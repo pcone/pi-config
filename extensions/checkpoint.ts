@@ -116,6 +116,36 @@ function prepareContextMessages(messages: AgentMessage[]): AgentMessage[] {
 // Extension
 // ---------------------------------------------------------------------------
 
+/** Run a checkpoint: archive the session, compact context, and optionally continue. */
+async function doCheckpoint(
+  ctx: ExtensionContext,
+  pi: ExtensionAPI,
+  summary: string,
+  nextSteps?: string,
+  shouldContinue?: boolean,
+): Promise<string> {
+  const archivePath = await archiveSession(ctx, summary, nextSteps);
+  await updateIndex(ctx.cwd);
+  ctx.ui.notify(`Session archived: ${archivePath}`, "info");
+
+  const doContinue = shouldContinue !== false;
+  const next = nextSteps ?? (doContinue ? "Continue work" : "Awaiting user instruction");
+
+  ctx.compact({
+    customInstructions: `[CHECKPOINT]\n${summary}\n\n## Next Steps\n${next}\n\n## Archived History\nPrevious session archived to: ${archivePath}\nUse grep or read to search it if needed:\n- grep -n "pattern" "${archivePath}"\n- read(path="${archivePath}")`,
+    onComplete: () => {
+      if (doContinue) {
+        pi.sendUserMessage(`Continue working on: ${next}`, { deliverAs: "followUp" });
+      }
+    },
+    onError: (error) => {
+      ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
+    },
+  });
+
+  return archivePath;
+}
+
 export default function (pi: ExtensionAPI) {
   // -------------------------------------------------------------------------
   // Strip thinking + cleared tool I/O from live LLM context
@@ -136,34 +166,15 @@ export default function (pi: ExtensionAPI) {
       "Archive the current session to a timestamped file and clear context. " +
       "Use at logical stopping points when moving to a new feature or task. " +
       "The archived session can be searched later with search_checkpoint. " +
-      "After checkpointing, continue working on nextSteps unless they explicitly say to stop or ask the user.",
+      "After checkpointing, continue working on nextSteps unless continue is false.",
     parameters: Type.Object({
       summary: Type.String({ description: "What was accomplished in this session" }),
-      nextSteps: Type.Optional(Type.String({ description: "What's planned for the next session. The agent will continue working on these after checkpoint. Use 'Ask the user' if there's a decision point, or 'Nothing more to do' to stop." })),
+      nextSteps: Type.Optional(Type.String({ description: "What's planned for the next session. The agent will continue working on these after checkpoint." })),
+      continue: Type.Optional(Type.Boolean({ description: "Whether to continue with nextSteps after checkpoint. Default: true. Set to false when the user needs to switch context or give a new instruction." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        const archivePath = await archiveSession(ctx, params.summary, params.nextSteps);
-        await updateIndex(ctx.cwd);
-        ctx.ui.notify(`Session archived: ${archivePath}`, "info");
-
-        const nextSteps = params.nextSteps ?? "Continue work";
-        const shouldContinue = !nextSteps.match(/^(ask the user|nothing more to do|stop)$/i);
-
-        ctx.compact({
-          customInstructions: `[CHECKPOINT]\n${params.summary}\n\n## Next Steps\n${nextSteps}\n\n## Archived History\nPrevious session archived to: ${archivePath}\nUse grep or read to search it if needed:\n- grep -n "pattern" "${archivePath}"\n- read(path="${archivePath}")`,
-          onComplete: () => {
-            if (shouldContinue) {
-              pi.sendUserMessage(`Continue working on: ${nextSteps}`, { deliverAs: "followUp" });
-            } else if (nextSteps.match(/^ask the user$/i)) {
-              pi.sendUserMessage("Checkpoint complete. Ask the user what to work on next.", { deliverAs: "followUp" });
-            }
-          },
-          onError: (error) => {
-            ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
-          },
-        });
-
+        const archivePath = await doCheckpoint(ctx, pi, params.summary, params.nextSteps, params.continue);
         return {
           content: [
             {
@@ -217,6 +228,26 @@ export default function (pi: ExtensionAPI) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`Failed: ${message}`, "error");
       }
+    },
+  });
+
+  pi.registerCommand("checkpoint-continue", {
+    description: "Checkpoint current session and continue with a new prompt",
+    async handler(args, _ctx) {
+      const extra = args.trim() ? ` Additional context: ${args.trim()}.` : "";
+      pi.sendUserMessage(
+        `Checkpoint the session now. Summarize what has been accomplished and what comes next.${extra}`,
+      );
+    },
+  });
+
+  pi.registerCommand("checkpoint-stop", {
+    description: "Checkpoint current session and stop — do not auto-continue",
+    async handler(args, _ctx) {
+      const extra = args.trim() ? ` Additional context: ${args.trim()}.` : "";
+      pi.sendUserMessage(
+        `Checkpoint the session now with continue set to false. Summarize what has been accomplished.${extra}`,
+      );
     },
   });
 

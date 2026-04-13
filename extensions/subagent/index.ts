@@ -187,6 +187,12 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
 	return items;
 }
 
+/** True for stop reasons that indicate abnormal completion (not 'stop' or 'toolUse'). */
+function isAbnormalStop(stopReason?: string): boolean {
+	if (!stopReason) return true;
+	return stopReason !== "stop" && stopReason !== "toolUse";
+}
+
 async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],
 	concurrency: number,
@@ -533,8 +539,7 @@ export default function (pi: ExtensionAPI) {
 					);
 					results.push(result);
 
-					const isError =
-						result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+					const isError = result.exitCode !== 0 || isAbnormalStop(result.stopReason);
 					if (isError) {
 						const errorMsg =
 							result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
@@ -645,7 +650,7 @@ export default function (pi: ExtensionAPI) {
 					onUpdate,
 					makeDetails("single"),
 				);
-				const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+				const isError = result.exitCode !== 0 || isAbnormalStop(result.stopReason);
 				if (isError) {
 					const errorMsg =
 						result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
@@ -739,7 +744,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (details.mode === "single" && details.results.length === 1) {
 				const r = details.results[0];
-				const isError = r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
+				const isError = r.exitCode !== 0 || isAbnormalStop(r.stopReason);
 				const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const displayItems = getDisplayItems(r.messages);
 				const finalOutput = getFinalOutput(r.messages);
