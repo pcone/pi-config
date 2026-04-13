@@ -151,6 +151,8 @@ export default function (pi: ExtensionAPI) {
         endedAt?: number;
         interval?: ReturnType<typeof setInterval>;
         summaryPollInterval?: ReturnType<typeof setInterval>;
+        phase?: number;       // 0=summary, 1=last 20 lines, 2=full
+        lastExpanded?: boolean;
       };
 
       // Mirror built-in timing logic
@@ -165,33 +167,70 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      // Every Ctrl+O press (any transition of expanded) advances the phase.
+      // Only use 3-phase cycling for long outputs; short outputs just show all.
+      const output = getTextOutput(result).trim();
+      const lineCount = output ? output.split("\n").length : 0;
+      const usePhaseCycling = lineCount > SUMMARIZE_THRESHOLD;
+
+      if (usePhaseCycling && state.lastExpanded !== undefined && options.expanded !== state.lastExpanded) {
+        state.phase = ((state.phase ?? 0) + 1) % 3;
+      }
+      state.lastExpanded = options.expanded;
+      const phase = usePhaseCycling ? (state.phase ?? 0) : (options.expanded ? 2 : 0);
+
       const component =
         (context.lastComponent as BashResultRenderComponent | undefined) ??
         new BashResultRenderComponent();
       component.clear();
 
       const renderState = component.state;
-      const output = getTextOutput(result).trim();
 
       if (output) {
-        const styledOutput = output
-          .split("\n")
+        const lines = output.split("\n");
+        const styledOutput = lines
           .map((line: string) => theme.fg("toolOutput", line))
           .join("\n");
 
-        if (options.expanded) {
+        if (phase === 2) {
+          // Full output
           component.addChild(new Text(`\n${styledOutput}`, 0, 0));
-          // Clean up any poll interval when expanded
           if (state.summaryPollInterval) {
             clearInterval(state.summaryPollInterval);
             state.summaryPollInterval = undefined;
           }
+        } else if (phase === 1) {
+          // Last 20 lines
+          const PARTIAL_LINES = 20;
+          component.addChild({
+            render(width: number): string[] {
+              if (renderState.cachedLines === undefined || renderState.cachedWidth !== width) {
+                const preview = truncateToVisualLines(styledOutput, PARTIAL_LINES, width);
+                renderState.cachedLines = preview.visualLines;
+                renderState.cachedSkipped = preview.skippedCount;
+                renderState.cachedWidth = width;
+              }
+              const out: string[] = [""];
+              if (renderState.cachedSkipped && renderState.cachedSkipped > 0) {
+                const hint =
+                  theme.fg("muted", `... (${renderState.cachedSkipped} earlier lines,`) +
+                  ` ${keyHint("app.tools.expand", "full output")})`;
+                out.push(truncateToWidth(hint, width, "..."));
+              }
+              out.push(...(renderState.cachedLines ?? []));
+              return out;
+            },
+            invalidate() {
+              renderState.cachedWidth = undefined;
+              renderState.cachedLines = undefined;
+              renderState.cachedSkipped = undefined;
+            },
+          } as any);
         } else {
+          // Phase 0: summary (or raw preview if output is short / no summary yet)
           const summary = summaryCache.get(context.toolCallId);
           const isPending = pendingSummaries.has(context.toolCallId);
 
-          // Self-polling: while pending, re-render every 200ms until summary arrives.
-          // This avoids relying on external invalidate callbacks and their timing issues.
           if (isPending && !state.summaryPollInterval) {
             state.summaryPollInterval = setInterval(() => {
               if (!pendingSummaries.has(context.toolCallId)) {
@@ -210,18 +249,19 @@ export default function (pi: ExtensionAPI) {
             const indicator = theme.fg("muted", "∑ ");
             component.addChild({
               render(width: number): string[] {
-                const indent = 2; // width of "∑ "
-                const lines = md.render(width - indent);
-                if (lines.length === 0) return [""];
+                const indent = 2;
+                const mdLines = md.render(width - indent);
+                if (mdLines.length === 0) return [""];
                 return [
                   "",
-                  indicator + (lines[0] ?? ""),
-                  ...lines.slice(1).map(l => "  " + l),
+                  indicator + (mdLines[0] ?? ""),
+                  ...mdLines.slice(1).map((l: string) => "  " + l),
                 ];
               },
               invalidate() { md.invalidate?.(); },
             } as any);
           } else {
+            // No summary: show last BASH_PREVIEW_LINES lines
             component.addChild({
               render(width: number): string[] {
                 if (renderState.cachedLines === undefined || renderState.cachedWidth !== width) {
@@ -230,20 +270,17 @@ export default function (pi: ExtensionAPI) {
                   renderState.cachedSkipped = preview.skippedCount;
                   renderState.cachedWidth = width;
                 }
-
-                const lines: string[] = [""];
-
+                const out: string[] = [""];
                 if (isPending) {
-                  lines.push(truncateToWidth(theme.fg("muted", "∑ summarizing…"), width, "..."));
+                  out.push(truncateToWidth(theme.fg("muted", "∑ summarizing…"), width, "..."));
                 } else if (renderState.cachedSkipped && renderState.cachedSkipped > 0) {
                   const hint =
                     theme.fg("muted", `... (${renderState.cachedSkipped} earlier lines,`) +
                     ` ${keyHint("app.tools.expand", "to expand")})`;
-                  lines.push(truncateToWidth(hint, width, "..."));
+                  out.push(truncateToWidth(hint, width, "..."));
                 }
-
-                lines.push(...(renderState.cachedLines ?? []));
-                return lines;
+                out.push(...(renderState.cachedLines ?? []));
+                return out;
               },
               invalidate() {
                 renderState.cachedWidth = undefined;
