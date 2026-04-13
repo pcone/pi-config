@@ -30,7 +30,7 @@ const BASH_PREVIEW_LINES = 5;
 const SUMMARIZE_THRESHOLD = 5;
 
 /** OpenRouter model to use for summarization. */
-const SUMMARY_MODEL = "mistralai/ministral-3b-2512";
+const SUMMARY_MODEL = "meta-llama/llama-3.1-8b-instruct";
 
 // ─── Async summary state (module-level, keyed by toolCallId) ─────────────────
 
