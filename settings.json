@@ -1,6 +1,10 @@
 {
   "lastChangelogVersion": "0.66.1",
-  "defaultProvider": "openrouter",
-  "defaultModel": "z-ai/glm-5.1",
-  "theme": "catppuccin-macchiato"
+  "defaultProvider": "minimax",
+  "defaultModel": "MiniMax-M2.7",
+  "theme": "catppuccin-macchiato",
+  "extensions": [
+    "extensions/compact-bash.ts"
+  ],
+  "defaultThinkingLevel": "medium"
 }
