@@ -26,7 +26,14 @@ Re-read the relevant sections after each round if author answers cite specific f
 
 # Bash policy (read-only)
 
-`bash` is for read-only commands only: file/directory inspection, `git diff`, `git log`, `git show`, `git status`, project build/type-check commands in read-only mode (e.g. `cargo check --message-format=short`). Do NOT modify files, run builds/tests, or stage commits.
+`bash` is for read-only operations only. Do NOT modify files, run the project's test suite, install dependencies, or stage commits.
+
+Allowed:
+- File inspection: `ls`, `cat`, `head`, `tail`, `wc`, plus the `read` / `find` / `grep` tools which handle their own cases.
+- Git reads: `git diff`, `git log`, `git show` (including `git show <commit>:<file>` for prior-code context), `git status`, `git grep` for prior-history queries.
+- Project type-checks in read-only mode, where the project's build system supports it (e.g. `cargo check --message-format=short`).
+
+Run only the smallest version of each command that gives you what you need (e.g. prefer `git show <commit>:<file>` over checking out the commit, prefer reading specific files over dumping them). When you've gathered what you came for, stop.
 
 # Review strategy
 

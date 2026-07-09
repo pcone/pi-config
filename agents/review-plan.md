@@ -34,7 +34,14 @@ Either form is authoritative. Read it carefully.
 
 # Bash policy (read-only)
 
-`bash` is for read-only lookups only: `ls`, `cat`, `head`, `tail`, `wc`, `git log`, `git show`, `git grep`. You can read existing code via `git show <commit>:<file>` for context. Do NOT modify files, run builds, or stage commits.
+`bash` is for read-only operations only. Do NOT modify files, run the project's test suite, install dependencies, or stage commits.
+
+Allowed:
+- File inspection: `ls`, `cat`, `head`, `tail`, `wc`, plus the `read` / `find` / `grep` tools which handle their own cases.
+- Git reads: `git diff`, `git log`, `git show` (including `git show <commit>:<file>` for prior-code context), `git status`, `git grep` for prior-history queries.
+- Project type-checks in read-only mode, where the project's build system supports it (e.g. `cargo check --message-format=short`).
+
+Run only the smallest version of each command that gives you what you need (e.g. prefer `git show <commit>:<file>` over checking out the commit, prefer reading specific files over dumping them). When you've gathered what you came for, stop.
 
 # How to evaluate
 
