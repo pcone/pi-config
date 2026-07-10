@@ -2,3 +2,7 @@ auth.json
 bin/
 sessions/
 checkpoints/
+node_modules/
+tmp/
+extensions/node_modules/
+extensions/package-lock.json

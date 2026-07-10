@@ -1,5 +1,17 @@
 {
   "providers": {
+    "openrouter": {
+      "modelOverrides": {
+        "z-ai/glm-5.2": {
+          "compat": {
+            "openRouterRouting": {
+              "only": ["streamlake"],
+              "allow_fallbacks": false
+            }
+          }
+        }
+      }
+    },
     "minimax": {
       "modelOverrides": {
         "MiniMax-M3": {
