@@ -8,7 +8,7 @@ feature: rules
 
 # Path-Scoped Rules
 
-A `rules` mechanism injects context into the agent's working set based on file path. Rules are markdown files with optional YAML frontmatter; rules with a `paths` field only apply when the agent is working with files matching the glob. Rules without `paths` (and without `disable-model-invocation`) are unconditional and load at session start. See *Rule modes* below for the three injection modes.
+A `rules` mechanism injects context into the agent's working set based on file path. Rules are markdown files with optional YAML frontmatter. Rules with a `paths` field only apply when the agent is working with files matching the glob; rules with `disable-model-invocation: true` never auto-trigger and only enter the conversation via `/rule:<name>`. See *Rule modes* below.
 
 This is a complement to skills, not a replacement. Skills answer "do X when Y" and stay loaded by description; rules answer "when editing file of type Z, here is the convention / syntax / constraint" and only enter context when the matching file is touched.
 
@@ -55,7 +55,7 @@ paths:
 - `let` bindings are immutable; use `var` for reassignment. ...
 ```
 
-Rules with no `paths` field and no `disable-model-invocation` flag are unconditional. Their content is appended to the system prompt at session start, in the same slot as unconditional `APPEND_SYSTEM.md` content. Rules with `disable-model-invocation: true` never auto-trigger (see *Rule modes*).
+Rules with `paths` are path-triggered: they inject on the first `read`/`edit`/`write` of a matching file. Rules with `disable-model-invocation: true` never auto-trigger (see *Rule modes*). A rule with neither `paths` nor `disable-model-invocation: true` has no trigger — it is warned and skipped.
 
 A rule file with only frontmatter and no body is empty — it is skipped with a warning. There is nothing to inject.
 
@@ -65,7 +65,7 @@ A rule file with only frontmatter and no body is empty — it is skipped with a 
 |---|---|---|---|
 | `paths` | no | `string[]` | Glob patterns; rule applies only when an in-scope path matches. |
 | `description` | no | `string` | One-line summary. Shown in `/rules` listing. Not used for matching. |
-| `disable-model-invocation` | no | `boolean` | When true, the rule never auto-triggers — not by path match, not by unconditional startup. Only `/rule:<name>` injects it. Marked as `[manual]` in `/rules`. |
+| `disable-model-invocation` | no | `boolean` | When true, the rule never auto-triggers by path match. Only `/rule:<name>` injects it. Marked as `[manual]` in `/rules`. |
 
 If `description` is absent, the first line of the rule body (stripped of heading `#` markup) is used as the summary in `/rules`.
 
@@ -95,17 +95,15 @@ Symlinked rule files and symlinked rule directories resolve and load normally. T
 
 ## Rule modes
 
-Every rule is in exactly one of three injection modes:
+Every rule is in exactly one of two injection modes:
 
 | Mode | `paths` field | `disable-model-invocation` | When it injects |
 |---|---|---|---|
-| Unconditional | absent | `false` (default) | Session start — appended to the system prompt |
 | Path-triggered | present | `false` (default) | On first `read`/`edit`/`write` of a matching path |
 | Manual-only | any | `true` | Only via `/rule:<name>` command — never auto-triggers |
 
 Manual-only rules are never triggered by path matching, even if they have a `paths`
-field. If they also lack a `paths` field, they skip the unconditional startup injection
-as well. The only way they enter the conversation is a user invoking `/rule:<name>` or
+field. The only way they enter the conversation is a user invoking `/rule:<name>` or
 the agent reading the rule file directly.
 
 The `/rules` listing marks manual-only rules (e.g. `[manual]`) so the user knows they
@@ -158,7 +156,7 @@ This is the only viable injection point that preserves prompt caching for the sy
 
 ### Session lifecycle
 
-- **Start**: unconditional rules (no `paths`, no `disable-model-invocation`) inject into the system prompt. In-scope set is empty. No path-scoped rules are in the conversation yet.
+- **Start**: in-scope set is empty. No rules have been injected yet.
 - **Mid-session**: as the agent reads/edits/writes files, matching rules are appended to the relevant tool-result messages and added to the in-scope set.
 - **Checkpoint**: snapshot the session. The in-scope set is **cleared** as part of the snapshot — it is session-segment state, not session state. Rules persist in the snapshot only as far as they appear in the conversation history; on resume, they re-inject on the next matching tool call.
 - **Compact**: replace the conversation history with a summary. The in-scope set is cleared before compaction. Rules that were in the old history are gone with the history; they re-inject as paths are re-encountered in the post-compact segment.
@@ -176,6 +174,36 @@ The agent can have both a `.tfd` rule and the `review-code` skill in context at 
 Because rules live in the conversation history (not the system prompt), they don't shift the system-prompt cache. They grow the conversation history in a forward-only direction, which is the same growth direction as the conversation itself, and the cache key for the conversation prefix stays stable from the trigger turn onward.
 
 Rules never invoke tools themselves (no `allowed-tools` field — the spec doesn't include one). If a rule needs to point at a script, it should be a skill instead.
+
+## Implementation approach
+
+This feature is implemented as a single pi extension. The extension maps the
+design's abstract operations to pi's event hooks:
+
+| Design operation | pi hook |
+|---|---|
+| Rule discovery — scan directories, parse frontmatter | Async extension factory (runs on load) |
+| Path-triggered injection | `tool_result` event — watch `read`/`edit`/`write`, check path against rule registry, append rule body to `event.content` |
+| Manual-only injection | `/rule:<name>` command reads the rule body from the registry and injects it into the conversation |
+| In-scope set | In-memory `Set<string>` of rule filenames that have fired this segment |
+| Clear in-scope set on compact | `session_compact` event resets the in-scope set |
+| `/rules` listing | `pi.registerCommand("rules")` — reads rule registry, formats output |
+| `/rule:<name>` | `pi.registerCommand("rule")` — handler receives the name as `args`, reads from registry |
+| `--rule` / `--no-rules` flags | `pi.registerFlag()` — suppress or extend rule discovery |
+| `settings.json` `rules` array | Extension reads from settings at startup |
+
+### In-scope set lifecycle
+
+- **Start**: empty. Rules are discovered at extension startup. No injection has happened.
+- **Mid-session**: on first `read`/`edit`/`write` of a matching path, the rule is added to the in-scope set and its body is appended to the tool result.
+- **Compact**: the in-scope set is cleared. Rules that were injected before the compact are gone from the history (replaced by the summary). A subsequent file touch re-injects them.
+- **Session resume**: the in-scope set is not persisted. On resume it is empty. The old rule text is in the loaded history; a subsequent file touch re-injects the rule body, producing temporary duplication. This is acceptable for v1 and can be optimized later by scanning history for `<rule>` tags to rebuild the in-scope set.
+- **End**: in-scope set is discarded with the session.
+
+### Parallel tool execution safety
+
+JavaScript is single-threaded, so `tool_result` events are serialized by the event
+loop. The in-scope `Set` is accessed synchronously — no race condition exists.
 
 ## Listing and management
 
@@ -202,15 +230,15 @@ Rules never invoke tools themselves (no `allowed-tools` field — the spec doesn
 - [x] Goals and non-goals
 - [x] Discovery and file format
 - [x] Frontmatter schema
+- [x] Rule modes (path-triggered + manual-only; unconditional removed)
 - [x] Triggering semantics — all 7 decisions locked
 - [x] Injection point (per-message append at trigger)
 - [x] Composition with skills (stacking, no prompt-prompt displacement)
 - [x] `allow-large` escape hatch
-- [ ] `/rules` and `/rule:<name>` commands
-- [ ] `settings.json` `rules` array
 - [x] `.pi/rules` vs `.claude/rules` precedence (`.pi/rules` wins at same level)
 - [x] Negation — stripped with warning in v1
 - [x] Multiple-rule injection order — alphabetical by filename
 - [x] `description` fallback — first body line
-- [ ] Implementation in `@earendil-works/pi-coding-agent`
-- [ ] First seeded rule (likely `tfd-syntax` for `.tfd` and `cases-format` for `.cases`)
+- [x] Implementation approach mapped to pi extension hooks
+- [ ] `/rules` and `/rule:<name>` commands
+- [ ] `settings.json` `rules` array
