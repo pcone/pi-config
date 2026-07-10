@@ -490,4 +490,6 @@ export default function rulesExtension(pi: ExtensionAPI) {
       );
     },
   });
+
 }
+
