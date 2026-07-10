@@ -69,7 +69,7 @@ Unknown fields are ignored. The `paths` field uses `picomatch` glob syntax with 
 
 ### `allow-large` escape hatch
 
-Rules have a strict per-rule line cap (75 lines by default) to keep the working set from growing unboundedly. A rule can opt out by including the directive `<!-- allow-large -->` as the first non-empty line of the body, immediately after the closing `---` of the frontmatter:
+Rules have a strict per-rule line cap (100 lines by default) to keep the working set from growing unboundedly. A rule can opt out by including the directive `<!-- allow-large -->` as the first non-empty line of the body, immediately after the closing `---` of the frontmatter:
 
 ```markdown
 ---
@@ -83,7 +83,7 @@ paths:
 (… a long, intentionally detailed reference …)
 ```
 
-The directive is the first thing checked, so the rule body can be arbitrarily long without warning. Rules without the directive that exceed the cap are loaded with a warning, truncated at 75 lines, and the truncation is surfaced to the user via `/rules`. The on-disk file is never modified.
+The directive is the first thing checked, so the rule body can be arbitrarily long without warning. Rules without the directive that exceed the cap are loaded with a warning, truncated at 100 lines, and the truncation is surfaced to the user via `/rules`. The on-disk file is never modified.
 
 ### Symlinks
 
@@ -106,7 +106,7 @@ Symlinked rule files and symlinked rule directories resolve and load normally. T
 6. **Stale rules and missing files**: a rule whose `paths` patterns match no file in the working tree at session start is dormant. It does not inject until the agent touches or creates a matching file. This is the same as Claude Code and avoids paying for rules the user is not yet using.
 
 7. **Limits**:
-   - **Per-rule line cap**: 75 lines default, lifted by `<!-- allow-large -->`. No upper bound once the escape hatch is set.
+   - **Per-rule line cap**: 100 lines default, lifted by `<!-- allow-large -->`. No upper bound once the escape hatch is set.
    - **No pattern cap**: rules can have as many `paths` entries as the author wants. We trust the author; rules are project-local config, not a hostile input vector.
    - **No eviction**: once a rule is in the conversation, it stays. Eviction would invalidate the prompt cache for every subsequent turn and is forbidden. If the user wants to free context, they compact — which clears the in-scope set and lets the next round of file touches re-inject only the rules that are still relevant.
 
