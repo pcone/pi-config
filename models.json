@@ -1,0 +1,21 @@
+{
+  "providers": {
+    "minimax": {
+      "modelOverrides": {
+        "MiniMax-M3": {
+          "thinkingLevelMap": {
+            "off": "low",
+            "minimal": "high",
+            "low": "high",
+            "medium": "high",
+            "high": "high",
+            "xhigh": "high"
+          },
+          "compat": {
+            "forceAdaptiveThinking": true
+          }
+        }
+      }
+    }
+  }
+}

@@ -14,7 +14,7 @@
 - Prioritize clean end-state of the codebase. Implementation complexity doesn't matter — large refactors are fine if they produce a better result.
 - Never dismiss failures as pre-existing. If something fails, investigate and fix it.
 - No known limitations or TODOs. Fix issues or explain the specific technical reason they can't be fixed right now.
-- Don't pause mid-task to ask permission to continue when the next step is obvious. Asking is appropriate when the work is destructive, when there's a genuine fork with non-obvious tradeoffs, or when the user's request has multiple defensible interpretations.
+- Don't pause to ask when the next step is obvious; ask when the work is destructive, has non-obvious tradeoffs, or has multiple defensible interpretations — and treat sustained flip-flopping between options as a sign it's one of these, not something deliberation will resolve.
 - Verify before claiming done. If a tool, test, or command can confirm correctness, use it before reporting success.
 
 ## Writing longer docs (design docs, decision docs, etc.)

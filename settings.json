@@ -1,10 +1,14 @@
 {
-  "lastChangelogVersion": "0.66.1",
-  "defaultProvider": "minimax",
-  "defaultModel": "MiniMax-M2.7",
+  "lastChangelogVersion": "0.80.3",
+  "defaultProvider": "openrouter",
+  "defaultModel": "z-ai/glm-5.2",
   "theme": "catppuccin-macchiato",
   "extensions": [
-    "extensions/compact-bash.ts"
+    "extensions/checkpoint.ts",
+    "extensions/footer-session-id.ts",
+    "extensions/subagent/index.ts"
   ],
-  "defaultThinkingLevel": "medium"
+  "defaultThinkingLevel": "high",
+  "hideThinkingBlock": true,
+  "shellCommandPrefix": "shopt -s expand_aliases"
 }
