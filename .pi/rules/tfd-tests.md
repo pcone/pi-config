@@ -6,10 +6,7 @@ paths:
 # Writing tfd Tests
 
 `.cases` files are end-to-end behavioral tests for the compiler. Every test is
-a self-contained tfd program with directives. Prefer `.cases` over unit tests.
-
-Full format reference: `tests/run_tests.py` (parser at `_parse_cases_file`).
-Conventions: `AGENTS.md` section "Testing".
+a self-contained tfd program with directives.
 
 ## Quick template
 
@@ -56,6 +53,25 @@ Use `//` line comments in source (token trivia). Use `#` comments in
   implementing them. For partial optimizations, NYI IR tests cover the
   unoptimized states; when they start passing, remove the flag.
 - **Be precise in reject patterns.** Match enough to distinguish the error.
+
+## Philosophy
+
+- **100% coverage goal.** Every supported path and failure mode should have a
+  `.cases` test. Prefer descriptive happy-path examples first, then exhaustive
+  edge cases.
+- **`.cases` over unit tests.** `.cases` tests only assert on `tfd run`/`tfd
+  emit-ir`'s observable behavior, so they're portable to any future
+  implementation. Unit tests are tied to this Rust codebase and become debt
+  if it's ever reimplemented. Reach for a unit test only when "no `.cases`
+  test would catch a regression here" is genuinely true.
+- **IR tests prove codegen paths.** Tests for non-semantic codegen behavior
+  (LUR, in-place mutation, no-copy optimizations) belong in IR tests
+  (`tests/fixtures/ir/`), alongside a `.cases` test with same input/output:
+  `.cases` verifies correctness, IR verifies the fast path was actually taken.
+- **Partial optimizations need NYI gap tests.** When an optimization fires
+  for some valid states but not all, add `| nyi` IR tests covering the
+  unoptimized states. When the gap is closed, the NYI test passes and prompts
+  removal of the directive.
 
 ## Running
 
