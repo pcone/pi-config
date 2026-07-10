@@ -1,3 +1,8 @@
+## Decision Logging
+
+Record non-trivial design choices (tradeoffs, rejected approaches, new primitives)
+in `decisions/<feature>/`. The global `tfd-decisions` rule provides format and workflow.
+
 ## Response style
 
 - Be concise. If there's an obvious next step, just do it. Avoid preamble, filler, and restating what was just done.
@@ -16,7 +21,3 @@
 - No known limitations or TODOs. Fix issues or explain the specific technical reason they can't be fixed right now.
 - Don't pause to ask when the next step is obvious; ask when the work is destructive, has non-obvious tradeoffs, or has multiple defensible interpretations — and treat sustained flip-flopping between options as a sign it's one of these, not something deliberation will resolve.
 - Verify before claiming done. If a tool, test, or command can confirm correctness, use it before reporting success.
-
-## Writing longer docs (design docs, decision docs, etc.)
-
-Lead with what we're going to do. Strip historical narrative — how the bug was found, what was tried in conversation, why a section exists — unless it's a sensible-looking path we rejected; keep those, with the reason. One idea per sentence. Active voice. Drop hedging and filler ("separately from this...", "it's worth noting that...", "this also happens to..."). Don't compress past the point of meaning — a question and its answer stapled into one clause is worse than the wordy version.
