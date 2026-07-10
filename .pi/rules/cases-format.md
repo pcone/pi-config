@@ -3,46 +3,61 @@ paths:
   - "**/*.cases"
 ---
 
-# .cases Test Format Reference
+# .cases Test Format — Quick Reference
 
-A `.cases` file is a behavioral test suite for the tfd compiler. Each test
-is a self-contained program with directives delimiting stages.
-
-## Test structure
+For the full test-writing guide (patterns, IR tests, matrix, NYI, naming
+conventions, documentation style) see `tfd-tests.md`.
 
 ```
-# --- test: test_name ---
+# --- test: descriptive_name ---
 [source code]
 # --- expect ---
-[expected stdout output]
-
+[expected stdout]
+# --- reject ---
+[expected compile error]
+# --- ir_contains ---
+[IR pattern expected]
+# --- ir_excludes ---
+[IR pattern NOT expected]
+# --- ir_count ---
+N  PATTERN
+# --- ir_equals ---
+[secondary source whose IR must match first exactly]
 ```
 
-A test may have directives:
-- `# --- expect ---` — stdout must match exactly.
-- `# --- expect_regex ---` — stdout must match the given regex.
-- `# --- reject ---` — compilation must fail with the given error message.
-- `# --- reject_regex ---` — compilation must fail matching the given regex.
-- `# --- ir_contains ---` — emitted IR must contain the specified text.
-- `# --- ir_excludes ---` — emitted IR must NOT contain the specified text.
-- `# --- ir_count ---` — count of a pattern in emitted IR, with a count header.
-- `# --- skip --- [reason]` — skip the test (always passes).
+## Directives
 
-| nyi directives:
-- `| nyi` suffix on `# --- test:` marks a Not-Yet-Implemented test.
-  NYI tests run but don't affect exit code. When one passes, the output says
-  "remove the '| nyi' directive".
-- Use `| nyi` for planned syntax/behavior not yet implemented. When the
-  feature ships, the NYI test starts passing and prompts cleanup.
+| Directive | Use |
+|---|---|
+| `# --- expect ---` | Expected stdout (exact match) |
+| `# --- expect_regex ---` | Expected stdout (regex) |
+| `# --- reject ---` | Expected compile error stderr |
+| `# --- reject_regex ---` | Expected compile error (regex) |
+| `# --- stderr ---` | Expected stderr for successful run |
+| `# --- ir_contains ---` | IR pattern must appear |
+| `# --- ir_excludes ---` | IR pattern must NOT appear |
+| `# --- ir_count ---` | `N  PATTERN` — exact count |
+| `# --- ir_equals ---` | Secondary source, IR must match first |
+| `# --- dump-comptime ---` | Run `tfd dump-comptime` |
+| `# --- matrix ---` | Parameterized template rows |
+| `# --- skip --- [reason]` | Skip test |
 
-## File-level directives
+## Flags (after `|` in test name)
 
-- `//` line comments in the source become token trivia — ignored.
-- `/* */` block comments are also parsed as trivia.
+- `| nyi` — Not Yet Implemented. Runs but doesn't affect exit code.
+- `| reject` — Shorthand compile-error test.
+- `| arena-dump` — Exercise arena-dump feature flag.
+
+## Comments in tests
+
+- `//` line comments in source → token trivia.
+- `/* */` block comments → token trivia.
+- `#` lines in `ir_contains`/`ir_excludes` sections → skipped by runner.
 
 ## Running
 
 ```bash
-tfd run tests/fixtures/comments.cases    # Run specific file
-python3 tests/run_tests.py               # Run entire suite
+python3 tests/run_tests.py                # All tests
+tfd run tests/fixtures/comments.cases     # Single file
+tfd emit-ir tests/fixtures/comments.cases  # Emit IR
 ```
