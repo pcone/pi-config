@@ -139,13 +139,13 @@ function findMarkdownFiles(dir: string): string[] {
   return results;
 }
 
-function loadRule(filePath: string): Rule | null {
+function loadRule(filePath: string, warnings: string[]): Rule | null {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
     const { frontmatter: fm, body } = parseFrontmatter(content);
 
     if (!body.trim()) {
-      console.warn(`[rules] Skipping empty rule: ${filePath}`);
+      warnings.push(`Skipping empty rule: ${filePath}`);
       return null;
     }
 
@@ -158,8 +158,8 @@ function loadRule(filePath: string): Rule | null {
     let effectiveLineCount = bodyLines.length;
 
     if (effectiveLineCount > 100 && !allowLarge) {
-      console.warn(
-        `[rules] Rule ${filePath} (${effectiveLineCount} lines) truncated to 100. Add <!-- allow-large --> to override.`,
+      warnings.push(
+        `Rule "${path.basename(filePath, ".md")}" (${effectiveLineCount} lines) truncated to 100. Add <!-- allow-large --> to override.`,
       );
       effectiveBody = bodyLines.slice(0, 100).join("\n");
       effectiveLineCount = 100;
@@ -180,8 +180,8 @@ function loadRule(filePath: string): Rule | null {
 
     // Warn about degenerate rules (no trigger)
     if (!fm?.paths && !disableModelInvocation) {
-      console.warn(
-        `[rules] Rule "${name}" has no paths field and is not manual-only. It will never trigger. Add paths or set disable-model-invocation: true.`,
+      warnings.push(
+        `Rule "${name}" has no paths field and is not manual-only — never triggers. Add paths or set disable-model-invocation: true.`,
       );
     }
 
@@ -196,7 +196,7 @@ function loadRule(filePath: string): Rule | null {
       allowLarge,
     };
   } catch (err) {
-    console.warn(`[rules] Error loading rule from ${filePath}:`, err);
+    warnings.push(`Error loading rule from ${filePath}: ${err}`);
     return null;
   }
 }
@@ -227,13 +227,14 @@ function discoverRules(
   noDiscovery: boolean,
   explicitPaths: string[],
   cwd: string,
+  warnings: string[],
 ): Map<string, Rule> {
   const rules = new Map<string, Rule>();
   const seenNames = new Set<string>();
 
   const add = (dir: string, _label: string) => {
     for (const filePath of findMarkdownFiles(dir)) {
-      const rule = loadRule(filePath);
+      const rule = loadRule(filePath, warnings);
       if (rule && !seenNames.has(rule.name)) {
         seenNames.add(rule.name);
         rules.set(rule.name, rule);
@@ -346,7 +347,18 @@ export default function rulesExtension(pi: ExtensionAPI) {
     }
 
     const noDiscovery = pi.getFlag("no-rules") === true || pi.getFlag("no-rules") === "true";
-    rules = discoverRules(noDiscovery, explicitPaths, cwd);
+    const warnings: string[] = [];
+    rules = discoverRules(noDiscovery, explicitPaths, cwd, warnings);
+
+    // Surface warnings — UI notification for interactive, console fallback
+    if (warnings.length > 0) {
+      const text = "[rules] " + warnings.join("; ");
+      if (ctx.hasUI) {
+        ctx.ui.notify(text, "warning");
+      } else {
+        console.warn(text);
+      }
+    }
 
     if (rules.size > 0 && ctx.hasUI) {
       ctx.ui.notify(
