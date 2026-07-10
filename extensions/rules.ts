@@ -317,6 +317,21 @@ export default function rulesExtension(pi: ExtensionAPI) {
   let cwd: string = "";
 
   // ------------------------------------------------------------------
+  // Flags
+  // ------------------------------------------------------------------
+
+  pi.registerFlag("no-rules", {
+    description: "Disable automatic rule discovery",
+    type: "boolean",
+    default: false,
+  });
+
+  pi.registerFlag("rule", {
+    description: "Load an additional rule file or directory: --rule <path>",
+    type: "string",
+  });
+
+  // ------------------------------------------------------------------
   // Session start — discover rules
   // ------------------------------------------------------------------
 
