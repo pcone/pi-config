@@ -162,7 +162,7 @@ function loadRule(filePath: string, warnings: string[]): Rule | null {
         `Rule "${path.basename(filePath, ".md")}" (${effectiveLineCount} lines) truncated to 100. Add <!-- allow-large --> to override.`,
       );
       effectiveBody = bodyLines.slice(0, 100).join("\n");
-      effectiveBody += `\n\n...(content truncated at 100 lines; full rule is ${effectiveLineCount} lines. Use /rule ${path.basename(filePath, ".md")} to read the full rule.)`;
+      effectiveBody += `\n\n...(content truncated at 100 lines; full rule is ${effectiveLineCount} lines. Read the file directly to see the full rule.)`;
       effectiveLineCount = 100;
     }
 
