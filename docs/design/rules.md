@@ -8,7 +8,7 @@ feature: rules
 
 # Path-Scoped Rules
 
-A `rules` mechanism injects context into the agent's working set based on file path. Rules are markdown files with optional YAML frontmatter. Rules with a `paths` field only apply when the agent is working with files matching the glob; rules with `disable-model-invocation: true` never auto-trigger and only enter the conversation via `/rule:<name>`. See *Rule modes* below.
+A `rules` mechanism injects context into the agent's working set based on file path. Rules are markdown files with optional YAML frontmatter. Rules with a `paths` field only apply when the agent is working with files matching the glob; rules with `disable-model-invocation: true` never auto-trigger and only enter the conversation via `/rule <name>`. See *Rule modes* below.
 
 This is a complement to skills, not a replacement. Skills answer "do X when Y" and stay loaded by description; rules answer "when editing file of type Z, here is the convention / syntax / constraint" and only enter context when the matching file is touched.
 
@@ -65,7 +65,7 @@ A rule file with only frontmatter and no body is empty — it is skipped with a 
 |---|---|---|---|
 | `paths` | no | `string[]` | Glob patterns; rule applies only when an in-scope path matches. |
 | `description` | no | `string` | One-line summary. Shown in `/rules` listing. Not used for matching. |
-| `disable-model-invocation` | no | `boolean` | When true, the rule never auto-triggers by path match. Only `/rule:<name>` injects it. Marked as `[manual]` in `/rules`. |
+| `disable-model-invocation` | no | `boolean` | When true, the rule never auto-triggers by path match. Only `/rule <name>` injects it. Marked as `[manual]` in `/rules`. |
 
 If `description` is absent, the first line of the rule body (stripped of heading `#` markup) is used as the summary in `/rules`.
 
@@ -100,10 +100,10 @@ Every rule is in exactly one of two injection modes:
 | Mode | `paths` field | `disable-model-invocation` | When it injects |
 |---|---|---|---|
 | Path-triggered | present | `false` (default) | On first `read`/`edit`/`write` of a matching path |
-| Manual-only | any | `true` | Only via `/rule:<name>` command — never auto-triggers |
+| Manual-only | any | `true` | Only via `/rule <name>` command — never auto-triggers |
 
 Manual-only rules are never triggered by path matching, even if they have a `paths`
-field. The only way they enter the conversation is a user invoking `/rule:<name>` or
+field. The only way they enter the conversation is a user invoking `/rule <name>` or
 the agent reading the rule file directly.
 
 The `/rules` listing marks manual-only rules (e.g. `[manual]`) so the user knows they
@@ -184,11 +184,11 @@ design's abstract operations to pi's event hooks:
 |---|---|
 | Rule discovery — scan directories, parse frontmatter | Async extension factory (runs on load) |
 | Path-triggered injection | `tool_result` event — watch `read`/`edit`/`write`, check path against rule registry, append rule body to `event.content` |
-| Manual-only injection | `/rule:<name>` command reads the rule body from the registry and injects it into the conversation |
+| Manual-only injection | `/rule <name>` command reads the rule body from the registry and injects it into the conversation |
 | In-scope set | In-memory `Set<string>` of rule filenames that have fired this segment |
 | Clear in-scope set on compact | `session_compact` event resets the in-scope set |
 | `/rules` listing | `pi.registerCommand("rules")` — reads rule registry, formats output |
-| `/rule:<name>` | `pi.registerCommand("rule")` — handler receives the name as `args`, reads from registry |
+| `/rule <name>` | `pi.registerCommand("rule")` — handler receives the name as `args`, reads from registry |
 | `--rule` / `--no-rules` flags | `pi.registerFlag()` — suppress or extend rule discovery |
 | `settings.json` `rules` array | Extension reads from settings at startup |
 
@@ -208,7 +208,7 @@ loop. The in-scope `Set` is accessed synchronously — no race condition exists.
 ## Listing and management
 
 - `/rules` command lists all rules (name, paths, description, line count, in-scope indicator for the current session segment). Manual-only rules are marked `[manual]`.
-- `/rule:<name>` reads the rule body, like `/skill:<name>`. Useful for forcing a read in segments where the matching path hasn't been touched yet, or for reviewing what a rule actually says.
+- `/rule <name>` reads the rule body, useful for forcing a read in segments where the matching path hasn't been touched yet, or for reviewing what a rule actually says.
 - `--no-rules` flag disables discovery, matching `--no-skills`.
 
 ## Configuration
@@ -240,5 +240,7 @@ loop. The in-scope `Set` is accessed synchronously — no race condition exists.
 - [x] Multiple-rule injection order — alphabetical by filename
 - [x] `description` fallback — first body line
 - [x] Implementation approach mapped to pi extension hooks
-- [ ] `/rules` and `/rule:<name>` commands
+- [x] `/rules` and `/rule <name>` commands
 - [ ] `settings.json` `rules` array
+- [x] `--no-rules` / `--rule` flags (built into pi, consumed by extension)
+- [x] Seed rules: `tfd-syntax`, `cases-format`
