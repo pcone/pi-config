@@ -361,11 +361,14 @@ export default function rulesExtension(pi: ExtensionAPI) {
       }
     }
 
-    if (rules.size > 0 && ctx.hasUI) {
-      ctx.ui.notify(
-        `Found ${rules.size} rule(s). /rules to list, /rule <name> to read.`,
-        "info",
-      );
+    if (rules.size > 0) {
+      const ruleNames = Array.from(rules.keys()).sort();
+      const text = `[Rules] ${rules.size} loaded: ${ruleNames.join(", ")}`;
+      if (ctx.hasUI) {
+        ctx.ui.notify(`${text}. /rules to list, /rule <name> to read.`, "info");
+      } else {
+        console.log(text);
+      }
     }
   });
 
