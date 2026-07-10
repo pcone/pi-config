@@ -8,7 +8,7 @@ feature: rules
 
 # Path-Scoped Rules
 
-A `rules` mechanism injects context into the agent's working set based on file path. Rules are markdown files with optional YAML frontmatter; rules with a `paths` field only apply when the agent is working with files matching the glob. Rules without `paths` are unconditional and load at session start.
+A `rules` mechanism injects context into the agent's working set based on file path. Rules are markdown files with optional YAML frontmatter; rules with a `paths` field only apply when the agent is working with files matching the glob. Rules without `paths` (and without `disable-model-invocation`) are unconditional and load at session start. See *Rule modes* below for the three injection modes.
 
 This is a complement to skills, not a replacement. Skills answer "do X when Y" and stay loaded by description; rules answer "when editing file of type Z, here is the convention / syntax / constraint" and only enter context when the matching file is touched.
 
@@ -33,7 +33,7 @@ This is a complement to skills, not a replacement. Skills answer "do X when Y" a
 
 - Global: `~/.pi/agent/rules/`
 - Global (cross-harness): `~/.claude/rules/` — same parser, so a rule file is portable.
-- Project: `.pi/rules/` and `.claude/rules/`, where `.pi/rules` may be a symlink to `.claude/rules` (mirroring the skill convention).
+- Project: `.pi/rules/` and `.claude/rules/`, where `.pi/rules` may be a symlink to `.claude/rules` (mirroring the skill convention). When both exist, `.pi/rules/` takes precedence over `.claude/rules/` on name collision. Project-level rules beat user-level rules. Explicit `--rule` paths beat all discovery.
 - CLI / settings: `--rule <path>` flag and `rules` array in settings.json, additive like `--skill`.
 - Disable discovery with `--no-rules`; explicit `--rule` paths still load.
 
@@ -55,7 +55,9 @@ paths:
 - `let` bindings are immutable; use `var` for reassignment. ...
 ```
 
-Rules with no `paths` field are unconditional. Their content is appended to the system prompt at session start, in the same slot as unconditional `APPEND_SYSTEM.md` content.
+Rules with no `paths` field and no `disable-model-invocation` flag are unconditional. Their content is appended to the system prompt at session start, in the same slot as unconditional `APPEND_SYSTEM.md` content. Rules with `disable-model-invocation: true` never auto-trigger (see *Rule modes*).
+
+A rule file with only frontmatter and no body is empty — it is skipped with a warning. There is nothing to inject.
 
 ### Frontmatter schema
 
@@ -63,9 +65,11 @@ Rules with no `paths` field are unconditional. Their content is appended to the 
 |---|---|---|---|
 | `paths` | no | `string[]` | Glob patterns; rule applies only when an in-scope path matches. |
 | `description` | no | `string` | One-line summary. Shown in `/rules` listing. Not used for matching. |
-| `disable-model-invocation` | no | `boolean` | When true, rule is hidden from the agent's tool surface; user-injected only. |
+| `disable-model-invocation` | no | `boolean` | When true, the rule never auto-triggers — not by path match, not by unconditional startup. Only `/rule:<name>` injects it. Marked as `[manual]` in `/rules`. |
 
-Unknown fields are ignored. The `paths` field uses `picomatch` glob syntax with case sensitivity following the host filesystem. Brace expansion (`*.{ts,tsx}`) is supported because `picomatch` provides it for free. Negation (`!`) is not supported in v1 — see *Triggering* for the rationale. Backslashes are normalized to forward slashes at parse time; rules that use `\` in patterns are warned about and rewritten.
+If `description` is absent, the first line of the rule body (stripped of heading `#` markup) is used as the summary in `/rules`.
+
+Unknown fields are ignored. The `paths` field uses `picomatch` glob syntax with case sensitivity following the host filesystem. Brace expansion (`*.{ts,tsx}`) is supported because `picomatch` provides it for free. Negation (`!`) patterns are stripped with a warning in v1 — see *Triggering* for the rationale. Backslashes are normalized to forward slashes at parse time; rules that use `\` in patterns are warned about and rewritten.
 
 ### `allow-large` escape hatch
 
@@ -89,6 +93,24 @@ The directive is the first thing checked, so the rule body can be arbitrarily lo
 
 Symlinked rule files and symlinked rule directories resolve and load normally. This lets a single shared rules tree (`~/shared-rules/`) be linked into multiple projects. Path matching operates on the **literal** path the tool was called with, not the resolved real path — see *Triggering* for the rationale.
 
+## Rule modes
+
+Every rule is in exactly one of three injection modes:
+
+| Mode | `paths` field | `disable-model-invocation` | When it injects |
+|---|---|---|---|
+| Unconditional | absent | `false` (default) | Session start — appended to the system prompt |
+| Path-triggered | present | `false` (default) | On first `read`/`edit`/`write` of a matching path |
+| Manual-only | any | `true` | Only via `/rule:<name>` command — never auto-triggers |
+
+Manual-only rules are never triggered by path matching, even if they have a `paths`
+field. If they also lack a `paths` field, they skip the unconditional startup injection
+as well. The only way they enter the conversation is a user invoking `/rule:<name>` or
+the agent reading the rule file directly.
+
+The `/rules` listing marks manual-only rules (e.g. `[manual]`) so the user knows they
+need to be explicitly requested.
+
 ## Triggering
 
 ### Decisions
@@ -99,7 +121,7 @@ Symlinked rule files and symlinked rule directories resolve and load normally. T
 
 3. **Symlink resolution**: literal path only. If a project lives at `/work/foo` via a symlink, the tool receives `/work/foo/bar.tfd` and rules with `**/*.tfd` match. The user is expected to launch pi from the path they intend to reason about, which is also the path rules are written against. Real-path matching is an unnecessary second axis.
 
-4. **First-match-injects-and-stays**: a rule is injected the first time a matching path appears in a `read`/`edit`/`write`, and is recorded in the in-scope set for the rest of the session segment. Subsequent operations on matching paths do not re-inject. **On checkpoint and on compact, the in-scope set is cleared** — rules re-inject as paths are re-encountered in the new segment. This is the correct behavior because compaction replaces the conversation history with a summary, and the rule content (which lives in the conversation, not the system prompt) is gone with the history.
+4. **First-match-injects-and-stays**: a rule is injected the first time a matching path appears in a `read`/`edit`/`write`, and is recorded in the in-scope set for the rest of the session segment. When multiple rules match the same path, they are injected in alphabetical order by filename. Subsequent operations on matching paths do not re-inject. **On checkpoint and on compact, the in-scope set is cleared** — rules re-inject as paths are re-encountered in the new segment. This is the correct behavior because compaction replaces the conversation history with a summary, and the rule content (which lives in the conversation, not the system prompt) is gone with the history.
 
 5. **Prompt slot for path-scoped rules**: not the system prompt. Rules are **appended to the tool-result message** that triggered the match, so the model sees the file content and the rule body in the same message. Once injected, the rule text becomes part of the conversation from that turn onward, and subsequent turns see it in their prompt prefix. This preserves prompt caching for the system prompt and earlier turns, which stay byte-stable. See *Injection point* below.
 
@@ -122,7 +144,7 @@ The injection is a per-message append at trigger time, not a system-prompt mutat
    [file content for src/foo.tfd]
 
    ---
-   <rule name="tfd-syntax" paths="**/*.tfd">
+   <rule name="tfd-syntax" paths="**/*.tfd, tests/**/*.tfd">
    [rule body]
    </rule>
    ```
@@ -136,7 +158,7 @@ This is the only viable injection point that preserves prompt caching for the sy
 
 ### Session lifecycle
 
-- **Start**: unconditional rules inject into the system prompt. In-scope set is empty. No path-scoped rules are in the conversation yet.
+- **Start**: unconditional rules (no `paths`, no `disable-model-invocation`) inject into the system prompt. In-scope set is empty. No path-scoped rules are in the conversation yet.
 - **Mid-session**: as the agent reads/edits/writes files, matching rules are appended to the relevant tool-result messages and added to the in-scope set.
 - **Checkpoint**: snapshot the session. The in-scope set is **cleared** as part of the snapshot — it is session-segment state, not session state. Rules persist in the snapshot only as far as they appear in the conversation history; on resume, they re-inject on the next matching tool call.
 - **Compact**: replace the conversation history with a summary. The in-scope set is cleared before compaction. Rules that were in the old history are gone with the history; they re-inject as paths are re-encountered in the post-compact segment.
@@ -157,7 +179,7 @@ Rules never invoke tools themselves (no `allowed-tools` field — the spec doesn
 
 ## Listing and management
 
-- `/rules` command lists all rules (name, paths, description, line count, in-scope indicator for the current session segment).
+- `/rules` command lists all rules (name, paths, description, line count, in-scope indicator for the current session segment). Manual-only rules are marked `[manual]`.
 - `/rule:<name>` reads the rule body, like `/skill:<name>`. Useful for forcing a read in segments where the matching path hasn't been touched yet, or for reviewing what a rule actually says.
 - `--no-rules` flag disables discovery, matching `--no-skills`.
 
@@ -186,6 +208,9 @@ Rules never invoke tools themselves (no `allowed-tools` field — the spec doesn
 - [x] `allow-large` escape hatch
 - [ ] `/rules` and `/rule:<name>` commands
 - [ ] `settings.json` `rules` array
-- [ ] `.pi/rules` vs `.claude/rules` precedence
+- [x] `.pi/rules` vs `.claude/rules` precedence (`.pi/rules` wins at same level)
+- [x] Negation — stripped with warning in v1
+- [x] Multiple-rule injection order — alphabetical by filename
+- [x] `description` fallback — first body line
 - [ ] Implementation in `@earendil-works/pi-coding-agent`
 - [ ] First seeded rule (likely `tfd-syntax` for `.tfd` and `cases-format` for `.cases`)
