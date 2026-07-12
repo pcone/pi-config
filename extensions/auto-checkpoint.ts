@@ -30,7 +30,7 @@
 
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve as resolvePath } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -164,6 +164,58 @@ interface PendingNudge {
 	percent: number;
 }
 
+// ---------------------------------------------------------------------------
+// Read-region tracking (shared format with checkpoint.ts)
+// ---------------------------------------------------------------------------
+
+interface ReadRegion {
+	offset: number;
+	limit: number; // Number.MAX_SAFE_INTEGER means "read to end"
+}
+
+/** Files read this session, keyed by normalized relative-to-cwd path. */
+const readRegions = new Map<string, ReadRegion[]>();
+
+function normalizePath(filePath: string, cwd: string): string {
+	const absolute = resolvePath(cwd, filePath);
+	const rel = relative(cwd, absolute);
+	return rel.startsWith("..") ? absolute : rel || ".";
+}
+
+function mergeRegions(regions: ReadRegion[]): Array<{ offset: number; endLine: number }> {
+	const sorted = regions
+		.map((r) => ({ offset: r.offset, endLine: r.offset + r.limit - 1 }))
+		.sort((a, b) => a.offset - b.offset);
+	const merged: Array<{ offset: number; endLine: number }> = [];
+	for (const r of sorted) {
+		const prev = merged[merged.length - 1];
+		if (prev && r.offset <= prev.endLine + 1) {
+			prev.endLine = Math.max(prev.endLine, r.endLine);
+		} else {
+			merged.push({ ...r });
+		}
+	}
+	return merged;
+}
+
+function formatReadRegions(readRegions: Map<string, ReadRegion[]>): string {
+	if (readRegions.size === 0) return "";
+	const entries: string[] = [];
+	for (const [path, regions] of readRegions) {
+		const merged = mergeRegions(regions);
+		const ranges = merged
+			.map((r) => (r.endLine >= Number.MAX_SAFE_INTEGER - 1 ? `L${r.offset}-end` : `L${r.offset}-${r.endLine}`))
+			.join(", ");
+		const fullFile = merged.length === 1 && merged[0].offset === 1 && merged[0].endLine >= Number.MAX_SAFE_INTEGER - 1;
+		entries.push(`- ${path}${fullFile ? " (entire file)" : ` → ${ranges}`}`);
+	}
+	return `\n\nFiles read this session:\n${entries.join("\n")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Nudge state
+// ---------------------------------------------------------------------------
+
 const state: {
 	config: AutoCheckpointConfig | null;
 	modelId: string | null;
@@ -189,6 +241,7 @@ function resetState(): void {
 	state.lastNudgedTurn = -1;
 	state.lastNudgedMs = -1;
 	state.pending = null;
+	readRegions.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +270,7 @@ export default function (pi: ExtensionAPI) {
 		state.threshold = resolveThreshold(event.model.id, event.model.contextWindow ?? 200_000, state.config);
 	});
 
-	// --- session_compact: context just got freed → clear nudge state ---
+	// --- session_compact: context just got freed → clear nudge state & read tracking ---
 	pi.on("session_compact", async () => {
 		resetState();
 	});
@@ -252,6 +305,20 @@ export default function (pi: ExtensionAPI) {
 		state.pending = { tokens, contextWindow, percent };
 	});
 
+	// --- tool_execution_end: track read regions for nudge file hints ---
+	pi.on("tool_execution_end", (event, ctx) => {
+		if (event.toolName !== "read" || event.isError) return;
+		const path: string | undefined = event.args?.path;
+		if (!path) return;
+		const offset: number = event.args?.offset ?? 1;
+		const limit: number = event.args?.limit ?? Number.MAX_SAFE_INTEGER;
+
+		const key = normalizePath(path, ctx.cwd);
+		const regions = readRegions.get(key) ?? [];
+		regions.push({ offset, limit });
+		readRegions.set(key, regions);
+	});
+
 	// --- before_agent_start: inject the nudge message if one is pending ---
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!state.pending) return;
@@ -259,17 +326,17 @@ export default function (pi: ExtensionAPI) {
 
 		const { tokens, contextWindow, percent } = state.pending;
 
-		// Resolve model config for prompt template (may have changed since turn_end)
 		const mcfg = resolveModelConfig(state.modelId ?? ctx.model?.id ?? "", state.config);
 
-		const content = mcfg.prompt
+		let content = mcfg.prompt
 			.replace(/\{\{tokens\}\}/g, tokens.toLocaleString())
 			.replace(/\{\{percent\}\}/g, percent.toFixed(1))
 			.replace(/\{\{contextWindow\}\}/g, contextWindow.toLocaleString());
 
-		// Record nudge using the turn counter from the most recent turn_end.
-		// Recording BEFORE injecting ensures the injected message itself doesn't
-		// contribute to context growth that re-triggers immediately.
+		// Append tracked read regions so the model can make informed
+		// relevantPaths decisions when calling the checkpoint tool.
+		content += formatReadRegions(readRegions);
+
 		state.lastNudgedTurn = state.turnCounter;
 		state.lastNudgedMs = Date.now();
 		state.pending = null;

@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, writeFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve as resolvePath } from "node:path";
 import type { AgentMessage, AssistantMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -13,9 +13,153 @@ const SUMMARY_FORMAT_HINT =
 	"(2) an in-depth explanation of what's being worked on right now and why, " +
 	"(3) medium-length overview of the overall plan (what comes after this).";
 
+// Fraction of context window to use for file injection (15%).
+const INJECTION_BUDGET_FRACTION = 0.15;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface RelevantPathEntry {
+	path: string;
+	scope?: "full" | "read";
+}
+
+interface ReadRegion {
+	offset: number;
+	/** Number.MAX_SAFE_INTEGER means "read to end". */
+	limit: number;
+}
+
 type StrippedAssistant = Omit<AssistantMessage, "content"> & {
 	content: AssistantMessage["content"];
 };
+
+// ---------------------------------------------------------------------------
+// Session-scoped read tracking
+// ---------------------------------------------------------------------------
+
+/** Files read this session, keyed by normalized relative-to-cwd path. */
+const readRegions = new Map<string, ReadRegion[]>();
+
+function normalizePath(filePath: string, cwd: string): string {
+	const absolute = resolvePath(cwd, filePath);
+	const rel = relative(cwd, absolute);
+	// If the resolved path is outside cwd, use the absolute path as key.
+	return rel.startsWith("..") ? absolute : rel || ".";
+}
+
+/**
+ * Merge overlapping/adjacent read regions to minimise duplicated content.
+ * Returns inclusive line numbers (endLine is the last line included).
+ */
+function mergeRegions(regions: ReadRegion[]): Array<{ offset: number; endLine: number }> {
+	const sorted = regions
+		.map((r) => ({ offset: r.offset, endLine: r.offset + r.limit - 1 }))
+		.sort((a, b) => a.offset - b.offset);
+
+	const merged: Array<{ offset: number; endLine: number }> = [];
+	for (const r of sorted) {
+		const prev = merged[merged.length - 1];
+		if (prev && r.offset <= prev.endLine + 1) {
+			prev.endLine = Math.max(prev.endLine, r.endLine);
+		} else {
+			merged.push({ ...r });
+		}
+	}
+	return merged;
+}
+
+// ---------------------------------------------------------------------------
+// File injection
+// ---------------------------------------------------------------------------
+
+function estimateTokens(content: string): number {
+	return Math.ceil(content.length / 4);
+}
+
+/**
+ * Read file contents for each entry in `relevantPaths`, respecting the
+ * injection token budget.  Returns the formatted injection string and a
+ * list of files that were omitted due to budget.
+ */
+async function buildFileInjection(
+	relevantPaths: RelevantPathEntry[],
+	cwd: string,
+	contextWindow: number,
+): Promise<{ text: string; omitted: string[] }> {
+	if (relevantPaths.length === 0) return { text: "", omitted: [] };
+
+	const budget = Math.round(contextWindow * INJECTION_BUDGET_FRACTION);
+	const parts: string[] = [];
+	const omitted: string[] = [];
+	let used = 0;
+
+	for (const entry of relevantPaths) {
+		const key = normalizePath(entry.path, cwd);
+		const absolutePath = resolvePath(cwd, entry.path);
+		let content: string;
+
+		try {
+			const raw = await readFile(absolutePath, "utf-8");
+			if (entry.scope === "read") {
+				const regions = readRegions.get(key);
+				if (!regions || regions.length === 0) {
+					// No tracked regions — fall back to full file with a note.
+					content = raw;
+				} else {
+					const merged = mergeRegions(regions);
+					const lines = raw.split("\n");
+					const chunks: string[] = [];
+					for (const r of merged) {
+						// endLine is inclusive; slice end needs to be endLine (since line N = index N-1, exclusive end = N).
+						const start = Math.max(0, r.offset - 1);
+						const end = Math.min(lines.length, r.endLine);
+						if (start >= end) continue;
+						chunks.push(`--- L${r.offset}-${end} ---`);
+						chunks.push(lines.slice(start, end).join("\n"));
+					}
+					content = chunks.join("\n");
+				}
+			} else {
+				content = raw;
+			}
+		} catch {
+			// File doesn't exist (e.g. was created then deleted). Skip.
+			continue;
+		}
+
+		const tokens = estimateTokens(content);
+		const header = entry.scope === "read"
+			? `[FILE: ${entry.path} (read regions)]`
+			: `[FILE: ${entry.path}]`;
+		const block = `${header}\n${content}`;
+		const blockTokens = estimateTokens(block);
+
+		if (used + blockTokens > budget) {
+			omitted.push(entry.path);
+			continue;
+		}
+
+		parts.push(block);
+		used += blockTokens;
+	}
+
+	let text = parts.join("\n\n");
+	if (omitted.length > 0) {
+		const note =
+			`\n\n[File context truncated: ${parts.length} of ${relevantPaths.length} files included ` +
+			`(budget: ${budget.toLocaleString()} tokens, ~${Math.round(INJECTION_BUDGET_FRACTION * 100)}% of context window). ` +
+			`Omitted: ${omitted.join(", ")}. Use read tool if needed.]`;
+		text += note;
+	}
+
+	return { text, omitted };
+}
+
+// ---------------------------------------------------------------------------
+// Archive helpers
+// ---------------------------------------------------------------------------
 
 /** Drop thinking blocks from assistant messages. Archives are for reference, not API replay. */
 function stripThinking(msg: AssistantMessage): AssistantMessage {
@@ -65,13 +209,33 @@ async function archiveSession(
 	return archivePath;
 }
 
+// ---------------------------------------------------------------------------
+// Extension
+// ---------------------------------------------------------------------------
+
 export default function (pi: ExtensionAPI) {
+	// -- Read tracking ---------------------------------------------------
+	pi.on("session_start", () => {
+		readRegions.clear();
+	});
+
+	pi.on("tool_execution_end", (event, ctx) => {
+		if (event.toolName !== "read" || event.isError) return;
+		const path: string | undefined = event.args?.path;
+		if (!path) return;
+		const offset: number = event.args?.offset ?? 1;
+		const limit: number = event.args?.limit ?? Number.MAX_SAFE_INTEGER;
+
+		const key = normalizePath(path, ctx.cwd);
+		const regions = readRegions.get(key) ?? [];
+		regions.push({ offset, limit });
+		readRegions.set(key, regions);
+	});
+
+	// -- Compaction hook -------------------------------------------------
 	pi.on("session_before_compact", async (event, ctx) => {
 		const { customInstructions, preparation } = event;
 
-		// When the checkpoint tool initiated this compaction, archiving already
-		// happened in the tool's execute function. Avoid the duplicate archive
-		// and short-circuit the LLM-based summarization with the agent's summary.
 		if (customInstructions?.includes(MARKER)) {
 			const summary = customInstructions.replace(MARKER, "").trim();
 			return {
@@ -83,7 +247,6 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		// Auto-compaction (not from checkpoint tool): archive independently.
 		const summary = `Auto-archived before compaction (${preparation.tokensBefore.toLocaleString()} tokens)`;
 		try {
 			const archivePath = await archiveSession(
@@ -101,6 +264,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// -- checkpoint tool -------------------------------------------------
 	pi.registerTool({
 		name: "checkpoint",
 		label: "Checkpoint",
@@ -121,13 +285,37 @@ export default function (pi: ExtensionAPI) {
 					description: "If true (default), follow up with a fresh prompt so work continues. Set false to stop.",
 				}),
 			),
+			relevantPaths: Type.Optional(
+				Type.Array(
+					Type.Object({
+						path: Type.String({
+							description:
+								"File path relative to cwd (same convention as read/write tools).",
+						}),
+						scope: Type.Optional(
+							Type.Union([Type.Literal("full"), Type.Literal("read")], {
+								description:
+									'"full" (default) injects the entire file. "read" injects only the lines actually read this session.',
+							}),
+						),
+					}),
+					{
+						description:
+							"Files to inject into context after compaction. Omit unused files to save tokens.",
+					},
+				),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const next = params.nextSteps ?? "Continue work";
 			const doContinue = params.continue !== false;
+			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
+			const contextWindow = ctx.model?.contextWindow ?? 200_000;
 
-			// Archive *before* compaction so all entries are captured in full.
-			// The session_before_compact handler skips archiving when MARKER is present.
+			// Read files for injection *before* compaction so we capture the
+			// current disk state while still in the old session context.
+			const injection = await buildFileInjection(relevantPaths, ctx.cwd, contextWindow);
+
 			let archivePath: string | undefined;
 			try {
 				archivePath = await archiveSession(
@@ -146,13 +334,15 @@ export default function (pi: ExtensionAPI) {
 			ctx.compact({
 				customInstructions: `${MARKER}\n${params.summary}`,
 				onComplete: () => {
-					// ctx may be stale after session reload; best-effort notification.
 					try {
 						const archiveLine = archivePath ? `\nArchive: ${archivePath}` : "";
 						ctx.ui.notify(`Checkpoint complete — context cleared.${archiveLine}`, "info");
-					} catch { /* ctx stale after reload — response already sent */ }
+					} catch { /* ctx stale after reload */ }
 					if (doContinue) {
-						const followUp = archivePath ? `${next}\n\nArchive: ${archivePath}` : next;
+						const parts = [next];
+						if (injection.text) parts.unshift(injection.text);
+						if (archivePath) parts.push(`Archive: ${archivePath}`);
+						const followUp = parts.join("\n\n");
 						pi.sendUserMessage(followUp, { deliverAs: "followUp" });
 					}
 				},
@@ -170,19 +360,23 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				responseLines.push(`Archive failed — session data is preserved in the session file.`);
 			}
+			if (relevantPaths.length > 0) {
+				const included = relevantPaths.length - injection.omitted.length;
+				responseLines.push(
+					`File injection: ${included} of ${relevantPaths.length} files ` +
+					`(~${Math.round(INJECTION_BUDGET_FRACTION * 100)}% context budget)` +
+					(injection.omitted.length > 0 ? `. Omitted: ${injection.omitted.join(", ")}` : ""),
+				);
+			}
 			responseLines.push(`Next: ${next}${doContinue ? "" : " (no auto-continue)"}`);
 
 			return {
-				content: [
-					{
-						type: "text",
-						text: responseLines.join("\n\n"),
-					},
-				],
+				content: [{ type: "text", text: responseLines.join("\n\n") }],
 			};
 		},
 	});
 
+	// -- checkpoint_fork tool --------------------------------------------
 	pi.registerTool({
 		name: "checkpoint_fork",
 		label: "Checkpoint Fork",
@@ -210,9 +404,29 @@ export default function (pi: ExtensionAPI) {
 					description: "If true (default), follow up with a fresh prompt so work continues after the switch.",
 				}),
 			),
+			relevantPaths: Type.Optional(
+				Type.Array(
+					Type.Object({
+						path: Type.String({
+							description:
+								"File path relative to the *source* cwd (same convention as read/write tools). " +
+								"Files are read from the source directory and injected into the new session.",
+						}),
+						scope: Type.Optional(
+							Type.Union([Type.Literal("full"), Type.Literal("read")], {
+								description:
+									'"full" (default) injects the entire file. "read" injects only the lines actually read this session.',
+							}),
+						),
+					}),
+					{
+						description:
+							"Files from the source cwd to inject into the new session context. Omit unused files to save tokens.",
+					},
+				),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			// Validate target directory
 			let targetStat;
 			try {
 				targetStat = await stat(params.newCwd);
@@ -231,8 +445,16 @@ export default function (pi: ExtensionAPI) {
 
 			const next = params.nextSteps ?? "Continue work";
 			const doContinue = params.continue !== false;
+			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
 			const oldSessionId = ctx.sessionManager.getSessionId();
 			const oldCwd = ctx.sessionManager.getCwd();
+			const contextWindow = ctx.model?.contextWindow ?? 200_000;
+
+			// Read files from the source cwd *now* while we still have context.
+			// We'll inject them into the new session during the /go callback.
+			const injection = await buildFileInjection(relevantPaths, oldCwd, contextWindow);
+
+			const included = relevantPaths.length - injection.omitted.length;
 
 			setPendingGo({
 				label: `fork → ${params.newCwd}`,
@@ -271,7 +493,11 @@ export default function (pi: ExtensionAPI) {
 					});
 					await cmdCtx.switchSession(newSession.getSessionFile()!, {
 						withSession: async (n) => {
-							if (doContinue) await n.sendUserMessage(next);
+							if (doContinue) {
+								const parts = [next];
+								if (injection.text) parts.unshift(injection.text);
+								await n.sendUserMessage(parts.join("\n\n"));
+							}
 						},
 					});
 				},
@@ -279,12 +505,22 @@ export default function (pi: ExtensionAPI) {
 
 			ctx.ui.notify(`Fork prepared → ${params.newCwd}. Run /go to switch.`, "info");
 
+			const responseLines = [`Fork prepared → ${params.newCwd}. Run /go to switch.`];
+			if (relevantPaths.length > 0) {
+				responseLines.push(
+					`File injection: ${included} of ${relevantPaths.length} files ` +
+					`(~${Math.round(INJECTION_BUDGET_FRACTION * 100)}% context budget)` +
+					(injection.omitted.length > 0 ? `. Omitted: ${injection.omitted.join(", ")}` : ""),
+				);
+			}
+
 			return {
-				content: [{ type: "text", text: `Fork prepared → ${params.newCwd}. Run /go to switch.` }],
+				content: [{ type: "text", text: responseLines.join("\n\n") }],
 			};
 		},
 	});
 
+	// -- checkpoint_search ------------------------------------------------
 	pi.registerTool({
 		name: "checkpoint_search",
 		label: "Checkpoint Search",
@@ -346,6 +582,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// -- /checkpoints command --------------------------------------------
 	pi.registerCommand("checkpoints", {
 		description: "List archived session checkpoints.",
 		async handler(_args, ctx) {
@@ -370,23 +607,49 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// /checkpoint — sends a follow-up prompting the model to call its own checkpoint tool.
-	// The model composes the summary; this command is just a consistent trigger.
+	// -- /checkpoint command ---------------------------------------------
 	pi.registerCommand("checkpoint", {
 		description:
 			"Archive session and compact context. Sends a follow-up prompting the model to summarize and continue. Optional: /checkpoint <focus hint>",
 		handler: async (args, ctx) => {
 			const focus = args.trim();
+
+			// Build a hint about tracked files if any were read.
+			let fileHint = "";
+			if (readRegions.size > 0) {
+				const entries: string[] = [];
+				for (const [path, regions] of readRegions) {
+					const merged = mergeRegions(regions);
+					const ranges = merged
+						.map((r) => (r.endLine === Number.MAX_SAFE_INTEGER ? `L${r.offset}-end` : `L${r.offset}-${r.endLine}`))
+						.join(", ");
+					const fullFile = merged.length === 1 && merged[0].offset === 1 && merged[0].endLine >= Number.MAX_SAFE_INTEGER - 1;
+					entries.push(`- ${path}${fullFile ? " (entire file)" : ` → ${ranges}`}`);
+				}
+				fileHint =
+					`\n\nFiles read this session (use relevantPaths to carry forward only what you need):\n${entries.join("\n")}`;
+			}
+
 			const basePrompt =
 				"Run the checkpoint tool now. " + SUMMARY_FORMAT_HINT + " " +
-				"Let `continue` default to true so work continues automatically after compaction.";
-			const prompt = focus ? `${basePrompt}\n\nFocus the summary on: ${focus}` : basePrompt;
+				"Let `continue` default to true so work continues automatically after compaction. " +
+				"If you need file context carried forward, include a `relevantPaths` list — only list the files " +
+				"you will actually need to continue. Use `scope: \"read\"` (not \"full\") when you only need " +
+				"the lines you already read.";
+
+			const prompt = focus
+				? `${basePrompt}\n\nFocus the summary on: ${focus}${fileHint}`
+				: `${basePrompt}${fileHint}`;
 
 			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 			ctx.ui.notify("Checkpoint queued — will run after current work.", "info");
 		},
 	});
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function matchWildcard(name: string, glob: string): boolean {
 	const re = new RegExp("^" + glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
