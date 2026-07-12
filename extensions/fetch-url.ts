@@ -17,10 +17,10 @@ import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import * as turndownPluginGfm from "turndown-plugin-gfm";
 import { parseHTML } from "linkedom";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile, readdir, stat, unlink } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { createHash } from "node:crypto";
-import os from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -35,7 +35,25 @@ const INLINE_MAX_CHARS = 12_000;
 // Inline cap for non-HTML passthrough bodies (JSON/XML/etc.).
 const MAX_BODY_CHARS = 200_000;
 
-const FETCH_DIR = join(os.tmpdir(), "pi-fetch-url");
+// Cache directory under ~/.pi/cache/<extension-name>/
+const CACHE_DIR = resolve(homedir(), ".pi", "cache", "fetch-url");
+const CACHE_TTL_MS = 72 * 60 * 60 * 1000;
+const FETCH_DIR = CACHE_DIR;
+
+// Sweep files older than 24 hours
+(async () => {
+	try {
+		await mkdir(CACHE_DIR, { recursive: true });
+		const now = Date.now();
+		for (const f of await readdir(CACHE_DIR)) {
+			const fp = join(CACHE_DIR, f);
+			try {
+				const { mtimeMs } = await stat(fp);
+				if (now - mtimeMs > CACHE_TTL_MS) await unlink(fp);
+			} catch { /* race */ }
+		}
+	} catch { /* dir may not exist yet */ }
+})();
 
 type ParsedResponse = {
 	status: string;

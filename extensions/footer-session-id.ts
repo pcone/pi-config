@@ -217,8 +217,10 @@ function lastActivityMs(entries: ReadonlyArray<unknown>): number {
  *  first match is the active one. Returns undefined if no such entry
  *  exists yet (treat as "off"). */
 function currentThinkingLevel(branch: ReadonlyArray<unknown>): string | undefined {
-	for (const entry of branch) {
-		const e = entry as { type?: string; thinkingLevel?: string };
+	// getBranch() returns root-to-leaf (chronological), so iterate in reverse to
+	// find the most recent thinking_level_change entry.
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const e = branch[i] as { type?: string; thinkingLevel?: string };
 		if (e.type === "thinking_level_change") return e.thinkingLevel;
 	}
 	return undefined;
@@ -361,10 +363,28 @@ function readAutoCompactEnabled(): boolean {
 // factory below; also re-read on every branch change via requestRender.
 let cachedAutoCompactEnabled = readAutoCompactEnabled();
 
+// Holds the active footer's requestRender so thinking_level_select can
+// trigger a redraw without waiting for the 30s interval or a branch change.
+let requestRenderRef: (() => void) | null = null;
+
 export default function (pi: ExtensionAPI) {
+	// Re-render the footer whenever the thinking level changes. The footer
+	// factory reads the level from session entries in render(), so it just
+	// needs to be called again.
+	pi.on("thinking_level_select", async () => {
+		requestRenderRef?.();
+	});
+
+	// Re-render when the model changes — model name, provider, context window
+	// are read from ctx.model in render(), which updates before this event fires.
+	pi.on("model_select", async () => {
+		requestRenderRef?.();
+	});
+
 	function installFooter(ctx: unknown): void {
 		const c = ctx as { ui: { setFooter: (factory: FooterFactory) => void } };
 		c.ui.setFooter((tui, theme, footerData) => {
+			requestRenderRef = () => tui.requestRender();
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
 			// Periodic refresh so the staleness indicator updates while the
 			// session is idle (no user input or session events would otherwise
@@ -378,6 +398,7 @@ export default function (pi: ExtensionAPI) {
 			}, 30_000);
 			return {
 				dispose() {
+					requestRenderRef = null;
 					unsub();
 					clearInterval(refreshInterval);
 				},

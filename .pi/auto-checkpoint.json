@@ -1,0 +1,48 @@
+{
+  "defaultThreshold": 0.75,
+  "cooldownTurns": 3,
+  "cooldownMs": 30000,
+  "models": {
+    "deepseek/deepseek-v4-flash": {
+      "threshold": 300000,
+      "cooldownTurns": 4
+    },
+    "deepseek/deepseek-v4-pro": {
+      "threshold": 300000,
+      "cooldownTurns": 4
+    },
+    "z-ai/glm-5.2": {
+      "threshold": 300000,
+      "cooldownTurns": 4,
+      "cooldownMs": 45000
+    },
+    "arcee-ai/trinity-large-thinking": {
+      "threshold": 180000
+    },
+    "qwen/qwen3-coder-next": {
+      "threshold": 180000
+    },
+    "minimax/minimax-m3": {
+      "threshold": 300000,
+      "cooldownTurns": 4
+    },
+    "anthropic/claude-sonnet-*": {
+      "threshold": 0.75
+    },
+    "anthropic/claude-opus-*": {
+      "threshold": 0.75
+    },
+    "anthropic/claude-haiku-*": {
+      "threshold": 0.7
+    },
+    "openai/gpt-*": {
+      "threshold": 0.7
+    },
+    "google/gemini-*": {
+      "threshold": 0.7
+    },
+    "qwen/qwen3.*-coder-*": {
+      "threshold": 0.7
+    }
+  }
+}

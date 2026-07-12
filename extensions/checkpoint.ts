@@ -1,11 +1,17 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentMessage, AssistantMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { setPendingGo } from "./go.ts";
 
 const CHECKPOINT_DIR = ".pi/checkpoints";
 const MARKER = "[CHECKPOINT]";
+const SUMMARY_FORMAT_HINT =
+	"Structure the summary with three parts: " +
+	"(1) brief bullet list of what was done/accomplished so far, " +
+	"(2) an in-depth explanation of what's being worked on right now and why, " +
+	"(3) medium-length overview of the overall plan (what comes after this).";
 
 type StrippedAssistant = Omit<AssistantMessage, "content"> & {
 	content: AssistantMessage["content"];
@@ -22,11 +28,13 @@ async function archiveSession(
 	cwd: string,
 	entries: unknown[],
 	summary: string,
+	sessionId?: string,
 ): Promise<string> {
 	const archiveDir = join(cwd, CHECKPOINT_DIR);
 	await mkdir(archiveDir, { recursive: true });
 	const ts = new Date().toISOString().replace(/[:.]/g, "-");
-	const archivePath = join(archiveDir, `session-${ts}.jsonl`);
+	const sid = sessionId ? `${sessionId}-` : "";
+	const archivePath = join(archiveDir, `session-${sid}${ts}.jsonl`);
 
 	const lines: string[] = [];
 	for (const entry of entries as Array<{ type: string; message?: AgentMessage }>) {
@@ -41,32 +49,31 @@ async function archiveSession(
 	const metaPath = archivePath.replace(/\.jsonl$/, ".meta.json");
 	await writeFile(
 		metaPath,
-		JSON.stringify({ timestamp: new Date().toISOString(), summary, entryCount: entries.length }, null, 2),
+		JSON.stringify(
+			{
+				timestamp: new Date().toISOString(),
+				sessionId,
+				archivePath,
+				summary,
+				entryCount: entries.length,
+			},
+			null,
+			2,
+		),
 		"utf8",
 	);
 	return archivePath;
 }
 
 export default function (pi: ExtensionAPI) {
-	// Always archive before compaction. If our `checkpoint` tool triggered it,
-	// short-circuit the LLM-based summarization by returning the agent's own summary.
 	pi.on("session_before_compact", async (event, ctx) => {
 		const { customInstructions, preparation } = event;
-		const summary = customInstructions?.includes(MARKER)
-			? customInstructions.replace(MARKER, "").trim()
-			: `Auto-archived before compaction (${preparation.tokensBefore.toLocaleString()} tokens)`;
 
-		try {
-			await archiveSession(ctx.cwd, ctx.sessionManager.getEntries(), summary);
-			ctx.ui.notify(`Archived session: ${summary.split("\n", 1)[0]}`, "info");
-		} catch (err) {
-			ctx.ui.notify(
-				`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
-				"warning",
-			);
-		}
-
+		// When the checkpoint tool initiated this compaction, archiving already
+		// happened in the tool's execute function. Avoid the duplicate archive
+		// and short-circuit the LLM-based summarization with the agent's summary.
 		if (customInstructions?.includes(MARKER)) {
+			const summary = customInstructions.replace(MARKER, "").trim();
 			return {
 				compaction: {
 					summary,
@@ -74,6 +81,23 @@ export default function (pi: ExtensionAPI) {
 					tokensBefore: preparation.tokensBefore,
 				},
 			};
+		}
+
+		// Auto-compaction (not from checkpoint tool): archive independently.
+		const summary = `Auto-archived before compaction (${preparation.tokensBefore.toLocaleString()} tokens)`;
+		try {
+			const archivePath = await archiveSession(
+				ctx.cwd,
+				ctx.sessionManager.getEntries(),
+				summary,
+				ctx.sessionManager.getSessionId(),
+			);
+			ctx.ui.notify(`📦 Archived session for grepping: ${archivePath}`, "info");
+		} catch (err) {
+			ctx.ui.notify(
+				`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			);
 		}
 	});
 
@@ -85,7 +109,7 @@ export default function (pi: ExtensionAPI) {
 			"Use at logical task boundaries when work for this turn is done but more remains. " +
 			"Archives are searchable with search_checkpoint.",
 		parameters: Type.Object({
-			summary: Type.String({ description: "What was accomplished and the current state." }),
+			summary: Type.String({ description: SUMMARY_FORMAT_HINT }),
 			nextSteps: Type.Optional(
 				Type.String({
 					description:
@@ -99,28 +123,60 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const next = params.nextSteps ?? "Continue work";
 			const doContinue = params.continue !== false;
-			const next = params.nextSteps ?? (doContinue ? "Continue work" : "Awaiting user instruction");
-			const summary = `${params.summary}\n\n## Next Steps\n${next}`;
+
+			// Archive *before* compaction so all entries are captured in full.
+			// The session_before_compact handler skips archiving when MARKER is present.
+			let archivePath: string | undefined;
+			try {
+				archivePath = await archiveSession(
+					ctx.cwd,
+					ctx.sessionManager.getEntries(),
+					params.summary,
+					ctx.sessionManager.getSessionId(),
+				);
+			} catch (err) {
+				ctx.ui.notify(
+					`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
+					"warning",
+				);
+			}
 
 			ctx.compact({
-				customInstructions: `${MARKER}\n${summary}`,
+				customInstructions: `${MARKER}\n${params.summary}`,
 				onComplete: () => {
-					ctx.ui.notify("Checkpoint complete — context cleared.", "info");
+					// ctx may be stale after session reload; best-effort notification.
+					try {
+						const archiveLine = archivePath ? `\nArchive: ${archivePath}` : "";
+						ctx.ui.notify(`Checkpoint complete — context cleared.${archiveLine}`, "info");
+					} catch { /* ctx stale after reload — response already sent */ }
 					if (doContinue) {
-						pi.sendUserMessage(next, { deliverAs: "followUp" });
+						const followUp = archivePath ? `${next}\n\nArchive: ${archivePath}` : next;
+						pi.sendUserMessage(followUp, { deliverAs: "followUp" });
 					}
 				},
 				onError: (err) => {
-					ctx.ui.notify(`Checkpoint compaction failed: ${err.message}`, "error");
+					try {
+						ctx.ui.notify(`Checkpoint failed: ${err.message}`, "error");
+					} catch { /* ctx stale after reload */ }
 				},
 			});
+
+			const responseLines = [`Checkpoint queued.`];
+			if (archivePath) {
+				responseLines.push(`Full session archived to:\n\`${archivePath}\``);
+				responseLines.push(`Grep there with: \`rg PATTERN ${archivePath}\``);
+			} else {
+				responseLines.push(`Archive failed — session data is preserved in the session file.`);
+			}
+			responseLines.push(`Next: ${next}${doContinue ? "" : " (no auto-continue)"}`);
 
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Checkpoint queued. Session will be archived and context cleared.\nNext: ${next}${doContinue ? "" : " (no auto-continue)"}`,
+						text: responseLines.join("\n\n"),
 					},
 				],
 			};
@@ -128,8 +184,110 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "search_checkpoint",
-		label: "Search Checkpoints",
+		name: "checkpoint_fork",
+		label: "Checkpoint Fork",
+		description:
+			"Archive the current session and stage a fork into a new working directory. " +
+			"Run /go to commit the switch (session switching requires a user-initiated command). " +
+			"You (the model) choose the target directory, author the summary from current context, " +
+			"and pick nextSteps/continue — just like checkpoint. " +
+			"The target dir must already exist.",
+		parameters: Type.Object({
+			newCwd: Type.String({
+				description: "Target working directory for the forked session. Must already exist.",
+			}),
+			summary: Type.String({
+				description: `${SUMMARY_FORMAT_HINT} Authored inline from current context.`,
+			}),
+			nextSteps: Type.Optional(
+				Type.String({
+					description:
+						"What comes next. Used as the kickoff prompt if continue is true. Default: 'Continue work'.",
+				}),
+			),
+			continue: Type.Optional(
+				Type.Boolean({
+					description: "If true (default), follow up with a fresh prompt so work continues after the switch.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// Validate target directory
+			let targetStat;
+			try {
+				targetStat = await stat(params.newCwd);
+			} catch {
+				return {
+					content: [{ type: "text", text: `Error: target directory does not exist: ${params.newCwd}` }],
+					isError: true,
+				};
+			}
+			if (!targetStat.isDirectory()) {
+				return {
+					content: [{ type: "text", text: `Error: not a directory: ${params.newCwd}` }],
+					isError: true,
+				};
+			}
+
+			const next = params.nextSteps ?? "Continue work";
+			const doContinue = params.continue !== false;
+			const oldSessionId = ctx.sessionManager.getSessionId();
+			const oldCwd = ctx.sessionManager.getCwd();
+
+			setPendingGo({
+				label: `fork → ${params.newCwd}`,
+				run: async (cmdCtx) => {
+					try {
+						const forkArchivePath = await archiveSession(
+							cmdCtx.cwd,
+							cmdCtx.sessionManager.getEntries(),
+							params.summary,
+							cmdCtx.sessionManager.getSessionId(),
+						);
+						cmdCtx.ui.notify(`📦 Fork source archived: ${forkArchivePath}`, "info");
+					} catch (err) {
+						cmdCtx.ui.notify(
+							`Fork archive failed (switch continues): ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						);
+					}
+					const newSession = SessionManager.create(params.newCwd);
+					newSession.appendMessage({
+						role: "user",
+						content: [
+							{ type: "text", text: `This session was created from a checkpoint of session ${oldSessionId} (${oldCwd}).` },
+						],
+						timestamp: Date.now(),
+					});
+					newSession.appendMessage({
+						role: "assistant",
+						content: [{ type: "text", text: params.summary }],
+						api: "anthropic",
+						provider: "anthropic",
+						model: "unknown",
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+						stopReason: "end",
+						timestamp: Date.now(),
+					});
+					await cmdCtx.switchSession(newSession.getSessionFile()!, {
+						withSession: async (n) => {
+							if (doContinue) await n.sendUserMessage(next);
+						},
+					});
+				},
+			});
+
+			ctx.ui.notify(`Fork prepared → ${params.newCwd}. Run /go to switch.`, "info");
+
+			return {
+				content: [{ type: "text", text: `Fork prepared → ${params.newCwd}. Run /go to switch.` }],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "checkpoint_search",
+		label: "Checkpoint Search",
 		description: "Search archived session JSONL files for patterns.",
 		parameters: Type.Object({
 			pattern: Type.String({ description: "Regex pattern to search for." }),
@@ -201,7 +359,9 @@ export default function (pi: ExtensionAPI) {
 				const lines: string[] = [`Checkpoints in ${archiveDir}:`];
 				for (const f of files.sort().reverse()) {
 					const meta = JSON.parse(await readFile(join(archiveDir, f), "utf8"));
+					const shortPath = meta.archivePath ? meta.archivePath.replace(archiveDir, "") : f.replace(/\.meta\.json$/, ".jsonl");
 					lines.push(`  ${meta.timestamp} — ${meta.summary.split("\n")[0]}`);
+					lines.push(`        archive: …${shortPath}`);
 				}
 				ctx.ui.notify(lines.join("\n"), "info");
 			} catch {
@@ -218,7 +378,8 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const focus = args.trim();
 			const basePrompt =
-				"Run the checkpoint tool now with a concise summary of what was accomplished in this turn and the current state. Let `continue` default to true so work continues automatically after compaction.";
+				"Run the checkpoint tool now. " + SUMMARY_FORMAT_HINT + " " +
+				"Let `continue` default to true so work continues automatically after compaction.";
 			const prompt = focus ? `${basePrompt}\n\nFocus the summary on: ${focus}` : basePrompt;
 
 			pi.sendUserMessage(prompt, { deliverAs: "followUp" });

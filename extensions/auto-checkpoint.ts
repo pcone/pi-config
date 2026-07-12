@@ -1,0 +1,330 @@
+/**
+ * Auto-Checkpoint Extension
+ *
+ * Monitors context usage per turn and nudges the model (via a context message)
+ * to suggest checkpointing when configured thresholds are crossed.
+ *
+ * The nudge injects a model-visible message at the start of the next agent run
+ * (before_agent_start) only when BOTH the turn-count and timer cooldowns have
+ * been exceeded since the last nudge.
+ *
+ * Config:
+ *   ~/.pi/agent/auto-checkpoint.json  (global)
+ *   .pi/auto-checkpoint.json          (project-local, merged over global)
+ *
+ * Schema:
+ *   {
+ *     "defaultThreshold": 0.75,        // fraction of contextWindow (0-1)
+ *     "cooldownTurns": 3,              // min turns between nudges
+ *     "cooldownMs": 30000,             // min ms between nudges
+ *     "prompt": "**Context note:** ...",
+ *     "models": {
+ *       "deepseek/*": { "threshold": 0.8, "cooldownTurns": 5 },
+ *       "openai/*":    { "threshold": 0.7 },
+ *     }
+ *   }
+ *
+ * Per-model thresholds: < 1 is a fraction of contextWindow, >= 1 is an absolute
+ * token count. Model patterns support * and ? wildcards; first match wins.
+ */
+
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface ModelThresholdConfig {
+	/** < 1 → fraction of contextWindow, >= 1 → absolute token count. */
+	threshold: number;
+	cooldownTurns?: number;
+	cooldownMs?: number;
+	prompt?: string;
+}
+
+interface RawAutoCheckpointConfig {
+	defaultThreshold?: number;
+	cooldownTurns?: number;
+	cooldownMs?: number;
+	models?: Record<string, ModelThresholdConfig>;
+	prompt?: string;
+}
+
+interface AutoCheckpointConfig {
+	defaultThreshold: number;
+	cooldownTurns: number;
+	cooldownMs: number;
+	models: Record<string, ModelThresholdConfig>;
+	prompt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Defaults
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CONFIG: AutoCheckpointConfig = {
+	defaultThreshold: 0.75,
+	cooldownTurns: 3,
+	cooldownMs: 30_000,
+	models: {},
+	prompt:
+		"**Context note:** The conversation has reached **{{tokens}}** tokens " +
+		"({{percent}}% of {{contextWindow}}). When you reach a natural stopping " +
+		"point, consider running the **checkpoint** tool to archive progress and " +
+		"continue with a fresh context.",
+};
+
+const GLOBAL_CONFIG_PATH = join(homedir(), ".pi", "agent", "auto-checkpoint.json");
+
+// ---------------------------------------------------------------------------
+// Glob matching (only * and ?)
+// ---------------------------------------------------------------------------
+
+function matchPattern(pattern: string, s: string): boolean {
+	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+	return new RegExp("^" + escaped + "$", "i").test(s);
+}
+
+// ---------------------------------------------------------------------------
+// Config loading & merging
+// ---------------------------------------------------------------------------
+
+function mergeConfig(base: AutoCheckpointConfig, raw: RawAutoCheckpointConfig): AutoCheckpointConfig {
+	return {
+		...base,
+		...raw,
+		models: { ...base.models, ...raw.models },
+	};
+}
+
+async function loadConfig(cwd: string): Promise<AutoCheckpointConfig> {
+	let config = { ...DEFAULT_CONFIG };
+
+	try {
+		const raw = JSON.parse(await readFile(GLOBAL_CONFIG_PATH, "utf8")) as RawAutoCheckpointConfig;
+		config = mergeConfig(config, raw);
+	} catch {
+		// missing or invalid global config → use defaults
+	}
+
+	const projectPath = join(cwd, ".pi", "auto-checkpoint.json");
+	try {
+		const raw = JSON.parse(await readFile(projectPath, "utf8")) as RawAutoCheckpointConfig;
+		config = mergeConfig(config, raw);
+	} catch {
+		// missing or invalid project config → keep current
+	}
+
+	return config;
+}
+
+/** Resolve threshold to an absolute token count for the given model. */
+function resolveThreshold(modelId: string, contextWindow: number, config: AutoCheckpointConfig): number {
+	for (const [pattern, mcfg] of Object.entries(config.models)) {
+		if (matchPattern(pattern, modelId)) {
+			return mcfg.threshold < 1
+				? Math.round(mcfg.threshold * contextWindow)
+				: mcfg.threshold;
+		}
+	}
+	return Math.round(config.defaultThreshold * contextWindow);
+}
+
+/** Get resolved model-level config for cooldown/prompt overrides. */
+function resolveModelConfig(
+	modelId: string,
+	config: AutoCheckpointConfig,
+): { cooldownTurns: number; cooldownMs: number; prompt: string } {
+	for (const [pattern, mcfg] of Object.entries(config.models)) {
+		if (matchPattern(pattern, modelId)) {
+			return {
+				cooldownTurns: mcfg.cooldownTurns ?? config.cooldownTurns,
+				cooldownMs: mcfg.cooldownMs ?? config.cooldownMs,
+				prompt: mcfg.prompt ?? config.prompt,
+			};
+		}
+	}
+	return {
+		cooldownTurns: config.cooldownTurns,
+		cooldownMs: config.cooldownMs,
+		prompt: config.prompt,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Nudge state
+// ---------------------------------------------------------------------------
+
+interface PendingNudge {
+	tokens: number;
+	contextWindow: number;
+	percent: number;
+}
+
+const state: {
+	config: AutoCheckpointConfig | null;
+	modelId: string | null;
+	threshold: number;
+	turnCounter: number;
+	lastNudgedTurn: number;
+	lastNudgedMs: number;
+	pending: PendingNudge | null;
+} = {
+	config: null,
+	modelId: null,
+	threshold: 0,
+	turnCounter: 0,
+	lastNudgedTurn: -1,
+	lastNudgedMs: -1,
+	pending: null,
+};
+
+function resetState(): void {
+	state.modelId = null;
+	state.threshold = 0;
+	state.turnCounter = 0;
+	state.lastNudgedTurn = -1;
+	state.lastNudgedMs = -1;
+	state.pending = null;
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+export default function (pi: ExtensionAPI) {
+	// --- session_start: load config, reset state for fresh session ---
+	pi.on("session_start", async (_event, ctx) => {
+		state.config = await loadConfig(ctx.cwd);
+		resetState();
+
+		const model = ctx.model;
+		if (model && model.id) {
+			state.modelId = model.id;
+			state.threshold = resolveThreshold(model.id, model.contextWindow ?? 200_000, state.config);
+		}
+	});
+
+	// --- model_select: recompute threshold, clear nudge state ---
+	pi.on("model_select", async (event, _ctx) => {
+		if (!state.config) return;
+
+		resetState();
+		state.modelId = event.model.id;
+		state.threshold = resolveThreshold(event.model.id, event.model.contextWindow ?? 200_000, state.config);
+	});
+
+	// --- session_compact: context just got freed → clear nudge state ---
+	pi.on("session_compact", async () => {
+		resetState();
+	});
+
+	// --- turn_end: check context usage against threshold ---
+	pi.on("turn_end", async (event, ctx) => {
+		if (!state.config) return;
+		if (!state.modelId) return;
+		if (state.threshold <= 0) return;
+
+		const usage = ctx.getContextUsage();
+		if (!usage || usage.tokens === null) return;
+
+		state.turnCounter = event.turnIndex;
+
+		const tokens = usage.tokens;
+		const contextWindow = usage.contextWindow;
+		const percent = usage.percent ?? Math.round((tokens / contextWindow) * 100);
+
+		// Below threshold → no nudge pending, but don't clear history (threshold
+		// zone exit is handled by compaction/model-change/session-start events).
+		if (tokens < state.threshold) return;
+
+		// Cooldown: both turn count AND timer must have elapsed.
+		const mcfg = resolveModelConfig(state.modelId, state.config);
+		const turnsSinceLast = state.turnCounter - state.lastNudgedTurn;
+		const msSinceLast = state.lastNudgedMs < 0 ? Number.POSITIVE_INFINITY : Date.now() - state.lastNudgedMs;
+
+		if (turnsSinceLast < mcfg.cooldownTurns || msSinceLast < mcfg.cooldownMs) return;
+
+		// Store values for injection at the next before_agent_start
+		state.pending = { tokens, contextWindow, percent };
+	});
+
+	// --- before_agent_start: inject the nudge message if one is pending ---
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (!state.pending) return;
+		if (!state.config) return;
+
+		const { tokens, contextWindow, percent } = state.pending;
+
+		// Resolve model config for prompt template (may have changed since turn_end)
+		const mcfg = resolveModelConfig(state.modelId ?? ctx.model?.id ?? "", state.config);
+
+		const content = mcfg.prompt
+			.replace(/\{\{tokens\}\}/g, tokens.toLocaleString())
+			.replace(/\{\{percent\}\}/g, percent.toFixed(1))
+			.replace(/\{\{contextWindow\}\}/g, contextWindow.toLocaleString());
+
+		// Record nudge using the turn counter from the most recent turn_end.
+		// Recording BEFORE injecting ensures the injected message itself doesn't
+		// contribute to context growth that re-triggers immediately.
+		state.lastNudgedTurn = state.turnCounter;
+		state.lastNudgedMs = Date.now();
+		state.pending = null;
+
+		return {
+			message: {
+				customType: "auto-checkpoint",
+				content,
+				display: false,
+			},
+		};
+	});
+
+	// --- /checkpoint-status command: show current config & context ---
+	pi.registerCommand("checkpoint-status", {
+		description: "Show auto-checkpoint configuration and current context usage.",
+		async handler(_args, ctx) {
+			const model = ctx.model;
+			const modelId = model?.id ?? "no-model";
+
+			const lines: string[] = [
+				"─── Auto-Checkpoint ───",
+				`model: ${modelId}`,
+			];
+
+			if (state.config) {
+				// Calculate effective threshold
+				const effectiveThreshold =
+					state.threshold > 0
+						? state.threshold
+						: resolveThreshold(modelId, model?.contextWindow ?? 200_000, state.config);
+
+				const mcfg = resolveModelConfig(modelId, state.config);
+				lines.push(`threshold: ${effectiveThreshold.toLocaleString()} tokens`);
+				lines.push(`cooldown: ${mcfg.cooldownTurns} turns / ${(mcfg.cooldownMs / 1000).toFixed(0)}s`);
+
+				const usage = ctx.getContextUsage();
+				if (usage && usage.tokens !== null) {
+					const pct = usage.percent ?? Math.round((usage.tokens / usage.contextWindow) * 100);
+					lines.push(`context: ${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} (${pct}%)`);
+					if (usage.tokens >= effectiveThreshold) {
+						lines.push(`status: ${state.pending ? "nudge pending" : "above threshold (cooldown)"}`);
+					} else {
+						lines.push("status: below threshold");
+					}
+				} else {
+					lines.push("context: unknown");
+				}
+			} else {
+				lines.push("config: not loaded");
+			}
+
+			lines.push(`last nudge: turn ${state.lastNudgedTurn} at ${state.lastNudgedMs > 0 ? new Date(state.lastNudgedMs).toLocaleTimeString() : "never"}`);
+
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
+}

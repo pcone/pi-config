@@ -1,14 +1,18 @@
 {
   "lastChangelogVersion": "0.80.6",
-  "defaultProvider": "minimax",
-  "defaultModel": "MiniMax-M3",
+  "defaultProvider": "openrouter",
+  "defaultModel": "deepseek/deepseek-v4-pro",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
+    "extensions/go.ts",
     "extensions/footer-session-id.ts",
-    "extensions/subagent/index.ts"
+    "extensions/auto-checkpoint.ts",
+    "extensions/subagent/index.ts",
+    "extensions/kagi-search.ts",
+    "extensions/model-tiers/index.ts"
   ],
-  "defaultThinkingLevel": "medium",
+  "defaultThinkingLevel": "xhigh",
   "hideThinkingBlock": true,
   "shellCommandPrefix": "shopt -s expand_aliases"
 }
