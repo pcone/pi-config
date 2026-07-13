@@ -147,7 +147,7 @@ async function buildFileInjection(
 	relevantPaths: RelevantPathEntry[],
 	cwd: string,
 	contextWindow: number,
-	preservedPaths: Set<string>,
+	preserved: { anyRead: Set<string>; fullFileRead: Set<string> },
 ): Promise<{ text: string; omitted: string[]; skippedPreserved: string[] }> {
 	if (relevantPaths.length === 0) return { text: "", omitted: [], skippedPreserved: [] };
 
@@ -159,10 +159,11 @@ async function buildFileInjection(
 
 	for (const entry of relevantPaths) {
 		const key = normalizePath(entry.path, cwd);
+		const scope = entry.scope ?? "full";
 
 		// -- Handle "context" scope ------------------------------------------
-		if (entry.scope === "context") {
-			const breadcrumb = preservedPaths.has(key)
+		if (scope === "context") {
+			const breadcrumb = preserved.anyRead.has(key)
 				? `[FILE: ${entry.path} — preserved in context]`
 				: `[FILE: ${entry.path} — not read this session; use read tool if needed]`;
 			const blockTokens = estimateTokens(breadcrumb);
@@ -176,7 +177,15 @@ async function buildFileInjection(
 		}
 
 		// -- Skip files already preserved in compacted context ----------------
-		if (preservedPaths.has(key)) {
+		// "read" scope: model asked for lines it already saw — safe to skip.
+		// "full" scope: only skip if preserved read was also a full-file
+		//   request (no offset/limit).  A partial preserved read doesn't cover
+		//   the whole file, so we must re-inject.
+		if (scope === "read" && preserved.anyRead.has(key)) {
+			skippedPreserved.push(entry.path);
+			continue;
+		}
+		if (scope === "full" && preserved.fullFileRead.has(key)) {
 			skippedPreserved.push(entry.path);
 			continue;
 		}
@@ -187,7 +196,7 @@ async function buildFileInjection(
 
 		try {
 			const raw = await readFile(absolutePath, "utf-8");
-			if (entry.scope === "read") {
+			if (scope === "read") {
 				const regions = readRegions.get(key);
 				if (!regions || regions.length === 0) {
 					content = raw;
@@ -212,7 +221,7 @@ async function buildFileInjection(
 		}
 
 		const tokens = estimateTokens(content);
-		const header = entry.scope === "read"
+		const header = scope === "read"
 			? `[FILE: ${entry.path} (read regions)]`
 			: `[FILE: ${entry.path}]`;
 		const block = `${header}\n${content}`;
@@ -335,7 +344,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Read and inject files now that we know the preservation boundary.
 			if (pendingCheckpoint) {
-				const preservedPaths = getPreservedPaths(
+				const preserved = getPreservedPaths(
 					ctx.sessionManager.getEntries(),
 					preparation.firstKeptEntryId,
 					ctx.cwd,
@@ -344,7 +353,7 @@ export default function (pi: ExtensionAPI) {
 					pendingCheckpoint.relevantPaths,
 					pendingCheckpoint.cwd,
 					pendingCheckpoint.contextWindow,
-					preservedPaths,
+					preserved,
 				);
 			}
 
