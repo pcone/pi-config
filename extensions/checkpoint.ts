@@ -420,15 +420,17 @@ export default function (pi: ExtensionAPI) {
 								Type.Literal("context"),
 							], {
 								description:
-									'"full" (default) — entire file. "read" — only lines read this session. ' +
-									'"context" — breadcrumb only (no content), useful for files already in preserved context.',
+									'"full" (default) — entire file. Only skipped if preserved context also has a full-file read; ' +
+									'a partial preserved read means the full file is NOT in context, so we inject. ' +
+									'"read" — only lines you read. Always skipped if preserved (exact same content). ' +
+									'"context" — breadcrumb only, never skipped.',
 							}),
 						),
 					}),
 					{
 						description:
-							"Files to inject into context after compaction. Files already in the preserved " +
-							"context tail are skipped automatically (unless scope:\"context\").",
+							"Files to carry forward after compaction. Dedup: \"full\" skipped only if preserved read was full-file; " +
+							"\"read\" always skipped if preserved; \"context\" never skipped.",
 					},
 				),
 			),
@@ -550,7 +552,7 @@ export default function (pi: ExtensionAPI) {
 								Type.Literal("context"),
 							], {
 								description:
-									'"full" (default) — entire file. "read" — only lines read this session. ' +
+									'"full" (default) — entire file. Only skipped if preserved context also has a full-file read; ' +
 									'"context" — breadcrumb only (no content).',
 							}),
 						),
@@ -784,9 +786,12 @@ export default function (pi: ExtensionAPI) {
 			const basePrompt =
 				"Run the checkpoint tool now. " + SUMMARY_FORMAT_HINT + " " +
 				"Let `continue` default to true so work continues automatically after compaction. " +
-				"If you need file context carried forward, include a `relevantPaths` list — only list the files " +
-				"you will actually need to continue. Skip files you read in the last few turns (they're already " +
-				"preserved). Use `scope: \"read\"` (not \"full\") when you only need the lines you already read. " +
+				"If you need file context carried forward, include a `relevantPaths` list — only list files " +
+				"you will actually need after the checkpoint. " +
+				"Prefer `scope: \"read\"` (not \"full\") when the lines you already read are enough. " +
+				"Use `scope: \"full\"` only when you need the entire file and you didn't already read it in full. " +
+				"Remember: \"full\" is NOT skipped if your preserved read was only partial — " +
+				"so it's safe to say \"full\" when you really need more than what you saw. " +
 				'Use `scope: "context"` for breadcrumb-only references.';
 
 			const prompt = focus
