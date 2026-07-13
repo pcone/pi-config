@@ -14,7 +14,8 @@
     "z-ai/glm-5.2": {
       "threshold": 300000,
       "cooldownTurns": 4,
-      "cooldownMs": 45000
+      "cooldownMs": 45000,
+      "contextDegradation": false
     },
     "arcee-ai/trinity-large-thinking": {
       "threshold": 180000

@@ -21,3 +21,30 @@ in `decisions/<feature>/`. The global `tfd-decisions` rule provides format and w
 - No known limitations or TODOs. Fix issues or explain the specific technical reason they can't be fixed right now.
 - Don't pause to ask when the next step is obvious; ask when the work is destructive, has non-obvious tradeoffs, or has multiple defensible interpretations — and treat sustained flip-flopping between options as a sign it's one of these, not something deliberation will resolve.
 - Verify before claiming done. If a tool, test, or command can confirm correctness, use it before reporting success.
+
+## Subagent delegation
+
+Delegate work to isolated subagents via the `subagent` tool. Each subagent runs in its own `pi` process with a fresh context window — keeping the main session focused and saving context space.
+
+**Available agents:**
+- `worker` — multi-file edits you can confidently one-shot (clear approach, no unknowns)
+- `scout` — codebase exploration: finding definitions, tracing references, mapping structure
+- `review-code` — adversarial code review: correctness, architectural fit, API surface, maintenance cost
+- `review-plan` — adversarial design/plan review: design-fit, soundness, consistency, simpler alternatives
+
+**Default model:** DeepSeek V4 Flash. It's a capable model — fast, handles large changes, and is more than sufficient for most subagent work (scouting, mechanical edits, straightforward reviews).
+
+**Override only when needed:** Pass `inheritParentModel: true` to run the subagent on whatever model the parent session is using. Reserve this for genuinely complex reasoning — deep architectural analysis, subtle correctness issues, or tasks where the nuances matter.
+
+**When to delegate:**
+
+| Task | Agent | Why |
+|------|-------|-----|
+| Browsing code to understand something | `scout` | Keeps the main session's context clean — scout dumps findings inline |
+| Multi-file refactor | `worker` | One-shot confidence; no surprises expected |
+| Second pair of eyes on code | `review-code` | Independent pass finds what you'd miss in flow |
+| Challenge a plan before implementing | `review-plan` | Catches design issues before code is written |
+
+**Parallel work:** Use `tasks: [...]` to fan out independent investigations simultaneously.
+
+**Continuing reviews:** Pass the returned `session_id` back on a follow-up call to continue the same review session (round 2+ with prior context preserved).

@@ -293,6 +293,13 @@ async function runSingleAgent(
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	parentModel: string | undefined,
+	/**
+	 * If true, the subagent uses the parent session's active model instead of
+	 * the default (DeepSeek V4 Flash). Reserve this for genuinely complex
+	 * reasoning — the default model is fast and capable for most work.
+	 * Default: false.
+	 */
+	inheritParentModel: boolean,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -323,10 +330,11 @@ async function runSingleAgent(
 	const augmentedTask = roundPrefix + task;
 
 	const args: string[] = ["--mode", "json", "-p", "--session-id", effectiveSessionId];
-	// Model precedence: agent definition > parent's active model > pi's default.
-	// Inheriting the parent's model means CC (or any other parent) can drive the subagent
-	// via `--model X` and have it propagate, instead of silently falling back to pi's default.
-	const effectiveModel = agent.model ?? parentModel;
+	// Model: agent frontmatter > inheritParentModel > DeepSeek V4 Flash default.
+	// DeepSeek V4 Flash is fast and capable for most subagent work. Use
+	// inheritParentModel: true only when the task requires genuinely complex
+	// reasoning that the default model can't handle reliably.
+	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash");
 	if (effectiveModel) args.push("--model", effectiveModel);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
@@ -501,6 +509,13 @@ const SubagentParams = Type.Object({
 				"Existing session ID to continue. If omitted, a fresh session is created and its ID is returned in the result (as `sessionId` in details and surfaced in the output text).",
 		}),
 	),
+	inheritParentModel: Type.Optional(
+		Type.Boolean({
+			description:
+				"If true, the subagent uses the parent session's active model instead of the default (DeepSeek V4 Flash). Reserve for complex reasoning.",
+			default: false,
+		}),
+	),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -513,6 +528,9 @@ export default function (pi: ExtensionAPI) {
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 			"Each invocation runs in a named session (auto-generated UUID if no session_id supplied); pass the returned session_id back as session_id to continue a prior conversation across invocations.",
+			"Subagents default to DeepSeek V4 Flash — fast and capable for most work. " +
+			"Set inheritParentModel: true to use the parent session's active model instead; " +
+			"reserve this for genuinely complex reasoning.",
 		].join(" "),
 		parameters: SubagentParams,
 
@@ -631,6 +649,7 @@ export default function (pi: ExtensionAPI) {
 						},
 						makeDetails("parallel"),
 						parentModelString(ctx),
+						params.inheritParentModel ?? false,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -669,6 +688,7 @@ export default function (pi: ExtensionAPI) {
 					onUpdate,
 					makeDetails("single"),
 					parentModelString(ctx),
+					params.inheritParentModel ?? false,
 				);
 				const isError = isFailedResult(result);
 				if (isError) {

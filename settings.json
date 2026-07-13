@@ -1,7 +1,7 @@
 {
   "lastChangelogVersion": "0.80.6",
   "defaultProvider": "openrouter",
-  "defaultModel": "deepseek/deepseek-v4-pro",
+  "defaultModel": "deepseek/deepseek-v4-flash",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
@@ -12,7 +12,7 @@
     "extensions/kagi-search.ts",
     "extensions/model-tiers/index.ts"
   ],
-  "defaultThinkingLevel": "xhigh",
+  "defaultThinkingLevel": "high",
   "hideThinkingBlock": true,
   "shellCommandPrefix": "shopt -s expand_aliases"
 }

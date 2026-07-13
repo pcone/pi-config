@@ -14,18 +14,28 @@
  *
  * Schema:
  *   {
- *     "defaultThreshold": 0.75,        // fraction of contextWindow (0-1)
- *     "cooldownTurns": 3,              // min turns between nudges
- *     "cooldownMs": 30000,             // min ms between nudges
- *     "prompt": "**Context note:** ...",
+ *     "defaultThreshold": 0.75,          // fraction of contextWindow (0-1)
+ *     "cooldownTurns": 3,                // min turns between nudges
+ *     "cooldownMs": 30000,               // min ms between nudges
+ *     "prompt": "**Context note:** ...",  // optional, overrides degradation auto-pick
+ *     "defaultContextDegradation": true,  // default for models without explicit setting
  *     "models": {
  *       "deepseek/*": { "threshold": 0.8, "cooldownTurns": 5 },
  *       "openai/*":    { "threshold": 0.7 },
+ *       "z.ai/glm-5.2": {
+ *         "threshold": 0.85,
+ *         "contextDegradation": false   // relaxed prompt, no urgency
+ *       }
  *     }
  *   }
  *
  * Per-model thresholds: < 1 is a fraction of contextWindow, >= 1 is an absolute
  * token count. Model patterns support * and ? wildcards; first match wins.
+ *
+ * When contextDegradation is false, the nudge prompt is relaxed — suggesting
+ * the model wait for a logical completion point rather than urging a quick
+ * checkpoint. When a custom prompt is set explicitly at the model or top level,
+ * the degradation flag is ignored.
  */
 
 import { readFile } from "node:fs/promises";
@@ -43,6 +53,14 @@ interface ModelThresholdConfig {
 	cooldownTurns?: number;
 	cooldownMs?: number;
 	prompt?: string;
+	/**
+	 * Whether this model's quality degrades at higher context lengths.
+	 * - true (default) → prompt with some urgency: "Quality degrades…"
+	 * - false → relaxed prompt: "Handles longer contexts well… no rush"
+	 *
+	 * Ignored when a custom prompt is set explicitly.
+	 */
+	contextDegradation?: boolean;
 }
 
 interface RawAutoCheckpointConfig {
@@ -51,6 +69,7 @@ interface RawAutoCheckpointConfig {
 	cooldownMs?: number;
 	models?: Record<string, ModelThresholdConfig>;
 	prompt?: string;
+	defaultContextDegradation?: boolean;
 }
 
 interface AutoCheckpointConfig {
@@ -59,22 +78,40 @@ interface AutoCheckpointConfig {
 	cooldownMs: number;
 	models: Record<string, ModelThresholdConfig>;
 	prompt: string;
+	defaultContextDegradation: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Prompt variants
+// ---------------------------------------------------------------------------
+
+/** Used when the model degrades at high context (contextDegradation: true). */
+const DEGRADATION_PROMPT =
+	"**Context note:** The conversation has reached **{{tokens}}** tokens " +
+	"({{percent}}% of {{contextWindow}}). Quality tends to degrade at higher " +
+	"context lengths. Consider running the **checkpoint** tool at your next " +
+	"natural stopping point to archive progress and continue with fresh context.";
+
+/** Used when the model handles long context well (contextDegradation: false). */
+const NO_DEGRADATION_PROMPT =
+	"**Context note:** The conversation has reached **{{tokens}}** tokens " +
+	"({{percent}}% of {{contextWindow}}). This model handles longer contexts " +
+	"well, but keeping context smaller reduces costs. Whenever you reach a " +
+	"clean break — finishing the current subtask or answering the current " +
+	"question — you can run the **checkpoint** tool to archive progress and " +
+	"continue with fresh context. There's no rush.";
+
 const DEFAULT_CONFIG: AutoCheckpointConfig = {
 	defaultThreshold: 0.75,
 	cooldownTurns: 3,
 	cooldownMs: 30_000,
 	models: {},
-	prompt:
-		"**Context note:** The conversation has reached **{{tokens}}** tokens " +
-		"({{percent}}% of {{contextWindow}}). When you reach a natural stopping " +
-		"point, consider running the **checkpoint** tool to archive progress and " +
-		"continue with a fresh context.",
+	prompt: DEGRADATION_PROMPT,
+	defaultContextDegradation: true,
 };
 
 const GLOBAL_CONFIG_PATH = join(homedir(), ".pi", "agent", "auto-checkpoint.json");
@@ -97,6 +134,8 @@ function mergeConfig(base: AutoCheckpointConfig, raw: RawAutoCheckpointConfig): 
 		...base,
 		...raw,
 		models: { ...base.models, ...raw.models },
+		prompt: raw.prompt ?? base.prompt,
+		defaultContextDegradation: raw.defaultContextDegradation ?? base.defaultContextDegradation,
 	};
 }
 
@@ -137,20 +176,27 @@ function resolveThreshold(modelId: string, contextWindow: number, config: AutoCh
 function resolveModelConfig(
 	modelId: string,
 	config: AutoCheckpointConfig,
-): { cooldownTurns: number; cooldownMs: number; prompt: string } {
+): {
+	cooldownTurns: number;
+	cooldownMs: number;
+	explicitPrompt: string | null;
+	contextDegradation: boolean;
+} {
 	for (const [pattern, mcfg] of Object.entries(config.models)) {
 		if (matchPattern(pattern, modelId)) {
 			return {
 				cooldownTurns: mcfg.cooldownTurns ?? config.cooldownTurns,
 				cooldownMs: mcfg.cooldownMs ?? config.cooldownMs,
-				prompt: mcfg.prompt ?? config.prompt,
+				explicitPrompt: mcfg.prompt ?? null,
+				contextDegradation: mcfg.contextDegradation ?? config.defaultContextDegradation,
 			};
 		}
 	}
 	return {
 		cooldownTurns: config.cooldownTurns,
 		cooldownMs: config.cooldownMs,
-		prompt: config.prompt,
+		explicitPrompt: null,
+		contextDegradation: config.defaultContextDegradation,
 	};
 }
 
@@ -333,7 +379,12 @@ export default function (pi: ExtensionAPI) {
 
 		const mcfg = resolveModelConfig(state.modelId ?? ctx.model?.id ?? "", state.config);
 
-		let content = mcfg.prompt
+		// Pick the right built-in prompt based on degradation flag, unless an
+		// explicit prompt was configured (takes precedence).
+		const promptTemplate = mcfg.explicitPrompt
+			?? (mcfg.contextDegradation ? DEGRADATION_PROMPT : NO_DEGRADATION_PROMPT);
+
+		let content = promptTemplate
 			.replace(/\{\{tokens\}\}/g, tokens.toLocaleString())
 			.replace(/\{\{percent\}\}/g, percent.toFixed(1))
 			.replace(/\{\{contextWindow\}\}/g, contextWindow.toLocaleString());
@@ -377,6 +428,7 @@ export default function (pi: ExtensionAPI) {
 				const mcfg = resolveModelConfig(modelId, state.config);
 				lines.push(`threshold: ${effectiveThreshold.toLocaleString()} tokens`);
 				lines.push(`cooldown: ${mcfg.cooldownTurns} turns / ${(mcfg.cooldownMs / 1000).toFixed(0)}s`);
+				lines.push(`context degradation: ${mcfg.contextDegradation}`);
 
 				const usage = ctx.getContextUsage();
 				if (usage && usage.tokens !== null) {
