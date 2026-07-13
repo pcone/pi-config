@@ -22,8 +22,8 @@ const INJECTION_BUDGET_FRACTION = 0.15;
 
 interface RelevantPathEntry {
 	path: string;
-	/** "full" (default) — entire file. "read" — lines read this session. "context" — breadcrumb only. */
-	scope?: "full" | "read" | "context";
+	/** "read" (default) — lines read this session. "full" — entire file. */
+	scope?: "full" | "read";
 }
 
 interface ReadRegion {
@@ -138,7 +138,7 @@ function estimateTokens(content: string): number {
 
 /**
  * Read file contents for each entry in `relevantPaths`, skipping files that
- * are already preserved in the compacted context (unless scope is "context").
+ * are already preserved in the compacted context.
  *
  * Returns the formatted injection string, files omitted for budget reasons,
  * and files skipped because they're preserved.
@@ -159,27 +159,12 @@ async function buildFileInjection(
 
 	for (const entry of relevantPaths) {
 		const key = normalizePath(entry.path, cwd);
-		const scope = entry.scope ?? "full";
+		const scope = entry.scope ?? "read";
 
-		// -- Handle "context" scope ------------------------------------------
-		if (scope === "context") {
-			const breadcrumb = preserved.anyRead.has(key)
-				? `[FILE: ${entry.path} — preserved in context]`
-				: `[FILE: ${entry.path} — not read this session; use read tool if needed]`;
-			const blockTokens = estimateTokens(breadcrumb);
-			if (used + blockTokens > budget) {
-				omitted.push(entry.path);
-				continue;
-			}
-			parts.push(breadcrumb);
-			used += blockTokens;
-			continue;
-		}
-
-		// -- Skip files already preserved in compacted context ----------------
-		// "read" scope: model asked for lines it already saw — safe to skip.
-		// "full" scope: only skip if preserved read was also a full-file
-		//   request (no offset/limit).  A partial preserved read doesn't cover
+// -- Skip files already preserved in compacted context ----------------
+		// "read" (default): model only needs lines it already saw — safe to skip.
+		// "full": only skip if preserved read was also a full-file request
+		//   (no offset/limit).  A partial preserved read does not cover
 		//   the whole file, so we must re-inject.
 		if (scope === "read" && preserved.anyRead.has(key)) {
 			skippedPreserved.push(entry.path);
@@ -242,7 +227,7 @@ async function buildFileInjection(
 	if (skippedPreserved.length > 0) {
 		notes.push(
 			`${skippedPreserved.length} file(s) already in preserved context — skipped: ${skippedPreserved.join(", ")}. ` +
-			`Use scope: "context" for breadcrumbs instead.`,
+			``,
 		);
 	}
 	if (omitted.length > 0) {
@@ -392,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 			"Archive the current session, clear context, and continue. " +
 			"Use at logical task boundaries when work for this turn is done but more remains. " +
 			"Archives are searchable with search_checkpoint. " +
-			"Files read in the preserved context tail are NOT re-injected — use scope:\"context\" for breadcrumbs.",
+			"Preserved reads are skipped automatically (default scope \"read\"). Use scope:\"full\" to force full-file injection.",
 		parameters: Type.Object({
 			summary: Type.String({ description: SUMMARY_FORMAT_HINT }),
 			nextSteps: Type.Optional(
@@ -417,20 +402,17 @@ export default function (pi: ExtensionAPI) {
 							Type.Union([
 								Type.Literal("full"),
 								Type.Literal("read"),
-								Type.Literal("context"),
-							], {
+								], {
 								description:
-									'"full" (default) — entire file. Only skipped if preserved context also has a full-file read; ' +
-									'a partial preserved read means the full file is NOT in context, so we inject. ' +
-									'"read" — only lines you read. Always skipped if preserved (exact same content). ' +
-									'"context" — breadcrumb only, never skipped.',
+									'"read" (default) — only lines you read. Always skipped if preserved. ' +
+									'"full" — entire file. Only skipped if preserved read was also full-file; ' +
+									'a partial preserved read means the full file is NOT in context.',
 							}),
 						),
 					}),
 					{
 						description:
-							"Files to carry forward after compaction. Dedup: \"full\" skipped only if preserved read was full-file; " +
-							"\"read\" always skipped if preserved; \"context\" never skipped.",
+							"Files to carry forward after compaction. Default \"read\" (skipped if preserved). Use \"full\" to force full-file injection.",
 					},
 				),
 			),
@@ -549,11 +531,9 @@ export default function (pi: ExtensionAPI) {
 							Type.Union([
 								Type.Literal("full"),
 								Type.Literal("read"),
-								Type.Literal("context"),
-							], {
+								], {
 								description:
-									'"full" (default) — entire file. Only skipped if preserved context also has a full-file read; ' +
-									'"context" — breadcrumb only (no content).',
+									'"read" (default) — only lines you read. "full" — entire file.',
 							}),
 						),
 					}),
@@ -788,11 +768,9 @@ export default function (pi: ExtensionAPI) {
 				"Let `continue` default to true so work continues automatically after compaction. " +
 				"If you need file context carried forward, include a `relevantPaths` list — only list files " +
 				"you will actually need after the checkpoint. " +
-				"Prefer `scope: \"read\"` (not \"full\") when the lines you already read are enough. " +
-				"Use `scope: \"full\"` only when you need the entire file and you didn't already read it in full. " +
-				"Remember: \"full\" is NOT skipped if your preserved read was only partial — " +
-				"so it's safe to say \"full\" when you really need more than what you saw. " +
-				'Use `scope: "context"` for breadcrumb-only references.';
+				"The default scope is \"read\" — preserved reads are skipped automatically. " +
+				"Use `scope: \"full\"` only when you need the entire file and your preserved read was partial " +
+				"(\"full\" is not skipped unless the preserved read was also full-file).";
 
 			const prompt = focus
 				? `${basePrompt}\n\nFocus the summary on: ${focus}${fileHint}`
