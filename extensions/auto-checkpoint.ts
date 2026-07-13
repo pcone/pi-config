@@ -209,7 +209,12 @@ function formatReadRegions(readRegions: Map<string, ReadRegion[]>): string {
 		const fullFile = merged.length === 1 && merged[0].offset === 1 && merged[0].endLine >= Number.MAX_SAFE_INTEGER - 1;
 		entries.push(`- ${path}${fullFile ? " (entire file)" : ` → ${ranges}`}`);
 	}
-	return `\n\nFiles read this session:\n${entries.join("\n")}`;
+	return (
+		`\n\nFiles read this session:\n${entries.join("\n")}` +
+		`\n\nWhen checkpointing, use relevantPaths to carry forward files you still need. ` +
+		`Skip files you read recently — they're already in the preserved context tail. ` +
+		`Use scope: "read" for partial re-injection, scope: "context" for breadcrumb-only references.`
+	);
 }
 
 // ---------------------------------------------------------------------------
