@@ -108,8 +108,9 @@ function getPreservedPaths(
 	entries: Array<{ id: string; type: string; message?: AgentMessage | null }>,
 	firstKeptEntryId: string,
 	cwd: string,
-): Set<string> {
-	const paths = new Set<string>();
+): { anyRead: Set<string>; fullFileRead: Set<string> } {
+	const anyRead = new Set<string>();
+	const fullFileRead = new Set<string>();
 	let found = false;
 	for (const entry of entries) {
 		if (entry.id === firstKeptEntryId) found = true;
@@ -117,15 +118,20 @@ function getPreservedPaths(
 		if (entry.type === "message" && entry.message?.role === "assistant") {
 			for (const block of entry.message.content) {
 				if (block.type === "tool_use" && block.name === "read") {
-					const rawPath: unknown = (block as { input?: { path?: unknown } }).input?.path;
-					if (typeof rawPath === "string") {
-						paths.add(normalizePath(rawPath, cwd));
+					const input = (block as { input?: { path?: unknown; offset?: unknown; limit?: unknown } }).input;
+					const rawPath = input?.path;
+					if (typeof rawPath !== "string") continue;
+					const key = normalizePath(rawPath, cwd);
+					anyRead.add(key);
+					// A full-file read has no offset and no limit.
+					if (input?.offset === undefined && input?.limit === undefined) {
+						fullFileRead.add(key);
 					}
 				}
 			}
 		}
 	}
-	return paths;
+	return { anyRead, fullFileRead };
 }
 
 // ---------------------------------------------------------------------------
@@ -574,7 +580,7 @@ export default function (pi: ExtensionAPI) {
 				relevantPaths,
 				oldCwd,
 				contextWindow,
-				new Set(), // empty — nothing preserved
+				{ anyRead: new Set(), fullFileRead: new Set() }, // empty — nothing preserved
 			);
 
 			const included = relevantPaths.length - injection.omitted.length - injection.skippedPreserved.length;
