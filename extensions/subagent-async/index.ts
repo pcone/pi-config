@@ -786,7 +786,7 @@ export default function (pi: ExtensionAPI) {
 				default: true,
 			}),
 		),
-		baseCommit: Type.Optional(
+		baseRef: Type.Optional(
 			Type.String({
 				description: "Git ref (commit hash, branch, or tag) to fork the worktree from. Defaults to HEAD if omitted. Use this to delegate work on uncommitted changes — pass the ref those changes sit on.",
 			}),
@@ -852,7 +852,7 @@ export default function (pi: ExtensionAPI) {
 			let isolationStatus = "";
 
 			if (params.isolate !== false) {
-				const wt = await createWorktree(cwd, sessionId, params.baseCommit);
+				const wt = await createWorktree(cwd, sessionId, params.baseRef);
 				if (wt) {
 					effectiveCwd = wt.worktreePath;
 					worktreePath = wt.worktreePath;
