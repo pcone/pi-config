@@ -953,7 +953,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wait",
 		label: "Wait",
-		description: "Set a non-blocking timer. Returns immediately. After N seconds, if no subagent has completed, a wake-up message is sent. If a subagent completes before the timer fires, the wake-up is cancelled. Use this instead of 'sleep' when waiting for subagent results.",
+		description: "Set a non-blocking timer. Returns immediately. After N seconds, if no subagent has completed, a wake-up message is sent. If a subagent completes before the timer fires, the wake-up is cancelled. Use this instead of 'sleep' when waiting for subagent results. After calling wait, stop — do not continue working. The next message will be either the result or a wake-up.",
 		parameters: WaitParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const w = { timer: null as NodeJS.Timeout | null, done: false };
@@ -969,7 +969,7 @@ export default function (pi: ExtensionAPI) {
 			activeTimers.push(w);
 
 			return {
-				content: [{ type: "text", text: `Timer set for ${params.seconds}s. You'll be notified when it fires or if a subagent completes sooner.` }],
+				content: [{ type: "text", text: `Waiting ${params.seconds}s. Do nothing — the next message will be either a subagent result or a timer wake-up.` }],
 			};
 		},
 	});
