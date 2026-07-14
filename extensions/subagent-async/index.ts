@@ -61,8 +61,7 @@ interface RunningSubagent {
 }
 
 const running = new Map<string, RunningSubagent>();
-let waitCounter = 0;
-const activeWaits = new Map<number, { resolve: (v: { type: string; sessionId?: string; output?: string }) => void; timer: NodeJS.Timeout }>();
+const activeTimers: Array<{ timer: NodeJS.Timeout; done: boolean }> = [];
 
 function newProgress(): SubagentProgress {
 	return {
@@ -578,8 +577,9 @@ async function spawnSubagent(
 		if (rs.resolveOnStop) {
 			rs.resolveOnStop(getFinalOutput(rs.messages) + isolationNote);
 			rs.resolveOnStop = null;
-		} else if (!resolveActiveWaits(rs)) {
-			// Deliver to parent only if no active wait consumed the result
+		} else {
+			// Natural completion — deliver result to parent.
+			cancelWaitTimers();
 			deliverResult(pi, rs, code ?? 0, isolationNote);
 		}
 
@@ -661,15 +661,13 @@ function formatToolAction(toolName: string, args: Record<string, any>): string {
 	}
 }
 
-function resolveActiveWaits(rs: RunningSubagent): boolean {
-	if (activeWaits.size === 0) return false;
-	const output = getFinalOutput(rs.messages) || "(no output)";
-	for (const [, w] of activeWaits) {
-		clearTimeout(w.timer);
-		w.resolve({ type: "subagent", sessionId: rs.sessionId, output: `Subagent ${rs.sessionId} completed (${rs.progress.turns} turns):\n${output}` });
+/** Cancel all active wait timers (subagent completed — no wake-up needed). */
+function cancelWaitTimers(): void {
+	for (const w of activeTimers) {
+		if (!w.done) clearTimeout(w.timer);
+		w.timer = null; // signal the callback not to fire
+		w.done = true;
 	}
-	activeWaits.clear();
-	return true;
 }
 
 function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
@@ -954,26 +952,23 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wait",
 		label: "Wait",
-		description: "Wait up to N seconds for subagent results. This is non-blocking — if a subagent completes during the wait, the result is returned immediately instead of waiting the full duration. Use this instead of 'sleep' when waiting for subagents to finish.",
+		description: "Set a non-blocking timer. Returns immediately. After N seconds, if no subagent has completed, a wake-up message is sent. If a subagent completes before the timer fires, the wake-up is cancelled. Use this instead of 'sleep' when waiting for subagent results.",
 		parameters: WaitParams,
-		async execute(_toolCallId, params) {
-			const myId = ++waitCounter;
-			const result = await new Promise<{ type: string; sessionId?: string; output?: string }>((resolve) => {
-				const timer = setTimeout(() => resolve({ type: "timeout" }), params.seconds * 1000);
-				activeWaits.set(myId, { resolve, timer });
-			});
-
-			// Clean up self if timed out (subagent resolution clears the whole map)
-			activeWaits.delete(myId);
-
-			if (result.type === "timeout") {
-				return {
-					content: [{ type: "text", text: `Waited ${params.seconds}s — no subagent completed. Use subagent_status to check progress.` }],
-				};
-			}
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const w = { timer: null as NodeJS.Timeout | null, done: false };
+			w.timer = setTimeout(() => {
+				if (!w.timer) return; // cancelled by subagent completion
+				w.done = true;
+				w.timer = null;
+				// Remove stale entry
+				const idx = activeTimers.indexOf(w);
+				if (idx >= 0) activeTimers.splice(idx, 1);
+				pi.sendUserMessage(`[timer] ${params.seconds}s elapsed — no subagent completed. Use subagent_status to check.`, { deliverAs: "steer" });
+			}, params.seconds * 1000);
+			activeTimers.push(w);
 
 			return {
-				content: [{ type: "text", text: result.output || `Subagent ${result.sessionId} completed.` }],
+				content: [{ type: "text", text: `Timer set for ${params.seconds}s. You'll be notified when it fires or if a subagent completes sooner.` }],
 			};
 		},
 	});
