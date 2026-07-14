@@ -954,7 +954,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Steering message sent to ${rs.agentName} (${params.session_id}).`,
+						text: `Steering message sent to ${rs.agentName} (${params.session_id}): "${params.message}"`,
 					},
 				],
 			};

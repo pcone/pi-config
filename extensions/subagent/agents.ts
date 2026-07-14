@@ -16,6 +16,8 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
+	allowedSubagents?: string[];
+	excludeTools?: string[];
 }
 
 export interface AgentDiscoveryResult {
@@ -60,6 +62,16 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			.map((t: string) => t.trim())
 			.filter(Boolean);
 
+		const allowedSubagents = frontmatter.allowedSubagents
+			?.split(",")
+			.map((a: string) => a.trim())
+			.filter(Boolean);
+
+		const excludeTools = frontmatter.excludeTools
+			?.split(",")
+			.map((t: string) => t.trim())
+			.filter(Boolean);
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
@@ -68,6 +80,8 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			systemPrompt: body,
 			source,
 			filePath,
+			allowedSubagents: allowedSubagents && allowedSubagents.length > 0 ? allowedSubagents : undefined,
+			excludeTools: excludeTools && excludeTools.length > 0 ? excludeTools : undefined,
 		});
 	}
 

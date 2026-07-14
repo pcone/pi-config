@@ -31,6 +31,7 @@ interface BenchmarkEntry {
 interface ModelInfo {
   id: string;
   canonical_slug?: string;
+  hugging_face_id?: string | null;
   context_length?: number;
   architecture?: { modality?: string };
   pricing?: {
@@ -197,6 +198,11 @@ function buildLookup(models: ModelsResponse): Map<string, ModelInfo> {
     if (m.id) map.set(m.id, m);
   }
   return map;
+}
+
+/** Check whether a model has open weights (hugging_face_id is non-null). */
+function isOpenWeights(mi: ModelInfo | undefined): boolean {
+  return !!(mi?.hugging_face_id);
 }
 
 /** Check whether a model supports image input. */
@@ -394,7 +400,7 @@ function paretoFilter2D(models: ScoredModel[]): ScoredModel[] {
 // Table rendering
 // ---------------------------------------------------------------------------
 
-function renderTable(models: ScoredModel[]): string {
+function renderTable(models: ScoredModel[], title = "MODEL TIERS"): string {
   const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
   const dim = (s: string) => `\x1b[2m${s}\x1b[22m`;
   const cyan = (s: string) => `\x1b[36m${s}\x1b[39m`;
@@ -403,15 +409,15 @@ function renderTable(models: ScoredModel[]): string {
 
   const costs = models.map((m) => m.blendedCost);
   const scores = models.map((m) => m.avg);
-  const costMin = Math.min(...costs);
-  const costMax = Math.max(...costs);
-  const scoreMin = Math.min(...scores);
-  const scoreMax = Math.max(...scores);
+  const costMin = oCostMin ?? Math.min(...costs);
+  const costMax = oCostMax ?? Math.max(...costs);
+  const scoreMin = oScoreMin ?? Math.min(...scores);
+  const scoreMax = oScoreMax ?? Math.max(...scores);
 
   const lines: string[] = [];
 
   lines.push(
-    bold("  MODEL TIERS") +
+    bold(`  ${title}`) +
       dim(`  ·  98% cache, 75/25 I/O  ·  I≥${THRESHOLDS.intelligence} C≥${THRESHOLDS.coding} A≥${THRESHOLDS.agentic}`),
   );
 
@@ -453,7 +459,7 @@ function renderTable(models: ScoredModel[]): string {
   return lines.join("\n");
 }
 
-function renderFullTable(models: ScoredModel[], dominatedCount: number, title: string, hiddenCount?: number): string {
+function renderFullTable(models: ScoredModel[], dominatedCount: number, title: string, hiddenCount?: number, oCostMin?: number, oCostMax?: number, oScoreMin?: number, oScoreMax?: number): string {
   if (models.length === 0) return "";
 
   const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
@@ -461,10 +467,10 @@ function renderFullTable(models: ScoredModel[], dominatedCount: number, title: s
 
   const costs = models.map((m) => m.blendedCost);
   const scores = models.map((m) => m.avg);
-  const costMin = Math.min(...costs);
-  const costMax = Math.max(...costs);
-  const scoreMin = Math.min(...scores);
-  const scoreMax = Math.max(...scores);
+  const costMin = oCostMin ?? Math.min(...costs);
+  const costMax = oCostMax ?? Math.max(...costs);
+  const scoreMin = oScoreMin ?? Math.min(...scores);
+  const scoreMax = oScoreMax ?? Math.max(...scores);
 
   const lines: string[] = [];
   const hidden = dominatedCount > 0 ? dim(`, −${dominatedCount} dominated`) : "";
@@ -559,14 +565,73 @@ export default async function (pi: ExtensionAPI) {
       }
       const scored = scoreModels(cache.benchmarks, cache.models);
       const frontier = paretoFilter2D(scored);
-      pi.sendMessage({
-        customType: "model-tiers",
-        content: renderTable(frontier),
-        display: true,
-      });
+
+      // Open-weights only Pareto
+      const lookup = buildLookup(cache.models);
+      const openWeights = scored.filter((m) =>
+        isOpenWeights(lookup.get(m.slug)),
+      );
+      const openFrontier = paretoFilter2D(openWeights);
+
+      // Global color scale from full frontier so open-weights colors match
+      const gCostMin = Math.min(...frontier.map((m) => m.blendedCost));
+      const gCostMax = Math.max(...frontier.map((m) => m.blendedCost));
+      const gScoreMin = Math.min(...frontier.map((m) => m.avg));
+      const gScoreMax = Math.max(...frontier.map((m) => m.avg));
+
+      if (openFrontier.length > 0) {
+        const left = renderTable(frontier, "MODEL TIERS");
+        const right = renderTable(openFrontier, "OPEN-WEIGHTS TIERS", gCostMin, gCostMax, gScoreMin, gScoreMax);
+        pi.sendMessage({
+          customType: "model-tiers",
+          content: sideBySide(left, right),
+          display: true,
+        });
+      } else {
+        pi.sendMessage({
+          customType: "model-tiers",
+          content: renderTable(frontier),
+          display: true,
+        });
+      }
     } catch (err) {
       console.log(`[model-tiers] Error: ${(err as Error).message}`);
     }
+  });
+
+  // ── /tiers-open: full 2D Pareto, open-weights only, no thresholds ──
+  pi.registerCommand("tiers-open", {
+    description: "Show 2D Pareto frontier for open-weights models only",
+    handler: async (_args, ctx) => {
+      try {
+        const cache = await getOrFetchCache(ctx);
+        if (!cache) {
+          ctx.ui.notify("No OpenRouter API key found", "error");
+          return;
+        }
+        const scored = scoreAllModels(cache.benchmarks, cache.models);
+        const lookup = buildLookup(cache.models);
+
+        // 2D Pareto on open-weights models only
+        const openModels = scored.filter((m) => isOpenWeights(lookup.get(m.slug)));
+        const openFrontier = paretoFilter2D(openModels);
+        const removed = openModels.length - openFrontier.length;
+
+        const content = renderFullTable(
+          openFrontier,
+          removed,
+          "OPEN-WEIGHTS MODELS (2D Pareto: score × cost)",
+        );
+
+        pi.sendMessage({
+          customType: "model-tiers-open",
+          content,
+          display: true,
+        });
+      } catch (err) {
+        console.log(`[model-tiers] /tiers-open error: ${(err as Error).message}`);
+      }
+    },
   });
 
   // ── /tiers: full 3D Pareto, no thresholds ──

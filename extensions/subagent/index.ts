@@ -337,6 +337,7 @@ async function runSingleAgent(
 	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash");
 	if (effectiveModel) args.push("--model", effectiveModel);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	if (agent.excludeTools && agent.excludeTools.length > 0) args.push("--exclude-tools", agent.excludeTools.join(","));
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -375,10 +376,15 @@ async function runSingleAgent(
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
+			const env: Record<string, string | undefined> = { ...process.env };
+			if (agent.allowedSubagents && agent.allowedSubagents.length > 0) {
+				env.PI_SUBAGENT_ALLOWLIST = agent.allowedSubagents.join(",");
+			}
 			const proc = spawn(invocation.command, invocation.args, {
 				cwd: cwd ?? defaultCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
+				env,
 			});
 			let buffer = "";
 
@@ -537,7 +543,15 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
-			const agents = discovery.agents;
+			let agents = discovery.agents;
+
+			// If this subagent process has an allowlist (set by the spawning parent),
+			// restrict available agents to only those named.
+			const allowlist = process.env.PI_SUBAGENT_ALLOWLIST;
+			if (allowlist) {
+				const allowed = new Set(allowlist.split(",").map((a) => a.trim()).filter(Boolean));
+				agents = agents.filter((a) => allowed.has(a.name));
+			}
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
 
 			const hasTasks = (params.tasks?.length ?? 0) > 0;

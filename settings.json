@@ -1,14 +1,14 @@
 {
   "lastChangelogVersion": "0.80.6",
   "defaultProvider": "openrouter",
-  "defaultModel": "deepseek/deepseek-v4-flash",
+  "defaultModel": "deepseek/deepseek-v4-pro",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
     "extensions/go.ts",
     "extensions/footer-session-id.ts",
     "extensions/auto-checkpoint.ts",
-    "extensions/subagent/index.ts",
+    "extensions/subagent-async/index.ts",
     "extensions/kagi-search.ts",
     "extensions/model-tiers/index.ts"
   ],

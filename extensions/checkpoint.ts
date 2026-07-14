@@ -22,8 +22,6 @@ const INJECTION_BUDGET_FRACTION = 0.15;
 
 interface RelevantPathEntry {
 	path: string;
-	/** "read" (default) — lines read this session. "full" — entire file. */
-	scope?: "full" | "read";
 }
 
 interface ReadRegion {
@@ -108,9 +106,8 @@ function getPreservedPaths(
 	entries: Array<{ id: string; type: string; message?: AgentMessage | null }>,
 	firstKeptEntryId: string,
 	cwd: string,
-): { anyRead: Set<string>; fullFileRead: Set<string> } {
-	const anyRead = new Set<string>();
-	const fullFileRead = new Set<string>();
+): Set<string> {
+	const paths = new Set<string>();
 	let found = false;
 	for (const entry of entries) {
 		if (entry.id === firstKeptEntryId) found = true;
@@ -121,17 +118,12 @@ function getPreservedPaths(
 					const input = (block as { input?: { path?: unknown; offset?: unknown; limit?: unknown } }).input;
 					const rawPath = input?.path;
 					if (typeof rawPath !== "string") continue;
-					const key = normalizePath(rawPath, cwd);
-					anyRead.add(key);
-					// A full-file read has no offset and no limit.
-					if (input?.offset === undefined && input?.limit === undefined) {
-						fullFileRead.add(key);
-					}
+					paths.add(normalizePath(rawPath, cwd));
 				}
 			}
 		}
 	}
-	return { anyRead, fullFileRead };
+	return paths;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,14 +138,15 @@ function estimateTokens(content: string): number {
  * Read file contents for each entry in `relevantPaths`, skipping files that
  * are already preserved in the compacted context.
  *
- * Returns the formatted injection string, files omitted for budget reasons,
- * and files skipped because they're preserved.
+ * Only the lines actually read this session are injected — if the whole file
+ * was read the whole file goes through.  Files with no tracked read regions
+ * are skipped entirely.
  */
 async function buildFileInjection(
 	relevantPaths: RelevantPathEntry[],
 	cwd: string,
 	contextWindow: number,
-	preserved: { anyRead: Set<string>; fullFileRead: Set<string> },
+	preserved: Set<string>,
 ): Promise<{ text: string; omitted: string[]; skippedPreserved: string[] }> {
 	if (relevantPaths.length === 0) return { text: "", omitted: [], skippedPreserved: [] };
 
@@ -165,57 +158,47 @@ async function buildFileInjection(
 
 	for (const entry of relevantPaths) {
 		const key = normalizePath(entry.path, cwd);
-		const scope = entry.scope ?? "read";
 
-// -- Skip files already preserved in compacted context ----------------
-		// "read" (default): model only needs lines it already saw — safe to skip.
-		// "full": only skip if preserved read was also a full-file request
-		//   (no offset/limit).  A partial preserved read does not cover
-		//   the whole file, so we must re-inject.
-		if (scope === "read" && preserved.anyRead.has(key)) {
-			skippedPreserved.push(entry.path);
-			continue;
-		}
-		if (scope === "full" && preserved.fullFileRead.has(key)) {
+		// Skip files already in the preserved context tail — the model
+		// already has whatever lines it read during the preserved turns.
+		if (preserved.has(key)) {
 			skippedPreserved.push(entry.path);
 			continue;
 		}
 
-		// -- Read and format file content ------------------------------------
+		// -- Read and format file content (matching read-tool output format) -
 		const absolutePath = resolvePath(cwd, entry.path);
 		let content: string;
 
 		try {
 			const raw = await readFile(absolutePath, "utf-8");
-			if (scope === "read") {
-				const regions = readRegions.get(key);
-				if (!regions || regions.length === 0) {
-					content = raw;
-				} else {
-					const merged = mergeRegions(regions);
-					const lines = raw.split("\n");
-					const chunks: string[] = [];
-					for (const r of merged) {
-						const start = Math.max(0, r.offset - 1);
-						const end = Math.min(lines.length, r.endLine);
-						if (start >= end) continue;
-						chunks.push(`--- L${r.offset}-${end} ---`);
-						chunks.push(lines.slice(start, end).join("\n"));
-					}
-					content = chunks.join("\n");
+			const regions = readRegions.get(key);
+
+			// No read regions tracked → nothing to inject, skip entirely.
+			if (!regions || regions.length === 0) continue;
+
+			const merged = mergeRegions(regions);
+			const rawLines = raw.split("\n");
+			const totalLines = rawLines.length;
+			// Single region covering the whole file → no continuation hints.
+			const isFullFile = merged.length === 1 && merged[0].offset === 1 && merged[0].endLine >= totalLines;
+			const chunks: string[] = [];
+			for (const r of merged) {
+				const start = Math.max(0, r.offset - 1);
+				const end = Math.min(rawLines.length, r.endLine);
+				if (start >= end) continue;
+				chunks.push(rawLines.slice(start, end).join("\n"));
+				if (!isFullFile && end < totalLines) {
+					chunks.push(`[L${r.offset}-${end} of ${totalLines} lines. offset=${end + 1} for more.]`);
 				}
-			} else {
-				content = raw;
 			}
+			content = chunks.join("\n\n");
 		} catch {
 			continue;
 		}
 
 		const tokens = estimateTokens(content);
-		const header = scope === "read"
-			? `[FILE: ${entry.path} (read regions)]`
-			: `[FILE: ${entry.path}]`;
-		const block = `${header}\n${content}`;
+		const block = `[${entry.path}]\n${content}`;
 		const blockTokens = estimateTokens(block);
 
 		if (used + blockTokens > budget) {
@@ -383,7 +366,7 @@ export default function (pi: ExtensionAPI) {
 			"Archive the current session, clear context, and continue. " +
 			"Use at logical task boundaries when work for this turn is done but more remains. " +
 			"Archives are searchable with search_checkpoint. " +
-			"Preserved reads are skipped automatically (default scope \"read\"). Use scope:\"full\" to force full-file injection.",
+			"Preserved reads are skipped automatically — only files the model hasn't seen in the preserved tail are injected.",
 		parameters: Type.Object({
 			summary: Type.String({ description: SUMMARY_FORMAT_HINT }),
 			nextSteps: Type.Optional(
@@ -404,21 +387,12 @@ export default function (pi: ExtensionAPI) {
 							description:
 								"File path relative to cwd (same convention as read/write tools).",
 						}),
-						scope: Type.Optional(
-							Type.Union([
-								Type.Literal("full"),
-								Type.Literal("read"),
-								], {
-								description:
-									'"read" (default) — only lines you read. Always skipped if preserved. ' +
-									'"full" — entire file. Only skipped if preserved read was also full-file; ' +
-									'a partial preserved read means the full file is NOT in context.',
-							}),
-						),
 					}),
 					{
 						description:
-							"Files to carry forward after compaction. Default \"read\" (skipped if preserved). Use \"full\" to force full-file injection.",
+							"Files to carry forward after compaction. Be conservative — only include files you are **certain** you'll need in the very next turn. " +
+							"When in doubt, omit it: you can always read it again after the checkpoint. " +
+							"Only the lines actually read are injected; files already in the preserved tail are skipped automatically.",
 					},
 				),
 			),
@@ -533,19 +507,11 @@ export default function (pi: ExtensionAPI) {
 								"File path relative to the *source* cwd (same convention as read/write tools). " +
 								"Files are read from the source directory and injected into the new session.",
 						}),
-						scope: Type.Optional(
-							Type.Union([
-								Type.Literal("full"),
-								Type.Literal("read"),
-								], {
-								description:
-									'"read" (default) — only lines you read. "full" — entire file.',
-							}),
-						),
 					}),
 					{
 						description:
 							"Files from the source cwd to inject into the new session context. " +
+							"Only the lines actually read are injected — if whole file, whole file goes through. " +
 							"Forks start fresh — no preservation dedup applies.",
 					},
 				),
@@ -580,7 +546,7 @@ export default function (pi: ExtensionAPI) {
 				relevantPaths,
 				oldCwd,
 				contextWindow,
-				{ anyRead: new Set(), fullFileRead: new Set() }, // empty — nothing preserved
+				new Set(), // empty — nothing preserved
 			);
 
 			const included = relevantPaths.length - injection.omitted.length - injection.skippedPreserved.length;
@@ -765,8 +731,8 @@ export default function (pi: ExtensionAPI) {
 					lines.push(`- ${path}${fullFile ? " (entire file)" : ` → ${ranges}`}`);
 				}
 				fileHint =
-					`\n\nFiles read this session (use relevantPaths to carry forward only what you need, ` +
-					`skip files you read recently — they're preserved in context):\n${lines.join("\n")}`;
+					`\n\nFiles read this session (be conservative with relevantPaths — only include files you're certain you'll need; ` +
+					`when in doubt just re-read after checkpoint):\n${lines.join("\n")}`;
 			}
 
 			const basePrompt =
@@ -774,9 +740,8 @@ export default function (pi: ExtensionAPI) {
 				"Let `continue` default to true so work continues automatically after compaction. " +
 				"If you need file context carried forward, include a `relevantPaths` list — only list files " +
 				"you will actually need after the checkpoint. " +
-				"The default scope is \"read\" — preserved reads are skipped automatically. " +
-				"Use `scope: \"full\"` only when you need the entire file and your preserved read was partial " +
-				"(\"full\" is not skipped unless the preserved read was also full-file).";
+				"Be conservative: include only files you're 100% certain you'll need in the next turn. " +
+				"When in doubt, omit it — you can always read it again.";
 
 			const prompt = focus
 				? `${basePrompt}\n\nFocus the summary on: ${focus}${fileHint}`

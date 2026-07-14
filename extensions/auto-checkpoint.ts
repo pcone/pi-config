@@ -257,9 +257,8 @@ function formatReadRegions(readRegions: Map<string, ReadRegion[]>): string {
 	}
 	return (
 		`\n\nFiles read this session:\n${entries.join("\n")}` +
-		`\n\nWhen checkpointing, use relevantPaths to carry forward files you still need. ` +
-		`Skip files you read recently — they're already in the preserved context tail. ` +
-		`Use scope: "read" for partial re-injection, scope: "context" for breadcrumb-only references.`
+		`\n\nWhen checkpointing, include only files you're certain you'll need immediately in relevantPaths — ` +
+		`be conservative, you can re-read anything after the checkpoint.`
 	);
 }
 

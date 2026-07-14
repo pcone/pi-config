@@ -3,10 +3,10 @@
     "openrouter": {
       "modelOverrides": {
         "z-ai/glm-5.2": {
-          "cost": { "input": 0.77, "output": 2.42, "cacheRead": 0.143, "cacheWrite": 0 },
+          "cost": { "input": 1.40, "output": 4.40, "cacheRead": 0.14, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
-              "only": ["streamlake"],
+              "only": ["fireworks"],
               "allow_fallbacks": false
             }
           }
