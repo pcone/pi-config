@@ -102,17 +102,20 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 // ── Worktree isolation ────────────────────────────────────────────────────
 
-/** Create an isolated git worktree on a branch off the parent HEAD.
+/** Create an isolated git worktree on a branch off the parent HEAD (or optional baseRef).
  *  Returns null if the cwd is not a git repo or worktree creation fails. */
 async function createWorktree(
 	parentCwd: string,
 	sessionId: string,
+	baseRef?: string,
 ): Promise<{ worktreePath: string; branchName: string; parentHeadCommit: string } | null> {
 	try {
 		const topLevel = await git(["rev-parse", "--show-toplevel"], parentCwd);
 		if (topLevel.exitCode !== 0) return null;
 
-		const headResult = await git(["rev-parse", "HEAD"], parentCwd);
+		// Resolve the base commit — use provided ref (branch/tag/commit) or HEAD
+		const baseCommitRef = baseRef || "HEAD";
+		const headResult = await git(["rev-parse", baseCommitRef], parentCwd);
 		if (headResult.exitCode !== 0) return null;
 		const parentHeadCommit = headResult.stdout.trim();
 
@@ -783,6 +786,11 @@ export default function (pi: ExtensionAPI) {
 				default: true,
 			}),
 		),
+		baseCommit: Type.Optional(
+			Type.String({
+				description: "Git ref (commit hash, branch, or tag) to fork the worktree from. Defaults to HEAD if omitted. Use this to delegate work on uncommitted changes — pass the ref those changes sit on.",
+			}),
+		),
 	});
 
 	const StatusParams = Type.Object({
@@ -844,7 +852,7 @@ export default function (pi: ExtensionAPI) {
 			let isolationStatus = "";
 
 			if (params.isolate !== false) {
-				const wt = await createWorktree(cwd, sessionId);
+				const wt = await createWorktree(cwd, sessionId, params.baseCommit);
 				if (wt) {
 					effectiveCwd = wt.worktreePath;
 					worktreePath = wt.worktreePath;
