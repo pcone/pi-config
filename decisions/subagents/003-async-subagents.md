@@ -89,5 +89,3 @@ Hard kill at 500 turns as a last-resort fallback. Should never trigger under nor
 ## Tradeoffs
 
 - **Subagents fork from HEAD**, not the working tree. Uncommitted changes in the parent are invisible to the subagent. Commit any work the subagent needs before delegating.
-- No real-time streaming — parent sees progress via `/subagents` or the external `watch-session` viewer.
-- Isolated worktrees prevent file conflicts but mean subagents can't see each other's in-progress changes.
