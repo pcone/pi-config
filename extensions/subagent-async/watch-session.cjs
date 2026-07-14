@@ -302,6 +302,9 @@ function runMultiViewer(initialIds, initialSplitCount) {
     p.rl.on("error", () => {
       // readline errors on dead sockets — handled by socket error above
     });
+    p.rl.on("close", () => {
+      // readline closed when socket ends — handled by socket close above
+    });
   }
 
   // ── Session management ───────────────────────────────────────────────
