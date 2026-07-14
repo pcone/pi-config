@@ -19,7 +19,7 @@ ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
 - `settings.json` — Global settings (default provider/model, thinking level, extensions)
 - `models.json` — Custom provider overrides (currently empty; using pi's built-in `minimax` provider on the MiniMax Token Plan)
 - `extensions/checkpoint.ts` — Archive-and-compact on demand; archives stored under `.pi/checkpoints/`
-- `extensions/subagent-async/index.ts` — Non-blocking subagents via RPC mode: spawn, check progress (`/subagents`), steer, stop. Includes live log viewer (`/watch`), external viewer (`watch-session`).
+- `extensions/subagent-async/index.ts` — Non-blocking subagents via RPC mode: spawn, check progress (`/subagents`), steer, stop. Subagents fork from HEAD (not working tree) — commit first. Includes live log viewer (`/watch`), external viewer (`watch-session`).
 - `extensions/subagent/` — (disabled) Original synchronous subagent extension, kept for reference.
 - `extensions/footer-session-id.ts` — Replaces the footer with one that adds a themed, reversible identifier (e.g. `arcane-phoenix-archmage`) for the current session on the right side. The phrase is bijective with the first 4 hex chars of the UUID session ID — look up the words in the lists to recover the prefix. Each session also gets a per-session hue (derived from the same bits) and a staleness indicator (`●◐◌○`) that tracks time since the most recent entry — the words themselves fade along the same axis, so freshness reads at a glance.
 - `skills/decision-log` — On-demand skill instructions
@@ -27,7 +27,7 @@ ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
 
 ## Tools added
 
-- **`subagent_async(agent, task, cwd?, inheritParentModel?)`** — Spawn an async subagent that runs in the background while you remain interactive. Use `/subagents` to check progress, `/watch <id>` to view live output. Subagents auto-checkpoint the parent before starting.
+- **`subagent_async(agent, task, cwd?, inheritParentModel?, isolate?)`** — Spawn an async subagent that runs in the background. Subagents fork from HEAD — commit any uncommitted work the subagent needs before delegating. Use `/subagents` to check progress, `/watch <id>` for live output. Subagents auto-checkpoint the parent before starting.
 - **`subagent_status(session_id)`** — Check progress of a running async subagent
 - **`subagent_steer(session_id, message)`** — Inject a steering message into a running subagent
 - **`subagent_stop(session_id, final_message?)`** — Tell a running subagent to wrap up and return
