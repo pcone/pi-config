@@ -36,6 +36,10 @@ function plainLen(s) {
   return s.replace(/\[[0-9;]*[A-Za-z]/g, "").length;
 }
 
+function plainLine(s) {
+  return s.replace(/\[[0-9;]*[A-Za-z]/g, "");
+}
+
 function truncate(str, width) {
   const visible = plainLen(str);
   if (visible <= width) return str;
@@ -263,7 +267,8 @@ function runMultiViewer(initialIds, initialSplitCount) {
     p.rl = readline.createInterface({ input: p.socket, crlfDelay: Infinity });
     p.rl.on("line", (line) => {
       p.lines.push(line);
-      const m = line.match(/^── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
+      // Match completion footer — may have ANSI codes at start
+      const m = plainLine(line).match(/^── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
       if (m) {
         p.done = true;
         p.exitCode = parseInt(m[3]);
@@ -343,10 +348,7 @@ function runMultiViewer(initialIds, initialSplitCount) {
 
   function setSplitCount(n) {
     n = Math.max(1, Math.min(n, 9));
-    if (n === splitCount || n > discoverSessions().filter((s) => s.status === "RUNNING").length + panes.length) {
-      // If asking for more panes than sessions, just cap at available but don't change
-      // unless the requested count matches what we have
-    }
+    if (n === splitCount) return;
     if (n > panes.length) {
       // Add panes
       const available = getAvailableSessions();
@@ -362,13 +364,14 @@ function runMultiViewer(initialIds, initialSplitCount) {
         try { p.socket.destroy(); } catch {}
       }
     }
-    splitCount = panes.length;
+    splitCount = Math.max(1, panes.length);
     render();
   }
 
   // ── Render helpers ───────────────────────────────────────────────────
 
   function getBodyRows() {
+    if (panes.length === 0) return 5;
     const paneHeader = 1;
     const separator = 0; // we use dimmed line separator between panes
     const totalOverhead = panes.length * paneHeader + (panes.length - 1) * separator + 1; // +1 for global footer
