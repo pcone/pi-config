@@ -713,19 +713,9 @@ export default function (pi: ExtensionAPI) {
 	// ── Session lifecycle ──────────────────────────────────────────────
 
 	pi.on("session_shutdown", () => {
-		// Kill all running subagents and clean up any leftover worktrees
-		for (const [id, rs] of running) {
-			rs.proc.kill("SIGTERM");
-			setTimeout(() => { if (!rs.proc.killed) rs.proc.kill("SIGKILL"); }, HARD_KILL_DELAY_MS);
-			// Best-effort worktree cleanup on emergency shutdown
-			if (rs.worktreePath && rs.parentCwd) {
-				spawn("git", ["worktree", "remove", "--force", rs.worktreePath], {
-					cwd: rs.parentCwd,
-					stdio: "ignore",
-				}).on("error", () => {});
-			}
-		}
-		running.clear();
+		// Don't kill subagents — they survive parent reloads/restarts.
+		// Their work commits to branches and is recoverable via git merge.
+		// Socket servers and log files persist at /tmp/pi-subagent-<sid>.*
 	});
 
 	// ── /subagents command ──────────────────────────────────────────────
