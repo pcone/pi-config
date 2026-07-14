@@ -62,7 +62,7 @@ interface RunningSubagent {
 
 const running = new Map<string, RunningSubagent>();
 // Active wait: resolves when timer fires OR subagent completes
-let activeWait: { resolve: (v: string) => void; timer: NodeJS.Timeout } | null = null;
+let activeWait: { timer: NodeJS.Timeout } | null = null;
 
 function newProgress(): SubagentProgress {
 	return {
@@ -580,11 +580,8 @@ async function spawnSubagent(
 			rs.resolveOnStop(getFinalOutput(rs.messages) + isolationNote);
 			rs.resolveOnStop = null;
 		} else {
-			// If a wait is active, deliver result through it; otherwise normal delivery
-			const output = getFinalOutput(rs.messages) || "(no output)";
-			if (!notifyWait(output, sessionId, rs.progress.turns)) {
-				deliverResult(pi, rs, code ?? 0, isolationNote);
-			}
+			cancelWait();
+			deliverResult(pi, rs, code ?? 0, isolationNote);
 		}
 
 		// Remove from running map
@@ -665,14 +662,12 @@ function formatToolAction(toolName: string, args: Record<string, any>): string {
 	}
 }
 
-/** Resolve active wait with subagent result, or cancel timer. Returns true if a wait was active. */
-function notifyWait(output: string, sessionId: string, turns: number): boolean {
-	if (!activeWait) return false;
-	clearTimeout(activeWait.timer);
-	const msg = `[Subagent finished] ${sessionId} (${turns} turns):\n${output}`;
-	activeWait.resolve(msg);
-	activeWait = null;
-	return true;
+/** Cancel the active wait timer. */
+function cancelWait(): void {
+	if (activeWait) {
+		clearTimeout(activeWait.timer);
+		activeWait = null;
+	}
 }
 
 function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
@@ -957,38 +952,21 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wait",
 		label: "Wait",
-		description: "Set a non-blocking timer. Blocks until N seconds elapse, a subagent completes, or the user sends a message — whichever comes first. The result is returned immediately when triggered. Use this instead of 'sleep' when waiting for subagent results.",
+		description: "Set a non-blocking timer. Returns immediately. After N seconds, if no subagent has completed during the interval, a wake-up message is sent. If a subagent completes before the timer fires, the wake-up is cancelled. Only one wait can be active at a time — calling wait again while waiting returns an error. Use this instead of 'sleep' when waiting for subagent results.",
 		parameters: WaitParams,
-		async execute(_toolCallId, params, signal) {
-			// If a wait is already active (shouldn't happen, but clean up)
+		async execute(_toolCallId, params) {
 			if (activeWait) {
-				clearTimeout(activeWait.timer);
-				activeWait.resolve("Previous wait superseded.");
+				return { content: [{ type: "text", text: `Already waiting — a timer is active. Do not call wait again. Stop and wait for the next message.` }] };
+			}
+
+			const w = { timer: null as NodeJS.Timeout | null };
+			w.timer = setTimeout(() => {
 				activeWait = null;
-			}
+				pi.sendUserMessage(`[timer] ${params.seconds}s elapsed — no subagent completed. Use subagent_status to check.`, { deliverAs: "steer" });
+			}, params.seconds * 1000);
+			activeWait = w;
 
-			let aborted = false;
-			if (signal) {
-				signal.addEventListener("abort", () => {
-					aborted = true;
-					if (activeWait) {
-						clearTimeout(activeWait.timer);
-						activeWait.resolve("Wait interrupted — user sent a message.");
-						activeWait = null;
-					}
-				}, { once: true });
-			}
-
-			const result = await new Promise<string>((resolve) => {
-				if (aborted) { resolve("Wait aborted."); return; }
-				const timer = setTimeout(() => {
-					if (activeWait) activeWait = null;
-					resolve(`No subagent completed within ${params.seconds}s. Use subagent_status to check progress.`);
-				}, params.seconds * 1000);
-				activeWait = { resolve, timer };
-			});
-
-			return { content: [{ type: "text", text: result }] };
+			return { content: [{ type: "text", text: `Timer set for ${params.seconds}s. Stop now — do nothing until the next message arrives (either a subagent result or a timer wake-up).` }] };
 		},
 	});
 
