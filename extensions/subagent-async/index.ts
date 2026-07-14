@@ -956,7 +956,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: WaitParams,
 		async execute(_toolCallId, params) {
 			if (activeWait) {
-				return { content: [{ type: "text", text: `Already waiting — a timer is active. Do not call wait again. Stop and wait for the next message.` }], terminate: true };
+				return { content: [{ type: "text", text: `Already waiting — a timer is active.` }], terminate: true };
 			}
 
 			const w = { timer: null as NodeJS.Timeout | null };
@@ -966,7 +966,7 @@ export default function (pi: ExtensionAPI) {
 			}, params.seconds * 1000);
 			activeWait = w;
 
-			return { content: [{ type: "text", text: `Timer set for ${params.seconds}s. Stop now — do nothing until the next message arrives (either a subagent result or a timer wake-up).` }], terminate: true };
+			return { content: [{ type: "text", text: `Timer set for ${params.seconds}s.` }], terminate: true };
 		},
 	});
 
