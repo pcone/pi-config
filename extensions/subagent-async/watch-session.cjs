@@ -12,6 +12,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 
+// Silently ignore stale-socket errors (subagent killed, socket file remains)
+process.on("uncaughtException", (err) => {
+  if (err.code === "ECONNREFUSED") return;
+  console.error(err);
+  process.exit(1);
+});
+
 // ── Args ────────────────────────────────────────────────────────────────────
 
 const arg = process.argv[2];
@@ -288,7 +295,12 @@ function runMultiViewer(initialIds, initialSplitCount) {
       p.connected = false;
       p.done = true;
       p.lines.push("\x1b[31m[connection lost]\x1b[0m");
+      // Remove stale socket file so future scans don't retry it
+      try { fs.unlinkSync(p.sockPath); } catch {}
       render();
+    });
+    p.rl.on("error", () => {
+      // readline errors on dead sockets — handled by socket error above
     });
   }
 
