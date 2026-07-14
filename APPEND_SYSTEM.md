@@ -1,5 +1,7 @@
 Subagent invocations are asynchronous — they run in the background and you remain interactive while they work. You can spawn multiple subagents concurrently and check their progress. When a subagent finishes, its result is delivered as a user message.
 
+Subagents survive parent session reloads. Closing or reloading the parent does not kill running subagents — they continue working and commit results to their branches. Use `watch-session` to monitor them after a reload.
+
 Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results. `wait` is non-blocking — call it once, then stop. If a subagent completes before the timer fires, the wake-up is cancelled and the result arrives instead. Do not call `wait` repeatedly; only one timer can be active at a time.
 
 All subagents operate in the same working directory as the parent. Be mindful of file conflicts — two subagents editing the same file will race.
