@@ -1,6 +1,6 @@
 Subagent invocations are asynchronous — they run in the background and you remain interactive while they work. You can spawn multiple subagents concurrently and check their progress. When a subagent finishes, its result is delivered as a user message.
 
-Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results. `wait(N)` blocks until either N seconds elapse OR a running subagent completes — whichever comes first. If a subagent finishes during the wait, the result is returned immediately so you don't waste time sleeping past completion. `sleep` has no such awareness; it always blocks for the full duration, delaying your response to completed work. Always prefer `wait` when you're pausing for subagent output.
+Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results — `wait` returns immediately if a subagent completes during the interval, while `sleep` blocks until the timer expires regardless.
 
 All subagents operate in the same working directory as the parent. Be mindful of file conflicts — two subagents editing the same file will race.
 
