@@ -824,7 +824,7 @@ export default function (pi: ExtensionAPI) {
 	// ── subagent ───────────────────────────────────────────────────────
 
 	pi.registerTool({
-		name: "subagent_async",
+		name: "subagent",
 		label: "Subagent (async)",
 		description:
 			"Spawn a subagent that runs in the background. The parent remains interactive. " +

@@ -27,7 +27,7 @@ ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
 
 ## Tools added
 
-- **`subagent_async(agent, task, cwd?, inheritParentModel?, isolate?)`** — Spawn an async subagent that runs in the background. Subagents fork from HEAD — commit any uncommitted work the subagent needs before delegating. Use `/subagents` to check progress, `/watch <id>` for live output. Subagents auto-checkpoint the parent before starting.
+- **`subagent(agent, task, cwd?, inheritParentModel?, isolate?, baseRef?)`** — Spawn an async subagent that runs in the background. Subagents fork from HEAD — commit any uncommitted work the subagent needs before delegating. Use `/subagents` to check progress, `/watch <id>` for live output. Subagents auto-checkpoint the parent before starting.
 - **`subagent_status(session_id)`** — Check progress of a running async subagent
 - **`subagent_steer(session_id, message)`** — Inject a steering message into a running subagent
 - **`subagent_stop(session_id, final_message?)`** — Tell a running subagent to wrap up and return
