@@ -32,7 +32,6 @@ ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
 - **`subagent_steer(session_id, message)`** — Inject a steering message into a running subagent
 - **`subagent_stop(session_id, final_message?)`** — Tell a running subagent to wrap up and return
 - **`checkpoint(summary, nextSteps?, continue?, newCwd?)`** — Archive the current session to `.pi/checkpoints/session-<timestamp>.jsonl`, override compaction with the supplied summary, optionally send a follow-up kickoff prompt. When `newCwd` is provided, fork to a fresh session in that directory instead of compacting: the archive is written, a new session file is created in the target cwd's session storage with the checkpoint summary as its initial context, and a `checkpoint_fork` entry is recorded on the old session.
-- **`search_checkpoint(pattern, archiveGlob?, contextLines?)`** — Grep archived JSONL files for prior work.
 
 ## Not tracked
 

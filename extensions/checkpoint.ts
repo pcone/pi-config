@@ -365,7 +365,6 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Archive the current session, clear context, and continue. " +
 			"Use at logical task boundaries when work for this turn is done but more remains. " +
-			"Archives are searchable with search_checkpoint. " +
 			"Preserved reads are skipped automatically — only files the model hasn't seen in the preserved tail are injected.",
 		parameters: Type.Object({
 			summary: Type.String({ description: SUMMARY_FORMAT_HINT }),
@@ -618,68 +617,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// -- checkpoint_search ------------------------------------------------
-	pi.registerTool({
-		name: "checkpoint_search",
-		label: "Checkpoint Search",
-		description: "Search archived session JSONL files for patterns.",
-		parameters: Type.Object({
-			pattern: Type.String({ description: "Regex pattern to search for." }),
-			archiveGlob: Type.Optional(
-				Type.String({
-					description: "Glob for archive files. Default: *.jsonl. Use 'session-2025-*' to limit by date.",
-				}),
-			),
-			contextLines: Type.Optional(
-				Type.Number({ description: "Lines of context around each match. Default: 2." }),
-			),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const glob = params.archiveGlob ?? "*.jsonl";
-			const ctxLines = params.contextLines ?? 2;
-			const archiveDir = join(ctx.cwd, CHECKPOINT_DIR);
-
-			let files: string[];
-			try {
-				files = (await readdir(archiveDir)).filter((f) => f.endsWith(".jsonl"));
-			} catch {
-				return {
-					content: [{ type: "text", text: "No archives yet." }],
-					details: {},
-				};
-			}
-
-			const regex = new RegExp(params.pattern, "gi");
-			const matches: string[] = [];
-
-			for (const file of files.sort().reverse()) {
-				if (glob !== "*.jsonl" && !matchWildcard(file, glob)) continue;
-				const text = await readFile(join(archiveDir, file), "utf8");
-				const lines = text.split("\n");
-				for (let i = 0; i < lines.length; i++) {
-					if (!lines[i]) continue;
-					if (regex.test(lines[i])) {
-						regex.lastIndex = 0;
-						const start = Math.max(0, i - ctxLines);
-						const end = Math.min(lines.length, i + ctxLines + 1);
-						matches.push(`--- ${file}:${i + 1} ---`);
-						for (let j = start; j < end; j++) {
-							matches.push(truncate(lines[j], 200));
-						}
-					}
-				}
-			}
-
-			if (matches.length === 0) {
-				return { content: [{ type: "text", text: `No matches for /${params.pattern}/.` }], details: {} };
-			}
-			return {
-				content: [{ type: "text", text: matches.join("\n") }],
-				details: { matchCount: matches.length },
-			};
-		},
-	});
-
 	// -- /checkpoints command --------------------------------------------
 	pi.registerCommand("checkpoints", {
 		description: "List archived session checkpoints.",
@@ -757,11 +694,3 @@ export default function (pi: ExtensionAPI) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function matchWildcard(name: string, glob: string): boolean {
-	const re = new RegExp("^" + glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
-	return re.test(name);
-}
-
-function truncate(s: string, n: number): string {
-	return s.length <= n ? s : s.slice(0, n) + "...";
-}
