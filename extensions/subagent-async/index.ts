@@ -484,6 +484,7 @@ async function spawnSubagent(
 
 			if (msg.role === "assistant") {
 				rs.progress.turns++;
+				updateFooter(ctx);
 
 				// Hard turn limit
 				if (rs.progress.turns >= MAX_TURNS_HARD) {
