@@ -712,6 +712,80 @@ function updateFooter(ctx: any): void {
 export default function (pi: ExtensionAPI) {
 	// ── Session lifecycle ──────────────────────────────────────────────
 
+	pi.on("session_start", async (_event, ctx) => {
+		// Re-attach to orphaned subagents from a previous session
+		try {
+			const sockDir = "/tmp";
+			const files = fs.readdirSync(sockDir).filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".sock"));
+			for (const f of files) {
+				const sid = f.replace("pi-subagent-", "").replace(".sock", "");
+				if (running.has(sid)) continue; // already tracked
+
+				const sockPath = path.join(sockDir, f);
+				const logPath = sockPath.replace(".sock", ".log");
+				const metaPath = sockPath.replace(".sock", ".meta.json");
+
+				// Read metadata written at spawn time
+				let meta: any = null;
+				try { meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch { continue; }
+
+				// Parse current turns from log
+				let turns = 0;
+				try {
+					const log = fs.readFileSync(logPath, "utf-8");
+					turns = (log.match(/── Turn (\d+) ──/g) || []).length;
+				} catch {}
+
+				const rs: RunningSubagent = {
+					proc: null as any,
+					sessionId: sid,
+					agentName: meta.agentName || "?",
+					task: meta.task || "?",
+					cwd: meta.cwd || ctx.cwd,
+					startedAt: meta.startedAt || Date.now(),
+					progress: { turns, filesRead: new Set(), filesModified: new Set(), errors: [], currentActivity: "recovered" },
+					messages: [],
+					stdin: null,
+					resolveOnStop: null,
+					isDone: false,
+					logPath,
+					logLines: [],
+					watchHandle: null,
+					sockPath,
+					sockServer: null as any,
+					sockClients: new Set(),
+					worktreePath: meta.worktreePath || null,
+					isolationBranch: meta.isolationBranch || null,
+					parentHeadCommit: meta.parentHeadCommit || null,
+					parentCwd: meta.parentCwd || ctx.cwd,
+				};
+
+				// Monitor via socket — when it closes, subagent exited
+				const sock = net.createConnection(sockPath);
+				rs.sockClients.add(sock);
+				sock.on("close", () => {
+					rs.isDone = true;
+					// Read final output from log
+					let finalOutput = "(no output)";
+					try {
+						const log = fs.readFileSync(logPath, "utf-8");
+						const match = log.match(/── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
+						if (match) {
+							rs.progress.turns = parseInt(match[2]);
+							finalOutput = log.split("── ").pop()?.trim() || finalOutput;
+						}
+					} catch {}
+					deliverResult(pi, rs, 0, `\n[Isolation] Recovered from previous session.`);
+					running.delete(sid);
+					updateFooter(ctx);
+				});
+
+				running.set(sid, rs);
+				updateFooter(ctx);
+			}
+		} catch { /* best-effort */ }
+	});
+
 	pi.on("session_shutdown", () => {
 		// Don't kill subagents — they survive parent reloads/restarts.
 		// Their work commits to branches and is recoverable via git merge.
@@ -881,6 +955,20 @@ export default function (pi: ExtensionAPI) {
 			);
 
 			running.set(sessionId, rs);
+
+		// Write metadata for recovery on session reload
+		try {
+			fs.writeFileSync(`/tmp/pi-subagent-${sessionId}.meta.json`, JSON.stringify({
+				agentName: agent.name,
+				task: params.task,
+				cwd,
+				startedAt: rs.startedAt,
+				worktreePath,
+				isolationBranch,
+				parentHeadCommit,
+				parentCwd: cwd,
+			}));
+		} catch {}
 
 			updateFooter(ctx);
 
