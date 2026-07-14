@@ -788,7 +788,7 @@ export default function (pi: ExtensionAPI) {
 		),
 		baseRef: Type.Optional(
 			Type.String({
-				description: "Git ref (commit hash, branch, or tag) to fork the worktree from. Defaults to HEAD if omitted. Use this when changes are on a feature branch that isn't ready for main — pass the branch name or ref.",
+				description: "Git ref (commit hash, branch, or tag) to fork the worktree from. Defaults to HEAD if omitted. Use this when changes are on a feature branch that isn't ready for main — pass the branch name or ref. If changes are only in the working tree, create a feature branch, commit them, and pass that branch.",
 			}),
 		),
 	});

@@ -2,4 +2,4 @@ Subagent invocations are asynchronous — they run in the background and you rem
 
 All subagents operate in the same working directory as the parent. Be mindful of file conflicts — two subagents editing the same file will race.
 
-Subagents fork from the current HEAD commit, not the working tree. Uncommitted changes in the parent are invisible to the subagent. Commit any work the subagent needs to build on before delegating.
+Subagents fork from the current HEAD commit, not the working tree. Uncommitted changes in the parent are invisible to the subagent. Commit any work the subagent needs to build on before delegating. If the changes aren't ready for main, create a feature branch, commit there, and pass `baseRef` with the branch name.
