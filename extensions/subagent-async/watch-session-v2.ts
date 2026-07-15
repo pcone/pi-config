@@ -27,6 +27,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as readline from "node:readline";
 import {
+	Box,
 	Container,
 	type Component,
 	Focusable,
@@ -42,6 +43,8 @@ import {
 } from "@earendil-works/pi-tui";
 import {
 	getMarkdownTheme,
+	Markdown,
+	type MarkdownTheme,
 	Theme,
 	type ThemeColor,
 	type ThemeBg,
@@ -429,29 +432,215 @@ class Layout {
 	}
 }
 
-// ── ScrollBody — scrolling log view for one pane ─────────────────────────────
+// ── Entries — typed log blocks (markdown, tool, thinking, headers) ─────────────────────
+
+let _mdTheme: MarkdownTheme | undefined;
+function getMdTheme(): MarkdownTheme {
+	if (!_mdTheme) _mdTheme = getMarkdownTheme();
+	return _mdTheme;
+}
+
+interface Entry {
+	lineCount(width: number): number;
+	render(width: number): string[];
+	invalidate(): void;
+}
+
+/** A single styled line of text (header, turn boundary, completion footer). */
+class TextEntry implements Entry {
+	private cached?: { width: number; lines: string[] };
+	constructor(private text: string, private style: (s: string) => string = (s) => s) {}
+	lineCount(_width: number): number { return 1; }
+	render(width: number): string[] {
+		if (this.cached && this.cached.width === width) return this.cached.lines;
+		this.cached = { width, lines: [truncateToWidth(this.style(this.text), width)] };
+		return this.cached.lines;
+	}
+	invalidate() { this.cached = undefined; }
+}
+
+/** Multi-line assistant text rendered as markdown (bold, code, headings, lists). */
+class AssistantEntry implements Entry {
+	private rawText = "";
+	private md: Markdown;
+	private cached?: { width: number; lines: string[] };
+	constructor() {
+		this.md = new Markdown("", 0, 0, getMdTheme());
+	}
+	append(rawLine: string): void {
+		// The parent extension prefixes each assistant text line with "  ".
+		const cleaned = stripAnsi(rawLine).replace(/^  /, "");
+		this.rawText = this.rawText ? `${this.rawText}\n${cleaned}` : cleaned;
+		this.md.setText(this.rawText);
+		this.cached = undefined;
+	}
+	lineCount(width: number): number { return this.render(width).length; }
+	render(width: number): string[] {
+		if (this.cached && this.cached.width === width) return this.cached.lines;
+		const lines = this.md.render(width);
+		this.cached = { width, lines };
+		return lines;
+	}
+	invalidate() { this.cached = undefined; this.md.invalidate(); }
+}
+
+/** Thinking block — each line prefixed with a `│` spine in thinkingMedium color. */
+class ThinkingEntry implements Entry {
+	private lines: string[] = [];
+	private cached?: { width: number; lines: string[] };
+	append(rawLine: string): void {
+		const cleaned = stripAnsi(rawLine).replace(/^\[thinking\] ?/, "").trim();
+		this.lines.push(cleaned);
+		this.cached = undefined;
+	}
+	lineCount(width: number): number { return this.render(width).length; }
+	render(width: number): string[] {
+		if (this.cached && this.cached.width === width) return this.cached.lines;
+		const innerWidth = Math.max(1, width - 2);
+		const out: string[] = [];
+		for (const l of this.lines) {
+			const wrapped = truncateToWidth(TS.thinking(l), innerWidth);
+			out.push(truncateToWidth(`│ ${wrapped}`, width));
+		}
+		this.cached = { width, lines: out };
+		return out;
+	}
+	invalidate() { this.cached = undefined; }
+}
+
+/**
+ * Tool call — `▸ summary` header in `toolPending`, result lines wrapped in a
+ * Box with `toolSuccessBg` / `toolErrorBg` background (matches pi's panel UI).
+ */
+class ToolEntry implements Entry {
+	private summary: string;
+	private status: "pending" | "success" | "error" = "pending";
+	private headerText: string;
+	private resultLines: string[] = [];
+	private cached?: { width: number; lines: string[] };
+
+	constructor(summary: string) {
+		this.summary = summary;
+		this.headerText = TS.toolPending(TS.bold(`▸ ${summary}`));
+	}
+
+	setStatus(s: "success" | "error"): void {
+		this.status = s;
+		this.cached = undefined;
+	}
+
+	appendResult(rawLine: string): void {
+		const cleaned = stripAnsi(rawLine).replace(/^[─✖]\s*/, "");
+		this.resultLines.push(cleaned);
+		this.cached = undefined;
+	}
+
+	lineCount(width: number): number { return this.render(width).length; }
+
+	private bgFn(): (s: string) => string {
+		const token: ThemeBg = this.status === "error" ? "toolErrorBg" : "toolSuccessBg";
+		if (!PI_THEME) return (s) => s;
+		return (s) => PI_THEME.bg(token, s);
+	}
+
+	render(width: number): string[] {
+		if (this.cached && this.cached.width === width) return this.cached.lines;
+		const out: string[] = [];
+		out.push(truncateToWidth(this.headerText, width));
+		const bg = this.bgFn();
+		for (const l of this.resultLines) {
+			const inner = truncateToWidth(TS.toolSuccess(l), Math.max(1, width - 2));
+			out.push(bg(`  ${inner}  `));
+		}
+		this.cached = { width, lines: out };
+		return out;
+	}
+
+	invalidate() { this.cached = undefined; }
+}
+
+// ── EntryBuffer — ordered list of entries with windowed render ──────────────────────
+
+class EntryBuffer implements Component {
+	private entries: Entry[] = [];
+	private cachedLineCount?: { width: number; total: number };
+
+	constructor(private getShowThinking: () => boolean) {}
+
+	add(entry: Entry): void {
+		this.entries.push(entry);
+		this.cachedLineCount = undefined;
+	}
+
+	get count(): number { return this.entries.length; }
+
+	lineCount(width: number): number {
+		if (this.cachedLineCount && this.cachedLineCount.width === width) return this.cachedLineCount.total;
+		let total = 0;
+		for (const e of this.entries) total += e.lineCount(width);
+		this.cachedLineCount = { width, total };
+		return total;
+	}
+
+	render(width: number, scrollOffset: number, bodyH: number): string[] {
+		const out: string[] = [];
+		let cursor = 0;
+		let remaining = bodyH;
+		let i = 0;
+
+		// Skip entries that are fully above the window
+		while (i < this.entries.length && remaining > 0) {
+			const e = this.entries[i];
+			// Skip thinking entries when toggle is off
+			if (!this.getShowThinking() && e instanceof ThinkingEntry) { i++; continue; }
+			const h = e.lineCount(width);
+			if (cursor + h <= scrollOffset) { cursor += h; i++; continue; }
+			if (cursor >= scrollOffset + bodyH) break;
+			const startInEntry = Math.max(0, scrollOffset - cursor);
+			const take = Math.min(h - startInEntry, remaining);
+			if (take > 0) {
+				const lines = e.render(width);
+				out.push(...lines.slice(startInEntry, startInEntry + take));
+				remaining -= take;
+			}
+			cursor += h;
+			i++;
+		}
+
+		while (out.length < bodyH) out.push("");
+		return out;
+	}
+
+	invalidate(): void {
+		this.cachedLineCount = undefined;
+		for (const e of this.entries) e.invalidate();
+	}
+}
+
+// ── ScrollBody — scrolling log view for one pane (now EntryBuffer-driven) ───────────────────
 
 class ScrollBody implements Component {
-	private cachedWidth = -1;
-	private cachedLineCount = -1;
-	private cachedLines: string[] | undefined;
-	private scrollOffset = 0;
+	private cached?: { width: number; scroll: number; bodyH: number; lines: string[] };
+	scrollOffset = 0;
 	userScrolled = false;
+	buffer: EntryBuffer;
 
 	constructor(
 		private dataRef: () => PaneData,
-		private getShowThinking: () => boolean,
+		getShowThinking: () => boolean,
 		private getBodyHeight: () => number,
-	) {}
+	) {
+		this.buffer = new EntryBuffer(getShowThinking);
+	}
 
 	invalidate(): void {
-		this.cachedWidth = -1;
-		this.cachedLines = undefined;
+		this.cached = undefined;
 	}
 
 	scrollBy(delta: number): void {
-		const filtered = this.filteredLines(this.dataRef().lines);
-		const max = Math.max(0, filtered.length - this.getBodyHeight());
+		const width = process.stdout.columns || 80;
+		const total = this.buffer.lineCount(width);
+		const max = Math.max(0, total - this.getBodyHeight());
 		const next = Math.max(0, Math.min(this.scrollOffset + delta, max));
 		this.scrollOffset = next;
 		this.userScrolled = next < max;
@@ -459,38 +648,29 @@ class ScrollBody implements Component {
 	}
 
 	scrollToBottom(): void {
-		const filtered = this.filteredLines(this.dataRef().lines);
-		this.scrollOffset = Math.max(0, filtered.length - this.getBodyHeight());
+		const width = process.stdout.columns || 80;
+		const total = this.buffer.lineCount(width);
+		this.scrollOffset = Math.max(0, total - this.getBodyHeight());
 		this.userScrolled = false;
 		this.invalidate();
 	}
 
-	private filteredLines(lines: string[]): string[] {
-		return this.getShowThinking() ? lines : lines.filter((l) => !l.includes("[thinking]"));
-	}
-
 	render(width: number): string[] {
-		const data = this.dataRef();
 		const bodyH = this.getBodyHeight();
-		if (this.cachedLines && this.cachedWidth === width && this.cachedLineCount === data.lines.length) {
-			return this.cachedLines;
+		const data = this.dataRef();
+
+		if (this.cached && this.cached.width === width && this.cached.scroll === this.scrollOffset && this.cached.bodyH === bodyH) {
+			return this.cached.lines;
 		}
-		const filtered = this.filteredLines(data.lines);
-		const maxScroll = Math.max(0, filtered.length - bodyH);
+
+		const total = this.buffer.lineCount(width);
+		const maxScroll = Math.max(0, total - bodyH);
 		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScroll));
 		if (!this.userScrolled) this.scrollOffset = maxScroll;
-		const start = this.scrollOffset;
-		const visible = filtered.slice(start, start + bodyH);
-		const out: string[] = [];
-		for (let i = 0; i < bodyH; i++) {
-			const raw = i < visible.length ? visible[i] : "";
-			const cleaned = raw.replace(/^ {0,2}/, "");
-			const text = truncateToWidth(" " + cleaned, width);
-			out.push(data.done ? TS.dim(text) : text);
-		}
-		this.cachedWidth = width;
-		this.cachedLineCount = data.lines.length;
-		this.cachedLines = out;
+
+		const lines = this.buffer.render(width, this.scrollOffset, bodyH);
+		const out = data.done ? lines.map((l) => TS.dim(l)) : lines;
+		this.cached = { width, scroll: this.scrollOffset, bodyH, lines: out };
 		return out;
 	}
 }
