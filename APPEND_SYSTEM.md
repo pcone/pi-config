@@ -4,7 +4,7 @@ Subagents survive parent session reloads. Closing or reloading the parent does n
 
 Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results. `wait` is non-blocking — call it once, then stop. If a subagent completes before the timer fires, the wake-up is cancelled and the result arrives instead. Do not call `wait` repeatedly; only one timer can be active at a time.
 
-All subagents operate in the same working directory as the parent. Be mindful of file conflicts — two subagents editing the same file will race.
+Subagents run in isolated git worktrees branched off HEAD (or `baseRef` when set). Each completes on its own branch; the calling session reviews and merges. Concurrent subagents cannot race on files.
 
 Subagents fork from the current HEAD commit, not the working tree. Uncommitted changes in the parent are invisible to the subagent. Commit any work the subagent needs to build on before delegating. If the changes aren't ready for main, create a feature branch, commit there, and pass `baseRef` with the branch name.
 

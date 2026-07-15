@@ -175,4 +175,5 @@ See the agent's system prompt for the exact schema.
 - **Always set `invariant_exhaustiveness`**. If you cannot determine exhaustiveness, default to `implicit` and route to `implement-pro`.
 - **Always set `routed_to`** consistent with the routing criteria. If the routing criteria and `invariant_exhaustiveness` disagree, `invariant_exhaustiveness` wins (it directly encodes the routing decision).
 - **Always list files NOT to modify** when adjacent files could plausibly be touched. This is the strongest single signal against scope creep.
+- **Use repo-relative paths everywhere.** Every `Files to modify`, `Files to read`, code excerpt, and line reference must be repo-relative (e.g. `decisions/effect-row-typing/003-...md`). Never prefix with the parent repo's absolute path; subagents operate inside an isolated git worktree, and absolute parent-repo paths make them `cd` back to the parent checkout and bypass isolation.
 - **Cross-reference AGENTS.md** for project-specific conventions to populate the Invariants section (build commands, naming rules, error handling style).
