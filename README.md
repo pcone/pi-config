@@ -22,6 +22,7 @@ ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
 - `extensions/subagent-async/index.ts` — Non-blocking subagents via RPC mode: spawn, check progress (`/subagents`), steer, stop. Subagents fork from HEAD (not working tree) — commit first. Includes live log viewer (`/watch`), external viewer (`watch-session`).
 - `extensions/subagent/` — (disabled) Original synchronous subagent extension, kept for reference.
 - `extensions/footer-session-id.ts` — Replaces the footer with one that adds a themed, reversible identifier (e.g. `arcane-phoenix-archmage`) for the current session on the right side. The phrase is bijective with the first 4 hex chars of the UUID session ID — look up the words in the lists to recover the prefix. Each session also gets a per-session hue (derived from the same bits) and a staleness indicator (`●◐◌○`) that tracks time since the most recent entry — the words themselves fade along the same axis, so freshness reads at a glance.
+- `extensions/modes.ts` — Toggles the parent session between `implement` (default — parent does work directly) and `orchestrate` (parent dispatches to subagents). Per-project state at `<cwd>/.pi/mode.json`. Commands: `/mode` toggles, `/mode <implement|orchestrate>` sets explicit. Footer shows current mode.
 - `skills/decision-log` — On-demand skill instructions
 - `themes/catppuccin-macchiato.json` — Color theme
 

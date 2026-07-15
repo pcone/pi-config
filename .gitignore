@@ -2,6 +2,7 @@ auth.json
 bin/
 sessions/
 checkpoints/
+.pi/mode.json
 node_modules/
 tmp/
 extensions/node_modules/
