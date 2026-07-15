@@ -40,6 +40,16 @@ import {
 	truncateToWidth,
 	TUI,
 } from "@earendil-works/pi-tui";
+import {
+	getMarkdownTheme,
+	Theme,
+	type ThemeColor,
+	type ThemeBg,
+} from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+// ── Constants ───────────────────────────────────────────────────────────────
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -73,6 +83,119 @@ const S = {
 	border: (s: string) => `\x1b[2m${s}${RESET}`,
 };
 
+// ── Theme bootstrap (mirror the user's active pi theme) ─────────────────────────
+// We run as a standalone script, so we can't inherit pi's runtime theme. The
+// nearest alternative is: read ~/.pi/agent/settings.json to find the theme
+// name, locate the JSON file in standard spots, parse it, resolve vars,
+// construct a Theme instance, and install it on the same global key pi uses
+// internally — so getMarkdownTheme() and the global `theme` proxy resolve.
+const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
+const FG_KEYS: ThemeColor[] = [
+	"accent", "border", "borderAccent", "borderMuted", "success", "error", "warning",
+	"muted", "dim", "text", "thinkingText", "userMessageText", "customMessageText",
+	"customMessageLabel", "toolTitle", "toolOutput",
+	"mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdCodeBlock", "mdCodeBlockBorder",
+	"mdQuote", "mdQuoteBorder", "mdHr", "mdListBullet",
+	"toolDiffAdded", "toolDiffRemoved", "toolDiffContext",
+	"syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable",
+	"syntaxString", "syntaxNumber", "syntaxType", "syntaxOperator", "syntaxPunctuation",
+	"thinkingOff", "thinkingMinimal", "thinkingLow", "thinkingMedium", "thinkingHigh",
+	"thinkingXhigh", "thinkingMax", "bashMode",
+];
+const BG_KEYS: ThemeBg[] = ["selectedBg", "userMessageBg", "customMessageBg", "toolPendingBg", "toolSuccessBg", "toolErrorBg"];
+
+function resolveVars(colors: Record<string, any>, vars: Record<string, string>): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(colors)) {
+		if (typeof v === "string" && v.startsWith("#")) out[k] = v;
+		else if (typeof v === "string" && vars[v]) out[k] = vars[v];
+		else if (typeof v === "number") out[k] = v;
+		else out[k] = "";
+	}
+	return out;
+}
+
+function bootstrapPiTheme(): Theme | null {
+	const settingsPaths = [
+		join(homedir(), ".pi", "agent", "settings.json"),
+		join(homedir(), ".pi", "agent", "settings.local.json"),
+	];
+	const themeSearchDirs = [
+		join(homedir(), ".pi", "agent", "themes"),
+		"/Users/scott/Developer/pi-config/themes",
+	];
+
+	let themeName = "dark";
+	for (const sp of settingsPaths) {
+		try {
+			const j = JSON.parse(fs.readFileSync(sp, "utf8"));
+			if (typeof j.theme === "string" && j.theme) {
+				themeName = j.theme;
+				break;
+			}
+		} catch { /* skip */ }
+	}
+
+	for (const dir of themeSearchDirs) {
+		const candidate = join(dir, `${themeName}.json`);
+		if (fs.existsSync(candidate)) {
+			try {
+				const raw = JSON.parse(fs.readFileSync(candidate, "utf8"));
+				const vars = raw.vars ?? {};
+				const resolved = resolveVars(raw.colors ?? {}, vars);
+				const fgColors = Object.fromEntries(FG_KEYS.map((k) => [k, resolved[k] ?? ""])) as Record<ThemeColor, string | number>;
+				const bgColors = Object.fromEntries(BG_KEYS.map((k) => [k, resolved[k] ?? ""])) as Record<ThemeBg, string | number>;
+				const theme = new Theme(fgColors, bgColors, "truecolor", { name: raw.name ?? themeName, sourcePath: candidate });
+				(globalThis as any)[THEME_KEY] = theme;
+				return theme;
+			} catch { /* fall through */ }
+		}
+	}
+	return null;
+}
+
+const PI_THEME = bootstrapPiTheme();
+const HAS_THEME = PI_THEME !== null;
+
+/** Themed style helpers — use theme tokens when a theme is loaded, otherwise
+ *  fall back to the static Catppuccin-like palette above. */
+function tok(token: ThemeColor, fallback: (s: string) => string): (s: string) => string {
+	if (HAS_THEME && PI_THEME) {
+		try {
+			return (s) => PI_THEME.fg(token, s);
+		} catch { /* missing token — use fallback */ }
+	}
+	return fallback;
+}
+
+const TS = {
+	inverse: S.inverse,
+	bold: S.bold,
+	reset: S.reset,
+	muted: tok("muted", S.muted),
+	dim: tok("dim", S.dim),
+	accent: tok("accent", S.accent),
+	success: tok("success", S.success),
+	error: tok("error", S.error),
+	warning: tok("warning", S.warning),
+	border: tok("border", S.border),
+	// markdown
+	mdHeading: tok("mdHeading", S.accent),
+	mdCode: tok("mdCode", S.accent),
+	mdCodeBlock: tok("mdCodeBlock", S.dim),
+	mdLink: tok("mdLink", S.accent),
+	// tool
+	toolTitle: tok("toolTitle", S.accent),
+	toolPending: tok("toolTitle", S.accent),
+	toolOutput: tok("toolOutput", S.muted),
+	toolSuccess: tok("success", S.success),
+	toolError: tok("error", S.error),
+	// thinking — use a calmer level than thinkingXhigh
+	thinking: tok("thinkingMedium", S.dim),
+	// turn boundary — muted accent (turn headers are a pi extension concept)
+	turnHdr: tok("muted", (s) => `${DIM_ON}\x1b[36m${s}${RESET}`),
+};
+
 // ── Pure utilities ──────────────────────────────────────────────────────────
 
 export function plainLen(s: string): number {
@@ -97,6 +220,60 @@ export function plainLen(s: string): number {
 		len++;
 	}
 	return len;
+}
+
+/** Return `s` with all ANSI escape sequences removed. */
+function stripAnsi(s: string): string {
+	return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+}
+
+/**
+ * Re-classify a raw log line by stripping its existing ANSI codes and applying
+ * theme-aware styling, so chrome colors match the user's active pi theme.
+ *
+ * The parent extension's logEntry() uses a hardcoded Catppuccin-like palette
+ * via S.toolPending / .toolSuccess / etc. We drop those and re-emit using the
+ * running pi theme's toolTitle / success / error tokens for a closer match.
+ */
+function restyleLine(raw: string): string {
+	const plain = stripAnsi(raw);
+	// Preserve leading indent so we keep alignment with the rest of the log
+	const indent = plain.match(/^(\s*)/)?.[1] ?? "";
+	const head = plain.trimStart();
+
+	// Tool start: "▸ tool-name args"
+	if (head.startsWith("▸ ")) {
+		return indent + TS.toolPending(TS.bold(head));
+	}
+	// Tool error: "✖ tool-name → ERROR"
+	if (head.startsWith("✖ ")) {
+		return indent + TS.toolError(TS.bold(head));
+	}
+	// Tool output: "─ result-text"
+	if (/^─\s/.test(head)) {
+		return indent + TS.toolSuccess(head);
+	}
+	// Thinking block: "[thinking] ..."
+	if (head.startsWith("[thinking]")) {
+		return indent + TS.thinking(head);
+	}
+	// Turn boundary: "── Turn N ──"
+	if (head.startsWith("── Turn ")) {
+		return indent + TS.turnHdr(head);
+	}
+	// Completion footer: "── Completed/Exited/Stopped (N turns, exit M) ──"
+	if (head.startsWith("── Completed ")) {
+		return indent + TS.success(TS.bold(head));
+	}
+	if (head.startsWith("── Exited ") || head.startsWith("── Stopped ")) {
+		return indent + TS.error(TS.bold(head));
+	}
+	// Header lines like "Agent: name", "Task: ...", etc.
+	if (/^(Agent:|Task:|Session:|CWD:)/.test(head)) {
+		return indent + TS.muted(head);
+	}
+	// Assistant text / unknown — pass through plain.
+	return indent + head;
 }
 
 function padRight(s: string, width: number): string {
@@ -309,7 +486,7 @@ class ScrollBody implements Component {
 			const raw = i < visible.length ? visible[i] : "";
 			const cleaned = raw.replace(/^ {0,2}/, "");
 			const text = truncateToWidth(" " + cleaned, width);
-			out.push(data.done ? S.dim(text) : text);
+			out.push(data.done ? TS.dim(text) : text);
 		}
 		this.cachedWidth = width;
 		this.cachedLineCount = data.lines.length;
@@ -388,7 +565,7 @@ class Pane extends Container implements Focusable {
 	}
 
 	private pushLine(line: string): void {
-		this.data.lines.push(line);
+		this.data.lines.push(restyleLine(line));
 		const m = line.match(COMPLETION_RE);
 		if (m) {
 			this.data.done = true;
@@ -427,17 +604,17 @@ class Pane extends Container implements Focusable {
 			: -1;
 		const status = this.data.done
 			? this.data.exitCode === 0
-				? S.success("COMPLETED")
-				: S.error(`EXIT ${this.data.exitCode}`)
+				? TS.success("COMPLETED")
+				: TS.error(`EXIT ${this.data.exitCode}`)
 			: this.data.connected
-				? S.accent(`${Math.floor(elapsed / 60)}m ${elapsed % 60}s`)
-				: S.muted(this.data.missing ? "missing" : "connecting");
+				? TS.accent(`${Math.floor(elapsed / 60)}m ${elapsed % 60}s`)
+				: TS.muted(this.data.missing ? "missing" : "connecting");
 		const idShort = this.shortId();
-		const turns = this.data.turns > 0 ? ` ${S.dim("|")} ${this.data.turns}t` : "";
-		const focusMark = this.focused ? ` ${S.accent("●")}` : "";
+		const turns = this.data.turns > 0 ? ` ${TS.dim("|")} ${this.data.turns}t` : "";
+		const focusMark = this.focused ? ` ${TS.accent("●")}` : "";
 		const bg = this.focused ? INVERSE_ON : "";
 		const bgOff = this.focused ? INVERSE_OFF : "";
-		const line = `${bg} ${idShort}  ${S.dim("|")}  ${status}${turns}${focusMark} ${bgOff}`;
+		const line = `${bg} ${idShort}  ${TS.dim("|")}  ${status}${turns}${focusMark} ${bgOff}`;
 		this.headerText.setText(padRight(line, width));
 		return super.render(width);
 	}
@@ -579,21 +756,21 @@ class MultiPaneViewer extends Container {
 		for (let i = 0; i < this.panes.length; i++) {
 			out.push(...this.panes[i].render(width));
 			if (i < this.panes.length - 1) {
-				out.push(S.border("─".repeat(Math.max(1, width))));
+				out.push(TS.border("─".repeat(Math.max(1, width))));
 			}
 		}
 		// Footer
 		const t = this.layout;
-		const think = `${S.muted("[t]")} thinking`;
+		const think = `${TS.muted("[t]")} thinking`;
 		const cycle = this.autoCycleEnabled
-			? `${S.muted("[c]")} ${S.accent("cycle")}`
-			: `${S.muted("[c]")} cycle`;
-		const refresh = `${S.muted("[r]")} refresh`;
-		const split = `${S.muted(`[1-${Math.max(1, this.panes.length)}]`)} panes`;
-		const focusTip = `${S.muted("[tab]")} focus`;
-		const bottom = `${S.muted("[g]")} bottom ${S.muted("[q]")} quit`;
-		const swapTip = `${S.muted("[!]")} swap`;
-		const alert = this.newSessionAlert ? ` ${S.warning("⚡ NEW")} ` : "";
+			? `${TS.muted("[c]")} ${TS.accent("cycle")}`
+			: `${TS.muted("[c]")} cycle`;
+		const refresh = `${TS.muted("[r]")} refresh`;
+		const split = `${TS.muted(`[1-${Math.max(1, this.panes.length)}]`)} panes`;
+		const focusTip = `${TS.muted("[tab]")} focus`;
+		const bottom = `${TS.muted("[g]")} bottom ${TS.muted("[q]")} quit`;
+		const swapTip = `${TS.muted("[!]")} swap`;
+		const alert = this.newSessionAlert ? ` ${TS.warning("⚡ NEW")} ` : "";
 		const hint = ` ${think}  ${cycle}  ${refresh}  ${split}  ${focusTip}  ${swapTip}  ${bottom}${alert} `;
 		this.footer.setText(S.inverse(padRight(hint, width)));
 		out.push(...this.footer.render(width));
@@ -611,20 +788,20 @@ function buildPicker(sessions: SessionInfo[], onSelect: (s: SessionInfo) => void
 	const now = Date.now();
 	const items: SelectItem[] = sessions.map((s) => ({
 		value: s.id,
-		label: `${s.id.startsWith("subagent-") ? s.id.slice(9, 17) : s.id.slice(0, 8)}  ${S.muted("[" + s.status + "]")}`,
+		label: `${s.id.startsWith("subagent-") ? s.id.slice(9, 17) : s.id.slice(0, 8)}  ${TS.muted("[" + s.status + "]")}`,
 		description: `${s.turns}t  ·  ${timeAgo(now - s.mtimeMs)}`,
 	}));
 
 	const container = new Container();
-	container.addChild(new Text(S.accent(`Pick a session (${items.length})`), 1, 0));
+	container.addChild(new Text(TS.accent(`Pick a session (${items.length})`), 1, 0));
 	container.addChild(new Spacer(1));
 
 	const list = new SelectList(items, Math.min(items.length, 10), {
-		selectedPrefix: (t) => S.accent(t),
-		selectedText: (t) => S.accent(t),
-		description: (t) => S.muted(t),
-		scrollInfo: (t) => S.dim(t),
-		noMatch: (t) => S.warning(t),
+		selectedPrefix: (t) => TS.accent(t),
+		selectedText: (t) => TS.accent(t),
+		description: (t) => TS.muted(t),
+		scrollInfo: (t) => TS.dim(t),
+		noMatch: (t) => TS.warning(t),
 	});
 	list.onSelect = (item) => {
 		const found = sessions.find((s) => s.id === item.value);
@@ -633,7 +810,7 @@ function buildPicker(sessions: SessionInfo[], onSelect: (s: SessionInfo) => void
 	list.onCancel = () => onCancel();
 	container.addChild(list);
 	container.addChild(new Spacer(1));
-	container.addChild(new Text(S.dim("↑↓ navigate • enter select • esc cancel"), 1, 0));
+	container.addChild(new Text(TS.dim("↑↓ navigate • enter select • esc cancel"), 1, 0));
 
 	return {
 		component: {
