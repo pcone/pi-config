@@ -338,9 +338,20 @@ function openSessionSocket(
 	const socket = net.createConnection(sockPath);
 	const rl = readline.createInterface({ input: socket, crlfDelay: Infinity });
 	rl.on("line", (line: string) => onLine(line));
+	rl.on("error", () => {
+		// readline errors on dead sockets — handled by socket error listener
+	});
+	rl.on("close", () => {
+		// readline closed when socket ends — handled by socket close listener
+	});
 	socket.once("connect", () => onStatus("open"));
 	socket.on("close", () => onStatus("close"));
-	socket.on("error", () => onStatus("error"));
+	socket.on("error", (err: NodeJS.ErrnoException) => {
+		onStatus("error");
+		if (err.code === "ECONNREFUSED") {
+			try { fs.unlinkSync(sockPath); } catch { /* best effort */ }
+		}
+	});
 	return {
 		close: () => {
 			try { socket.destroy(); } catch {}
