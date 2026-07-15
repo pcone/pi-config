@@ -735,10 +735,11 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 		if (exiting) return;
 		exiting = true;
 		for (const t of tickHandles) clearInterval(t);
+		process.stdout.off("resize", onStdoutResize);
 		removeInput();
 		for (const p of viewer.panes) p.close();
 		try { tui.stop(); } catch {}
-		process.stdout.write(`\x1b[?25h\x1b[?1049l${RESET}\n`);
+		process.stdout.write(`\x1b[?25h\x1b[?1049l\x1b[?1000l\x1b[?1006l${RESET}\n`);
 		process.exit(code);
 	};
 
@@ -746,21 +747,35 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 	process.on("SIGTERM", () => cleanupAndExit(0));
 	process.stdin.on("close", () => cleanupAndExit(0));
 	process.on("exit", () => {
-		process.stdout.write(`\x1b[?25h\x1b[?1049l${RESET}`);
+		process.stdout.write(`\x1b[?25h\x1b[?1049l\x1b[?1000l\x1b[?1006l${RESET}`);
 	});
 
 	tui.start();
+
+	// Enable mouse reporting (SGR mode). TUI.start() does a `[c` reset that
+	// clears these, so we set them up afterwards.
+	process.stdout.write(`\x1b[?1000h\x1b[?1006h`);
+
+	// Resize handler — tui.start wires the terminal onResize to requestRender,
+	// but the layout also needs updated rows/cols for bodyHeight() to recompute.
+	const onStdoutResize = () => {
+		viewer.resize(process.stdout.columns || 80, process.stdout.rows || 24);
+		tui.requestRender();
+	};
+	process.stdout.on("resize", onStdoutResize);
+	onStdoutResize(); // initial sync
 	tui.requestRender();
 
 	// ── Input ────────────────────────────────────────────────────────
 	removeInput = tui.addInputListener((data: string) => {
-		// Mouse SGR first
+		// Mouse SGR first. Row is 1-indexed; paneRowRanges() is 0-indexed.
 		const mm = data.match(MOUSE_SGR_RE);
 		if (mm) {
 			const button = parseInt(mm[1], 10);
-			const row = parseInt(mm[3], 10);
+			const row1 = parseInt(mm[3], 10);
+			const row0 = row1 - 1;
 			const ranges = viewer.layout.paneRowRanges();
-			let target = viewer.panes.findIndex((_, i) => row >= ranges[i].start && row <= ranges[i].end);
+			let target = viewer.panes.findIndex((_, i) => row0 >= ranges[i].start && row0 <= ranges[i].end);
 			if (target < 0) target = (viewer as unknown as { focusedIdx: number }).focusedIdx;
 			if (button === 64) {
 				viewer.panes[target]?.body.scrollBy(-3);
@@ -777,7 +792,7 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 				tui.requestRender();
 				return { consume: true };
 			}
-			return undefined;
+			return { consume: true }; // also swallow stray mouse moves
 		}
 
 		// Quit
