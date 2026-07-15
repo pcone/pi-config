@@ -40,15 +40,17 @@ import {
 	Text,
 	truncateToWidth,
 	TUI,
+	Markdown,
+	type MarkdownTheme,
 } from "@earendil-works/pi-tui";
 import {
 	getMarkdownTheme,
-	Markdown,
-	type MarkdownTheme,
 	Theme,
 	type ThemeColor,
-	type ThemeBg,
 } from "@earendil-works/pi-coding-agent";
+
+/** Background color token names (duplicated from pi internals — not exported). */
+type ThemeBg = "selectedBg" | "userMessageBg" | "customMessageBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -57,7 +59,6 @@ import { join } from "node:path";
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const RECENT_WINDOW_MS = 30 * 60 * 1000;
-const COMPLETION_RE = /^── (Completed|Exited|Stopped) \((\d+) turns, exit (-?\d+|null)\)/;
 const MOUSE_SGR_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
 const MAX_PANES = 9;
 const POLL_INTERVAL_MS = 1000;
@@ -230,55 +231,6 @@ function stripAnsi(s: string): string {
 	return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 }
 
-/**
- * Re-classify a raw log line by stripping its existing ANSI codes and applying
- * theme-aware styling, so chrome colors match the user's active pi theme.
- *
- * The parent extension's logEntry() uses a hardcoded Catppuccin-like palette
- * via S.toolPending / .toolSuccess / etc. We drop those and re-emit using the
- * running pi theme's toolTitle / success / error tokens for a closer match.
- */
-function restyleLine(raw: string): string {
-	const plain = stripAnsi(raw);
-	// Preserve leading indent so we keep alignment with the rest of the log
-	const indent = plain.match(/^(\s*)/)?.[1] ?? "";
-	const head = plain.trimStart();
-
-	// Tool start: "▸ tool-name args"
-	if (head.startsWith("▸ ")) {
-		return indent + TS.toolPending(TS.bold(head));
-	}
-	// Tool error: "✖ tool-name → ERROR"
-	if (head.startsWith("✖ ")) {
-		return indent + TS.toolError(TS.bold(head));
-	}
-	// Tool output: "─ result-text"
-	if (/^─\s/.test(head)) {
-		return indent + TS.toolSuccess(head);
-	}
-	// Thinking block: "[thinking] ..."
-	if (head.startsWith("[thinking]")) {
-		return indent + TS.thinking(head);
-	}
-	// Turn boundary: "── Turn N ──"
-	if (head.startsWith("── Turn ")) {
-		return indent + TS.turnHdr(head);
-	}
-	// Completion footer: "── Completed/Exited/Stopped (N turns, exit M) ──"
-	if (head.startsWith("── Completed ")) {
-		return indent + TS.success(TS.bold(head));
-	}
-	if (head.startsWith("── Exited ") || head.startsWith("── Stopped ")) {
-		return indent + TS.error(TS.bold(head));
-	}
-	// Header lines like "Agent: name", "Task: ...", etc.
-	if (/^(Agent:|Task:|Session:|CWD:)/.test(head)) {
-		return indent + TS.muted(head);
-	}
-	// Assistant text / unknown — pass through plain.
-	return indent + head;
-}
-
 function padRight(s: string, width: number): string {
 	const len = plainLen(s);
 	if (len >= width) return s;
@@ -369,7 +321,6 @@ function resolveSockPath(id: string): string {
 // ── Live pane data ──────────────────────────────────────────────────────────
 
 interface PaneData {
-	lines: string[];
 	done: boolean;
 	exitCode: number;
 	turns: number;
@@ -529,6 +480,8 @@ class ToolEntry implements Entry {
 		this.cached = undefined;
 	}
 
+	getStatus(): "pending" | "success" | "error" { return this.status; }
+
 	appendResult(rawLine: string): void {
 		const cleaned = stripAnsi(rawLine).replace(/^[─✖]\s*/, "");
 		this.resultLines.push(cleaned);
@@ -569,6 +522,11 @@ class EntryBuffer implements Component {
 
 	add(entry: Entry): void {
 		this.entries.push(entry);
+		this.cachedLineCount = undefined;
+	}
+
+	clear(): void {
+		this.entries = [];
 		this.cachedLineCount = undefined;
 	}
 
@@ -686,6 +644,9 @@ class Pane extends Container implements Focusable {
 	private closeSocket: () => void = () => {};
 	focused: boolean;
 	showThinking = true;
+	private currentAssistant?: AssistantEntry;
+	private currentThinking?: ThinkingEntry;
+	private lastTool?: ToolEntry;
 
 	constructor(id: string, layout: Layout, focused = false) {
 		super();
@@ -694,7 +655,6 @@ class Pane extends Container implements Focusable {
 		this.focused = focused;
 
 		this.data = {
-			lines: [],
 			done: false,
 			exitCode: 0,
 			turns: 0,
@@ -728,7 +688,10 @@ class Pane extends Container implements Focusable {
 	retarget(newId: string): void {
 		this.closeSocket();
 		this.id = newId;
-		this.data.lines = [];
+		this.body.buffer.clear();
+		this.currentAssistant = undefined;
+		this.currentThinking = undefined;
+		this.lastTool = undefined;
 		this.data.done = false;
 		this.data.exitCode = 0;
 		this.data.turns = 0;
@@ -744,16 +707,117 @@ class Pane extends Container implements Focusable {
 		this.closeSocket();
 	}
 
-	private pushLine(line: string): void {
-		this.data.lines.push(restyleLine(line));
-		const m = line.match(COMPLETION_RE);
-		if (m) {
-			this.data.done = true;
-			this.data.exitCode = m[3] === "null" ? 0 : parseInt(m[3], 10);
-			this.data.turns = parseInt(m[2], 10);
+	private pushLine(raw: string): void {
+		const plain = stripAnsi(raw);
+		const trimmed = plain.replace(/^\s+/, "");
+
+		// Turn boundary
+		const turnMatch = trimmed.match(/^──\s*Turn\s+(\d+)\s*──/);
+		if (turnMatch) {
+			this.flushAssistant();
+			this.flushThinking();
+			this.lastTool = undefined;
+			this.body.buffer.add(new TextEntry(trimmed, TS.turnHdr));
+			this.body.invalidate();
+			return;
 		}
+
+		// Completion footer
+		const doneMatch = trimmed.match(/^──\s*(Completed|Exited|Stopped)\b/);
+		if (doneMatch) {
+			this.flushAssistant();
+			this.flushThinking();
+			this.lastTool = undefined;
+			const style = doneMatch[1] === "Completed" ? TS.success : TS.error;
+			this.body.buffer.add(new TextEntry(trimmed, style));
+			this.data.done = true;
+			const m = trimmed.match(/(\d+)\s+turns,\s+exit\s+(-?\d+|null)/);
+			if (m) {
+				this.data.turns = parseInt(m[1], 10);
+				this.data.exitCode = m[2] === "null" ? 0 : parseInt(m[2], 10);
+			}
+			this.body.invalidate();
+			return;
+		}
+
+		// Tool start
+		if (trimmed.startsWith("▸ ")) {
+			this.flushAssistant();
+			this.flushThinking();
+			const summary = trimmed.slice(2);
+			const entry = new ToolEntry(summary);
+			this.body.buffer.add(entry);
+			this.lastTool = entry;
+			this.body.invalidate();
+			return;
+		}
+
+		// Tool error
+		if (trimmed.startsWith("✖ ")) {
+			this.flushAssistant();
+			this.flushThinking();
+			const summary = trimmed.slice(2);
+			const entry = new ToolEntry(summary);
+			entry.setStatus("error");
+			this.body.buffer.add(entry);
+			this.lastTool = entry;
+			this.body.invalidate();
+			return;
+		}
+
+		// Tool result line (─ single dash + space, NOT ──)
+		if (trimmed.startsWith("─ ") && !trimmed.startsWith("──")) {
+			if (this.lastTool) {
+				if (this.lastTool.getStatus() === "pending") this.lastTool.setStatus("success");
+				this.lastTool.appendResult(raw);
+			} else {
+				// Orphan result line; treat as assistant text
+				this.flushThinking();
+				if (!this.currentAssistant) {
+					this.currentAssistant = new AssistantEntry();
+					this.body.buffer.add(this.currentAssistant);
+				}
+				this.currentAssistant.append(raw);
+			}
+			this.body.invalidate();
+			return;
+		}
+
+		// Thinking block
+		if (trimmed.startsWith("[thinking]")) {
+			this.flushAssistant();
+			if (!this.currentThinking) {
+				this.currentThinking = new ThinkingEntry();
+				this.body.buffer.add(this.currentThinking);
+			}
+			this.currentThinking.append(raw);
+			this.body.invalidate();
+			return;
+		}
+
+		// Header lines (Agent:/Task:/Session:/CWD:)
+		if (/^(Agent:|Task:|Session:|CWD:)/.test(trimmed)) {
+			this.flushAssistant();
+			this.flushThinking();
+			this.lastTool = undefined;
+			this.body.buffer.add(new TextEntry(trimmed, TS.muted));
+			this.body.invalidate();
+			return;
+		}
+
+		// Default: assistant text
+		this.flushThinking();
+		this.lastTool = undefined;
+		if (!this.currentAssistant) {
+			this.currentAssistant = new AssistantEntry();
+			this.body.buffer.add(this.currentAssistant);
+		}
+		this.currentAssistant.append(raw);
 		this.body.invalidate();
 	}
+
+	private flushAssistant(): void { this.currentAssistant = undefined; }
+	private flushThinking(): void { this.currentThinking = undefined; }
 
 	private setStatus(state: "open" | "close" | "error"): void {
 		if (state === "open") {
@@ -925,7 +989,7 @@ class MultiPaneViewer extends Container {
 		this.getShowThinkingForFooter = () => value;
 		for (const p of this.panes) {
 			// Force toggle to actually change state
-			p.setShowThinking(p.getShowThinkingValue() !== value ? value : p.getShowThinkingValue());
+			p.setShowThinking(value);
 		}
 		this.invalidate();
 	}
