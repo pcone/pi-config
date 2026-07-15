@@ -19,6 +19,8 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import picomatch from "picomatch";
 
+const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -363,12 +365,8 @@ export default function rulesExtension(pi: ExtensionAPI) {
 
     if (rules.size > 0) {
       const ruleNames = Array.from(rules.keys()).sort();
-      const text = `[Rules] ${rules.size} loaded: ${ruleNames.join(", ")}`;
-      if (ctx.hasUI) {
-        ctx.ui.notify(`${text}. /rules to list, /rule <name> to read.`, "info");
-      } else {
-        console.log(text);
-      }
+      const text = `[Rules] ${rules.size} loaded: ${ruleNames.join(", ")}. /rules to list, /rule <name> to read.`;
+      pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "rules", order: 10, text });
     }
   });
 
