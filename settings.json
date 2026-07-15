@@ -1,7 +1,7 @@
 {
-  "lastChangelogVersion": "0.80.6",
+  "lastChangelogVersion": "0.80.7",
   "defaultProvider": "openrouter",
-  "defaultModel": "deepseek/deepseek-v4-pro",
+  "defaultModel": "minimax/minimax-m3",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
