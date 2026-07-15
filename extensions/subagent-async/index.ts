@@ -23,6 +23,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 const MAX_TURNS_HARD = 500;
 const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const HARD_KILL_DELAY_MS = 5000;
+const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
 
 // ── Progress tracking ───────────────────────────────────────────────────────
 
@@ -713,6 +714,17 @@ export default function (pi: ExtensionAPI) {
 	// ── Session lifecycle ──────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
+		try {
+			const agents = discoverAgents(ctx.cwd, "user").agents;
+			const agentNames = agents.map((agent) => agent.name).sort();
+			const text = `[Subagents] ${agentNames.length} available: ${agentNames.join(", ") || "none"}`;
+			pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "subagents", order: 20, text });
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			const text = `[Subagents] Unable to list available subagents: ${detail}`;
+			pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "subagents", order: 20, text });
+		}
+
 		// Re-attach to orphaned subagents from a previous session
 		try {
 			const sockDir = "/tmp";
@@ -760,10 +772,32 @@ export default function (pi: ExtensionAPI) {
 					parentCwd: meta.parentCwd || ctx.cwd,
 				};
 
-				// Monitor via socket — when it closes, subagent exited
+				// Monitor via socket — when it closes, subagent exited.
+				// The socket may already be dead (previous pi died without
+				// cleanup), in which case connect() fails with ECONNREFUSED.
+				// Without an `error` handler that event becomes an
+				// uncaughtException and crashes the new pi session.
 				const sock = net.createConnection(sockPath);
-				rs.sockClients.add(sock);
+				let connected = false;
+				sock.on("connect", () => {
+					connected = true;
+				});
+				sock.on("error", () => {
+					rs.sockClients.delete(sock);
+					if (connected) return; // socket lived, then died — close handler will run
+					// Orphan: previous session left a sock file behind with no listener.
+					// Clean up and skip live tracking.
+					try {
+						fs.unlinkSync(sockPath);
+					} catch {
+						/* already gone */
+					}
+					running.delete(sid);
+					updateFooter(ctx);
+				});
 				sock.on("close", () => {
+					rs.sockClients.delete(sock);
+					if (!connected) return; // orphan already handled in error handler
 					rs.isDone = true;
 					// Read final output from log
 					let finalOutput = "(no output)";
@@ -780,6 +814,7 @@ export default function (pi: ExtensionAPI) {
 					updateFooter(ctx);
 				});
 
+				rs.sockClients.add(sock);
 				running.set(sid, rs);
 				updateFooter(ctx);
 			}
@@ -907,6 +942,27 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			// Check if the parent restricted sub-spawning via PI_SUBAGENT_ALLOWLIST
+			const allowlist = process.env.PI_SUBAGENT_ALLOWLIST;
+			if (allowlist) {
+				const allowed = new Set(
+					allowlist.split(",").map((a: string) => a.trim()).filter(Boolean),
+				);
+				if (!allowed.has(agent.name)) {
+					const requested = agent.name;
+					const allowedList = [...allowed].sort().join(", ") || "(empty)";
+					return {
+						content: [{
+							type: "text",
+							text:
+								`Agent "${requested}" is not in this subagent's allowlist ` +
+								`(${allowedList}). The parent's \`allowedSubagents\` field ` +
+								`restricted sub-spawning to that set.`,
+						}],
+					};
+				}
+			}
+
 			// Check if session is already running
 			if (running.has(sessionId)) {
 				return {
@@ -925,6 +981,7 @@ export default function (pi: ExtensionAPI) {
 			let isolationBranch: string | null = null;
 			let parentHeadCommit: string | null = null;
 			let isolationStatus = "";
+			let taskForAgent = params.task;
 
 			if (params.isolate !== false) {
 				const wt = await createWorktree(cwd, sessionId, params.baseRef);
@@ -934,6 +991,12 @@ export default function (pi: ExtensionAPI) {
 					isolationBranch = wt.branchName;
 					parentHeadCommit = wt.parentHeadCommit;
 					isolationStatus = `\nIsolated in worktree \`${wt.branchName}\` (off \`${wt.parentHeadCommit.slice(0, 8)}\`)`;
+					taskForAgent =
+						`## Worktree isolation\n` +
+						`You are running inside an isolated git worktree at \`${wt.worktreePath}\`, branched from \`${wt.parentHeadCommit.slice(0, 12)}\`. ` +
+						`Your cwd is the worktree root. Edits go to the worktree branch; the harness auto-commits uncommitted changes, removes the worktree, and keeps the branch for review.\n\n` +
+						`If the task lists paths like \`/Users/<owner>/<parent-repo>/foo/bar.rs\`, strip the parent prefix and use \`foo/bar.rs\` as a repo-relative path. Never \`cd\` to an absolute parent-repo path — that bypasses isolation.\n\n` +
+						params.task;
 				} else {
 					isolationStatus = "\n(Worktree isolation unavailable — not a git repo or creation failed.)";
 				}
@@ -943,7 +1006,7 @@ export default function (pi: ExtensionAPI) {
 				pi,
 				ctx,
 				agent,
-				params.task,
+				taskForAgent,
 				effectiveCwd,
 				sessionId,
 				parentModel,
