@@ -40,7 +40,8 @@ const CACHE_DIR = resolve(homedir(), ".pi", "cache", "fetch-url");
 const CACHE_TTL_MS = 72 * 60 * 60 * 1000;
 const FETCH_DIR = CACHE_DIR;
 
-// Sweep files older than 24 hours
+// Sweep stale cache files older than CACHE_TTL_MS on each pi startup.
+// Cleanup runs only here — no periodic or close-time sweeps.
 (async () => {
 	try {
 		await mkdir(CACHE_DIR, { recursive: true });

@@ -11,7 +11,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -79,7 +79,20 @@ interface CacheData {
 
 const CACHE_DIR = resolve(homedir(), ".pi", "cache", "model-tiers");
 const CACHE_FILE = join(CACHE_DIR, "cache.json");
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 72 * 60 * 60 * 1000;
+
+// Sweep stale cache files older than CACHE_TTL_MS on each pi startup.
+// Cleanup runs only here — no periodic or close-time sweeps.
+try {
+  mkdirSync(CACHE_DIR, { recursive: true });
+  const now = Date.now();
+  for (const f of readdirSync(CACHE_DIR)) {
+    const fp = join(CACHE_DIR, f);
+    try {
+      if (now - statSync(fp).mtimeMs > CACHE_TTL_MS) rmSync(fp);
+    } catch { /* race with concurrent removal */ }
+  }
+} catch { /* dir may not exist yet */ }
 
 const THRESHOLDS = {
   intelligence: 40,

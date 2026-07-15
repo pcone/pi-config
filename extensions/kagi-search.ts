@@ -88,7 +88,8 @@ export default function (pi: ExtensionAPI) {
 	const searchDir = join(cacheRoot, "kagi-search");
 	mkdirSync(searchDir, { recursive: true });
 
-	// Sweep files older than 24 hours on each startup
+	// Sweep stale cache files older than CACHE_TTL_MS on each pi startup.
+	// Cleanup runs only here — no periodic or close-time sweeps.
 	const CACHE_TTL_MS = 72 * 60 * 60 * 1000;
 	try {
 		const now = Date.now();
