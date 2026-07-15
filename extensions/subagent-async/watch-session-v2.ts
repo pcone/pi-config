@@ -410,13 +410,14 @@ class TextEntry implements Entry {
 	invalidate() { this.cached = undefined; }
 }
 
-/** Multi-line assistant text rendered as markdown (bold, code, headings, lists). */
+/** Multi-line assistant text rendered as markdown (bold, code, headings, lists).
+ *  Matches pi's AssistantMessageComponent: paddingX=1 (outputPad), paddingY=0. */
 class AssistantEntry implements Entry {
 	private rawText = "";
 	private md: Markdown;
 	private cached?: { width: number; lines: string[] };
 	constructor() {
-		this.md = new Markdown("", 0, 0, getMdTheme());
+		this.md = new Markdown("", 1, 0, getMdTheme());
 	}
 	append(rawLine: string): void {
 		// The parent extension prefixes each assistant text line with "  ".
@@ -435,81 +436,93 @@ class AssistantEntry implements Entry {
 	invalidate() { this.cached = undefined; this.md.invalidate(); }
 }
 
-/** Thinking block — each line prefixed with a `│` spine in thinkingMedium color. */
+/** Thinking block — matches pi's AssistantMessageComponent thinking render:
+ *  Markdown with `thinkingText` color override and 1-col left padding. */
 class ThinkingEntry implements Entry {
-	private lines: string[] = [];
+	private rawText = "";
+	private md: Markdown;
 	private cached?: { width: number; lines: string[] };
+	constructor() {
+		this.md = new Markdown("", 1, 0, getMdTheme(), {
+			color: (text) => PI_THEME ? PI_THEME.fg("thinkingText", text) : text,
+			italic: true,
+		});
+	}
 	append(rawLine: string): void {
-		const cleaned = stripAnsi(rawLine).replace(/^\[thinking\] ?/, "").trim();
-		this.lines.push(cleaned);
+		const cleaned = stripAnsi(rawLine).replace(/^\s*\[thinking\] ?/, "").trim();
+		this.rawText = this.rawText ? `${this.rawText}\n${cleaned}` : cleaned;
+		this.md.setText(this.rawText);
 		this.cached = undefined;
 	}
 	lineCount(width: number): number { return this.render(width).length; }
 	render(width: number): string[] {
 		if (this.cached && this.cached.width === width) return this.cached.lines;
-		const innerWidth = Math.max(1, width - 2);
-		const out: string[] = [];
-		for (const l of this.lines) {
-			const wrapped = truncateToWidth(TS.thinking(l), innerWidth);
-			out.push(truncateToWidth(`│ ${wrapped}`, width));
-		}
-		this.cached = { width, lines: out };
-		return out;
+		const lines = this.md.render(width);
+		this.cached = { width, lines };
+		return lines;
 	}
-	invalidate() { this.cached = undefined; }
+	invalidate() { this.cached = undefined; this.md.invalidate(); }
 }
 
 /**
- * Tool call — `▸ summary` header in `toolPending`, result lines wrapped in a
- * Box with `toolSuccessBg` / `toolErrorBg` background (matches pi's panel UI).
+ * Tool call — matches pi's ToolExecutionComponent: a Box with `toolPendingBg` /
+ * `toolSuccessBg` / `toolErrorBg` background containing the call summary
+ * (toolTitle color, bold) and result text (toolOutput color). Status icon
+ * (◌/✓/✗) prefixes the call. paddingX=1, paddingY=1 to match pi's framing.
  */
 class ToolEntry implements Entry {
 	private summary: string;
 	private status: "pending" | "success" | "error" = "pending";
-	private headerText: string;
 	private resultLines: string[] = [];
 	private cached?: { width: number; lines: string[] };
+	private box: Box;
+	private contentText: Text;
 
 	constructor(summary: string) {
 		this.summary = summary;
-		this.headerText = TS.toolPending(TS.bold(`▸ ${summary}`));
+		this.contentText = new Text("", 0, 0);
+		this.box = new Box(1, 1, (s) => PI_THEME ? PI_THEME.bg("toolPendingBg", s) : s);
+		this.box.addChild(this.contentText);
+		this.refreshContent();
+	}
+
+	private refreshContent(): void {
+		const icon = this.status === "success" ? "✓" : this.status === "error" ? "✗" : "◌";
+		const iconColor = this.status === "success" ? TS.success : this.status === "error" ? TS.error : TS.toolPending;
+		const header = `${iconColor(TS.bold(icon))} ${TS.toolPending(TS.bold(this.summary))}`;
+		const resultText = this.resultLines.join("\n");
+		this.contentText.setText(
+			resultText ? `${header}\n${TS.toolOutput(resultText)}` : header,
+		);
 	}
 
 	setStatus(s: "success" | "error"): void {
 		this.status = s;
+		const token: ThemeBg = s === "error" ? "toolErrorBg" : "toolSuccessBg";
+		this.box.setBgFn((t) => PI_THEME ? PI_THEME.bg(token, t) : t);
+		this.refreshContent();
 		this.cached = undefined;
 	}
 
 	getStatus(): "pending" | "success" | "error" { return this.status; }
 
 	appendResult(rawLine: string): void {
-		const cleaned = stripAnsi(rawLine).replace(/^[─✖]\s*/, "");
+		const cleaned = stripAnsi(rawLine).replace(/^\s*[─✖]\s*/, "");
 		this.resultLines.push(cleaned);
+		this.refreshContent();
 		this.cached = undefined;
 	}
 
 	lineCount(width: number): number { return this.render(width).length; }
 
-	private bgFn(): (s: string) => string {
-		const token: ThemeBg = this.status === "error" ? "toolErrorBg" : "toolSuccessBg";
-		if (!PI_THEME) return (s) => s;
-		return (s) => PI_THEME.bg(token, s);
-	}
-
 	render(width: number): string[] {
 		if (this.cached && this.cached.width === width) return this.cached.lines;
-		const out: string[] = [];
-		out.push(truncateToWidth(this.headerText, width));
-		const bg = this.bgFn();
-		for (const l of this.resultLines) {
-			const inner = truncateToWidth(TS.toolSuccess(l), Math.max(1, width - 2));
-			out.push(bg(`  ${inner}  `));
-		}
-		this.cached = { width, lines: out };
-		return out;
+		const lines = this.box.render(width);
+		this.cached = { width, lines };
+		return lines;
 	}
 
-	invalidate() { this.cached = undefined; }
+	invalidate() { this.cached = undefined; this.box.invalidate(); }
 }
 
 // ── EntryBuffer — ordered list of entries with windowed render ──────────────────────
