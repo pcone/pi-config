@@ -25,6 +25,14 @@ ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
 - `skills/decision-log` — On-demand skill instructions
 - `themes/catppuccin-macchiato.json` — Color theme
 
+## Extension caches
+
+Three extensions cache data on disk under `~/.pi/cache/<extension>/`. This is outside the repo (under HOME, not in `~/Developer/pi-config`), so no `.gitignore` entries are needed for it. The dir is created on first write by the extension itself.
+
+- `~/.pi/cache/fetch-url/` — large fetched pages (HTML→Markdown); 72h TTL
+- `~/.pi/cache/kagi-search/` — Kagi API search responses; 72h TTL
+- `~/.pi/cache/model-tiers/` — OpenRouter benchmarks and model info; 24h TTL
+
 ## Tools added
 
 - **`subagent(agent, task, cwd?, inheritParentModel?, isolate?, baseRef?)`** — Spawn an async subagent that runs in the background. Subagents fork from HEAD — commit any uncommitted work the subagent needs before delegating. Use `/subagents` to check progress, `/watch <id>` for live output. Subagents auto-checkpoint the parent before starting.

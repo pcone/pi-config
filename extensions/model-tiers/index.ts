@@ -12,7 +12,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,7 +77,8 @@ interface CacheData {
 // Constants
 // ---------------------------------------------------------------------------
 
-const CACHE_FILE = join(__dirname, "cache.json");
+const CACHE_DIR = resolve(homedir(), ".pi", "cache", "model-tiers");
+const CACHE_FILE = join(CACHE_DIR, "cache.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const THRESHOLDS = {
