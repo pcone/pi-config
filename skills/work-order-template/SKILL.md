@@ -50,10 +50,10 @@ Your work order quality directly determines whether the implementer succeeds on 
     summary). The implementer will not silently skip — a `skip`
     value is a deliberate orchestrator choice.
   - Alternative: pass `skip_review: true` on the `subagent` call
-    to skip the harness's review guard entirely. Use for trivial
-    changes where the orchestrator reviews the diff directly.
-    This bypasses both the harness guard and the implementer's
-    review step.
+    to skip the harness's review guard. Use for trivial changes
+    where the orchestrator reviews the diff directly. The agent
+    can still spawn reviewers if its prompt instructs it to —
+    this only suppresses the harness reminder.
 - **review_depth**: standard | thorough
   - `standard` (default) — uses Mimo-V2.5-Pro reviewers
     (`review-code`, `review-plan`, `review-tests`). Appropriate for

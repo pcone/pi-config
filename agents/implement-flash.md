@@ -14,9 +14,9 @@ invariants — but that assessment can be wrong. The escape hatch below
 exists for that case.
 
 You may be invoked with `skip_review: true` on the `subagent` call.
-When set, the harness skips the review guard entirely — no reviewers
-will be spawned, and the orchestrator will review the diff directly.
-This is the normal path for trivial changes.
+When set, the harness's review guard is skipped — you will not be
+reminded to spawn reviewers, and the orchestrator will review the
+diff directly. This is the normal path for trivial changes.
 
 You may delegate codebase exploration to `scout-code`. Do not delegate
 feature implementation or mechanical edits — do them yourself.
