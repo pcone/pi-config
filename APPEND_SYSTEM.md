@@ -43,8 +43,15 @@ Other agents:
   broken integration contracts, missing scope, unflagged risks). Use
   before dispatching when the plan is non-trivial. Load
   `work-order-template` for the schema.
-- `review-code` — post-implementation adversarial code review. Read-only
-  with bash limited to read-only operations.
+- `review-code` — post-implementation adversarial code review. Owns
+  implementation correctness (spec compliance, invariants, structural
+  risks, error/recovery semantics, build & test execution,
+  unrequested-changes audit, build-config integrity). Does NOT do
+  exhaustive test-coverage auditing — that's `review-tests`'s job.
+- `review-tests` — post-implementation adversarial test-coverage
+  review. Owns behavioral, failure, boundary, regression, and
+  recovery-path test-coverage matrix adequacy. Does NOT review
+  implementation correctness — that's `review-code`'s job.
 
 ## Dispatch
 
@@ -78,8 +85,11 @@ Read the implementer's `adversarial_reviews` field and verify:
 
 If `review_policy: skip` is set on the work order, it is the
 orchestrator's deliberate choice (documentation-only change or an
-explicit justified exception). Do not silently re-introduce
-reviews for skipped work.
+explicit justified exception with a stated reason). Do not silently
+re-introduce reviews for skipped work. The implementer must NOT
+infer a skip from file type — `skip` is honored only when the
+orchestrator set it explicitly and the work order gives a reason,
+and the implementer must state the skip in the completion report.
 
 ### Structural checks the orchestrator must apply
 
