@@ -136,6 +136,85 @@ function debugLog(msg: string): void {
 	try { fs.appendFileSync("/tmp/pi-async-debug.log", `[${process.pid}] ${msg}\n`); } catch { /* */ }
 }
 
+// ── Meta-file helpers ──────────────────────────────────────────────────────
+// Atomic read/write for /tmp/pi-subagent-<sid>.meta.json, matching the
+// recordReviewerSpawn pattern (tmp + rename) to avoid torn reads.
+
+export function metaPath(sessionId: string): string {
+	return `/tmp/pi-subagent-${sessionId}.meta.json`;
+}
+
+/** Write a complete meta file atomically. */
+export function writeMetaJson(sessionId: string, data: Record<string, any>): void {
+	try {
+		const target = metaPath(sessionId);
+		const tmp = `${target}.tmp.${process.pid}`;
+		fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+		fs.renameSync(tmp, target);
+	} catch (e) {
+		debugLog(`writeMetaJson: failed: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
+/** Read a meta file, returning null on any error (missing, malformed, etc.). */
+export function readMetaJson(sessionId: string): Record<string, any> | null {
+	try {
+		const raw = fs.readFileSync(metaPath(sessionId), "utf-8");
+		return JSON.parse(raw);
+	} catch {
+		return null;
+	}
+}
+
+/** Update an existing meta file by merging fields (read-modify-write, atomic). */
+export function updateMetaJson(sessionId: string, updates: Record<string, any>): void {
+	try {
+		const existing = readMetaJson(sessionId) ?? {};
+		const merged = { ...existing, ...updates };
+		writeMetaJson(sessionId, merged);
+	} catch (e) {
+		debugLog(`updateMetaJson: failed: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
+/**
+ * Resolve a subagent session ID from a full or partial (last 8+ chars)
+ * identifier. Scans /tmp/pi-subagent-*.meta.json and matches on the
+ * session id portion (the part between "pi-subagent-" and ".meta.json").
+ * Returns the full session ID and meta if exactly one match; null if none;
+ * throws with an ambiguity list if multiple match.
+ */
+export function resolveSubagentMeta(sessionId: string): { sid: string; meta: Record<string, any> } | null {
+	let files: string[];
+	try {
+		files = fs.readdirSync("/tmp").filter(
+			(f) => f.startsWith("pi-subagent-") && f.endsWith(".meta.json"),
+		);
+	} catch {
+		return null;
+	}
+
+	// Extract the session id portion from the filename
+	const candidates: Array<{ sid: string; meta: Record<string, any> }> = [];
+	for (const f of files) {
+		const sid = f.replace("pi-subagent-", "").replace(".meta.json", "");
+		if (sid === sessionId || sid.endsWith(sessionId)) {
+			const meta = readMetaJson(sid);
+			if (meta) candidates.push({ sid, meta });
+		}
+	}
+
+	if (candidates.length === 0) return null;
+	if (candidates.length === 1) return candidates[0];
+
+	// Ambiguous partial match — list candidates
+	const ids = candidates.map((c) => c.sid).join(", ");
+	throw new Error(
+		`Ambiguous partial session id "${sessionId}" matches multiple sessions: ${ids}. ` +
+			`Use a longer suffix or the full id.`,
+	);
+}
+
 // ── Progress tracking ───────────────────────────────────────────────────────
 
 interface SubagentProgress {
@@ -178,6 +257,10 @@ interface RunningSubagent {
 	// at spawn time when ctx is available; reused at stop time when ctx is
 	// out of scope inside the message_end handler.
 	parentTrackerKey: string;
+	// Captured from the child's RPC get_state response; set once after spawn.
+	// Used by subagent_resume to locate the session file for later continuation.
+	sessionFile?: string;
+	piSessionId?: string;
 }
 
 const running = new Map<string, RunningSubagent>();
@@ -376,6 +459,30 @@ interface RpcEvent {
 	message_end?: any;
 }
 
+/**
+ * Build the argv array for spawning a subagent pi process.
+ * Extracted so tests can assert flag composition without spawning.
+ * Does NOT include --append-system-prompt (the temp file path is
+ * generated dynamically by the caller — writeTempFile).
+ */
+export function buildSubagentArgs(config: {
+	model: string;
+	tools: string[];
+	excludeTools: string[];
+	sessionFile?: string;
+}): string[] {
+	const args: string[] = ["--mode", "rpc"];
+	if (config.model) args.push("--model", config.model);
+	if (config.tools && config.tools.length > 0) args.push("--tools", config.tools.join(","));
+	if (config.excludeTools && config.excludeTools.length > 0) {
+		args.push("--exclude-tools", config.excludeTools.join(","));
+	}
+	if (config.sessionFile) {
+		args.push("--session", config.sessionFile);
+	}
+	return args;
+}
+
 // ── Spawn & manage ──────────────────────────────────────────────────────────
 
 async function spawnSubagent(
@@ -391,17 +498,19 @@ async function spawnSubagent(
 	isolationBranch: string | null,
 	parentHeadCommit: string | null,
 	parentCwdForCleanup: string,
+	// When set, the subprocess loads an existing session file instead of
+	// creating a new one. Used by subagent_resume.
+	resumeSessionFile?: string,
 ): Promise<RunningSubagent> {
 	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash");
 
-	// RPC mode auto-creates sessions — never pass --session for async subagents.
-	// Steering happens via stdin to the running process, not by restarting.
-	const args: string[] = ["--mode", "rpc"];
-	if (effectiveModel) args.push("--model", effectiveModel);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
-	if (agent.excludeTools && agent.excludeTools.length > 0) {
-		args.push("--exclude-tools", agent.excludeTools.join(","));
-	}
+	// Build spawn args via shared helper (also used by tests).
+	const args = buildSubagentArgs({
+		model: effectiveModel ?? "",
+		tools: agent.tools ?? [],
+		excludeTools: agent.excludeTools ?? [],
+		sessionFile: resumeSessionFile,
+	});
 
 	let tmpDir: string | null = null;
 	let tmpPath: string | null = null;
@@ -535,6 +644,23 @@ async function spawnSubagent(
 
 		debugLog("ev:" + event.type);
 
+		// ── Capture session info from get_state response ───────────────
+		if (event.type === "response" && event.id === getStateId) {
+			const data = (event as any).data;
+			if ((event as any).success && data) {
+				rs.sessionFile = data.sessionFile;
+				rs.piSessionId = data.sessionId;
+				debugLog(`get_state: sessionFile=${rs.sessionFile} piSessionId=${rs.piSessionId}`);
+				// Persist to meta so subagent_resume can discover the file later.
+				// The meta file was already written by the spawn caller with
+				// the agent config fields; we add only sessionFile / piSessionId.
+				updateMetaJson(sessionId, {
+					sessionFile: rs.sessionFile,
+					piSessionId: rs.piSessionId,
+				});
+			}
+		}
+
 		// ── Live log: turn boundaries ──────────────────────────────────
 		if (event.type === "turn_start") {
 			currentTurn++;
@@ -648,7 +774,14 @@ async function spawnSubagent(
 				// `subagent_review_status` check is the actual gate.
 				const required = rs.reviewParentRequirements;
 				if (required && required.length > 0) {
-					const persisted = readPersistedSpawns(rs.sessionId);
+					// The child's harness writes its reviewer-spawn tracker file
+					// keyed by its own pi session ID (obtained via
+					// getParentTrackerKey inside the child process). We read
+					// by `rs.piSessionId` (captured from the child's get_state
+					// response) so the file key matches. Fall back to the
+					// extension-level key if piSessionId was never captured.
+					const trackerKey = rs.piSessionId || rs.sessionId;
+					const persisted = readPersistedSpawns(trackerKey);
 					const spawnedKinds = new Set(persisted.map((s) => s.reviewerKind));
 					const missing = required.filter((k) => !spawnedKinds.has(k));
 					if (missing.length > 0) {
@@ -663,7 +796,7 @@ async function spawnSubagent(
 								streamingBehavior: "steer",
 							});
 							logEntry(`\x1b[33m[review-gate] soft prompt injected; missing reviewers: ${missing.join(", ")}\x1b[0m`);
-							debugLog(`review-gate: soft prompt for missing=${missing.join(",")} child=${rs.sessionId}`);
+							debugLog(`review-gate: soft prompt for missing=${missing.join(",")} child=${rs.sessionId} trackerKey=${trackerKey}`);
 						} catch (e) {
 							debugLog(`review-gate: rpcSend failed: ${e instanceof Error ? e.message : String(e)}`);
 						}
@@ -739,6 +872,13 @@ async function spawnSubagent(
 			fs.unlinkSync(sockPath);
 		} catch { /* */ }
 
+		// Mark the session as no longer running BEFORE cleanupWorktree (which
+		// runs multiple git commands and can take seconds). Otherwise
+		// subagent_resume would incorrectly reject with "already running"
+		// during the cleanup window for a session that has completed.
+		running.delete(sessionId);
+		updateFooter(ctx);
+
 		// Worktree isolation: commit changes, remove worktree, keep branch
 		const isolationNote = await cleanupWorktree(rs);
 
@@ -754,10 +894,6 @@ async function spawnSubagent(
 			cancelWait();
 			deliverResult(pi, rs, code ?? 0, isolationNote);
 		}
-
-		// Remove from running map
-		running.delete(sessionId);
-		updateFooter(ctx);
 	});
 
 	proc.on("error", () => {
@@ -765,7 +901,14 @@ async function spawnSubagent(
 		updateFooter(ctx);
 	});
 
-	// Send initial prompt
+	// Send get_state BEFORE the initial prompt so we capture the child's
+	// real sessionFile and pi sessionId before any prompt processing begins.
+	// Both commands run on the same RPC pipe; order is preserved by serial
+	// stdin writes. If get_state never responds (child crashes immediately),
+	// sessionFile remains undefined on rs — subagent_resume will error
+	// gracefully for that session.
+	const getStateId = `get-state-${randomUUID()}`;
+	rpcSend(proc.stdin, { id: getStateId, type: "get_state" });
 	rpcSend(proc.stdin, { type: "prompt", message: task });
 
 	return rs;
@@ -1104,7 +1247,8 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Spawn a subagent that runs in the background. The parent remains interactive. " +
 			"Use subagent_status to check progress, subagent_steer to inject guidance, " +
-			"and subagent_stop to tell it to wrap up. Results are delivered as a user message when the subagent finishes.",
+			"and subagent_stop to tell it to wrap up. Results are delivered as a user message when the subagent finishes. " +
+			"After a subagent finishes, use `subagent_resume` with the same session_id to continue the same conversation instead of starting fresh.",
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const sessionId = `subagent-${randomUUID()}`;
@@ -1196,19 +1340,30 @@ export default function (pi: ExtensionAPI) {
 
 			running.set(sessionId, rs);
 
-		// Write metadata for recovery on session reload
-		try {
-			fs.writeFileSync(`/tmp/pi-subagent-${sessionId}.meta.json`, JSON.stringify({
-				agentName: agent.name,
-				task: params.task,
-				cwd,
-				startedAt: rs.startedAt,
-				worktreePath,
-				isolationBranch,
-				parentHeadCommit,
-				parentCwd: cwd,
-			}));
-		} catch {}
+		// Write metadata for recovery on session reload. Includes the full
+		// agent config so subagent_resume can reproduce the original
+		// configuration faithfully (storing the resolved model and system
+		// prompt avoids drift if the user edits the agent definition between
+		// spawn and resume). Uses atomic write (tmp + rename) to avoid torn
+		// reads.
+		const effectiveModel = params.inheritParentModel
+			? parentModel
+			: (agent.model ?? "deepseek/deepseek-v4-flash");
+		writeMetaJson(sessionId, {
+			agentName: agent.name,
+			task: params.task,
+			cwd,
+			startedAt: rs.startedAt,
+			worktreePath,
+			isolationBranch,
+			parentHeadCommit,
+			parentCwd: cwd,
+			tools: agent.tools ?? [],
+			model: effectiveModel,
+			systemPrompt: agent.systemPrompt,
+			allowedSubagents: agent.allowedSubagents ?? [],
+			excludeTools: agent.excludeTools ?? [],
+		});
 
 			// Reviewer-spawn tracker: if the spawned agent is a declared reviewer
 			// (reviewerKind set in frontmatter), record this spawn under the
@@ -1341,6 +1496,187 @@ export default function (pi: ExtensionAPI) {
 			};
 			return {
 				content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+			};
+		},
+	});
+
+	// ── subagent_resume ───────────────────────────────────────────────
+	// Resumes a previously-completed subagent session by spawning a new
+	// RPC process that loads the existing session JSONL and continues
+	// from where the previous run stopped. Preserves the original agent
+	// config (tools, model, system prompt) from the spawn-time meta file.
+
+	/**
+	 * Validate a meta object read from disk for resume. Returns either
+	 * { ok: true } or { ok: false, error, isError }. Extracted so tests
+	 * can cover all error paths without spawning real processes.
+	 */
+	function validateResumeMeta(
+		meta: Record<string, any> | null,
+		sid: string,
+	): { ok: true } | { ok: false; error: string; isError: boolean } {
+		if (!meta) {
+			return {
+				ok: false,
+				error: `No prior session found with id "${sid}". The session may have been purged or never existed. Spawn a fresh subagent instead.`,
+				isError: false,
+			};
+		}
+		if (!meta.sessionFile) {
+			return {
+				ok: false,
+				error: `Session file not captured for "${sid}". The original subagent may have crashed before reporting its session. Spawn a fresh subagent instead.`,
+				isError: true,
+			};
+		}
+		if (!fs.existsSync(meta.sessionFile)) {
+			return {
+				ok: false,
+				error: `Session file ${meta.sessionFile} no longer exists. Cannot resume.`,
+				isError: true,
+			};
+		}
+		return { ok: true };
+	}
+
+	/**
+	 * Build an AgentConfig from persisted meta fields. Uses the stored
+	 * resolved model and full system prompt so resume reproduces the
+	 * original config exactly (no drift from user editing agent files).
+	 */
+	function buildAgentConfigFromMeta(meta: Record<string, any>): AgentConfig {
+		return {
+			name: meta.agentName || "?",
+			description: "",
+			systemPrompt: meta.systemPrompt || "",
+			tools: Array.isArray(meta.tools) ? meta.tools : [],
+			model: meta.model,
+			source: "user",
+			filePath: "",
+			allowedSubagents: Array.isArray(meta.allowedSubagents) ? meta.allowedSubagents : undefined,
+			excludeTools: Array.isArray(meta.excludeTools) ? meta.excludeTools : undefined,
+		};
+	}
+
+	const ResumeParams = Type.Object({
+		session_id: Type.String({
+			minLength: 1,
+			description:
+				"Session ID of a previously completed subagent to resume " +
+				"(full 'subagent-<UUID>' or last 8+ chars).",
+		}),
+		task: Type.String({
+			description: "Follow-up task to send to the resumed session.",
+		}),
+		cwd: Type.Optional(
+			Type.String({
+				description:
+					"Working directory; defaults to the original subagent's recorded parentCwd.",
+			}),
+		),
+	});
+
+	pi.registerTool({
+		name: "subagent_resume",
+		label: "Subagent Resume",
+		description:
+			"Resume a previously-completed subagent session with a follow-up prompt. " +
+			"Spawns a new RPC process that loads the existing session file and continues " +
+			"from where the previous run stopped, preserving conversation history and " +
+			"model state. The resumed session runs in the original recorded parent cwd " +
+			"and does NOT re-establish the original isolation worktree. " +
+			"Use this to send a follow-up question or corrective prompt to a reviewer " +
+			"that has already finished, without re-seeding the full context.",
+		parameters: ResumeParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// 1. Resolve the meta file by full or partial session id
+			let sid: string;
+			let resolvedMeta: Record<string, any>;
+			try {
+				const r = resolveSubagentMeta(params.session_id);
+				if (!r) {
+					const v = validateResumeMeta(null, params.session_id);
+					return {
+						content: [{ type: "text", text: v.ok ? "" : v.error }],
+						isError: (v as any).isError,
+					};
+				}
+				sid = r.sid;
+				resolvedMeta = r.meta;
+
+				// 2. Validate meta fields (sessionFile present, file on disk)
+				const validation = validateResumeMeta(resolvedMeta, sid);
+				if (!validation.ok) {
+					return {
+						content: [{ type: "text", text: validation.error }],
+						isError: validation.isError,
+					};
+				}
+			} catch (e: any) {
+				return {
+					content: [{ type: "text", text: e.message }],
+					isError: true,
+				};
+			}
+
+	
+			// 3. Validate no running subagent with the same id
+			if (running.has(sid)) {
+				return {
+					content: [{
+						type: "text",
+						text: `Subagent "${sid}" is already running.`,
+					}],
+					isError: true,
+				};
+			}
+
+			// 4. Build a synthetic AgentConfig from the persisted meta fields.
+			const syntheticAgent = buildAgentConfigFromMeta(resolvedMeta);
+			const cwd = params.cwd ?? (resolvedMeta.parentCwd || ctx.cwd);
+
+			// 5. Spawn the resumed RPC process under the SAME subagent-<UUID> key.
+			// No worktree isolation — resumed sessions run in the recorded parentCwd.
+			const rs = await spawnSubagent(
+				pi,
+				ctx,
+				syntheticAgent,
+				params.task,
+				cwd,
+				sid,
+				undefined, // parentModel — not meaningful for resume
+				false, // inheritParentModel — already resolved in meta
+				null, // worktreePath
+				null, // isolationBranch
+				null, // parentHeadCommit
+				cwd,
+				resolvedMeta.sessionFile, // resumeSessionFile
+			);
+
+			running.set(sid, rs);
+			updateFooter(ctx);
+
+			// 6. DO NOT record a new reviewer-spawn tracker entry. The original
+			// spawn already recorded it; resume continues the same logical session.
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: [
+							`Subagent resumed: ${syntheticAgent.name} (session: ${sid})`,
+							`Task: ${params.task.slice(0, 200)}${params.task.length > 200 ? "..." : ""}`,
+							"",
+							"Watch live:",
+							"```bash",
+							`tail -f /tmp/pi-subagent-${sid}.log`,
+							"```",
+							"Or in-pi: /watch " + sid.slice(-8),
+							"Or from another terminal: nc -U /tmp/pi-subagent-" + sid + ".sock",
+							"Use /subagents to check progress.",
+						].join("\n"),
+					},
+				],
 			};
 		},
 	});
