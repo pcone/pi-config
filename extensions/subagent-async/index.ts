@@ -585,7 +585,9 @@ async function spawnSubagent(
 		parentHeadCommit,
 		parentCwd: parentCwdForCleanup,
 		parentTrackerKey: getParentTrackerKey(ctx),
-		reviewParentRequirements: skipReview ? undefined : agent.reviewParentRequirements,
+		reviewParentRequirements: (skipReview || /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task))
+			? undefined
+			: agent.reviewParentRequirements,
 		usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
 	};
 
