@@ -194,6 +194,45 @@ the parent id is your own session id (you are directly spawning
 the reviewer); the rule is "parent id is whoever spawned the
 reviewer."
 
+### Worked example
+
+```text
+# 1. Orchestrator launches an implementer:
+subagent(
+  agent="implement-flash",
+  task="<work order text>"
+)
+# tool returns:
+#   Subagent started: implement-flash (session: subagent-7e6d2eb7-...)
+#   ...
+#   Watch live:
+#   ```bash
+#   tail -f /tmp/pi-subagent-7e6d2eb7-...log
+#   ```
+# Capture: implementer_session_id = subagent-7e6d2eb7-...
+
+# 2. Time later, the implementer returns with a completion report.
+#    Before forwarding `complete`, the orchestrator queries the gate:
+
+subagent_review_status(
+  parent_session_id="subagent-7e6d2eb7-..."
+)
+# returns JSON:
+#   {
+#     "parentSessionId": "subagent-7e6d2eb7-...",
+#     "updatedAt": ...,
+#     "kindsPresent": ["implementation", "tests"],
+#     "kindsMissing": [],
+#     "spawns": [ {reviewerKind:..., childSessionId:..., ...}, ... ]
+#   }
+
+# 3. Compare `kindsPresent` against the implementer's
+#    `requires_parent_reviewers` value (`["implementation","tests"]`).
+#    Both kinds present -> `complete` is eligible.
+#    Any required kind missing -> refuse `complete`, route back to
+#    the implementer, or report partial/blocked.
+```
+
 ## Completion reports
 
 When a subagent returns, act on its report:
