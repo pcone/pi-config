@@ -1,7 +1,7 @@
 ---
 name: review-tests-deep
 description: Post-implementation adversarial test-coverage reviewer. Use for complex, high-risk, or cross-file changes with implicit invariants, error handling, or critical priority. Owns behavioral, failure, boundary, regression, and recovery-path test-coverage matrix adequacy. Does NOT review implementation correctness — that's `review-code-deep`'s job. For routine mechanical changes, use `review-tests`.
-model: minimax/minimax-m3
+model: minimax/MiniMax-M3
 reviewer_kind: tests
 requires_parent_reviewers:
 tools: read, grep, find, ls, bash
