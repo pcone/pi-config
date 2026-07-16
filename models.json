@@ -6,7 +6,7 @@
           "cost": { "input": 0.96, "output": 3.01, "cacheRead": 0.18, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
-              "order": ["z-ai", "streamlake", "novita"],
+              "order": ["streamlake", "fireworks", "z-ai"],
               "allow_fallbacks": true
             }
           }
