@@ -517,6 +517,9 @@ async function spawnSubagent(
 	// When set, the subprocess loads an existing session file instead of
 	// creating a new one. Used by subagent_resume.
 	resumeSessionFile?: string,
+	// When true, skip the review guard for this spawn (orchestrator will
+	// review the diff directly).
+	skipReview?: boolean,
 ): Promise<RunningSubagent> {
 	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash");
 
@@ -563,7 +566,7 @@ async function spawnSubagent(
 		parentHeadCommit,
 		parentCwd: parentCwdForCleanup,
 		parentTrackerKey: getParentTrackerKey(ctx),
-		reviewParentRequirements: agent.reviewParentRequirements,
+		reviewParentRequirements: skipReview ? undefined : agent.reviewParentRequirements,
 	};
 
 	// Unix socket server for external viewers
@@ -1244,6 +1247,12 @@ export default function (pi: ExtensionAPI) {
 				description: "Git ref (commit hash, branch, or tag) to fork the worktree from. Defaults to HEAD if omitted. Use this when changes are on a feature branch that isn't ready for main — pass the branch name or ref. If changes are only in the working tree, create a feature branch, commit them, and pass that branch.",
 			}),
 		),
+		skip_review: Type.Optional(
+			Type.Boolean({
+				description: "Skip the post-implementation review for this spawn. Use for trivial changes where the orchestrator will review the diff directly. Default: false.",
+				default: false,
+			}),
+		),
 	});
 
 	const StatusParams = Type.Object({
@@ -1367,6 +1376,8 @@ export default function (pi: ExtensionAPI) {
 				isolationBranch,
 				parentHeadCommit,
 				cwd,
+				undefined, // resumeSessionFile
+				params.skip_review ?? false,
 			);
 
 			running.set(sessionId, rs);
