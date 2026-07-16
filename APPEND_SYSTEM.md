@@ -157,6 +157,43 @@ implementer's `notes_for_orchestrator` cites the work order reason.
 `subagent_review_status` is itself a tool registered by the
 subagent extension; do not invent a separate mechanism.
 
+### Calling `subagent_review_status` correctly (the parent id)
+
+The `parent_session_id` you pass to `subagent_review_status` is the
+**child session id of the implementer**, not your own session id.
+The persisted tracker file
+(`/tmp/pi-subagent-<sessionId>.reviewers.json`) is written by the
+harness of whatever process spawned the reviewers; for
+implementer-spawned reviewers, that file is owned by the
+implementer's RPC process.
+
+When you launch an implementer via `subagent`, the tool response
+returns the spawned child's session id (the same value the harness
+uses for its `/tmp/pi-subagent-<sessionId>.log` filename). Keep
+that id alongside the work order so the gate check at completion
+time can find the implementer's tracker, not yours.
+
+Concretely, after launching the implementer:
+
+1. The `subagent` tool returns text beginning with
+   `Subagent started: <name> (session: subagent-<uuid>)...`.
+2. Capture that uuid.
+3. When the implementer's completion report arrives, before
+   forwarding `complete`, call:
+   ```
+   subagent_review_status(
+     parent_session_id="subagent-<implementer-uuid>"
+   )
+   ```
+4. Compare `kindsPresent` against the implementer's
+   `requires_parent_reviewers`. Refuse `complete` if any required
+   kind is missing.
+
+For orchestrator-launched reviewer sweeps of a preserved branch,
+the parent id is your own session id (you are directly spawning
+the reviewer); the rule is "parent id is whoever spawned the
+reviewer."
+
 ## Completion reports
 
 When a subagent returns, act on its report:
