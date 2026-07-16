@@ -1,3 +1,4 @@
+<!-- touched 2026-197 — smoke WO-2026-010 — review_policy: required -->
 # Pi Agent Configuration
 
 Global configuration for [pi](https://github.com/badlogic/pi-mono) coding agent at `@earendil-works/pi-coding-agent@0.80.3`.
