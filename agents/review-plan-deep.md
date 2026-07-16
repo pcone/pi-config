@@ -1,7 +1,7 @@
 ---
 name: review-plan-deep
 description: Pre-implementation plan reviewer. Use for complex, high-risk, or cross-file plans with implicit invariants, error handling, type-system changes, or critical priority. Catches plan defects before delegation — wrong file hints, broken integration contracts, missing scope, weak reference patterns, unflagged risks. Reads project docs at review time. Read-only tools only. For routine mechanical plans, use `review-plan`.
-model: minimax/minimax-m3
+model: minimax/MiniMax-M3
 tools: read, grep, find, ls
 ---
 
