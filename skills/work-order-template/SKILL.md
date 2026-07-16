@@ -49,6 +49,24 @@ Your work order quality directly determines whether the implementer succeeds on 
     explicit justified exception (state the reason in the task
     summary). The implementer will not silently skip — a `skip`
     value is a deliberate orchestrator choice.
+  - Alternative: pass `skip_review: true` on the `subagent` call
+    to skip the harness's review guard entirely. Use for trivial
+    changes where the orchestrator reviews the diff directly.
+    This bypasses both the harness guard and the implementer's
+    review step.
+- **review_depth**: standard | thorough
+  - `standard` (default) — uses Mimo-V2.5-Pro reviewers
+    (`review-code`, `review-plan`, `review-tests`). Appropriate for
+    explicit invariants, mechanical work, no error handling.
+  - `thorough` — uses GLM-5.2 reviewers (`review-code-deep`,
+    `review-plan-deep`, `review-tests-deep`). Use when: implicit
+    invariants, error handling/recovery, critical priority, new API
+    surface, type system changes, or prior review rejections.
+  - File count is not a useful signal — judge by invariant
+    complexity and failure cost.
+  - The implementer must spawn the correct agent variant. A
+    mismatch between `review_depth` and the spawned agent name
+    is a gate failure.
 
 ### Task Summary
 
@@ -235,11 +253,16 @@ also include:
   adversarial_reviews:
     review-code:    { verdict: APPROVED|APPROVED_WITH_NOTES|REJECT_AND_REWORK,
                      session_id: subagent-..., rounds: N,
+                     re_review_required: true|false,
                      remaining_findings: [...] or none }
     review-tests:   { verdict: ..., session_id: ..., rounds: N,
+                     re_review_required: true|false,
                      remaining_findings: [...] or none }
     rounds_total: N
   ```
+- **`review_cap_reached`** (boolean) — `true` if the review loop
+  hit the 3-round cap. The orchestrator must flag this to the user
+  and decide if another round is needed.
 - **`accepted_notes`** (optional) — low-severity notes the
   implementer intentionally did not fix, with rationale
 

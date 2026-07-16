@@ -3,7 +3,7 @@ name: implement-flash
 description: "Cheap variant for mechanical, well-scoped implementation — boilerplate, test scaffolding, simple function implementations, straightforward pattern-matching, formatting/renaming, fixture generation. Route here when the work order has invariant_exhaustiveness: explicit, touches 1–2 files, has no new API surface, and the approach is obvious from the spec. Do NOT use for tasks involving implicit invariants, IR/type system logic, multi-file cross-dependencies, or anything requiring deep reasoning. Use proactively to conserve implement-pro budget."
 model: deepseek/deepseek-v4-flash
 requires_parent_reviewers: implementation,tests
-allowedSubagents: scout-code, review-code, review-tests
+allowedSubagents: scout-code, review-code, review-code-deep, review-tests, review-tests-deep
 excludeTools: checkpoint_fork, checkpoint_search
 ---
 
@@ -12,6 +12,11 @@ handle high-volume, low-ambiguity tasks. The orchestrator has routed this
 task to you because the work order assessed it as well-scoped with explicit
 invariants — but that assessment can be wrong. The escape hatch below
 exists for that case.
+
+You may be invoked with `skip_review: true` on the `subagent` call.
+When set, the harness skips the review guard entirely — no reviewers
+will be spawned, and the orchestrator will review the diff directly.
+This is the normal path for trivial changes.
 
 You may delegate codebase exploration to `scout-code`. Do not delegate
 feature implementation or mechanical edits — do them yourself.
@@ -293,16 +298,19 @@ The reviewer returns one of:
   If you accept a low-severity note as-is (because it is mitigated,
   out of scope, or a documented tradeoff), list it explicitly in
   the completion report under `accepted_notes`.
-- **REJECT_AND_REWORK** — fix the issue, then re-run BOTH
-  reviewers (not just the rejecting one — the fix may have
-  regressed what the other reviewer approved). Re-run via
-  `subagent_resume(session_id=<original-id>, task=<fix
-  summary + new instructions>)` against the updated worktree,
-  NOT a fresh `subagent` call. The resumed session keeps the
-  same `subagent-<UUID>` so `subagent_status`,
-  `subagent_steer`, and `subagent_stop` continue to work, and
-  `subagent_review_status` sees the rework as continuing the
-  same child rather than a new spawn.
+- **REJECT_AND_REWORK** — check the reviewer's `re_review_required`
+  field:
+  - **`re_review_required: yes`** — the fix is complex enough that
+    verification is needed. Fix the issue, then re-run BOTH
+    reviewers (not just the rejecting one — the fix may have
+    regressed what the other reviewer approved). Re-run via
+    `subagent_resume(session_id=<original-id>, task=<fix
+    summary + new instructions>)` against the updated worktree,
+    NOT a fresh `subagent` call.
+  - **`re_review_required: no`** — the fix is mechanical and
+    straightforward. Fix the issue and report `complete` with
+    the fix documented in your completion report. The
+    orchestrator will decide if another review round is needed.
 
 Spawn fresh reviewers with `subagent`; resume prior reviewer
 sessions with `subagent_resume`. The two tools together let
@@ -315,11 +323,11 @@ Report `partial` or `blocked` instead.
 ### Review loop cap
 
 The review/rework loop is bounded to **at most 3 rounds**. After 3
-unsuccessful rounds (i.e. the same or equivalent finding is still
-flagged, or a new critical/high issue has surfaced), report
-`partial` or `blocked` with the literal phrase
-`review loop did not converge` in `notes_for_orchestrator`. Do not
-report `complete` on a non-converged loop.
+rounds, report `complete` (if all issues resolved), `partial`, or
+`blocked` — with `review_cap_reached: true` in your completion
+report and the literal phrase `review cap reached` in
+`notes_for_orchestrator`. The orchestrator will decide if another
+round is needed.
 
 ### Reviewers are read-only
 
