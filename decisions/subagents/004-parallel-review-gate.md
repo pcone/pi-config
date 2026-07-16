@@ -234,3 +234,26 @@ Tradeoffs (extension):
   than be killed, which is desirable for a gate whose primary job
   is to surface missing actions to the orchestrator, not to punish
   the agent.
+
+### Orchestrator parent-id handling
+
+The `parent_session_id` passed to `subagent_review_status` is the
+implementer's child session id, **not** the orchestrator's. The
+persisted tracker file
+(`/tmp/pi-subagent-<sessionId>.reviewers.json`) is owned by the
+process that actually issued the `subagent` tool calls to spawn the
+reviewers — for implementer-spawned reviewers, that's the
+implementer's RPC process.
+
+The orchestrator captures the implementer's session id from the
+`subagent` tool's response (the "Subagent started: ... (session:
+subagent-<uuid>)" prefix) when dispatching the implementer, then
+passes that id to `subagent_review_status` at completion time.
+The worked example lives in `APPEND_SYSTEM.md` under
+"Calling `subagent_review_status` correctly → Worked example".
+
+This is a documentation-only fix — no harness change. It was
+surfaced by `WO-2026-012` (smoke test of WO-2026-011), which
+showed the orchestrator's natural read of its own session id
+returned an empty spawn list, even though the implementer's
+tracker file was correctly populated under its own id.
