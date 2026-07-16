@@ -17,15 +17,16 @@ interface Todo {
 }
 
 interface TodoDetails {
-	action: "list" | "add" | "start" | "complete" | "defer" | "clear";
+	action: "list" | "add" | "start" | "complete" | "defer" | "clear" | "setDoc";
 	todos: Todo[];
 	nextId: number;
+	doc?: string;
 	error?: string;
 }
 
 const TodoParams = Type.Object({
-	action: StringEnum(["list", "add", "start", "complete", "defer", "clear"] as const),
-	text: Type.Optional(Type.String({ description: "Task description (for add)" })),
+	action: StringEnum(["list", "add", "start", "complete", "defer", "clear", "setDoc"] as const),
+	text: Type.Optional(Type.String({ description: "Task description (for add) or doc path (for setDoc)" })),
 	id: Type.Optional(Type.Number({ description: "Task ID (for start/complete/defer)" })),
 });
 
@@ -46,11 +47,13 @@ function icon(t: Todo): string {
 
 class TodoListComponent {
 	private todos: Todo[];
+	private doc: string | undefined;
 	private theme: any;
 	private onClose: () => void;
 
-	constructor(todos: Todo[], theme: any, onClose: () => void) {
+	constructor(todos: Todo[], doc: string | undefined, theme: any, onClose: () => void) {
 		this.todos = todos;
+		this.doc = doc;
 		this.theme = theme;
 		this.onClose = onClose;
 	}
@@ -66,7 +69,8 @@ class TodoListComponent {
 		const th = this.theme;
 
 		lines.push("");
-		lines.push(truncateToWidth(th.fg("accent", " Tasks "), width));
+		const title = this.doc ? ` Tasks [${this.doc}] ` : " Tasks ";
+		lines.push(truncateToWidth(th.fg("accent", title), width));
 		lines.push(truncateToWidth(th.fg("borderMuted", "─".repeat(width)), width));
 		lines.push("");
 
@@ -100,10 +104,12 @@ class TodoListComponent {
 export default function (pi: ExtensionAPI) {
 	let todos: Todo[] = [];
 	let nextId = 1;
+	let doc: string | undefined;
 
 	const reconstructState = (ctx: ExtensionContext) => {
 		todos = [];
 		nextId = 1;
+		doc = undefined;
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
 			const msg = entry.message;
@@ -112,6 +118,7 @@ export default function (pi: ExtensionAPI) {
 			if (details) {
 				todos = details.todos;
 				nextId = details.nextId;
+				if (details.doc !== undefined) doc = details.doc;
 			}
 		}
 	};
@@ -130,9 +137,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: `Track tasks for this session. Actions: list, add (text), start (id), complete (id), defer (id), clear.
+		description: `Track tasks for this session. Actions: list, add (text), start (id), complete (id), defer (id), clear, setDoc (text).
 
-Use this as a lightweight index into your work plan. For multi-step tasks, store numbered/lettered steps with full detail in a TODO.md (or similar) in the repo, then add one-sentence summaries here referencing the doc path and step numbers (e.g. "Step 3 in TODO.md: wire up the new auth middleware"). This keeps high-level goals visible while you're deep in details.`,
+Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with text "docs/TODO.md"). Then add one-sentence summaries referencing step numbers from that doc (e.g. "Step 3: wire up the new auth middleware"). The doc path is shown in the widget so you always know where the details live.`,
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -140,6 +147,7 @@ Use this as a lightweight index into your work plan. For multi-step tasks, store
 				action: params.action,
 				todos: [...todos],
 				nextId,
+				doc,
 			});
 
 			switch (params.action) {
@@ -188,6 +196,21 @@ Use this as a lightweight index into your work plan. For multi-step tasks, store
 					todo.status = "in_progress";
 					return {
 						content: [{ type: "text", text: `Started #${todo.id}: ${todo.text}` }],
+						details: snapshot(),
+					};
+				}
+
+				case "setDoc": {
+					if (!params.text) {
+						doc = undefined;
+						return {
+							content: [{ type: "text", text: "Cleared doc path" }],
+							details: snapshot(),
+						};
+					}
+					doc = params.text;
+					return {
+						content: [{ type: "text", text: `Doc path set: ${doc}` }],
 						details: snapshot(),
 					};
 				}
@@ -300,6 +323,9 @@ Use this as a lightweight index into your work plan. For multi-step tasks, store
 
 			const text = result.content[0];
 			const msg = text?.type === "text" ? text.text : "";
+			if (details.action === "setDoc") {
+				return new Text(theme.fg("accent", "📄 ") + theme.fg("muted", msg), 0, 0);
+			}
 			return new Text(theme.fg("success", "✓ ") + theme.fg("muted", msg), 0, 0);
 		},
 	});
@@ -314,6 +340,7 @@ Use this as a lightweight index into your work plan. For multi-step tasks, store
 		const deferred = todos.filter((t) => t.status === "deferred");
 
 		const parts: string[] = [`● ${todos.length} tasks`];
+		if (doc) parts[0] += ` [${doc}]`;
 		if (active.length) parts.push(`${active.length} active`);
 		if (done.length) parts.push(`${done.length} done`);
 		if (deferred.length) parts.push(`${deferred.length} deferred`);
@@ -363,7 +390,7 @@ Use this as a lightweight index into your work plan. For multi-step tasks, store
 			}
 
 			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-				return new TodoListComponent(todos, theme, () => done());
+				return new TodoListComponent(todos, doc, theme, () => done());
 			});
 		},
 	});
