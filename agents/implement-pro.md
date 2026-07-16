@@ -1,4 +1,3 @@
-<!-- touched 2026-197 — verify-reviewer-guard WO-2026-012 — review_policy: required -->
 ---
 name: implement-pro
 description: "Default path for non-trivial feature work. Use for any implementation task that involves implicit invariants, multi-file changes with cross-file dependencies, new API surface, complex error handling / retry logic / state machines, or tasks where a broken first pass would be expensive to recover (downstream passes depend on the output, verification gate won't catch structural failures). Reads code, discovers patterns, makes implementation decisions, and produces working code. The orchestrator should delegate here when the work order has invariant_exhaustiveness: implicit."
@@ -260,8 +259,15 @@ report.
    (files modified, tests run, results, assumptions, deviations).
 2. **Launch both reviewers in parallel** by issuing two
    `subagent` tool calls in the same response — one for
-   `review-code` and one for `review-tests`. Both reviewers
-   inspect the same worktree snapshot you just finished in.
+   `review-code` and one for `review-tests`. Use `subagent`
+   here for the FIRST launch of each reviewer. For subsequent
+   rework rounds (after REJECT_AND_REWORK), use
+   `subagent_resume(session_id=<original-reviewer-id>,
+   task=<rework prompt>)` instead — that continues the prior
+   session in place, preserving the conversation, compactions,
+   and tracker entry, rather than spawning fresh and reseeding
+   context. Both reviewers inspect the same worktree snapshot
+   you just finished in.
 3. **Both calls MUST use `isolate: false` and MUST omit
    `cwd`.** This is critical: with `isolate: false`, no worktree
    is created for the reviewer, and with `cwd` omitted, the
@@ -270,7 +276,15 @@ report.
    would branch from HEAD and the reviewers would see a stale
    snapshot.) Do not pass `cwd`; do not pass `baseRef`. Pass
    `isolate: false` explicitly.
-4. **What to send each reviewer:** the work order text, your
+4. **Use relative paths for edits inside worktrees.** When your
+   worktree is active, use repo-relative paths (e.g.,
+   `agents/implement-pro.md`) in `edit`, `write`, and `read`
+   calls rather than absolute paths (e.g.,
+   `~/Developer/pi-config/agents/...`). Absolute paths resolve
+   against the filesystem root, bypassing worktree isolation —
+   edits land in the primary check-out instead of the worktree,
+   and the worktree branch ends up empty.
+5. **What to send each reviewer:** the work order text, your
    draft completion report, the list of files you changed, the
    tests you ran and their results, your assumptions/deviations,
    and any issues you encountered during implementation.
@@ -310,8 +324,18 @@ The reviewer returns one of:
   the completion report under `accepted_notes`.
 - **REJECT_AND_REWORK** — fix the issue, then re-run BOTH
   reviewers (not just the rejecting one — the fix may have
-  regressed what the other reviewer approved) against the updated
-  worktree.
+  regressed what the other reviewer approved). Re-run via
+  `subagent_resume(session_id=<original-id>, task=<fix
+  summary + new instructions>)` against the updated worktree,
+  NOT a fresh `subagent` call. The resumed session keeps the
+  same `subagent-<UUID>` so `subagent_status`,
+  `subagent_steer`, and `subagent_stop` continue to work, and
+  `subagent_review_status` sees the rework as continuing the
+  same child rather than a new spawn.
+
+Spawn fresh reviewers with `subagent`; resume prior reviewer
+sessions with `subagent_resume`. The two tools together let
+you iterate without burning the conversational context.
 
 Any CRITICAL or HIGH finding, any unmitigated MEDIUM finding, any
 reviewer failure or timeout, or any missing review → NOT complete.

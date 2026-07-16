@@ -185,7 +185,16 @@ Concretely, after launching the implementer:
      parent_session_id="subagent-<implementer-uuid>"
    )
    ```
-4. Compare `kindsPresent` against the implementer's
+4. **For rework rounds on an existing implementer session:**
+   the orchestrator (or implementer itself) can continue the
+   prior session instead of spawning fresh by invoking
+   `subagent_resume(session_id=<original-uuid>,
+   task=<rework prompt>)`. The resumed session shares the same
+   tracker key, so `subagent_review_status` reads the
+   continuous chain — there's no double-counting. Prefer resume
+   over fresh spawns when the prior session is still on disk
+   and the implementer's own context is the relevant artifact.
+5. Compare `kindsPresent` against the implementer's
    `requires_parent_reviewers`. Refuse `complete` if any required
    kind is missing.
 
@@ -231,6 +240,15 @@ subagent_review_status(
 #    Both kinds present -> `complete` is eligible.
 #    Any required kind missing -> refuse `complete`, route back to
 #    the implementer, or report partial/blocked.
+```
+
+**For a rework round on the same implementer:**
+```text
+# 4. Orchestrator launches a rework round
+subagent_resume(
+  session_id="subagent-1c901288-...",  # ← session id from round 1
+  task="Address the MEDIUM finding from review-code round 1 about handler extraction..."
+)
 ```
 
 ## Completion reports

@@ -226,7 +226,11 @@ also include:
 - **`test_coverage`** — one-line summary of what tests exist and
   what they exercise (the per-case matrix is `review-tests`'s job)
 - **`adversarial_reviews`** — both reviewer verdicts, session IDs,
-  rounds used, and remaining findings. Format:
+  rounds used, and remaining findings. When the implementer has
+  done rework rounds, the `childSessionId` values are stable
+  across rounds — the same reviewer's session is resumed via
+  `subagent_resume` between rounds, so the session id from round
+  1 == session id in round 2. Format:
   ```
   adversarial_reviews:
     review-code:    { verdict: APPROVED|APPROVED_WITH_NOTES|REJECT_AND_REWORK,
