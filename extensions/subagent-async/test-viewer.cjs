@@ -331,6 +331,73 @@ test("checkpoint tool", () => {
   eq(r, "checkpoint: Built the main UI component");
 });
 
+// ── Tests: formatTokens ────────────────────────────────────────────────────
+// NOTE: formatTokens and formatStatsLine are duplicated here as inline mirrors
+// of the functions in index.ts. This is the "acceptable alternative" per the
+// work order (WO-2026-009), chosen because the TypeScript functions are not
+// exported. The test reviewer audits index.ts directly to confirm the function
+// bodies match.
+
+console.log("\nformatTokens:");
+
+function formatTokens(count) {
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
+  return `${Math.round(count / 1000000)}M`;
+}
+
+test("0 tokens", () => eq(formatTokens(0), "0"));
+test("999 tokens", () => eq(formatTokens(999), "999"));
+test("1000 tokens = 1.0k", () => eq(formatTokens(1000), "1.0k"));
+test("9999 tokens = 10.0k (toFixed rounds)", () => eq(formatTokens(9999), "10.0k"));
+test("10000 tokens = 10k", () => eq(formatTokens(10000), "10k"));
+test("999999 tokens = 1000k", () => eq(formatTokens(999999), "1000k"));
+test("1000000 tokens = 1.0M", () => eq(formatTokens(1000000), "1.0M"));
+test("9999999 tokens = 10.0M", () => eq(formatTokens(9999999), "10.0M"));
+test("10000000 tokens = 10M", () => eq(formatTokens(10000000), "10M"));
+
+// ── Tests: formatStatsLine ──────────────────────────────────────────────────
+
+console.log("\nformatStatsLine:");
+
+function formatStatsLine(stats) {
+  const parts = [];
+  if (stats.input) parts.push(`\u2191${formatTokens(stats.input)}`);
+  if (stats.output) parts.push(`\u2193${formatTokens(stats.output)}`);
+  if (stats.cacheRead) parts.push(`R${formatTokens(stats.cacheRead)}`);
+  if (stats.cacheWrite) parts.push(`W${formatTokens(stats.cacheWrite)}`);
+  if ((stats.cacheRead > 0 || stats.cacheWrite > 0) && stats.latestCacheHitRate !== undefined) {
+    parts.push(`CH${stats.latestCacheHitRate.toFixed(1)}%`);
+  }
+  if (stats.cost) parts.push(`$${stats.cost.toFixed(3)}`);
+  return parts.join(" ");
+}
+
+test("empty stats (all zeros)", () => eq(formatStatsLine({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined }), ""));
+test("input only", () => eq(formatStatsLine({ input: 100, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined }), "\u2191100"));
+test("input and output", () => eq(formatStatsLine({ input: 1500, output: 2000, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined }), "\u21911.5k \u21932.0k"));
+test("full breakdown", () => eq(
+  formatStatsLine({ input: 5300000, output: 804000, cacheRead: 261000000, cacheWrite: 120000, cost: 18.064, latestCacheHitRate: 99.2 }),
+  "\u21915.3M \u2193804k R261M W120k CH99.2% $18.064"
+));
+test("full breakdown, zero cost", () => {
+  const result = formatStatsLine({ input: 5300000, output: 804000, cacheRead: 261000000, cacheWrite: 120000, cost: 0, latestCacheHitRate: 99.2 });
+  eq(result, "\u21915.3M \u2193804k R261M W120k CH99.2%");
+  eq(result.includes("$"), false, "cost segment should be omitted when cost is 0");
+});
+test("no CH% when cacheRead=0 and cacheWrite=0", () => {
+  const result = formatStatsLine({ input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: 99 });
+  eq(result.includes("CH"), false, "CH% should be omitted when both cacheRead and cacheWrite are 0");
+});
+test("no CH% when latestCacheHitRate is undefined", () => {
+  const result = formatStatsLine({ input: 1000, output: 500, cacheRead: 100, cacheWrite: 50, cost: 0, latestCacheHitRate: undefined });
+  eq(result.includes("CH"), false, "CH% should be omitted when latestCacheHitRate is undefined");
+});
+test("output-only (no input)", () => eq(formatStatsLine({ input: 0, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined }), "\u2193500"));
+test("cacheRead-only with rate", () => eq(formatStatsLine({ input: 0, output: 0, cacheRead: 100, cacheWrite: 0, cost: 0, latestCacheHitRate: 80.0 }), "R100 CH80.0%"));
+
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 
 process.on("exit", () => {

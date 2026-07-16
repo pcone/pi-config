@@ -242,6 +242,15 @@ interface SubagentProgress {
 	currentActivity: string;
 }
 
+interface UsageStats {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	latestCacheHitRate: number | undefined;
+}
+
 interface RunningSubagent {
 	proc: ChildProcess;
 	sessionId: string;
@@ -273,6 +282,8 @@ interface RunningSubagent {
 	// at spawn time when ctx is available; reused at stop time when ctx is
 	// out of scope inside the message_end handler.
 	parentTrackerKey: string;
+	// Cumulative token/cost usage stats for the subagent
+	usageStats: UsageStats;
 	// Captured from the child's RPC get_state response; set once after spawn.
 	// Used by subagent_resume to locate the session file for later continuation.
 	sessionFile?: string;
@@ -442,6 +453,14 @@ function extractFilesFromArgs(toolName: string, args: Record<string, any>): { re
 	return result;
 }
 
+function formatTokens(count: number): string {
+	if (count < 1000) return count.toString();
+	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+	if (count < 1000000) return `${Math.round(count / 1000)}k`;
+	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
+	return `${Math.round(count / 1000000)}M`;
+}
+
 function formatProgress(rs: RunningSubagent): string {
 	const p = rs.progress;
 	const elapsed = Math.round((Date.now() - rs.startedAt) / 1000);
@@ -567,6 +586,7 @@ async function spawnSubagent(
 		parentCwd: parentCwdForCleanup,
 		parentTrackerKey: getParentTrackerKey(ctx),
 		reviewParentRequirements: skipReview ? undefined : agent.reviewParentRequirements,
+		usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
 	};
 
 	// Unix socket server for external viewers
@@ -752,6 +772,16 @@ async function spawnSubagent(
 
 			if (msg.role === "assistant") {
 				rs.progress.turns++;
+				// Accumulate usage stats
+				rs.usageStats.input += msg.usage.input;
+				rs.usageStats.output += msg.usage.output;
+				rs.usageStats.cacheRead += msg.usage.cacheRead;
+				rs.usageStats.cacheWrite += msg.usage.cacheWrite;
+				rs.usageStats.cost += msg.usage.cost.total;
+				const promptTokens = msg.usage.input + msg.usage.cacheRead + msg.usage.cacheWrite;
+				if (promptTokens > 0) {
+					rs.usageStats.latestCacheHitRate = (msg.usage.cacheRead / promptTokens) * 100;
+				}
 				updateFooter(ctx);
 
 				// Hard turn limit
@@ -947,11 +977,13 @@ class LogViewer {
 		private lines: string[],
 		private agentName: string,
 		private sessionId: string,
+		private getStats: () => UsageStats,
 		private maxHeight: number = 15,
 	) {}
 
 	/* TUI state */
 	private lastLineCount = 0;
+	private lastStatsSnapshot = "";
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -961,16 +993,31 @@ class LogViewer {
 	}
 
 	render(width: number): string[] {
-		// Skip cache if lines have grown (live stream)
-		if (this.cachedLines && this.cachedWidth === width && this.lastLineCount === this.lines.length) {
+		const statsSnapshot = JSON.stringify(this.getStats());
+		// Skip cache if lines and stats haven't changed
+		if (this.cachedLines && this.cachedWidth === width && this.lastLineCount === this.lines.length && this.lastStatsSnapshot === statsSnapshot) {
 			return this.cachedLines;
 		}
 		this.lastLineCount = this.lines.length;
+		this.lastStatsSnapshot = statsSnapshot;
+
+		// Build stats line
+		const stats = this.getStats();
+		const statsParts: string[] = [];
+		if (stats.input) statsParts.push(`↑${formatTokens(stats.input)}`);
+		if (stats.output) statsParts.push(`↓${formatTokens(stats.output)}`);
+		if (stats.cacheRead) statsParts.push(`R${formatTokens(stats.cacheRead)}`);
+		if (stats.cacheWrite) statsParts.push(`W${formatTokens(stats.cacheWrite)}`);
+		if ((stats.cacheRead > 0 || stats.cacheWrite > 0) && stats.latestCacheHitRate !== undefined) {
+			statsParts.push(`CH${stats.latestCacheHitRate.toFixed(1)}%`);
+		}
+		if (stats.cost) statsParts.push(`$${stats.cost.toFixed(3)}`);
+		const statsLine = statsParts.length > 0 ? ` ${statsParts.join(" ")}` : "";
 
 		const tail = this.lines.slice(-this.maxHeight);
 		this.cachedLines = [
 			truncateToWidth(`▸ Subagent: ${this.agentName}  |  ${this.sessionId}`, width),
-			"",
+			truncateToWidth(statsLine, width),
 			...tail.map((l) => truncateToWidth(` ${l}`, width - 1)),
 		];
 		this.cachedWidth = width;
@@ -1116,6 +1163,7 @@ export default function (pi: ExtensionAPI) {
 					// in the meta file, we'd use it here instead.
 					parentTrackerKey: getParentTrackerKey(ctx),
 					reviewParentRequirements: undefined,
+					usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
 				};
 
 				// Monitor via socket — when it closes, subagent exited.
@@ -1217,6 +1265,7 @@ export default function (pi: ExtensionAPI) {
 				rs.logLines,
 				rs.agentName,
 				rs.sessionId,
+				() => rs.usageStats,
 			);
 			rs.watchHandle = ctx.ui.setWidget("subagent-watch", () => viewer, { placement: "belowEditor" });
 
