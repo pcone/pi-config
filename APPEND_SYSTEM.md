@@ -116,6 +116,47 @@ and let the reviewer branch from that ref. Do NOT pass
 `isolate: false` for orchestrator reviews of preserved branches —
 the implementer's isolation exception is theirs, not yours.
 
+## Reviewer invocation guard (option 2)
+
+For any code-changing work order, the implementer's harness enforces a
+soft-prompt guard at parent-stop time, and the orchestrator enforces
+the hard gate mechanically.
+
+### Harness — soft prompt
+
+- Every reviewer-kind launch is recorded per parent session id in
+  `/tmp/pi-subagent-<sessionId>.reviewers.json` (cross-process;
+  persisted across harness restart).
+- When an `implement-flash` / `implement-pro` child emits its final
+  text-only assistant message and has `requires_parent_reviewers`
+  populated, the harness reads the persisted tracker file, compares
+  against the gate, and if a required reviewer kind is missing,
+  injects a steer prompt into the child's RPC stdin and skips
+  `stdin.close()` so the corrective prompt re-enters the agent loop.
+- This is a soft prompt, not a hard stop. The orchestrator's
+  mechanical `subagent_review_status` check is the actual gate.
+- See `extensions/subagent-async/index.ts:622-665` (soft-prompt
+  block), `:1286-1334` (tool registration), `:25-137` (tracker).
+
+### Orchestrator — mechanical gate
+
+Before accepting any implementer `complete` report:
+
+```
+subagent_review_status(parent_session_id=<implementer's session id>)
+```
+
+Returns the persisted spawn list. For `review_policy: required`,
+verify each reviewer kind listed in the implementer's
+`reviewParentRequirements` is present with a session id that
+matches an outstanding verdict. Refuse `complete` if not.
+
+For `review_policy: skip`, accept the skip only if the
+implementer's `notes_for_orchestrator` cites the work order reason.
+
+`subagent_review_status` is itself a tool registered by the
+subagent extension; do not invent a separate mechanism.
+
 ## Completion reports
 
 When a subagent returns, act on its report:
