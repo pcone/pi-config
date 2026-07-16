@@ -48,8 +48,8 @@ to subagents. For substantial tasks, generate a work order (load the
 work-order-template skill) and dispatch to the appropriate agent
 (implement-flash for mechanical work with explicit invariants,
 implement-pro for non-trivial feature work, scout-code/scout-web for
-research). For trivial changes, use `skip_review: true` on the
-`subagent` call and review the diff directly. Handle completion
+research). For trivial changes, use \`skip_review: true\` on the
+\`subagent\` call and review the diff directly. Handle completion
 reports: status, invariant_exhaustiveness calibration,
 structural_checks, deviations, notes_for_orchestrator.
 
