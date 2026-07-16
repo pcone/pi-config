@@ -653,6 +653,12 @@ async function spawnSubagent(
 		stdio: ["pipe", "pipe", "pipe"],
 		env: {
 			...process.env,
+			// Marker that this process is a subagent. The modes extension
+			// (and any other extension that branches on orchestrator vs
+			// worker role) reads this to skip orchestrator-specific prompts
+			// like "you are the conductor." Set unconditionally so the
+			// signal is present even when allowedSubagents is empty.
+			PI_IS_SUBAGENT: "1",
 			...(agent.allowedSubagents && agent.allowedSubagents.length > 0
 				? { PI_SUBAGENT_ALLOWLIST: agent.allowedSubagents.join(",") }
 				: {}),

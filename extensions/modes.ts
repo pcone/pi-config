@@ -128,6 +128,16 @@ export default function modesExt(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event) => {
+		// Subagent sessions inherit the parent's mode setting from disk
+		// (e.g. ~/.pi/agent/modes.json), which causes them to receive the
+		// orchestrator's "you are the conductor" prompt and try to dispatch
+		// work to other subagents — wrong for a session that IS the worker.
+		// The subagent harness sets PI_IS_SUBAGENT=1 on every spawn; check
+		// it and skip both the brief and the mode-injection message for
+		// subagent sessions. The agent's own system prompt (e.g. implement-
+		// flash.md) carries the role-specific instructions.
+		if (process.env.PI_IS_SUBAGENT === "1") return {};
+
 		const out: { systemPrompt?: string; message?: unknown } = {
 			systemPrompt: event.systemPrompt + "\n\n" + MODES_BRIEF,
 		};
