@@ -6,7 +6,7 @@
  * Startup: 2D Pareto (avg score × cost) with thresholds — compact tier picks.
  * /tiers:  3D Pareto (avg score × cost × multimodal) — full frontier, no thresholds.
  *
- * Pricing assumes 98% cache hit, 75/25 input/output split.
+ * Pricing assumes 98% cache hit, 90/10 input/output split.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -102,8 +102,8 @@ const THRESHOLDS = {
 
 const CACHE_HIT_RATE = 0.98;
 const MISS_RATE = 0.02;
-const INPUT_RATIO = 0.75;
-const OUTPUT_RATIO = 0.25;
+const INPUT_RATIO = 0.90;
+const OUTPUT_RATIO = 0.10;
 
 // ---------------------------------------------------------------------------
 // Tier definitions
@@ -263,7 +263,8 @@ function computeBounds(benchmarks: BenchmarksResponse) {
   return { iMin, iMax, cMin, cMax, aMin, aMax };
 }
 
-function scoreModels(benchmarks: BenchmarksResponse, models: ModelsResponse): ScoredModel[] {
+// @for-testing-only — export is safe; scoreModels is pure (no IO, no pi globals)
+export function scoreModels(benchmarks: BenchmarksResponse, models: ModelsResponse): ScoredModel[] {
   const lookup = buildLookup(models);
   const bnd = computeBounds(benchmarks);
   const results: ScoredModel[] = [];
@@ -415,7 +416,8 @@ function paretoFilter2D(models: ScoredModel[]): ScoredModel[] {
 // Table rendering
 // ---------------------------------------------------------------------------
 
-function renderTable(models: ScoredModel[], title = "MODEL TIERS"): string {
+// @for-testing-only — export is safe; renderTable is pure (no IO, no pi globals)
+export function renderTable(models: ScoredModel[], title = "MODEL TIERS", oCostMin?: number, oCostMax?: number, oScoreMin?: number, oScoreMax?: number): string {
   const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
   const dim = (s: string) => `\x1b[2m${s}\x1b[22m`;
   const cyan = (s: string) => `\x1b[36m${s}\x1b[39m`;
@@ -433,7 +435,7 @@ function renderTable(models: ScoredModel[], title = "MODEL TIERS"): string {
 
   lines.push(
     bold(`  ${title}`) +
-      dim(`  ·  98% cache, 75/25 I/O  ·  I≥${THRESHOLDS.intelligence} C≥${THRESHOLDS.coding} A≥${THRESHOLDS.agentic}`),
+      dim(`  ·  98% cache, 90/10 I/O  ·  I≥${THRESHOLDS.intelligence} C≥${THRESHOLDS.coding} A≥${THRESHOLDS.agentic}`),
   );
 
   for (const tier of TIERS) {
@@ -491,7 +493,7 @@ function renderFullTable(models: ScoredModel[], dominatedCount: number, title: s
   const hidden = dominatedCount > 0 ? dim(`, −${dominatedCount} dominated`) : "";
   lines.push(
     bold(`  ${title}`) +
-      dim("  ·  98% cache, 75/25 I/O") +
+      dim("  ·  98% cache, 90/10 I/O") +
       hidden,
   );
 
