@@ -51,6 +51,61 @@ Other agents:
 Prefer dispatching implementation work to subagents. Load
 `work-order-template` for the schema.
 
+## Bounded post-implementation review (code-changing work)
+
+For any work order that changes executable code, tests, configuration,
+APIs/routes, or observable behavior, the implementer runs a bounded
+parallel review before reporting `complete`. Both `implement-flash`
+and `implement-pro` carry this requirement.
+
+The orchestrator's role is to enforce the gate at completion-time.
+Read the implementer's `adversarial_reviews` field and verify:
+
+- **Both reviewers ran** — `review-code` and `review-tests` each
+  have a verdict, session ID, and rounds used. A missing entry is
+  not "review skipped" — it is a gate failure.
+- **Verdicts are acceptable** — both `APPROVED`, or `APPROVED` plus
+  `APPROVED_WITH_NOTES` with all notes resolved or listed under
+  `accepted_notes` with rationale.
+- **No critical/high/unmitigated-medium findings remain** — any of
+  these → not complete. Route back to the implementer for rework.
+- **Review loop converged** — at most 3 rounds. If the implementer
+  reports `review loop did not converge`, surface it as
+  `partial` or `blocked`, never as `complete`.
+- **Test-coverage evidence is real** — `review-tests` reports a
+  per-case matrix with `file:line` evidence. "Tests pass" without
+  the matrix is not enough.
+
+If `review_policy: skip` is set on the work order, it is the
+orchestrator's deliberate choice (documentation-only change or an
+explicit justified exception). Do not silently re-introduce
+reviews for skipped work.
+
+### Structural checks the orchestrator must apply
+
+A `complete` report must also satisfy the structural checks from
+the work order's `StructuralRisks`:
+
+- Entry point correctness, input validation, test surface,
+  recovery logic, build passes, no unrequested changes — one
+  line per item, pass/fail.
+- A failed check is not "complete with notes" — it is a gate
+  failure.
+
+### Worktree handling for orchestrator-launched reviews
+
+The implementer-owned review step runs in the implementer's current
+worktree with `isolate: false` and `cwd` omitted — both reviewers
+see uncommitted changes. This is the bounded exception to
+subagent isolation.
+
+If YOU (the orchestrator) launch a review of a completed preserved
+branch (e.g. after a checkpoint, against a `pi-subagent-<id>`
+branch), use the standard isolation: pass `baseRef: <branch>`
+and let the reviewer branch from that ref. Do NOT pass
+`isolate: false` for orchestrator reviews of preserved branches —
+the implementer's isolation exception is theirs, not yours.
+
 ## Completion reports
 
 When a subagent returns, act on its report:
@@ -63,9 +118,13 @@ When a subagent returns, act on its report:
   (prefer Flash for similar future tasks).
 - **structural_checks** — any failure means the implementer flagged it
   for a reason; address before merging.
-- **assumptions_made / unexpected_changes / plan_mismatches** —
-  surface to the user; the work order may need correction, not just
-  the code.
+- **adversarial_reviews** — both reviewers signed off, or the
+  implementer reports `review loop did not converge`. Surface
+  blocked/partial; do not accept them as complete.
+- **assumptions_made / unexpected_changes / issues_encountered /
+  test_coverage** — surface anything that affects scope, test
+  adequacy, or routing. The work order may need correction, not
+  just the code.
 - **notes_for_orchestrator / notes_for_routing** — calibration data
   for future work orders.
 
