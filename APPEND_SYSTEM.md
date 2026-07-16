@@ -157,6 +157,12 @@ implementer's `notes_for_orchestrator` cites the work order reason.
 `subagent_review_status` is itself a tool registered by the
 subagent extension; do not invent a separate mechanism.
 
+The gate is per-kind, not per-round. Round N may legitimately have
+only the rejecting reviewer's kind in `subagent_review_status.spawns`
+(e.g. only `tests` if the fix was additive). The orchestrator should
+accept that as a non-defective `complete` — it does not indicate a
+missing reviewer.
+
 ### Calling `subagent_review_status` correctly (the parent id)
 
 The `parent_session_id` you pass to `subagent_review_status` is the

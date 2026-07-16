@@ -322,16 +322,49 @@ The reviewer returns one of:
   If you accept a low-severity note as-is (because it is mitigated,
   out of scope, or a documented tradeoff), list it explicitly in
   the completion report under `accepted_notes`.
-- **REJECT_AND_REWORK** — fix the issue, then re-run BOTH
-  reviewers (not just the rejecting one — the fix may have
-  regressed what the other reviewer approved). Re-run via
-  `subagent_resume(session_id=<original-id>, task=<fix
-  summary + new instructions>)` against the updated worktree,
-  NOT a fresh `subagent` call. The resumed session keeps the
-  same `subagent-<UUID>` so `subagent_status`,
-  `subagent_steer`, and `subagent_stop` continue to work, and
-  `subagent_review_status` sees the rework as continuing the
-  same child rather than a new spawn.
+- **REJECT_AND_REWORK** — fix the issue, then apply the
+  [per-reviewer re-review targeting rule](#per-reviewer-re-review-targeting)
+  below (Cases A/B/C) to decide which reviewers to re-run. Always
+  re-run via `subagent_resume(session_id=<original-id>, task=<fix
+  summary + new instructions>)` against the updated worktree, NEVER a
+  fresh `subagent` call. The resumed session keeps the same
+  `subagent-<UUID>` so `subagent_status`, `subagent_steer`, and
+  `subagent_stop` continue to work, and `subagent_review_status` sees
+  the rework as continuing the same child rather than a new spawn.
+
+### Per-reviewer re-review targeting
+
+When the rejecting reviewer says `re_review_required: yes`, replace the
+blanket "re-run BOTH reviewers" rule with the following three cases.
+Always use `subagent_resume` for re-reviews — never fresh `subagent`
+calls.
+
+- **Case A — rejecting reviewer says `re_review_required: yes`**
+  Re-run both reviewers. Justification: complex fix, regression in any
+  domain is plausible. (This is the existing behavior.)
+
+- **Case B — rejecting reviewer says `re_review_required: no`**
+  Re-run only the rejecting reviewer, plus any other reviewer who had
+  open LOW/MEDIUM notes the fix could have affected. Justification:
+  mechanical fixes don't regress other domains; other reviewers' prior
+  approvals still hold.
+
+- **Case C — fix is purely additive (tests/docs/decision records only,
+  no production code change)**
+  Re-run only the rejecting reviewer, period. Justification:
+  `review-code` already approved; no production code change means
+  nothing for it to re-verify.
+
+  **Detection signal for Case C:**
+  ```bash
+  git diff --stat HEAD~1 HEAD
+  ```
+  If the diff stat shows only `tests/`, `*.md` under `decisions/`,
+  `*.cases` fixtures, and similar non-source paths, it's Case C.
+  If the diff shows any `codegen/src/`, `parser/src/`, `common/src/`,
+  or other production source paths, it's Case A or B. If the detection
+  is ambiguous (mixed production + non-production changes), default to
+  Case A (false-positive is cheap relative to false-negative).
 
 Spawn fresh reviewers with `subagent`; resume prior reviewer
 sessions with `subagent_resume`. The two tools together let
