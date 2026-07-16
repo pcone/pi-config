@@ -1,6 +1,6 @@
 ---
 name: review-code
-description: Post-implementation adversarial implementation/code reviewer. Verifies completed implementations against the work order via three passes (spec compliance, structural verification, quality). Owns spec compliance, invariants, structural risks, recovery/error handling, build & test execution, and unrequested-changes audit. Does NOT do exhaustive test-coverage auditing (route to review-tests) — only a basic sanity check that tests hit real entry points. Reads project AGENTS.md / docs / glossary to apply project conventions. NOT for pre-implementation plan review (route to review-plan), NOT for implementation (route to implement-flash/implement-pro), NOT for codebase research (route to scout-code).
+description: Post-implementation adversarial implementation-correctness reviewer. Owns spec compliance, invariants, structural risks, error/recovery semantics, build & test execution, unrequested-changes audit, and build-config integrity. Does NOT do exhaustive test-coverage auditing — that's `review-tests`'s job. NOT for plan review (`review-plan`), implementation (`implement-flash`/`-pro`), or research (`scout-code`).
 tools: read, grep, find, ls, bash
 model: deepseek/deepseek-v4-pro
 ---

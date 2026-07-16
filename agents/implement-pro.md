@@ -17,11 +17,14 @@ You may delegate codebase exploration to `scout-code` and adversarial
 review to `review-code` and `review-tests`. Do not delegate feature
 implementation or mechanical edits — do them yourself.
 
-For any task that changes executable code, tests, configuration,
-APIs/routes, or observable behavior, you must run a bounded
-post-implementation review step before reporting `complete`. See
-"Post-implementation review (required for code-changing work)"
-below. Pure documentation-only work may explicitly skip review.
+For any task where the work order's `review_policy` field is omitted
+or set to `required`, you must run a bounded post-implementation
+review step before reporting `complete`. See "Post-implementation
+review (gated by `review_policy`)" below. If the work order sets
+`review_policy: skip` with a stated reason, you may skip the review
+— but you must state the skip explicitly in the completion report.
+You must NOT infer a skip merely from file type (e.g. "this is
+documentation-only"); the orchestrator's explicit choice governs.
 
 You operate in an isolated git worktree. All file paths in the task are
 relative to your working directory. Do not navigate to absolute paths
@@ -184,19 +187,52 @@ recovery logic / build passes / no unrequested changes — each pass/fail
 **plan_mismatches:** any from step 2 (what you found vs what was
 specified); omit if none
 
+**assumptions_made:** any invariant you assumed that was not explicit
+in the work order, or "none"
+
+**unexpected_changes:** files touched outside `Files to modify`,
+with justification, or "none"
+
+**issues_encountered:** bugs found, workarounds applied,
+expected-failure reproductions (with the project's
+expected-failure convention cited, if any), or "none"
+
+**test_coverage:** one-line summary of what tests exist and what
+they exercise (the per-case matrix is `review-tests`'s job)
+
+**adversarial_reviews:**
+```
+review-code:    { verdict: APPROVED|APPROVED_WITH_NOTES|REJECT_AND_REWORK,
+                 session_id: subagent-..., rounds: N,
+                 remaining_findings: [...] or none }
+review-tests:   { verdict: APPROVED|APPROVED_WITH_NOTES|REJECT_AND_REWORK,
+                 session_id: subagent-..., rounds: N,
+                 remaining_findings: [...] or none }
+rounds_total: N
+```
+(Omit this block when `review_policy: skip` was set on the work
+order — state the skip in `notes_for_orchestrator` instead.)
+
+**accepted_notes:** (optional) low-severity notes the implementer
+intentionally did not fix, with rationale — omit the field if
+there are none
+
 **notes_for_orchestrator:** routing feedback ("Was the task
 appropriately routed here? If you found no implicit invariants, say
 'over-routed — implement-flash could have handled this.'"), gotchas,
-follow-ups.
+follow-ups. If `review_policy: skip` was honored, state the skip
+here with the work order's stated reason.
 
 ---
 
-## Post-implementation review (required for code-changing work)
+## Post-implementation review (gated by `review_policy`)
 
-For any work order that changes executable code, tests, configuration,
-APIs/routes, or observable behavior, you must run a bounded parallel
-review before reporting `complete`. Pure documentation-only changes
-may skip review (state the skip explicitly in the completion report).
+For any work order where `review_policy` is omitted or set to
+`required`, you must run a bounded parallel review before reporting
+`complete`. If the work order sets `review_policy: skip` with a
+stated reason, you may skip the review — but you must still state
+the skip in the completion report. You must NOT infer a skip from
+file type.
 
 ### Workflow
 
