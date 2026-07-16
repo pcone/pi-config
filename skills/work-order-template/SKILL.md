@@ -42,6 +42,13 @@ Your work order quality directly determines whether the implementer succeeds on 
 - **invariant_exhaustiveness**: explicit | implicit
 - **priority**: critical | normal | low
 - **estimated_complexity**: trivial | moderate | complex
+- **review_policy**: required | skip
+  - Default `required` for any work order that changes executable code,
+    tests, configuration, APIs/routes, or observable behavior. Set
+    `skip` only for documentation-only changes, or when there is an
+    explicit justified exception (state the reason in the task
+    summary). The implementer will not silently skip — a `skip`
+    value is a deliberate orchestrator choice.
 
 ### Task Summary
 
@@ -68,7 +75,37 @@ Your work order quality directly determines whether the implementer succeeds on 
 
 **Detailed requirements**: <step-by-step description of what to implement. Be specific about behavior, not just structure.>
 
-**Integration contract**: <how this code connects to the rest of the system — what calls it, what it calls, what interfaces it must implement, what types it must produce/consume>
+**Required test boundary**: <the cheapest stable externally observable
+entry point through which tests must exercise the behavior — public
+API, CLI command, compiler driver, HTTP endpoint. For pure,
+deterministic, inexpensive input/output transformers, end-to-end /
+oracle / golden tests through this boundary are the primary
+correctness evidence. Unit tests may supplement but do not replace
+them. State the boundary explicitly; do not let the implementer
+guess.>
+
+**Behavior and failure matrix**: <the cases the implementation must
+satisfy, organized as a non-overlapping matrix that the test reviewer
+can audit row by row. Cover at minimum:
+
+- Success paths the work order requests
+- Validation, malformed, empty, boundary, and failure paths
+- Retry, timeout, recovery, and partial-failure behavior (when relevant)
+- Regressions for every issue fixed or discovered during implementation
+
+Each row should name the case precisely. The implementer's tests and
+the test reviewer's coverage matrix both target these rows.>
+
+**Representation-level checks**: <only when applicable — IR shape,
+generated code, optimization invariants, internal data-structure
+checks. These supplement behavioral tests but do not replace them.
+Specify which representations must hold and how the implementer
+should assert them. Omit this subsection if the work order has no
+representation-level concerns.>
+
+**Integration contract**: <how this code connects to the rest of the
+system — what calls it, what it calls, what interfaces it must
+implement, what types it must produce/consume>
 
 **Reference patterns**: <point to existing code in the repo that demonstrates the style/convention to follow. E.g., "follow the pattern in `passes/constant_folding.rs` for pass registration and visitor implementation">
 
@@ -118,6 +155,13 @@ The implementer must verify all of the following before reporting completion.
 **Test surface requirements**:
 - <e.g., "Integration tests must call the actual `compile()` entry point, not internal pass functions directly">
 - <e.g., "Tests must exercise the error path, not just the happy path">
+- Tests must hit the **Required test boundary** declared above. If the
+  implementer only writes internal-helper tests for a public-API
+  change, the test reviewer will mark that INADEQUATE.
+- For pure deterministic transformers with a cheap stable public
+  boundary, end-to-end / oracle / golden tests are primary;
+  unit tests are supplemental. State this explicitly when it
+  applies.
 
 **Build requirements**:
 - <e.g., "`cargo build` succeeds with no warnings related to this change">
@@ -161,12 +205,47 @@ If you are `implement-flash` and during your invariant enumeration step you disc
 
 ### Completion Report Format
 
-The implementer must produce a completion report in their final assistant message. The schema depends on which agent:
+The implementer must produce a completion report in their final assistant
+message. The schema depends on which agent:
 
 - **`implement-flash`** uses: status / invariant_exhaustiveness / files_modified / tests / structural_checks / deviations_from_spec / notes_for_orchestrator
 - **`implement-pro`** uses the same fields plus: deviations_from_spec (required), plan_mismatches (when applicable), notes_for_orchestrator (with explicit routing feedback)
 
+For code-changing work that ran the post-implementation review (i.e.
+`review_policy: required` and not explicitly skipped), every
+completion report — regardless of which implementer ran it — must
+also include:
+
+- **`assumptions_made`** — any invariant the implementer assumed that
+  was not explicit in the work order
+- **`unexpected_changes`** — files touched outside `Files to modify`,
+  with justification
+- **`issues_encountered`** — bugs found, workarounds applied,
+  expected-failure reproductions (with the project's
+  expected-failure convention cited, if any)
+- **`test_coverage`** — one-line summary of what tests exist and
+  what they exercise (the per-case matrix is `review-tests`'s job)
+- **`adversarial_reviews`** — both reviewer verdicts, session IDs,
+  rounds used, and remaining findings. Format:
+  ```
+  adversarial_reviews:
+    review-code:    { verdict: APPROVED|APPROVED_WITH_NOTES|REJECT_AND_REWORK,
+                     session_id: subagent-..., rounds: N,
+                     remaining_findings: [...] or none }
+    review-tests:   { verdict: ..., session_id: ..., rounds: N,
+                     remaining_findings: [...] or none }
+    rounds_total: N
+  ```
+- **`accepted_notes`** (optional) — low-severity notes the
+  implementer intentionally did not fix, with rationale
+
 See the agent's system prompt for the exact schema.
+
+A `complete` status requires both reviewers to be APPROVED (or
+APPROVED_WITH_NOTES with all notes resolved or accepted). Any
+REJECT_AND_REWORK, any critical/high finding, any unmitigated medium
+finding, any reviewer failure or timeout, or any missing review →
+not complete. Report `partial` or `blocked` instead.
 
 ---
 
