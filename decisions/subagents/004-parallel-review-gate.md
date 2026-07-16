@@ -199,3 +199,38 @@ never accepts a non-converged loop as `complete`.
   Rejected: adds a layer that the implementer can already perform
   directly with two `subagent` calls. The implementer is the right
   owner because it has the context and the worktree.
+
+## Reviewer invocation guard (amendment)
+
+Implemented in `WO-2026-011`. Adds a soft-prompt guard at the
+implementer's stop and a mechanical orchestrator check via
+`subagent_review_status`.
+
+- Soft prompt: `extensions/subagent-async/index.ts:622-665`. Skips
+  `stdin.close()` so the corrective prompt re-enters the agent loop.
+  Rationale: a hard stop would lose model state for the corrective
+  path; the orchestrator's mechanical check is the actual gate.
+- Persistent tracker: `/tmp/pi-subagent-<sessionId>.reviewers.json`.
+  Cross-process; survives harness restart. The orchestrator reads
+  it via `subagent_review_status` and the harness reads it via
+  `readPersistedSpawns` for the soft-prompt check, so both
+  mechanisms share one source of truth.
+- `reviewer_kind` frontmatter: `implementation` for `review-code`,
+  `tests` for `review-tests`. `requires_parent_reviewers` lists the
+  reviewer kinds each implementer must spawn before stop; empty
+  for reviewers (no recursion).
+- Routing-feedback phrasing reform: reflexive
+  "over-routed — implement-pro could have handled this" replaced
+  with a conditional keyed to the work order's `routed_to` and the
+  discovered `invariant_exhaustiveness` so the stock phrase is no
+  longer reflexive.
+
+Tradeoffs (extension):
+
+- **Per-spawn disk write**: every reviewer spawn writes a JSON file.
+  Negligible cost; tracked in `extensions/subagent-async/index.ts:73-87`.
+- **Soft-prompt vs. hard-stop**: chose soft prompt to preserve model
+  state. A misbehaving implementer could still self-correct rather
+  than be killed, which is desirable for a gate whose primary job
+  is to surface missing actions to the orchestrator, not to punish
+  the agent.

@@ -2,6 +2,7 @@
 name: implement-flash
 description: "Cheap variant for mechanical, well-scoped implementation — boilerplate, test scaffolding, simple function implementations, straightforward pattern-matching, formatting/renaming, fixture generation. Route here when the work order has invariant_exhaustiveness: explicit, touches 1–2 files, has no new API surface, and the approach is obvious from the spec. Do NOT use for tasks involving implicit invariants, IR/type system logic, multi-file cross-dependencies, or anything requiring deep reasoning. Use proactively to conserve implement-pro budget."
 model: deepseek/deepseek-v4-flash
+requires_parent_reviewers: implementation,tests
 allowedSubagents: scout-code, review-code, review-tests
 excludeTools: checkpoint_fork, checkpoint_search
 ---
@@ -191,10 +192,18 @@ order — state the skip in `notes_for_orchestrator` instead.)
 intentionally did not fix, with rationale — omit the field if
 there are none
 
-**notes_for_orchestrator:** routing feedback ("Was the task
-appropriately routed here? If you found no implicit invariants,
-say 'over-routed — implement-pro could have handled this.'"),
-gotchas, follow-ups. If `review_policy: skip` was honored, state
+**notes_for_orchestrator:** routing feedback:
+- If the work order listed `routed_to: implement-pro` and you discovered
+  `invariant_exhaustiveness: explicit` after your invariant enumeration,
+  suggest "over-routed — implement-flash could have handled this".
+- If the work order listed `routed_to: implement-flash` and you discovered
+  `invariant_exhaustiveness: implicit` after your enumeration, suggest
+  "misrouted — implement-pro should have handled this".
+- Otherwise, default to: "Tasks touching agent prompts / work-order
+  templates / decision records often belong on `implement-pro` even when
+  FLASH-routable in isolation. If you found no implicit invariants,
+  mention which invariants the work order already covered."
+Gotchas, follow-ups. If `review_policy: skip` was honored, state
 the skip here with the work order's stated reason.
 
 ---
@@ -207,6 +216,15 @@ For any work order where `review_policy` is omitted or set to
 stated reason, you may skip the review — but you must still state
 the skip in the completion report. You must NOT infer a skip from
 file type.
+
+You MUST actually invoke the `subagent` tool to launch reviewers. The
+harness tracks each `subagent(...)` call and exposes the result via
+`subagent_review_status(parent_session_id)`. Reporting reviewers in the
+completion report without actually spawning them will fail the
+orchestrator's mechanical gate. If `subagent_review_status` reports fewer
+reviewer kinds than the work order requires, the implementer must (a) spawn
+the missing reviewers, (b) wait for results, (c) update the completion
+report.
 
 ### Workflow
 
