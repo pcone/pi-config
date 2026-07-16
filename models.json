@@ -3,10 +3,10 @@
     "openrouter": {
       "modelOverrides": {
         "z-ai/glm-5.2": {
-          "cost": { "input": 1.40, "output": 4.40, "cacheRead": 0.14, "cacheWrite": 0 },
+          "cost": { "input": 0.96, "output": 3.01, "cacheRead": 0.18, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
-              "only": ["fireworks"],
+              "order": ["z-ai", "streamlake", "novita"],
               "allow_fallbacks": true
             }
           }
@@ -33,8 +33,8 @@
           "cost": { "input": 0.14, "output": 0.28, "cacheRead": 0.0028, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
-              "only": ["deepseek"],
-              "allow_fallbacks": false
+              "order": ["deepseek", "novita", "streamlake"],
+              "allow_fallbacks": true
             }
           }
         },
@@ -48,11 +48,20 @@
           }
         },
         "xiaomi/mimo-v2.5-pro": {
-          "cost": { "input": 0.435, "output": 0.87, "cacheRead": 0.0036, "cacheWrite": 0 },
+          "cost": { "input": 0.43, "output": 0.87, "cacheRead": 0.0036, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
-              "only": ["xiaomi"],
-              "allow_fallbacks": false
+              "order": ["xiaomi", "novita"],
+              "allow_fallbacks": true
+            }
+          }
+        },
+        "minimax/minimax-m3": {
+          "cost": { "input": 0.30, "output": 1.20, "cacheRead": 0.06, "cacheWrite": 0 },
+          "compat": {
+            "openRouterRouting": {
+              "order": ["minimax", "novita"],
+              "allow_fallbacks": true
             }
           }
         }
