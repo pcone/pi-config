@@ -24,6 +24,7 @@ const MAX_TURNS_HARD = 500;
 const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const HARD_KILL_DELAY_MS = 5000;
 const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
+const REVIEW_ROUND_CAP = 3;
 
 // ── Reviewer-spawn tracker ────────────────────────────────────────────────
 //
@@ -55,7 +56,13 @@ interface SpawnEntry {
 	spawnedAt: number;
 }
 
-const parentReviewerSpawns = new Map<string, SpawnEntry[]>();
+interface TrackerState {
+	spawns: SpawnEntry[];
+	reviewRounds: number;
+	reviewCapReached: boolean;
+}
+
+const parentReviewerSpawns = new Map<string, TrackerState>();
 
 /** Stable key for tracker persistence and cross-process lookup. */
 function getParentTrackerKey(ctx: any): string {
@@ -76,9 +83,13 @@ function reviewStatusPath(parentKey: string): string {
 }
 
 function recordReviewerSpawn(parentKey: string, entry: SpawnEntry): void {
-	const list = parentReviewerSpawns.get(parentKey) ?? [];
-	list.push(entry);
-	parentReviewerSpawns.set(parentKey, list);
+	const state = parentReviewerSpawns.get(parentKey) ?? { spawns: [], reviewRounds: 0, reviewCapReached: false };
+	state.spawns.push(entry);
+	state.reviewRounds++;
+	if (state.reviewRounds >= REVIEW_ROUND_CAP) {
+		state.reviewCapReached = true;
+	}
+	parentReviewerSpawns.set(parentKey, state);
 
 	// Persist atomically: write to a temp file then rename. Avoids partial
 	// reads if the orchestrator polls while we write.
@@ -88,7 +99,9 @@ function recordReviewerSpawn(parentKey: string, entry: SpawnEntry): void {
 		fs.writeFileSync(tmp, JSON.stringify({
 			parentSessionId: parentKey,
 			updatedAt: Date.now(),
-			spawns: list,
+			spawns: state.spawns,
+			reviewRounds: state.reviewRounds,
+			reviewCapReached: state.reviewCapReached,
 		}, null, 2));
 		fs.renameSync(tmp, target);
 	} catch (e) {
@@ -102,18 +115,21 @@ function recordReviewerSpawn(parentKey: string, entry: SpawnEntry): void {
  *      child's tracker file).
  *   2. The `subagent_review_status` tool (orchestrator's harness reads the
  *      implementer's tracker file).
- * Returns an empty list on any error (missing file, parse failure, IO error).
+ * Returns an empty TrackerState on any error (missing file, parse failure, IO error).
  * Never throws — this is a best-effort signal; gate enforcement belongs to the
  * orchestrator, not the harness.
  */
-function readPersistedSpawns(parentSessionId: string): SpawnEntry[] {
+function readPersistedSpawns(parentSessionId: string): TrackerState {
 	try {
 		const path = reviewStatusPath(parentSessionId);
 		const raw = fs.readFileSync(path, "utf-8");
 		const parsed = JSON.parse(raw);
-		if (Array.isArray(parsed.spawns)) return parsed.spawns as SpawnEntry[];
+		const spawns = Array.isArray(parsed.spawns) ? parsed.spawns as SpawnEntry[] : [];
+		const reviewRounds = typeof parsed.reviewRounds === "number" ? parsed.reviewRounds : spawns.length > 0 ? 1 : 0;
+		const reviewCapReached = parsed.reviewCapReached === true;
+		return { spawns, reviewRounds, reviewCapReached };
 	} catch { /* missing or malformed — treat as empty */ }
-	return [];
+	return { spawns: [], reviewRounds: 0, reviewCapReached: false };
 }
 
 /** Drop the in-memory entry when a parent ends (avoid growth across sessions). */
@@ -778,13 +794,19 @@ async function spawnSubagent(
 					// keyed by its own pi session ID (obtained via
 					// getParentTrackerKey inside the child process). We read
 					// by `rs.piSessionId` (captured from the child's get_state
-					// response) so the file key matches. Fall back to the
-					// extension-level key if piSessionId was never captured.
-					const trackerKey = rs.piSessionId || rs.sessionId;
-					const persisted = readPersistedSpawns(trackerKey);
-					const spawnedKinds = new Set(persisted.map((s) => s.reviewerKind));
+					// response) so the file key matches. If get_state never
+					// responded (child crashed before responding), skip the
+					// soft-prompt guard — the orchestrator's mechanical
+					// `subagent_review_status` check is the real gate.
+					if (!rs.piSessionId) {
+						debugLog(`review-gate: piSessionId not captured, skipping soft-prompt guard`);
+						// Fall through to isDone/completion logic below
+					} else {
+					const trackerKey = rs.piSessionId;
+					const trackerState = readPersistedSpawns(trackerKey);
+					const spawnedKinds = new Set(trackerState.spawns.map((s) => s.reviewerKind));
 					const missing = required.filter((k) => !spawnedKinds.has(k));
-					if (missing.length > 0) {
+					if (missing.length > 0 && !trackerState.reviewCapReached) {
 						const message =
 							`[review-gate] You returned a final message without spawning all required reviewers. ` +
 							`Missing: ${missing.join(", ")}. Per your post-implementation review section, you must launch ` +
@@ -806,7 +828,8 @@ async function spawnSubagent(
 						// corrective prompt to act on.
 						return;
 					}
-				}
+					} // end else (piSessionId captured)
+				} // end if (required)
 
 					rs.progress.currentActivity = "completed, closing session";
 					rs.isDone = true;
@@ -1304,6 +1327,14 @@ export default function (pi: ExtensionAPI) {
 			let isolationStatus = "";
 			let taskForAgent = params.task;
 
+			// Reviewers default to sharing the caller's worktree — they need
+			// to see the implementer's uncommitted changes. But if the caller
+			// explicitly passes baseRef (a specific branch/commit), the reviewer
+			// gets its own worktree branched from that ref.
+			if (agent.reviewerKind && params.isolate === undefined && !params.baseRef) {
+				params.isolate = false;
+			}
+
 			if (params.isolate !== false) {
 				const wt = await createWorktree(cwd, sessionId, params.baseRef);
 				if (wt) {
@@ -1474,11 +1505,11 @@ export default function (pi: ExtensionAPI) {
 			"this to refuse `complete` until the implementer's tracker shows all required " +
 			"kinds. Output is a JSON object with `parentSessionId`, `updatedAt`, " +
 			"`kindsPresent`, `kindsMissing` (relative to no requirement list — always empty), " +
-			"and `spawns` (one entry per spawn).",
+			"`reviewRounds`, `reviewCapReached`, and `spawns` (one entry per spawn).",
 		parameters: ReviewStatusParams,
 		async execute(_toolCallId, params) {
 			const parentSessionId = params.parent_session_id;
-			const spawns = readPersistedSpawns(parentSessionId);
+			const trackerState = readPersistedSpawns(parentSessionId);
 			// updatedAt is informational; recompute from file mtime if available
 			let updatedAt: number | null = null;
 			try {
@@ -1486,13 +1517,15 @@ export default function (pi: ExtensionAPI) {
 				const stat = fs.statSync(path);
 				updatedAt = stat.mtimeMs;
 			} catch { /* missing file — updatedAt stays null */ }
-			const kindsPresent = Array.from(new Set(spawns.map((s) => s.reviewerKind))).sort();
+			const kindsPresent = Array.from(new Set(trackerState.spawns.map((s) => s.reviewerKind))).sort();
 			const payload = {
 				parentSessionId,
 				updatedAt,
 				kindsPresent,
 				kindsMissing: [], // populated by orchestrator if it knows the requirement set
-				spawns,
+				reviewRounds: trackerState.reviewRounds,
+				reviewCapReached: trackerState.reviewCapReached,
+				spawns: trackerState.spawns,
 			};
 			return {
 				content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
