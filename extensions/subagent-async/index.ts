@@ -1370,6 +1370,18 @@ export default function (pi: ExtensionAPI) {
 		),
 	});
 
+	// If the orchestrator passed review_policy: "skip" as a tool param but did
+	// not include the canonical bullet in the work order text, append it so
+	// the implementer's own agent-level reasoning (Gate B) matches the
+	// harness's gate suppression (Gate A). Single source of truth: the tool
+	// arg. Work-order text is the fallback for non-subagent dispatch paths.
+	function maybeInjectReviewPolicySkip(task: string, reviewPolicy: "required" | "skip" | undefined): string {
+		if (reviewPolicy !== "skip") return task;
+		if (/^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task)) return task;
+		const skipLine = "\n\n- **review_policy**: skip (set by orchestrator on the subagent call — do not spawn reviewers; orchestrator will review the diff directly)";
+		return task + skipLine;
+	}
+
 	// ── subagent ───────────────────────────────────────────────────────
 
 	pi.registerTool({
@@ -1466,7 +1478,7 @@ export default function (pi: ExtensionAPI) {
 				pi,
 				ctx,
 				agent,
-				taskForAgent,
+				maybeInjectReviewPolicySkip(taskForAgent, params.review_policy),
 				effectiveCwd,
 				sessionId,
 				parentModel,
