@@ -17,7 +17,7 @@ interface Todo {
 }
 
 interface TodoDetails {
-	action: "list" | "add" | "start" | "complete" | "defer" | "clear" | "setDoc";
+	action: "list" | "add" | "start" | "complete" | "defer" | "clear" | "setDoc" | "remove" | "edit";
 	todos: Todo[];
 	nextId: number;
 	doc?: string;
@@ -25,9 +25,9 @@ interface TodoDetails {
 }
 
 const TodoParams = Type.Object({
-	action: StringEnum(["list", "add", "start", "complete", "defer", "clear", "setDoc"] as const),
-	text: Type.Optional(Type.String({ description: "Task description (for add) or doc path (for setDoc)" })),
-	id: Type.Optional(Type.Number({ description: "Task ID (for start/complete/defer)" })),
+	action: StringEnum(["list", "add", "start", "complete", "defer", "clear", "setDoc", "remove", "edit"] as const),
+	text: Type.Optional(Type.String({ description: "Task description (for add), new text (for edit), or doc path (for setDoc)" })),
+	id: Type.Optional(Type.Number({ description: "Task ID (for start/complete/defer/remove/edit)" })),
 });
 
 const MAX_VISIBLE = 4;
@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: `Track tasks for this session. Actions: list, add (text), start (id), complete (id), defer (id), clear, setDoc (text).
+		description: `Track tasks for this session. Actions: list, add (text), start (id), complete (id), defer (id), remove (id), edit (id, text), clear, setDoc (text).
 
 Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with text "docs/TODO.md"). Then add one-sentence summaries referencing step numbers from that doc (e.g. "Step 3: wire up the new auth middleware"). The doc path is shown in the widget so you always know where the details live.`,
 		parameters: TodoParams,
@@ -273,6 +273,56 @@ Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with
 								text: `#${todo.id} ${todo.status === "deferred" ? "deferred" : "un-deferred"}: ${todo.text}`,
 							},
 						],
+						details: snapshot(),
+					};
+				}
+
+				case "remove": {
+					if (params.id === undefined) {
+						return {
+							content: [{ type: "text", text: "Error: id required for remove" }],
+							details: { ...snapshot(), error: "id required" },
+						};
+					}
+					const removeTodo = todos.find((t) => t.id === params.id);
+					if (!removeTodo) {
+						return {
+							content: [{ type: "text", text: `#${params.id} not found` }],
+							details: { ...snapshot(), error: `#${params.id} not found` },
+						};
+					}
+					const removedText = removeTodo.text;
+					todos = todos.filter((t) => t.id !== params.id);
+					return {
+						content: [{ type: "text", text: `Removed #${params.id}: ${removedText}` }],
+						details: snapshot(),
+					};
+				}
+
+				case "edit": {
+					if (params.id === undefined) {
+						return {
+							content: [{ type: "text", text: "Error: id required for edit" }],
+							details: { ...snapshot(), error: "id required" },
+						};
+					}
+					if (!params.text) {
+						return {
+							content: [{ type: "text", text: "Error: text required for edit" }],
+							details: { ...snapshot(), error: "text required" },
+						};
+					}
+					const editTodo = todos.find((t) => t.id === params.id);
+					if (!editTodo) {
+						return {
+							content: [{ type: "text", text: `#${params.id} not found` }],
+							details: { ...snapshot(), error: `#${params.id} not found` },
+						};
+					}
+					const oldText = editTodo.text;
+					editTodo.text = params.text;
+					return {
+						content: [{ type: "text", text: `Edited #${editTodo.id}: "${oldText}" → "${editTodo.text}"` }],
 						details: snapshot(),
 					};
 				}
