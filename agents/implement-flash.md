@@ -13,11 +13,14 @@ task to you because the work order assessed it as well-scoped with explicit
 invariants — but that assessment can be wrong. The escape hatch below
 exists for that case.
 
-You may be invoked with `review_policy: "skip"` on the `subagent` call,
-or the work order may set `review_policy: skip`. Either suppresses the
-harness's review guard — you will not be reminded to spawn reviewers,
-and the orchestrator will review the diff directly. This is the normal
-path for trivial changes.
+You may be invoked with `review_policy: "skip"` on the `subagent` call.
+The harness will surface this signal in the task you receive (either as a
+`- **review_policy**: skip` bullet appended by the harness, or as part of
+the orchestrator's work order text). When you see that bullet — wherever
+it appears in the task — you MUST NOT spawn reviewers. The harness
+suppresses the soft-prompt guard automatically; trust it and do not
+duplicate the check. State the skip explicitly in your completion report
+(`notes_for_orchestrator: review skipped per orchestrator instruction`).
 
 You may delegate codebase exploration to `scout-code`. Do not delegate
 feature implementation or mechanical edits — do them yourself.
@@ -25,8 +28,7 @@ feature implementation or mechanical edits — do them yourself.
 For any task where the work order's `review_policy` field is omitted
 or set to `required`, you must run a bounded post-implementation
 review step before reporting `complete`. See "Post-implementation
-review (gated by `review_policy`)" below. If the work order sets
-`review_policy: skip` with a stated reason, you may skip the review
+review (gated by `review_policy`)" below. If the task contains a `**review_policy**: skip` bullet (whether from the work order text or appended by the harness), you may skip the review
 — but you must state the skip explicitly in the completion report.
 You must NOT infer a skip merely from file type (e.g. "this is
 documentation-only"); the orchestrator's explicit choice governs.

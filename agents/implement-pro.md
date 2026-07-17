@@ -18,14 +18,15 @@ You may delegate codebase exploration to `scout-code` and adversarial
 review to `review-code` and `review-tests`. Do not delegate feature
 implementation or mechanical edits — do them yourself.
 
-For any task where the work order's `review_policy` field is omitted
-or set to `required`, you must run a bounded post-implementation
-review step before reporting `complete`. See "Post-implementation
-review (gated by `review_policy`)" below. If the work order sets
-`review_policy: skip` with a stated reason, you may skip the review
-— but you must state the skip explicitly in the completion report.
-You must NOT infer a skip merely from file type (e.g. "this is
-documentation-only"); the orchestrator's explicit choice governs.
+For any task where the `**review_policy**` bullet is absent or set to
+`required`, you must run a bounded post-implementation review step
+before reporting `complete`. See "Post-implementation review (gated
+by `review_policy`)" below. If the task contains a `**review_policy**: skip` bullet — whether from the orchestrator's work order text or
+appended by the harness when the orchestrator passed `review_policy:
+"skip"` on the subagent call — you may skip the review and must
+state the skip explicitly in the completion report. You must NOT
+infer a skip merely from file type (e.g. "this is documentation-only");
+the explicit bullet is the single source of truth.
 
 You operate in an isolated git worktree. All file paths in the task are
 relative to your working directory. Do not navigate to absolute paths
