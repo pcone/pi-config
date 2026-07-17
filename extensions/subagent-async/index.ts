@@ -265,6 +265,11 @@ interface RunningSubagent {
 	isDone: boolean;
 	logPath: string;   // live human-readable event log
 	logLines: string[];     // in-memory buffer for live TUI widget
+	stderrLines: string[];  // captured stderr from the child pi process;
+	                        // surfaced in the delivered result when the
+	                        // child exits before completing any turn so
+	                        // the orchestrator can see *why* it failed
+	                        // instead of just "exit 1, 0 turns".
 	watchHandle: any;       // setWidget handle for live updates
 	sockPath: string;       // Unix socket path for external viewers
 	sockServer: net.Server; // socket server
@@ -577,6 +582,7 @@ async function spawnSubagent(
 		isDone: false,
 		logPath,
 		logLines: [],
+		stderrLines: [],
 		watchHandle: null,
 		sockPath,
 		sockServer: null as any,
@@ -932,7 +938,17 @@ async function spawnSubagent(
 	});
 
 	proc.stderr.on("data", (data: Buffer) => {
-		// Accumulate stderr for debugging; don't surface to parent unless needed.
+		// Capture every line. Capped to the last 200 to bound memory for
+		// long-running sessions; surfaced in deliverResult when the child
+		// exits before completing a turn so the orchestrator sees the
+		// actual failure (extension load error, model auth, etc.) instead
+		// of a bare "exit 1, 0 turns".
+		for (const line of data.toString().split("\n")) {
+			if (line) {
+				rs.stderrLines.push(line);
+				if (rs.stderrLines.length > 200) rs.stderrLines.shift();
+			}
+		}
 	});
 
 	proc.on("close", async (code) => {
@@ -1089,6 +1105,14 @@ function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, 
 	const wasAborted = exitCode !== 0 && rs.progress.turns < MAX_TURNS_HARD;
 	const prefix = wasAborted ? "[Subagent aborted]" : "[Subagent implement finished]";
 
+	// Surface child stderr when the agent never made a turn. The most
+	// common cause is a child `pi` that failed to start (broken extension,
+	// missing binary, auth error, etc.) — without this, the orchestrator
+	// sees only "exit 1, 0 turns" and has no signal for debugging.
+	const stderrNote = rs.progress.turns === 0 && rs.stderrLines.length > 0
+		? `Child stderr (${rs.stderrLines.length} line${rs.stderrLines.length === 1 ? "" : "s"}):\n\`\`\`\n${rs.stderrLines.slice(-30).join("\n")}\n\`\`\``
+		: null;
+
 	const message = [
 		`${prefix} — session: ${rs.sessionId}`,
 		`Task: ${rs.task.slice(0, 200)}${rs.task.length > 200 ? "..." : ""}`,
@@ -1097,6 +1121,7 @@ function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, 
 			? `Errors: ${rs.progress.errors.slice(0, 3).join("; ")}`
 			: null,
 		isolationNote || null,
+		stderrNote,
 		"---",
 		output,
 	]
