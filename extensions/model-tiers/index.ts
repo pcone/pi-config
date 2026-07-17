@@ -10,6 +10,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -571,6 +572,12 @@ function sideBySide(left: string, right: string): string {
 // ---------------------------------------------------------------------------
 
 export default async function (pi: ExtensionAPI) {
+  // ── TUI entry renderer (startup tiers — never enters LLM context) ──
+  pi.registerEntryRenderer<{ content: string }>("model-tiers", (entry, _options, theme) => {
+    const data = entry.data ?? { content: "" };
+    return new Text(data.content, 1, 1, (text) => theme.bg("customMessageBg", text));
+  });
+
   // ── Startup: 2D compact tier picks ──
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
@@ -599,17 +606,9 @@ export default async function (pi: ExtensionAPI) {
       if (openFrontier.length > 0) {
         const left = renderTable(frontier, "MODEL TIERS");
         const right = renderTable(openFrontier, "OPEN-WEIGHTS TIERS", gCostMin, gCostMax, gScoreMin, gScoreMax);
-        pi.sendMessage({
-          customType: "model-tiers",
-          content: sideBySide(left, right),
-          display: true,
-        });
+        pi.appendEntry("model-tiers", { content: sideBySide(left, right) });
       } else {
-        pi.sendMessage({
-          customType: "model-tiers",
-          content: renderTable(frontier),
-          display: true,
-        });
+        pi.appendEntry("model-tiers", { content: renderTable(frontier) });
       }
     } catch (err) {
       console.log(`[model-tiers] Error: ${(err as Error).message}`);
