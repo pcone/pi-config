@@ -275,20 +275,18 @@ report.
 
 ### Wait semantics and parallel completion
 
-The runtime has exactly one active `wait` timer at a time. After
-one reviewer completes (or its wait timer expires), the runtime
-cancels the active wait. Do NOT assume "one completed → both are
+`wait` owns no timer — it ends your turn and yields until a
+subagent completes. Do NOT assume "one completed → both are
 done." Instead:
 
-- After launching both reviewers, call `wait` once with a generous
-  interval (e.g. 60–120s).
+- After launching both reviewers, call `wait` once (no interval).
 - When the wake-up arrives, check progress on the outstanding
   reviewer with `subagent_status`. If it is still running, call
   `wait` again for it.
-- If the timer expires without a result, inspect `subagent_status`,
-  then either call `wait` again (bounded) or use `subagent_stop`
-  if the reviewer is genuinely stuck. Never silently treat a
-  missing review as complete.
+- `wait` has no timer; wake-up comes only from subagent
+  completion. If a reviewer is genuinely stuck, use
+  `subagent_stop` — but never silently treat a missing review as
+  complete.
 
 ### Verdict handling
 
@@ -317,41 +315,20 @@ The reviewer returns one of:
 
 ### Per-reviewer re-review targeting
 
-When the rejecting reviewer says `re_review_required: yes`, replace the
-blanket "re-run BOTH reviewers" rule with the following three cases.
-Always use `subagent_resume` for re-reviews — never fresh `subagent`
-calls.
+When a reviewer rejects with `re_review_required: yes`, replace the
+blanket "re-run both" rule with these cases. Always use
+`subagent_resume(session_id=<original-id>, task=...)` for re-reviews —
+never fresh `subagent` calls.
 
-- **Case A — rejecting reviewer says `re_review_required: yes`**
-  Re-run both reviewers. Justification: complex fix, regression in any
-  domain is plausible. (This is the existing behavior.)
-
-- **Case B — rejecting reviewer says `re_review_required: no`**
-  Re-run only the rejecting reviewer, plus any other reviewer who had
-  open LOW/MEDIUM notes the fix could have affected. Justification:
-  mechanical fixes don't regress other domains; other reviewers' prior
-  approvals still hold.
-
-- **Case C — fix is purely additive (tests/docs/decision records only,
-  no production code change)**
-  Re-run only the rejecting reviewer, period. Justification:
-  `review-code` already approved; no production code change means
-  nothing for it to re-verify.
-
-  **Detection signal for Case C:**
-  ```bash
-  git diff --stat HEAD~1 HEAD
-  ```
-  If the diff stat shows only `tests/`, `*.md` under `decisions/`,
-  `*.cases` fixtures, and similar non-source paths, it's Case C.
-  If the diff shows any `codegen/src/`, `parser/src/`, `common/src/`,
-  or other production source paths, it's Case A or B. If the detection
-  is ambiguous (mixed production + non-production changes), default to
-  Case A (false-positive is cheap relative to false-negative).
-
-Spawn fresh reviewers with `subagent`; resume prior reviewer
-sessions with `subagent_resume`. The two tools together let
-you iterate without burning the conversational context.
+- **A — `re_review_required: yes`** — re-run both reviewers.
+- **B — `re_review_required: no`** — re-run only the rejecting
+  reviewer, plus any others with open LOW/MEDIUM notes the fix could
+  affect.
+- **C — purely additive fix** (tests / docs / decision records only;
+  no production code change) — re-run only the rejecting reviewer.
+  Detect via `git diff --stat HEAD~1 HEAD`: only `tests/`, `*.md`
+  under `decisions/`, `*.cases` fixtures, etc. → C. Any `*.src/` paths
+  → A or B. Ambiguous (mixed) → default to A.
 
 Any CRITICAL or HIGH finding, any unmitigated MEDIUM finding, any
 reviewer failure or timeout, or any missing review → NOT complete.

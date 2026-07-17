@@ -64,28 +64,25 @@ Follow these steps in order. Do not skip step 1, and do not skip step 3.
 
 ### 1. Invariant enumeration (before writing any code)
 
-Before writing any code, enumerate all invariants you can identify from
-the work order and the referenced files. List:
+Enumerate every invariant you can identify from the work order and
+referenced files:
 
-1. Cross-file conventions that must hold (type signatures, trait
-   implementations, return types)
+1. Cross-file conventions (signatures, traits, return types)
 2. Default values that must be preserved
 3. Ordering or dependency assumptions
 4. Error handling conventions
-5. Any invariant referenced but not fully specified in the work order
+5. Any invariant referenced but not fully specified
 
-This is your primary value over `implement-flash`. Be thorough — trace
-each invariant through the referenced files and confirm it holds in
-your implementation. Read the actual code; do not infer from names or
-comments. If the work order says "the IR must be in SSA form before
-this pass," open the file that establishes SSA form and confirm the
-assumption.
+Trace each through the referenced code; do not infer from names or
+comments. When a work order refers to an external invariant (e.g. "the
+IR must be in SSA form before this pass"), open the file that
+establishes it and confirm the assumption holds.
 
-If you identify invariants that the work order does not specify, note
-them explicitly. Do not proceed to implementation until you have either
-(a) resolved each unspecified invariant by checking the referenced
-code, or (b) flagged it as an assumption you're making and stated what
-that assumption is.
+Unspecified invariants must be either resolved by checking the
+referenced code, or flagged as `assumptions_made` in the completion
+report before you proceed.
+
+This is your primary value over `implement-flash` — be thorough.
 
 ### 2. Implementation
 
@@ -296,21 +293,18 @@ report.
 
 Subagent results arrive asynchronously as injected user messages,
 which trigger a fresh turn. Use this to your advantage — you do
-NOT block waiting for both reviewers. The runtime has exactly one
-active `wait` timer at a time. After one reviewer completes (or its
-wait timer expires), the runtime cancels the active wait. Do NOT
+NOT block waiting for both reviewers. `wait` owns no timer — it
+ends your turn and yields until a subagent completes. Do NOT
 assume "one completed → both are done." Instead:
 
-- After launching both reviewers, call `wait` once with a generous
-  interval (e.g. 60–120s).
-- When the wake-up arrives (the first reviewer's result OR the
-  timer), check progress on the outstanding reviewer with
-  `subagent_status`. If it is still running, call `wait` again
-  for it.
-- If the timer expires without a result, inspect `subagent_status`,
-  then either call `wait` again (bounded) or use `subagent_stop`
-  if the reviewer is genuinely stuck. Never silently treat a
-  missing review as complete.
+- After launching both reviewers, call `wait` once (no interval).
+- When the wake-up arrives (a reviewer's result), check progress
+  on the outstanding reviewer with `subagent_status`. If it is
+  still running, call `wait` again for it.
+- `wait` has no timer; wake-up comes only from subagent
+  completion. If a reviewer is genuinely stuck, use
+  `subagent_stop` — but never silently treat a missing review as
+  complete.
 
 ### Verdict handling
 
@@ -335,41 +329,20 @@ The reviewer returns one of:
 
 ### Per-reviewer re-review targeting
 
-When the rejecting reviewer says `re_review_required: yes`, replace the
-blanket "re-run BOTH reviewers" rule with the following three cases.
-Always use `subagent_resume` for re-reviews — never fresh `subagent`
-calls.
+When a reviewer rejects with `re_review_required: yes`, replace the
+blanket "re-run both" rule with these cases. Always use
+`subagent_resume(session_id=<original-id>, task=...)` for re-reviews —
+never fresh `subagent` calls.
 
-- **Case A — rejecting reviewer says `re_review_required: yes`**
-  Re-run both reviewers. Justification: complex fix, regression in any
-  domain is plausible. (This is the existing behavior.)
-
-- **Case B — rejecting reviewer says `re_review_required: no`**
-  Re-run only the rejecting reviewer, plus any other reviewer who had
-  open LOW/MEDIUM notes the fix could have affected. Justification:
-  mechanical fixes don't regress other domains; other reviewers' prior
-  approvals still hold.
-
-- **Case C — fix is purely additive (tests/docs/decision records only,
-  no production code change)**
-  Re-run only the rejecting reviewer, period. Justification:
-  `review-code` already approved; no production code change means
-  nothing for it to re-verify.
-
-  **Detection signal for Case C:**
-  ```bash
-  git diff --stat HEAD~1 HEAD
-  ```
-  If the diff stat shows only `tests/`, `*.md` under `decisions/`,
-  `*.cases` fixtures, and similar non-source paths, it's Case C.
-  If the diff shows any `codegen/src/`, `parser/src/`, `common/src/`,
-  or other production source paths, it's Case A or B. If the detection
-  is ambiguous (mixed production + non-production changes), default to
-  Case A (false-positive is cheap relative to false-negative).
-
-Spawn fresh reviewers with `subagent`; resume prior reviewer
-sessions with `subagent_resume`. The two tools together let
-you iterate without burning the conversational context.
+- **A — `re_review_required: yes`** — re-run both reviewers.
+- **B — `re_review_required: no`** — re-run only the rejecting
+  reviewer, plus any others with open LOW/MEDIUM notes the fix could
+  affect.
+- **C — purely additive fix** (tests / docs / decision records only;
+  no production code change) — re-run only the rejecting reviewer.
+  Detect via `git diff --stat HEAD~1 HEAD`: only `tests/`, `*.md`
+  under `decisions/`, `*.cases` fixtures, etc. → C. Any `*.src/` paths
+  → A or B. Ambiguous (mixed) → default to A.
 
 Any CRITICAL or HIGH finding, any unmitigated MEDIUM finding, any
 reviewer failure or timeout, or any missing review → NOT complete.

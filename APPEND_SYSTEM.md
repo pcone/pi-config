@@ -2,7 +2,7 @@ Subagent invocations are asynchronous — they run in the background and you rem
 
 Subagents survive parent session reloads. Closing or reloading the parent does not kill running subagents — they continue working and commit results to their branches. Use `watch-session` to monitor them after a reload.
 
-Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results. `wait` is non-blocking — call it once, then stop. If a subagent completes before the timer fires, the wake-up is cancelled and the result arrives instead. Do not call `wait` repeatedly; only one timer can be active at a time.
+Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results. `wait` ends your turn and yields until a running subagent completes — there is no timer, so call it exactly once after launching subagents and stop. Wake-up is triggered solely by subagent completion; do not poll or re-arm. Only call `wait` when at least one subagent is running.
 
 Subagents run in isolated git worktrees branched off HEAD (or `baseRef` when set). Each completes on its own branch; the calling session reviews and merges. Concurrent subagents cannot race on files.
 
@@ -102,19 +102,15 @@ the work order's `StructuralRisks`:
 - A failed check is not "complete with notes" — it is a gate
   failure.
 
-### Worktree handling for orchestrator-launched reviews
+### Worktree handling for orchestrator reviews
 
-The implementer-owned review step runs in the implementer's current
-worktree with `isolate: false` and `cwd` omitted — both reviewers
-see uncommitted changes. This is the bounded exception to
-subagent isolation.
+The implementer-owned review step runs in the implementer's worktree
+with `isolate: false` and `cwd` omitted — reviewers see uncommitted
+changes. This exception is implementer-only.
 
-If YOU (the orchestrator) launch a review of a completed preserved
-branch (e.g. after a checkpoint, against a `pi-subagent-<id>`
-branch), use the standard isolation: pass `baseRef: <branch>`
-and let the reviewer branch from that ref. Do NOT pass
-`isolate: false` for orchestrator reviews of preserved branches —
-the implementer's isolation exception is theirs, not yours.
+When you launch a review of a completed preserved branch (e.g. against
+`pi-subagent-<id>`), use standard isolation: pass `baseRef: <branch>`.
+Never pass `isolate: false` for your own reviewer sweeps.
 
 ## Reviewer invocation guard (option 2)
 
@@ -163,99 +159,20 @@ only the rejecting reviewer's kind in `subagent_review_status.spawns`
 accept that as a non-defective `complete` — it does not indicate a
 missing reviewer.
 
-### Calling `subagent_review_status` correctly (the parent id)
+### The parent id
 
-The `parent_session_id` you pass to `subagent_review_status` is the
-**child session id of the implementer**, not your own session id.
-The persisted tracker file
-(`/tmp/pi-subagent-<sessionId>.reviewers.json`) is written by the
-harness of whatever process spawned the reviewers; for
-implementer-spawned reviewers, that file is owned by the
-implementer's RPC process.
+`subagent_review_status(parent_session_id=...)` takes the session id of
+**whoever spawned the reviewers** — not your own. When you spawn an
+implementer via `subagent`, the tool returns `subagent-<uuid>`; capture
+it alongside the work order. That implementer owns its tracker at
+`/tmp/pi-subagent-<uuid>.reviewers.json`, so pass the implementer's
+uuid (not yours) when you gate-check on completion.
 
-When you launch an implementer via `subagent`, the tool response
-returns the spawned child's session id (the same value the harness
-uses for its `/tmp/pi-subagent-<sessionId>.log` filename). Keep
-that id alongside the work order so the gate check at completion
-time can find the implementer's tracker, not yours.
+For orchestrator-spawned reviewer sweeps (e.g. reviewing a preserved
+branch directly), you are the spawner — pass your own session id.
 
-Concretely, after launching the implementer:
-
-1. The `subagent` tool returns text beginning with
-   `Subagent started: <name> (session: subagent-<uuid>)...`.
-2. Capture that uuid.
-3. When the implementer's completion report arrives, before
-   forwarding `complete`, call:
-   ```
-   subagent_review_status(
-     parent_session_id="subagent-<implementer-uuid>"
-   )
-   ```
-4. **For rework rounds on an existing implementer session:**
-   the orchestrator (or implementer itself) can continue the
-   prior session instead of spawning fresh by invoking
-   `subagent_resume(session_id=<original-uuid>,
-   task=<rework prompt>)`. The resumed session shares the same
-   tracker key, so `subagent_review_status` reads the
-   continuous chain — there's no double-counting. Prefer resume
-   over fresh spawns when the prior session is still on disk
-   and the implementer's own context is the relevant artifact.
-5. Compare `kindsPresent` against the implementer's
-   `requires_parent_reviewers`. Refuse `complete` if any required
-   kind is missing.
-
-For orchestrator-launched reviewer sweeps of a preserved branch,
-the parent id is your own session id (you are directly spawning
-the reviewer); the rule is "parent id is whoever spawned the
-reviewer."
-
-### Worked example
-
-```text
-# 1. Orchestrator launches an implementer:
-subagent(
-  agent="implement-flash",
-  task="<work order text>"
-)
-# tool returns:
-#   Subagent started: implement-flash (session: subagent-7e6d2eb7-...)
-#   ...
-#   Watch live:
-#   ```bash
-#   tail -f /tmp/pi-subagent-7e6d2eb7-...log
-#   ```
-# Capture: implementer_session_id = subagent-7e6d2eb7-...
-
-# 2. Time later, the implementer returns with a completion report.
-#    Before forwarding `complete`, the orchestrator queries the gate:
-
-subagent_review_status(
-  parent_session_id="subagent-7e6d2eb7-..."
-)
-# returns JSON:
-#   {
-#     "parentSessionId": "subagent-7e6d2eb7-...",
-#     "updatedAt": ...,
-#     "kindsPresent": ["implementation", "tests"],
-#     "kindsMissing": [],
-#     "spawns": [ {reviewerKind:..., childSessionId:..., ...}, ... ]
-#   }
-
-# 3. Compare `kindsPresent` against the implementer's
-#    `requires_parent_reviewers` value (`["implementation","tests"]`).
-#    Both kinds present -> `complete` is eligible.
-#    Any required kind missing -> refuse `complete`, route back to
-#    the implementer, or report partial/blocked.
-```
-
-**For a rework round on the same implementer:**
-```text
-# 4. Orchestrator launches a rework round
-subagent_resume(
-  session_id="subagent-1c901288-...",  # ← session id from round 1
-  task="Address the MEDIUM finding from review-code round 1 about handler extraction..."
-)
-```
+For rework rounds, use `subagent_resume(session_id=<original-uuid>,
+task=...)`; the tracker key is preserved, no double-counting.
 
 ## Completion reports
 

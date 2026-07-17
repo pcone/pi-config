@@ -98,15 +98,21 @@ is implementer-owned, not orchestrator-owned.
 
 ## Wait semantics
 
-The runtime has exactly one active `wait` timer at a time
-(verified in `extensions/subagent-async/index.ts`). When a
-subagent completes, the runtime cancels the active wait. The
-implementer therefore issues `wait` once for both reviewers and
-then loops: when the wake-up arrives (whether from one reviewer's
-result or the timer), it inspects `subagent_status` on the
-outstanding reviewer and either issues another `wait` or uses
-`subagent_stop` if the reviewer is genuinely stuck. "One
-completion means both are done" is the wrong inference.
+`wait` owns no timer — it ends the caller's turn and yields until
+a subagent completes (verified in `extensions/subagent-async/index.ts`).
+Wake-up is triggered solely by subagent completion; there is no
+timer-expiry path. The implementer therefore issues `wait` once
+for both reviewers and then loops: when a reviewer's result
+arrives, it inspects `subagent_status` on the outstanding reviewer
+and either issues another `wait` or uses `subagent_stop` if the
+reviewer is genuinely stuck. "One completion means both are done"
+is the wrong inference.
+
+The previous design armed an N-second timer that, on expiry, woke
+the caller with "no subagent completed" — which the caller
+answered by re-arming the timer, burning tokens in a poll loop.
+That timer was removed; the only wake-up is now subagent
+completion.
 
 ## Bounded allowlist and reviewer read-only
 

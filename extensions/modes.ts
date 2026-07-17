@@ -54,7 +54,21 @@ diff directly. Handle completion reports: status, invariant_exhaustiveness
 calibration, structural_checks, deviations, notes_for_orchestrator.
 
 You are the conductor. Subagents do the work; you synthesize, verify,
-and decide.`,
+and decide.
+
+## Context hygiene
+
+Occasional investigation, thinking, or experimentation loops you do
+yourself burn context that won't matter once the task moves on.
+Manage it:
+
+- **Plans go in a todo doc, not in chat.** Use \`todo\` \`setDoc\`
+  (e.g. \`tmp/TODO.md\`) and write the full plan there.
+- **Keep the in-pi todo list accurate** — one-line summaries
+  referencing the doc, marked \`in_progress\` / \`done\` as work moves.
+- **Checkpoint after every context-heavy loop or subtask lands.**
+  Summary must be rich enough to resume from cold: what was decided,
+  what's next, which files/identifiers matter next.`,
 };
 
 function readModeFile(path: string): Mode | null {
