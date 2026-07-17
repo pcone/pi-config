@@ -665,6 +665,23 @@ async function spawnSubagent(
 			...(agent.allowedSubagents && agent.allowedSubagents.length > 0
 				? { PI_SUBAGENT_ALLOWLIST: agent.allowedSubagents.join(",") }
 				: {}),
+			// Path to the subagent's isolated git worktree. The worktree-guard
+			// extension reads this and uses it to:
+			//   1. Allow writes inside this worktree (the "own worktree" anchor)
+			//   2. Block writes inside OTHER concurrent subagents' worktrees
+			//      (paths matching `/tmp/pi-subagent-wt-*` that are not this one)
+			// Empty string when no worktree isolation applies (`isolate: false`
+			// reviewers, or subagents dispatched without worktree support);
+			// the worktree-guard treats empty as a no-op for that guard.
+			PI_SUBAGENT_WORKTREE: worktreePath ?? "",
+			// Path to the parent repo's checkout. The worktree-guard blocks
+			// writes inside this path so the child cannot contaminate the
+			// orchestrator's working tree. Only meaningful when the child is
+			// actually isolated (i.e. has its own worktree) — for unisolated
+			// reviewers the child runs IN the parent cwd, so the parent-cwd
+			// block would block them from their own working directory. Empty
+			// in that case.
+			PI_SUBAGENT_PARENT_CWD: worktreePath ? (parentCwdForCleanup ?? "") : "",
 		},
 	});
 
