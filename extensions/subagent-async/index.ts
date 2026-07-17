@@ -2119,6 +2119,16 @@ export default function (pi: ExtensionAPI) {
 			// handler observes it on entry.
 			rs.killedExplicitly = true;
 
+			// Cancel the stalled-turn watchdog so a hard-killed subagent
+			// doesn't get a spurious [Subagent stalled] wake-up racing the
+			// close handler's cleanup. The close handler also clears this
+			// (line ~996), but doing it here closes the race where the
+			// timer fires between SIGTERM dispatch and the close handler
+			// reaching the cleanup section — `bumpStaleWatchdog`'s guard
+			// `running.has(rs.sessionId)` is not enough because the close
+			// handler runs `running.delete` AFTER the cleanup phase.
+			if (rs.staleTimer) { clearTimeout(rs.staleTimer); rs.staleTimer = null; }
+
 			// Log a visible kill marker to /watch and the persisted log so
 			// the orchestrator / user see the kill even if the close handler
 			// is delayed. Mirrors the closure-scoped `logEntry` helper inside
