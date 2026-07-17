@@ -536,9 +536,10 @@ async function spawnSubagent(
 	// When set, the subprocess loads an existing session file instead of
 	// creating a new one. Used by subagent_resume.
 	resumeSessionFile?: string,
-	// When true, skip the review guard for this spawn (orchestrator will
-	// review the diff directly).
-	skipReview?: boolean,
+	// Mirrors the work-order `review_policy` field. When `skip`, suppresses
+	// the harness's post-implementation review guard for this spawn. Ad-hoc
+	// dispatches without a work order should pass `"skip"` here.
+	reviewPolicy?: "required" | "skip",
 ): Promise<RunningSubagent> {
 	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash");
 
@@ -585,7 +586,7 @@ async function spawnSubagent(
 		parentHeadCommit,
 		parentCwd: parentCwdForCleanup,
 		parentTrackerKey: getParentTrackerKey(ctx),
-		reviewParentRequirements: (skipReview || /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task))
+		reviewParentRequirements: (reviewPolicy === "skip" || /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task))
 			? undefined
 			: agent.reviewParentRequirements,
 		usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
@@ -1304,10 +1305,9 @@ export default function (pi: ExtensionAPI) {
 				description: "Git ref (commit hash, branch, or tag) to fork the worktree from. Defaults to HEAD if omitted. Use this when changes are on a feature branch that isn't ready for main — pass the branch name or ref. If changes are only in the working tree, create a feature branch, commit them, and pass that branch.",
 			}),
 		),
-		skip_review: Type.Optional(
-			Type.Boolean({
-				description: "Skip the post-implementation review for this spawn. Use for trivial changes where the orchestrator will review the diff directly. Default: false.",
-				default: false,
+		review_policy: Type.Optional(
+			Type.Union([Type.Literal("required"), Type.Literal("skip")], {
+				description: "Mirrors the work-order `review_policy` field. Pass `skip` to suppress the harness's post-implementation review guard for this spawn (use for trivial changes where the orchestrator will review the diff directly, or for ad-hoc dispatches without a formal work order). Default: `required`.",
 			}),
 		),
 	});
@@ -1434,7 +1434,7 @@ export default function (pi: ExtensionAPI) {
 				parentHeadCommit,
 				cwd,
 				undefined, // resumeSessionFile
-				params.skip_review ?? false,
+				params.review_policy,
 			);
 
 			running.set(sessionId, rs);

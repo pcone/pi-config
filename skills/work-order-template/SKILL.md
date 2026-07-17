@@ -49,11 +49,10 @@ Your work order quality directly determines whether the implementer succeeds on 
     explicit justified exception (state the reason in the task
     summary). The implementer will not silently skip — a `skip`
     value is a deliberate orchestrator choice.
-  - Alternative: pass `skip_review: true` on the `subagent` call
-    to skip the harness's review guard. Use for trivial changes
-    where the orchestrator reviews the diff directly. The agent
-    can still spawn reviewers if its prompt instructs it to —
-    this only suppresses the harness reminder.
+  - For ad-hoc dispatches without a formal work order, the harness also
+    accepts `review_policy: "skip"` as a tool parameter on the `subagent`
+    call. The two signals share this name and are equivalent; pick the
+    one that matches your dispatch shape (work order text vs. tool arg).
 - **review_depth**: standard | thorough
   - `standard` (default) — uses Mimo-V2.5-Pro reviewers
     (`review-code`, `review-plan`, `review-tests`). Appropriate for
