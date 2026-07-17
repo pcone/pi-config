@@ -96,7 +96,19 @@ against; flag sugar opportunities the project policy names.
 - **Type-system / soundness**: runtime vs compile-time boundaries,
   lifetime/scope concerns, whatever the project's docs name.
 - **Consistency**: conflicts with existing decisions?
-- **Simpler alternatives**: a cleaner way to achieve the same outcome?
+- **Simpler alternatives / "make the change easy, then make the
+  easy change"** (Kent Beck): could a small refactor make the
+  change trivially correct instead of requiring it to be
+  implemented as specified? Look for:
+  - A missing abstraction the new feature plugs into.
+  - An overgrown function/module to split.
+  - A special case to generalize.
+  - A data shape that doesn't fit the processing it needs to
+    support — change the data, not the code.
+  Flag only when the refactor would clearly shrink the change
+  (typically 2× fewer lines, or removes duplicated special
+  cases). Often overlaps with a routing recommendation: do the
+  small refactor first, then the feature becomes trivial.
 
 ## Your operating rules
 

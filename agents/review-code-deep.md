@@ -132,6 +132,37 @@ For each item in `Structural Risks`:
 4. **Code style** — `grep` for similar patterns; verify
    naming, modules, imports, docs match. Major deviations
    (different error pattern) are MEDIUM.
+5. **Architectural simplification** — apply "make the change
+   easy, then make the easy change" (Kent Beck). Step back
+   from the diff and ask whether a small surrounding refactor
+   would have made it dramatically simpler: a missing
+   abstraction to introduce, an overgrown function to split,
+   a special case to generalize, a data shape that doesn't
+   fit the processing it needs to support (change the data,
+   not the code). Flag only when the refactor would clearly
+   shrink the change (typically 2× fewer lines, or removes
+   duplicated special cases). Suggest the smallest refactor
+   that earns the simplification — no architectural
+   grandstanding.
+6. **Connascence** — coupling that spec/invariant checks
+   miss but accumulates as long-term hazard:
+   - **Name/type** — repeated string literals or magic
+     numbers that should be named constants; type unions
+     without discriminated narrowing.
+   - **Meaning** — encoded values without an enum
+     (e.g., `0 = ok`, `1 = err`); flag-and-sentinel patterns.
+   - **Position** — positional arguments whose order must
+     agree across multiple call sites.
+   - **Algorithm** — the same algorithm repeated in two
+     places that must stay in sync.
+   - **Execution** — operations that depend on a specific
+     order without explicit sequencing.
+   - **Value** — parallel enums or paired values that must
+     change together.
+   Apply Page-Jones's rules: convert strong → weak (rule of
+   strength), minimize scope (rule of degree), accept strong
+   connascence if local to one module (rule of locality).
+   MEDIUM at default; HIGH only when global and undocumented.
 
 ## Output
 
@@ -169,6 +200,8 @@ For each item in `Structural Risks`:
 - Edge cases: <list per case: COVERED/UNCOVERED>
 - Assumptions: <list per assumption: CORRECT/INCORRECT/UNVERIFIABLE>
 - Code style: <PASS/MINOR_ISSUES/MAJOR_DEVIATION>
+- Architectural simplification: <PASS/OPPORTUNITY — refactor + expected shrinkage, or N/A>
+- Connascence: <PASS/CONCERNS — forms found + locations, or N/A>
 
 ### Issues
 | # | Severity | Description | Location |
