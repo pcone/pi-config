@@ -269,6 +269,14 @@ interface RunningSubagent {
 	stdin: NodeJS.WritableStream | null;
 	resolveOnStop: ((finalMessage?: string) => void) | null; // set by stop tool
 	isDone: boolean;
+	// Set by the `subagent_kill` tool before it dispatches SIGTERM/SIGKILL
+	// so the close handler can label the footer "Killed" and prepend a
+	// `[Killed via subagent_kill ...]` marker to the delivered result.
+	// Set BEFORE `proc.kill(...)` so the close handler observes it; tool is
+	// idempotent on the second call (no-op when already true). Not set by
+	// `subagent_stop` — that path uses the regular `Stopped` footer and
+	// resolves the waiter directly without delivering as a user message.
+	killedExplicitly: boolean;
 	logPath: string;   // live human-readable event log
 	logLines: string[];     // in-memory buffer for live TUI widget
 	stderrLines: string[];  // captured stderr from the child pi process;
@@ -499,6 +507,26 @@ function rpcSend(stdin: NodeJS.WritableStream | null, command: Record<string, an
 	stdin.write(JSON.stringify(command) + "\n");
 }
 
+/**
+ * Append a single text line to a running subagent's live log: persisted log
+ * file, in-memory `logLines` buffer (drives the TUI widget), and any
+ * connected socket viewers.
+ *
+ * Mirrors the closure-scoped `logEntry` helper inside `spawnSubagent` so
+ * tool bodies registered in `export default function` (e.g. `subagent_kill`,
+ * which must return before `proc.on("close")` fires) can write to the same
+ * log surface without needing access to the closure. Append-only; the close
+ * handler is still the single owner of footer/status rendering.
+ */
+function appendRunningLogLine(rs: RunningSubagent, text: string): void {
+	try { fs.appendFileSync(rs.logPath, text + "\n"); } catch { /* */ }
+	rs.logLines.push(text);
+	rs.watchHandle?.requestRender();
+	for (const client of rs.sockClients) {
+		try { client.write(text + "\n"); } catch { rs.sockClients.delete(client); }
+	}
+}
+
 interface RpcEvent {
 	type: string;
 	id?: string;
@@ -587,6 +615,7 @@ async function spawnSubagent(
 		stdin: null,
 		resolveOnStop: null,
 		isDone: false,
+		killedExplicitly: false,
 		logPath,
 		logLines: [],
 		stderrLines: [],
@@ -968,9 +997,14 @@ async function spawnSubagent(
 		if (stdoutBuffer.trim()) processLine(stdoutBuffer);
 
 		// Write completion footer to live log
-		const how = rs.isDone ? "Completed" : (code === 0 ? "Exited" : "Stopped");
+		const how = rs.killedExplicitly
+			? "Killed"
+			: (rs.isDone ? "Completed" : (code === 0 ? "Exited" : "Stopped"));
 		logEntry("");
-		const style = rs.isDone ? S.doneOk : S.doneFail;
+		// Killed footer is always red — even in the rare race where a subagent
+		// raced to `isDone` before SIGTERM was dispatched, a hard kill is an
+		// abort and should render as such.
+		const style = rs.killedExplicitly ? S.doneFail : (rs.isDone ? S.doneOk : S.doneFail);
 		logEntry(`${style}── ${how} (${rs.progress.turns} turns, exit ${code ?? "?"}) ──${S.reset}`);
 
 		// Widget stays visible for user to review; they clear it with /watch off
@@ -998,7 +1032,11 @@ async function spawnSubagent(
 
 		// If stop was requested, resolve that waiter (don't double-deliver).
 		if (rs.resolveOnStop) {
-			rs.resolveOnStop(getFinalOutput(rs.messages) + isolationNote);
+			let stoppedText = getFinalOutput(rs.messages) + isolationNote;
+			if (rs.killedExplicitly) {
+				stoppedText = "[Killed via subagent_kill — process terminated, work in this subagent is lost]\n" + stoppedText;
+			}
+			rs.resolveOnStop(stoppedText);
 			rs.resolveOnStop = null;
 		} else {
 			deliverResult(pi, rs, code ?? 0, isolationNote);
@@ -1128,7 +1166,15 @@ function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, 
 	const output = getFinalOutput(rs.messages) || "(no output)";
 
 	const wasAborted = exitCode !== 0 && rs.progress.turns < MAX_TURNS_HARD;
-	const prefix = wasAborted ? "[Subagent aborted]" : "[Subagent implement finished]";
+	// Killed via `subagent_kill` supersedes the standard prefix — the
+	// orchestrator dispatched an out-of-band hard kill, so make that the
+	// first line of the delivered message.
+	const killedNote = rs.killedExplicitly
+		? "[Killed via subagent_kill — process terminated, work in this subagent is lost]"
+		: null;
+	const prefix = killedNote
+		? killedNote
+		: (wasAborted ? "[Subagent aborted]" : "[Subagent implement finished]");
 
 	// Surface child stderr when the agent never made a turn. The most
 	// common cause is a child `pi` that failed to start (broken extension,
@@ -1222,6 +1268,11 @@ export default function (pi: ExtensionAPI) {
 					stdin: null,
 					resolveOnStop: null,
 					isDone: false,
+					// Recovered subagents are re-attached to a fresh pi
+					// session; the kill flag never applies (the previous
+					// session died, not killed). Initialize to false to
+					// satisfy the RunningSubagent interface contract.
+					killedExplicitly: false,
 					logPath,
 					logLines: [],
 					watchHandle: null,
@@ -1393,6 +1444,10 @@ export default function (pi: ExtensionAPI) {
 		final_message: Type.Optional(
 			Type.String({ description: "Final steering message before stopping" }),
 		),
+	});
+
+	const KillParams = Type.Object({
+		session_id: Type.String({ description: "Session ID of the running subagent to hard-kill" }),
 	});
 
 	// If the orchestrator passed review_policy: "skip" as a tool param but did
@@ -2014,6 +2069,85 @@ export default function (pi: ExtensionAPI) {
 					{
 						type: "text",
 						text: `${rs.agentName} (${params.session_id}) stopped.\n\n${result}`,
+					},
+				],
+			};
+		},
+	});
+
+	// ── subagent_kill ──────────────────────────────────────────────────
+	// Hard-kill tool: dispatch SIGTERM immediately, schedule SIGKILL after
+	// HARD_KILL_DELAY_MS, and return without waiting for the close handler.
+	// The close handler is the single owner of delivery; it reads the
+	// `killedExplicitly` flag set here and prepends a marker to the delivered
+	// message so the orchestrator sees what happened. Idempotent on the
+	// second call (no-op when the flag is already true).
+
+	pi.registerTool({
+		name: "subagent_kill",
+		label: "Subagent Kill",
+		description:
+			"Hard-kill a stuck subagent by terminating its underlying `pi` process. Use this when `subagent_stop` has not worked because the subagent is genuinely stuck and no longer reading its RPC stdin (e.g. deadlocked, infinite loop, blocked provider call). Sends SIGTERM, then SIGKILL after a short grace period if the child is still alive. The result is delivered as a user message with a clear marker so the orchestrator can see the kill happened. This is destructive — any in-flight work in the subagent is lost. Prefer `subagent_stop` when the subagent is responsive.",
+		parameters: KillParams,
+		async execute(_toolCallId, params) {
+			const rs = running.get(params.session_id);
+			if (!rs) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `No running subagent found with session "${params.session_id}". It may have already finished or been stopped.`,
+						},
+					],
+				};
+			}
+
+			// Idempotency: a second `subagent_kill` on the same session is a
+			// no-op. Returning a short message keeps the orchestrator's log
+			// legible without re-firing signals.
+			if (rs.killedExplicitly) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `${rs.agentName} (${params.session_id}) already killed — signals skipped. Result will be delivered via the close handler.`,
+						},
+					],
+				};
+			}
+			// Order matters: set the flag BEFORE `proc.kill(...)` so the close
+			// handler observes it on entry.
+			rs.killedExplicitly = true;
+
+			// Log a visible kill marker to /watch and the persisted log so
+			// the orchestrator / user see the kill even if the close handler
+			// is delayed. Mirrors the closure-scoped `logEntry` helper inside
+			// `spawnSubagent`, since tool bodies do not share that closure.
+			appendRunningLogLine(rs, `── Killed via subagent_kill (SIGTERM sent, SIGKILL in ${HARD_KILL_DELAY_MS / 1000}s if needed) ──`);
+
+			const alreadyDead = rs.proc.killed || rs.proc.exitCode !== null;
+			if (!alreadyDead) {
+				try {
+					rs.proc.kill("SIGTERM");
+				} catch {
+					// proc.kill can throw on an already-dead proc; the close
+					// handler will still fire (or has already fired) and
+					// deliver the result. Swallow.
+				}
+				setTimeout(() => {
+					if (!rs.proc.killed && rs.proc.exitCode === null) {
+						try { rs.proc.kill("SIGKILL"); } catch { /* */ }
+					}
+				}, HARD_KILL_DELAY_MS);
+			}
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: alreadyDead
+							? `${rs.agentName} (${params.session_id}) already dead — kill signals skipped. Result will be delivered via the close handler.`
+							: `${rs.agentName} (${params.session_id}) sent SIGTERM (SIGKILL will follow in ${HARD_KILL_DELAY_MS / 1000}s if still alive). Result will be delivered via the close handler.`,
 					},
 				],
 			};
