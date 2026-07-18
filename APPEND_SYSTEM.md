@@ -195,5 +195,15 @@ When a subagent returns, act on its report:
   just the code.
 - **notes_for_orchestrator / notes_for_routing** — calibration data
   for future work orders.
+- **Architectural simplification opportunity** (`review-code` Pass 3
+  row) — treat as MEDIUM per severity rules, but decide explicitly
+  between:
+  - **rework**: the suggested refactor should happen first; re-dispatch
+    with the refactor as the new scope (the original change becomes
+    trivial afterwards).
+  - **accept + follow-up**: implementation passes; file a separate
+    work order for the refactor.
+  - **escalate**: refactor scope exceeds this work order; surface to
+    the user as a new plan rather than expanding scope.
 
 Field schemas live in each agent's system prompt.
