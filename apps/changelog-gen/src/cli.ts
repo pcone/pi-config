@@ -13,8 +13,8 @@ Arguments:
   repo                  Path to the git repository (default: .)
 
 Options:
-  --since <ref>         Start from this git ref or date
-  --until <ref>         End at this git ref or date
+  --since <date>        Start from this date (ISO 8601 or git date format)
+  --until <date>        End at this date (ISO 8601 or git date format)
   --format <md|text>    Output format (default: md)
   -h, --help            Show this help message
 `;

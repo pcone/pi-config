@@ -57,13 +57,17 @@ export function parseGitLog(stdout: string): Commit[] {
   const commits: Commit[] = [];
 
   for (const record of records) {
-    const trimmed = record.trimEnd();
+    const trimmed = record.trim();
     if (!trimmed) continue;
 
     const fields = trimmed.split('\x00');
     if (fields.length < 5) continue;
 
     const [hash, date, author, subject, ...bodyParts] = fields;
+
+    // Guard: reject records with non-hex hash (protects against leading \n
+    // producing an empty-string hash for the first record)
+    if (!/^[0-9a-f]+$/.test(hash)) continue;
     let body = bodyParts.join('\x00');
 
     // Strip trailing newline from the body if present (git appends one)
@@ -92,12 +96,37 @@ export function parseGitLog(stdout: string): Commit[] {
   return commits;
 }
 
+/** Refs that git resolves to a commit — not valid date-like values. */
+const GIT_REF_LIKE = new Set([
+  'HEAD',
+  'FETCH_HEAD',
+  'ORIG_HEAD',
+  'MERGE_HEAD',
+  'CHERRY_PICK_HEAD',
+]);
+
+/**
+ * Validate a date parameter passed to --since / --until.
+ *
+ * Rejects values that look like git refs rather than dates:
+ * - Values containing `~` or `^` (ref-prefix operators)
+ * - Values that are exact matches for well-known ref names
+ * - Values that are all-hex and 7+ characters long (likely hashes)
+ */
+export function isValidDateParam(value: string): boolean {
+  if (value.includes('~') || value.includes('^')) return false;
+  if (GIT_REF_LIKE.has(value)) return false;
+  if (/^[0-9a-f]{7,}$/i.test(value)) return false;
+  return true;
+}
+
 /**
  * Fetch commits from a git repository using `git log`.
  *
  * @param repoPath - Path to the git repository.
- * @param since    - Optional `--since` value (ref, date, etc.).
- * @param until    - Optional `--until` value (ref, date, etc.).
+ * @param since    - Optional `--since` value (date string).
+ * @param until    - Optional `--until` value (date string).
+ * @throws         - If `since` or `until` look like git refs rather than dates.
  * @returns Promise resolving to an array of parsed Commit objects.
  */
 export function fetchCommits(
@@ -105,6 +134,17 @@ export function fetchCommits(
   since?: string,
   until?: string,
 ): Promise<Commit[]> {
+  if (since !== undefined && !isValidDateParam(since)) {
+    return Promise.reject(
+      new Error(`Invalid --since value '${since}': expected a date, not a git ref`),
+    );
+  }
+  if (until !== undefined && !isValidDateParam(until)) {
+    return Promise.reject(
+      new Error(`Invalid --until value '${until}': expected a date, not a git ref`),
+    );
+  }
+
   return new Promise((resolve, reject) => {
     const args = [
       '-C',

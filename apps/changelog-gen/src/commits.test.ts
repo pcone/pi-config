@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { parseCommitSubject, parseGitLog, fetchCommits } from './commits.js';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { parseCommitSubject, parseGitLog, fetchCommits, isValidDateParam } from './commits.js';
 import type { Commit } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -202,6 +206,76 @@ describe('parseGitLog', () => {
 });
 
 // ---------------------------------------------------------------------------
+// isValidDateParam
+// ---------------------------------------------------------------------------
+describe('isValidDateParam', () => {
+  it('accepts ISO date 2025-01-01', () => {
+    expect(isValidDateParam('2025-01-01')).toBe(true);
+  });
+
+  it('accepts ISO datetime 2025-01-01T00:00:00Z', () => {
+    expect(isValidDateParam('2025-01-01T00:00:00Z')).toBe(true);
+  });
+
+  it('accepts relative date "3 months ago"', () => {
+    expect(isValidDateParam('3 months ago')).toBe(true);
+  });
+
+  it('rejects value containing ~', () => {
+    expect(isValidDateParam('HEAD~2')).toBe(false);
+  });
+
+  it('rejects value containing ^', () => {
+    expect(isValidDateParam('main^')).toBe(false);
+  });
+
+  it('rejects HEAD', () => {
+    expect(isValidDateParam('HEAD')).toBe(false);
+  });
+
+  it('rejects FETCH_HEAD', () => {
+    expect(isValidDateParam('FETCH_HEAD')).toBe(false);
+  });
+
+  it('rejects ORIG_HEAD', () => {
+    expect(isValidDateParam('ORIG_HEAD')).toBe(false);
+  });
+
+  it('rejects MERGE_HEAD', () => {
+    expect(isValidDateParam('MERGE_HEAD')).toBe(false);
+  });
+
+  it('rejects CHERRY_PICK_HEAD', () => {
+    expect(isValidDateParam('CHERRY_PICK_HEAD')).toBe(false);
+  });
+
+  it('rejects all-hex string 7+ chars (looks like hash)', () => {
+    expect(isValidDateParam('abc1234')).toBe(false);
+  });
+
+  it('rejects long hex string', () => {
+    expect(isValidDateParam('deadbeef1234567')).toBe(false);
+  });
+
+  it('accepts short hex string (under 7 chars)', () => {
+    expect(isValidDateParam('abc123')).toBe(true);
+  });
+
+  it('rejects hex with uppercase letters', () => {
+    expect(isValidDateParam('ABC1234')).toBe(false);
+  });
+
+  it('accepts non-hex string like "yesterday"', () => {
+    expect(isValidDateParam('yesterday')).toBe(true);
+  });
+
+  it('accepts empty string (git ignores empty --since)', () => {
+    // While we don't pass empty strings in practice, the function is lenient
+    expect(isValidDateParam('')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // fetchCommits (integration)
 // ---------------------------------------------------------------------------
 describe('fetchCommits', () => {
@@ -235,5 +309,94 @@ describe('fetchCommits', () => {
     const old = await fetchCommits(root, undefined, '2026-07-10');
     expect(old.length).toBeGreaterThan(0);
     expect(old.length).toBeLessThan(all.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hermetic git repo test (real git log output)
+// ---------------------------------------------------------------------------
+describe('parseGitLog with real git output', () => {
+  let repoDir: string;
+
+  beforeAll(() => {
+    repoDir = mkdtempSync(join(tmpdir(), 'changelog-gen-hermetic-'));
+    execFileSync('git', ['init'], { cwd: repoDir, encoding: 'utf-8' });
+    execFileSync('git', ['config', 'user.email', 'test@test.com'], {
+      cwd: repoDir, encoding: 'utf-8',
+    });
+    execFileSync('git', ['config', 'user.name', 'Test'], {
+      cwd: repoDir, encoding: 'utf-8',
+    });
+
+    // Commit 1: empty body
+    writeFileSync(join(repoDir, 'a.txt'), 'a');
+    execFileSync('git', ['add', 'a.txt'], { cwd: repoDir, encoding: 'utf-8' });
+    execFileSync('git', ['commit', '-m', 'feat: empty body commit'], {
+      cwd: repoDir, encoding: 'utf-8',
+    });
+
+    // Commit 2: single-line body
+    writeFileSync(join(repoDir, 'b.txt'), 'b');
+    execFileSync('git', ['add', 'b.txt'], { cwd: repoDir, encoding: 'utf-8' });
+    execFileSync('git', ['commit', '-m', 'fix: single line body\n\nsingle body line'], {
+      cwd: repoDir, encoding: 'utf-8',
+    });
+
+    // Commit 3: multi-line body
+    writeFileSync(join(repoDir, 'c.txt'), 'c');
+    execFileSync('git', ['add', 'c.txt'], { cwd: repoDir, encoding: 'utf-8' });
+    execFileSync('git', ['commit', '-m', 'docs: multi line body\n\nline 1\nline 2\nline 3'], {
+      cwd: repoDir, encoding: 'utf-8',
+    });
+
+    // Commit 4: BREAKING CHANGE footer
+    writeFileSync(join(repoDir, 'd.txt'), 'd');
+    execFileSync('git', ['add', 'd.txt'], { cwd: repoDir, encoding: 'utf-8' });
+    execFileSync('git', [
+      'commit', '-m',
+      'feat: breaking change footer\n\nSome body text\n\nBREAKING CHANGE: drops old api',
+    ], { cwd: repoDir, encoding: 'utf-8' });
+  });
+
+  afterAll(() => {
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('parses real git log output with various body formats', () => {
+    const stdout = execFileSync(
+      'git',
+      ['-C', repoDir, 'log', '--format=%h%x00%aI%x00%an <%ae>%x00%s%x00%b%x00%n'],
+      { encoding: 'utf-8' },
+    );
+
+    const commits = parseGitLog(stdout);
+
+    // We should have 4 commits (newest first)
+    expect(commits).toHaveLength(4);
+
+    // All hashes must be clean hex strings
+    for (const c of commits) {
+      expect(c.hash).toMatch(/^[0-9a-f]+$/);
+    }
+
+    // Commit 0 (newest): feat with BREAKING CHANGE footer
+    expect(commits[0].type).toBe('feat');
+    expect(commits[0].subject).toBe('breaking change footer');
+    expect(commits[0].breaking).toBe(true);
+
+    // Commit 1: docs with multi-line body — not breaking
+    expect(commits[1].type).toBe('docs');
+    expect(commits[1].subject).toBe('multi line body');
+    expect(commits[1].breaking).toBe(false);
+
+    // Commit 2: fix with single-line body — not breaking
+    expect(commits[2].type).toBe('fix');
+    expect(commits[2].subject).toBe('single line body');
+    expect(commits[2].breaking).toBe(false);
+
+    // Commit 3 (oldest): feat with empty body — not breaking
+    expect(commits[3].type).toBe('feat');
+    expect(commits[3].subject).toBe('empty body commit');
+    expect(commits[3].breaking).toBe(false);
   });
 });
