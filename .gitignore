@@ -7,3 +7,4 @@ node_modules/
 tmp/
 extensions/node_modules/
 extensions/package-lock.json
+extensions/model-tiers/cache.json
