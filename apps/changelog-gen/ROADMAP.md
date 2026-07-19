@@ -81,8 +81,9 @@ export interface GroupedChangelog {
 
 ### changelog-gen
 
-- [ ] **ITEM-0: Package scaffold + frozen data-contract types + vitest harness**
+- [x] **ITEM-0: Package scaffold + frozen data-contract types + vitest harness**
       — create `apps/changelog-gen/{package.json, tsconfig.json, vitest.config.ts, .gitignore, README.md, src/types.ts}` per the data contract above and resolved policy. **Sequential, FIRST.** Items 1–3 branch from the commit this item produces.
+      — **Merged:** commit `20d0a37`; deps: typescript ^5.6.3, tsx ^4.19.2, vitest ^2.1.8
 - [ ] **ITEM-1: Commit fetcher + parser** — wrap `git log`, parse conventional-commit messages into `Commit[]` (pure module, `src/commits.ts` + `src/commits.test.ts`). *Parallel after ITEM-0.*
 - [ ] **ITEM-2: Classifier/grouper** — `Commit[]` → `GroupedChangelog`, groups ordered by `TYPE_PRECEDENCE`, breaking flagged (pure module, `src/group.ts` + `src/group.test.ts`). *Parallel after ITEM-0.*
 - [ ] **ITEM-3: Renderers** — `GroupedChangelog` → markdown + plain text (pure module, `src/render.ts` + `src/render.test.ts`). *Parallel after ITEM-0.*
