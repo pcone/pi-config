@@ -1333,6 +1333,18 @@ function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 		// Skip if the subagent already finished between the timer fire
 		// and our callback running — completion delivers its own message.
 		if (rs.isDone || !running.has(rs.sessionId)) return;
+		// If the subagent is parked in a nested wait (it dispatched a child
+		// and is blocked on it), the stall is expected — soften the message
+		// so the caller doesn't reach for subagent_stop prematurely. The
+		// signal: its last tool call was `wait`, so currentActivity === "wait"
+		// (formatToolAction falls through to the literal tool name).
+		if (rs.progress.currentActivity === "wait") {
+			pi.sendUserMessage(
+				`[Subagent waiting] ${rs.agentName} (${rs.sessionId.slice(-8)}) has not advanced a turn in ${SUBAGENT_STALE_TURN_MS / 60000} minutes, but appears parked in a nested wait (dispatched a child and is blocked on it). This is usually expected — use subagent_status to inspect; use subagent_stop only if it seems genuinely stuck.`,
+				{ deliverAs: "steer" },
+			);
+			return;
+		}
 		pi.sendUserMessage(
 			`[Subagent stalled] ${rs.agentName} (${rs.sessionId.slice(-8)}) has not advanced a turn in ${SUBAGENT_STALE_TURN_MS / 60000} minutes. The subagent is still running — use subagent_status to inspect progress or subagent_stop to terminate.`,
 			{ deliverAs: "steer" },
