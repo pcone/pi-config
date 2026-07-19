@@ -420,13 +420,21 @@ async function fetchQuota(apiKey: string): Promise<QuotaData | undefined> {
 	}
 }
 
-/** Resolve and cache the z.ai API key. Returns true if a valid sk-sp- key is available. */
+/**
+ * Resolve and cache the z.ai API key. Returns true if any key is configured.
+ *
+ * Do NOT gate on a key-prefix heuristic: the endpoint response is the authority
+ * on whether this is a coding-plan key. Real coding-plan keys do not
+ * consistently start with `sk-sp-` (verified against a live Pro subscription
+ * whose key had a hex prefix). A standard pay-as-you-go key simply returns no
+ * `data.limits`, which renderQuotaSegment already treats as "render nothing".
+ */
 async function ensureZaiKey(ctx: FooterFactoryCtx): Promise<boolean> {
-	if (zaiKeyResolved) return !!resolvedZaiKey && resolvedZaiKey.startsWith("sk-sp-");
+	if (zaiKeyResolved) return !!resolvedZaiKey;
 	zaiKeyResolved = true;
 	try {
 		const key = await ctx.modelRegistry?.getApiKeyForProvider?.("zai");
-		if (key && key.startsWith("sk-sp-")) {
+		if (key) {
 			resolvedZaiKey = key;
 			return true;
 		}
@@ -585,7 +593,7 @@ export default function (pi: ExtensionAPI) {
 			}, 30_000);
 
 			// Quota polling: every 60s, fetch z.ai coding-plan quota when the active
-			// provider is zai and a valid sk-sp- key is configured. Silently retains
+			// provider is zai and any API key is configured. Silently retains
 			// last-known value on failure. The interval is cheap — the guard inside
 			// checks provider at tick time, and render() checks per-call.
 			const fc = ctx as FooterFactoryCtx;
