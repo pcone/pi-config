@@ -1,4 +1,3 @@
-// @ts-expect-error - @types/node not in project deps
 import { execFile } from 'node:child_process';
 import type { Commit } from './types.js';
 
