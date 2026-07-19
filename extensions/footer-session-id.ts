@@ -446,6 +446,38 @@ async function ensureZaiKey(ctx: FooterFactoryCtx): Promise<boolean> {
 	}
 }
 
+/**
+ * Run one quota cycle: clear stale data on switch-away from zai, fetch on
+ * switch-to-zai. Triggers a render whenever cachedQuota is mutated, so the
+ * footer reflects the new state without waiting for the 60s polling tick.
+ *
+ * Fire-and-forget at call sites — render() reads cachedQuota at draw time,
+ * so the awaiter doesn't need to block on the network round-trip.
+ */
+async function refreshQuotaNow(
+	fc: FooterFactoryCtx,
+	requestRender: (() => void) | null | undefined,
+): Promise<void> {
+	const model = fc.model;
+	if (model?.provider !== "zai") {
+		// Switch-away (or never-zai): drop any stale zai data so it can't
+		// show up under a non-zai model. Render immediately.
+		cachedQuota = undefined;
+		requestRender?.();
+		return;
+	}
+	const hasKey = await ensureZaiKey(fc);
+	if (!hasKey || !resolvedZaiKey) {
+		cachedQuota = undefined;
+		return;
+	}
+	const quota = await fetchQuota(resolvedZaiKey);
+	if (quota) {
+		cachedQuota = quota;
+		requestRender?.();
+	}
+}
+
 /** Unit → display label mapping for quota windows. */
 const QUOTA_LABELS: Record<number, string> = {
 	3: "5h",   // TOKENS_LIMIT, 5-hour rolling window
@@ -594,10 +626,16 @@ export default function (pi: ExtensionAPI) {
 		requestRenderRef?.();
 	});
 
-	// Re-render when the model changes — model name, provider, context window
-	// are read from ctx.model in render(), which updates before this event fires.
-	pi.on("model_select", async () => {
+	// Re-render when the model changes AND reconcile quota state.
+	// model name, provider, context window are read from ctx.model in
+	// render(). The quota block needs special handling: on switch-AWAY
+	// from zai we must clear stale data immediately (not wait for the
+	// 60s tick), and on switch-TO zai we must fetch immediately (not
+	// wait up to 60s for the next interval tick — that was the bug).
+	pi.on("model_select", async (_event, ctx) => {
 		requestRenderRef?.();
+		const fc = ctx as FooterFactoryCtx;
+		void refreshQuotaNow(fc, requestRenderRef);
 	});
 
 	function installFooter(ctx: unknown): void {
@@ -616,39 +654,18 @@ export default function (pi: ExtensionAPI) {
 				tui.requestRender();
 			}, 30_000);
 
-			// Quota polling: every 60s, fetch z.ai coding-plan quota when the active
-			// provider is zai and any API key is configured. Silently retains
-			// last-known value on failure. The interval is cheap — the guard inside
-			// checks provider at tick time, and render() checks per-call.
+			// Quota polling: every 60s, run a quota cycle (refreshQuotaNow).
+			// The helper itself decides whether to fetch or clear based on
+			// the current provider, so this stays a one-liner.
 			const fc = ctx as FooterFactoryCtx;
-			const quotaInterval = setInterval(async () => {
-				const model = fc.model;
-				if (model?.provider !== "zai") {
-					cachedQuota = undefined;
-					return;
-				}
-				const hasKey = await ensureZaiKey(fc);
-				if (!hasKey || !resolvedZaiKey) {
-					cachedQuota = undefined;
-					return;
-				}
-				const quota = await fetchQuota(resolvedZaiKey);
-				if (quota) cachedQuota = quota;
+			const quotaInterval = setInterval(() => {
+				void refreshQuotaNow(fc, requestRenderRef);
 			}, 60_000);
 
 			// Kick off the first quota fetch immediately (don't wait 60s).
-			// This is async; cachedQuota stays undefined until it resolves.
-			(async () => {
-				const model = fc.model;
-				if (model?.provider !== "zai") return;
-				const hasKey = await ensureZaiKey(fc);
-				if (!hasKey || !resolvedZaiKey) return;
-				const quota = await fetchQuota(resolvedZaiKey);
-				if (quota) {
-					cachedQuota = quota;
-					tui.requestRender();
-				}
-			})();
+			// Fire-and-forget; cachedQuota stays undefined until it resolves,
+			// at which point refreshQuotaNow requests a render.
+			void refreshQuotaNow(fc, requestRenderRef);
 
 			return {
 				dispose() {
