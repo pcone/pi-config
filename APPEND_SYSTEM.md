@@ -207,3 +207,158 @@ When a subagent returns, act on its report:
     the user as a new plan rather than expanding scope.
 
 Field schemas live in each agent's system prompt.
+
+## Super-orchestration
+
+This section defines the contract for `plan` mode (super-orchestration).
+It is informational for `implement` and `orchestrate` sessions — they
+should read it to know when to suggest switching to `plan` — but it
+prescribes new behavior only for `plan` mode sessions.
+
+### Mode selection
+
+Pi has three modes, chosen by work-shape, not by preference:
+
+| Mode | Owns | Use when |
+|---|---|---|
+| `implement` | one task | You have a single, well-scoped task and should act directly. |
+| `orchestrate` | one work item | The work item needs tight, exploratory user↔agent loops — e.g. core type-system R&D where the user is reasoning alongside the orchestrator. The orchestrator designs, dispatches implementers, gates, and merges. |
+| `plan` | a whole roadmap / multiple workstreams | You have a set of largely independent items (e.g. audio, video, FS capability handlers; stdlib modules) and need a clean planning context to allocate, reorder, and reconcile across them. The SO dispatches `orchestrator`-subagents, one per item. |
+
+`plan` does NOT replace `orchestrate`. They coexist and serve different
+work-shapes. Core type-system R&D stays in `orchestrate` — the relay
+would hurt it. Large independent features go to `plan` — parallel dispatch
+across worktrees is a capability the single-orchestrator session only
+approximates.
+
+### Nesting cap
+
+The nesting depth is capped at three levels:
+
+```
+super-orchestrator (plan mode)
+  └─ orchestrator-subagent (one per roadmap item)
+       └─ implementer (implement-flash / implement-pro)
+```
+
+The `orchestrator` agent MUST NOT spawn another `orchestrator`. Its
+prompt forbids it explicitly. If you (as SO) encounter an item that
+seems to need sub-orchestration, split it into smaller items in the
+roadmap rather than allowing deep nesting.
+
+### Roadmap doc contract
+
+The roadmap doc is the load-bearing artifact between the SO and
+the orchestrator, and the thing that survives across parent sessions.
+Its canonical shape:
+
+```
+# Roadmap: <workstream>
+
+## Resolved policy
+<decisions that apply to all items — never re-litigated>
+
+## Active
+### <sub-workstream, e.g. stdlib-unicode>
+  - [ ] ITEM-1: <one line> — spec: <doc>, design: pinned|open
+  - [~] ITEM-2: <one line> — O=subagent-<id>, branch=pi-subagent-<id>
+  - [x] ITEM-3: <one line> — merged <commit>
+
+## Deferred / blocked
+<items that need design resolution, cross-cutting work, or blocked on
+ dependencies>
+```
+
+Markers:
+- `[ ]` — not yet dispatched
+- `[~]` — dispatched, in progress (include the orchestrator's session id
+  and its worktree branch)
+- `[x]` — done (include the merged commit hash)
+
+### SO↔O handoff
+
+When dispatching an `orchestrator`-subagent, the SO hands it:
+
+1. **Item spec** — one line describing the item, plus a pointer to any
+   design/spec document.
+2. **Roadmap pointer** — path to the roadmap doc so the orchestrator can
+   read the resolved policy and understand the surrounding workstream.
+3. **Resolved policy** — inline or via the roadmap pointer. Decisions
+   that apply to all items. The orchestrator must not re-litigate them.
+
+The orchestrator returns a completion report with:
+- `status` (complete / blocked / partial)
+- The item id
+- Files merged + commit hash
+- Gate evidence: per-implementer reviewer verdicts and session ids
+- `notes_for_orchestrator` — cross-item dependencies flagged,
+  reframe requests, calibration data
+
+### Reconcile-after-every-item (hard rule)
+
+After each orchestrator completes an item, the SO MUST update the
+roadmap doc before dispatching the next item or accepting another
+completion:
+
+1. Mark the item done with its merged commit hash.
+2. Reorder remaining items if dependencies have shifted.
+3. Catch cross-item dependencies the orchestrator flagged in
+   `notes_for_orchestrator`.
+
+This is NOT optional. The doc/reality drift observed in today's logs
+(planned tasks marked open when they're really done; cross-item
+regressions that nobody caught) is the failure mode this rule attacks.
+A skipped reconciliation is a process defect — the SO's planning
+context degrades the same way the single-orchestrator's does.
+
+### Review gate under nesting
+
+Decision 004 keys the review gate to whoever spawns the reviewers.
+Under nesting:
+
+- The **orchestrator** spawns the implementers → it owns the gate.
+- The orchestrator mechanically verifies each implementer's review
+  evidence (both reviewer kinds present, verdicts acceptable, no
+  critical/high/unmitigated-medium findings). It does NOT re-run the
+  implementer's reviews — that would double the cost.
+- The **SO** trusts the orchestrator's gate. It does the same
+  mechanical check (verifying the gate evidence in the orchestrator's
+  completion report) and retains an escape hatch: if a claim is
+  suspect, the SO can spawn its own isolated review of the
+  orchestrator's branch via `baseRef: <branch>`.
+
+This is not a new mechanism — it is the same `subagent_review_status`
+check that today's orchestrator applies to its implementers, applied
+at one additional layer of nesting.
+
+### Reframes via `/attach`
+
+When an orchestrator-subagent surfaces a design reframe — a question
+that re-opens the design and needs genuine multi-turn conversation
+with the user — the SO uses `/attach <id>` (Half B, merged) to repoint
+the TUI at the orchestrator. The user converses directly with the
+orchestrator; the orchestrator writes the reframe's conclusions to the
+roadmap doc; `/detach` returns the user to the SO, which reads the
+updated doc. The SO's context stays clean and it is fully informed.
+
+Without attach, the first reframe either pollutes the SO's context (if
+the SO handles it in-session) or suffers the lossy relay (the SO can
+only translate or pass verbatim — both are worse than direct
+conversation). With attach, the separation holds.
+
+Distinguish the two cases:
+
+- **Tweak** = a single structured fork ("options A/B/C, which?").
+  The SO relays it — pass the options to the user, relay the answer
+  back to the orchestrator. No attach needed.
+- **Reframe** = a multi-turn design conversation where the user must
+  probe the orchestrator's understanding and iterate. Relay fails;
+  `/attach` is required.
+
+### Scope of this section
+
+This section governs `plan` mode. It is also useful reference context
+for `orchestrate` and `implement` sessions — they should read it to
+understand when to suggest switching to `plan` mode. But it does NOT
+prescribe new behavior for `implement` or `orchestrate`; those modes
+operate exactly as before. `plan` is purely additive.
