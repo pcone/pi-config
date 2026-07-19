@@ -14,9 +14,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -314,6 +315,11 @@ interface RunningSubagent {
 
 const running = new Map<string, RunningSubagent>();
 
+// ── Attach state ────────────────────────────────────────────────────────────
+
+let attachedSessionId: string | null = null;
+let _attachCtx: any = null; // captured from /attach command for editor-internal notify
+
 function newProgress(): SubagentProgress {
 	return {
 		turns: 0,
@@ -498,6 +504,41 @@ function formatProgress(rs: RunningSubagent): string {
 	]
 		.filter(Boolean)
 		.join(" | ");
+}
+
+// ── Attach helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Resolve an attach target from a user-supplied session-id string.
+ * Encapsulates lookup + all guards: empty arg, not found, already done,
+ * no writable stdin. Pure over the map + each rs's isDone/stdin state.
+ */
+function resolveAttachTarget(
+	runningMap: Map<string, RunningSubagent>,
+	sid: string,
+): { ok: true; rs: RunningSubagent } | { ok: false; reason: "empty" | "notFound" | "done" | "noStdin" } {
+	if (!sid.trim()) return { ok: false, reason: "empty" };
+
+	let rs: RunningSubagent | undefined;
+	for (const [id, r] of runningMap) {
+		if (id === sid || id.endsWith(sid)) {
+			rs = r;
+			break;
+		}
+	}
+	if (!rs) return { ok: false, reason: "notFound" };
+	if (rs.isDone) return { ok: false, reason: "done" };
+	if (!rs.stdin || rs.stdin.destroyed) return { ok: false, reason: "noStdin" };
+	return { ok: true, rs };
+}
+
+/**
+ * Build the RPC prompt payload for attaching user input to a running
+ * subagent. Pins the exact shape — missing streamingBehavior would throw
+ * when the child is mid-turn.
+ */
+function buildPromptPayload(text: string): { type: "prompt"; message: string; streamingBehavior: "steer" } {
+	return { type: "prompt", message: text, streamingBehavior: "steer" };
 }
 
 // ── RPC communication ──────────────────────────────────────────────────────
@@ -937,6 +978,15 @@ async function spawnSubagent(
 					rs.progress.currentActivity = "completed, closing session";
 					rs.isDone = true;
 					debugLog("DONE! closing stdin");
+
+					// Auto-detach: if the user is attached to this session,
+					// restore the default editor and clear the attach widget
+					// so it isn't orphaned after the child completes.
+					if (attachedSessionId === sessionId) {
+						detach(ctx);
+						ctx.ui.notify(`Subagent ${sessionId.slice(-8)} ended — detached.`, "info");
+					}
+
 					if (rs.stdin && !rs.stdin.destroyed) {
 						rs.stdin.end();
 					}
@@ -1015,6 +1065,15 @@ async function spawnSubagent(
 			rs.sockServer.close();
 			fs.unlinkSync(sockPath);
 		} catch { /* */ }
+
+		// Auto-detach on unexpected exit: if the user was attached to this
+		// session when it died (crash, kill, timeout), restore the default
+		// editor so it isn't orphaned. The isDone path above handles the
+		// normal-completion case; this catches abnormal termination.
+		if (attachedSessionId === sessionId) {
+			detach(ctx);
+			ctx.ui.notify(`Subagent ${sessionId.slice(-8)} ended — detached.`, "info");
+		}
 
 		// Mark the session as no longer running BEFORE cleanupWorktree (which
 		// runs multiple git commands and can take seconds). Otherwise
@@ -1119,6 +1178,116 @@ class LogViewer {
 		return this.cachedLines;
 	}
 }
+
+// ── Attach Editor ───────────────────────────────────────────────────────────
+
+/**
+ * Custom editor that intercepts submit to route user input to an attached
+ * async subagent. Escape detaches; all other keys pass through to the
+ * default editor (ctrl+d/exit, model switching, paste, autocomplete, etc.).
+ */
+class AttachEditor extends CustomEditor {
+	handleInput(data: string): void {
+		// Escape → detach (restore default editor, clear widget, clear state)
+		if (matchesKey(data, Key.escape)) {
+			if (_attachCtx) detach(_attachCtx);
+			return;
+		}
+
+		// Submit interception: route user text to the attached subagent
+		if (this.keybindings.matches(data, "tui.input.submit") && !this.isShowingAutocomplete()) {
+			const text = this.getExpandedText().trim();
+			if (!text) return; // no-op on empty/whitespace submit
+
+			this.setText(""); // clear the editor
+
+			const id = attachedSessionId;
+			if (!id) {
+				// No target — shouldn't happen if editor is installed, but be safe
+				debugLog("attach: submit with no attachedSessionId");
+				return;
+			}
+
+			const rs = running.get(id);
+			if (!rs || !rs.stdin || rs.stdin.destroyed) {
+				// Session is gone — append a visible error line to the stream
+				if (rs) {
+					appendRunningLogLine(rs, "\x1b[31m[Session no longer accepting input — detach with Escape]\x1b[0m");
+				}
+				debugLog("attach: submit with no valid target (rs=" + !!rs + ")");
+				return;
+			}
+
+			// Send the user's message to the child's RPC stdin
+			rpcSend(rs.stdin, buildPromptPayload(text));
+
+			// Log the user's message into the stream view so it appears inline
+			appendRunningLogLine(rs, "\x1b[36m› " + text + "\x1b[0m");
+
+			return; // consumed — do NOT pass to super (would send to parent)
+		}
+
+		// Everything else → normal editor behavior (ctrl+d/exit, model
+		// switching, paste, autocomplete navigation, all editing keys)
+		super.handleInput(data);
+	}
+}
+
+// ── Attach widget ───────────────────────────────────────────────────────────
+
+/**
+ * Lightweight viewer for the attached session's log stream.
+ * Resolves the target dynamically from `attachedSessionId` on each render
+ * so target-switching and auto-detach work without re-installing the widget.
+ * Delegates rendering to the existing `LogViewer` class.
+ */
+class AttachLogViewer {
+	private viewer: LogViewer | null = null;
+	private viewerId: string | null = null;
+
+	invalidate(): void {
+		this.viewer?.invalidate();
+	}
+
+	render(width: number): string[] {
+		const id = attachedSessionId;
+		if (!id) return [];
+		const rs = running.get(id);
+		if (!rs) return [truncateToWidth("(session ended)", width)];
+
+		// Rebuild the inner LogViewer when the target changes
+		if (this.viewerId !== id) {
+			this.viewer = new LogViewer(rs.logLines, rs.agentName, rs.sessionId, () => rs.usageStats);
+			this.viewerId = id;
+		}
+
+		const lines = this.viewer.render(width);
+		// Prepend a clear header so it's visually distinct from /watch
+		return [
+			truncateToWidth(`\x1b[36m▸ ATTACHED: ${rs.agentName} | ${rs.sessionId}\x1b[0m`, width),
+			...lines,
+		];
+	}
+}
+
+// ── Detach ──────────────────────────────────────────────────────────────────
+
+/**
+ * Internal detach routine. Restores the default editor, clears the attach
+ * widget, resets module state, and updates the footer. Idempotent — safe to
+ * call when not attached (no-op).
+ */
+function detach(ctx: any): void {
+	if (attachedSessionId === null) return;
+	ctx.ui.setEditorComponent(undefined);
+	ctx.ui.setWidget("subagent-attach", undefined);
+	attachedSessionId = null;
+	_attachCtx = null;
+	ctx.ui.setStatus("subagent-attach", undefined);
+	updateFooter(ctx);
+}
+
+// ── Tool action formatting ─────────────────────────────────────────────────
 
 function formatToolAction(toolName: string, args: Record<string, any>): string {
 	const shortenPath = (p: string) => {
@@ -1397,6 +1566,98 @@ export default function (pi: ExtensionAPI) {
 			rs.watchHandle = ctx.ui.setWidget("subagent-watch", () => viewer, { placement: "belowEditor" });
 
 			ctx.ui.notify(`Watching ${rs.agentName} (${rs.sessionId}). Use /watch off to close.`);
+		},
+	});
+
+	// ── /attach ──────────────────────────────────────────────────────────
+
+	pi.registerCommand("attach", {
+		description: "Attach to a running async subagent to converse directly. Usage: /attach <session-id>",
+		handler: async (args, ctx) => {
+			const sid = args.trim();
+
+			// Empty arg while attached → convenience detach
+			if (!sid) {
+				if (attachedSessionId !== null) {
+					detach(ctx);
+					ctx.ui.notify("Detached.", "info");
+					return;
+				}
+				ctx.ui.notify("Usage: /attach <session-id>", "info");
+				return;
+			}
+
+			// Resolve target — all guards are in the pure helper
+			const result = resolveAttachTarget(running, sid);
+			if (!result.ok) {
+				const msgs: Record<string, string> = {
+					empty: "Usage: /attach <session-id>",
+					notFound: `No running session matches "${sid}".`,
+					done: `Session "${sid}" has completed; nothing to attach to.`,
+					noStdin: `Session "${sid}" is not accepting input.`,
+				};
+				const level = result.reason === "notFound" || result.reason === "done" || result.reason === "noStdin"
+					? "warning" : "info";
+				ctx.ui.notify(msgs[result.reason], level);
+				return;
+			}
+
+			const rs = result.rs;
+
+			// Capture ctx for editor-internal use (escape-detach, notify)
+			_attachCtx = ctx;
+
+			// Already attached to the same session — no-op
+			if (attachedSessionId === rs.sessionId) {
+				ctx.ui.notify(`Already attached to ${rs.sessionId.slice(-8)}.`, "info");
+				return;
+			}
+
+			// Switching target (already attached to a different session)
+			const wasAttached = attachedSessionId !== null;
+			attachedSessionId = rs.sessionId;
+
+			if (wasAttached) {
+				ctx.ui.notify(`Switched attach target → ${rs.sessionId.slice(-8)}`, "info");
+			}
+
+			// Install the attach stream widget (only if not already attached;
+			// the widget resolves its target dynamically so switching works
+			// without re-installing).
+			if (!wasAttached) {
+				const attachViewer = new AttachLogViewer();
+				ctx.ui.setWidget("subagent-attach", () => attachViewer, { placement: "belowEditor" });
+			}
+
+			// Install the AttachEditor (only if not already attached; setEditorComponent
+			// creates a fresh editor each call and would lose in-progress text).
+			if (!wasAttached) {
+				ctx.ui.setEditorComponent((tui, theme, kb) => new AttachEditor(tui, theme, kb));
+			}
+
+			// Update footer / status line
+			ctx.ui.setStatus("subagent-attach", `▸ attached: ${rs.agentName} (${rs.sessionId.slice(-8)})`);
+
+			if (!wasAttached) {
+				ctx.ui.notify(
+					`Attached to ${rs.agentName} (${rs.sessionId.slice(-8)}). Type /detach or Escape to return.`,
+					"info",
+				);
+			}
+		},
+	});
+
+	// ── /detach ──────────────────────────────────────────────────────────
+
+	pi.registerCommand("detach", {
+		description: "Detach from the foregrounded subagent and return to the parent session.",
+		handler: async (_args, ctx) => {
+			if (attachedSessionId === null) {
+				ctx.ui.notify("Not currently attached.", "info");
+				return;
+			}
+			detach(ctx);
+			ctx.ui.notify("Detached.", "info");
 		},
 	});
 
