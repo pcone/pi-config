@@ -2,7 +2,7 @@
 name: review-code-deep
 description: Post-implementation adversarial implementation-correctness reviewer. Use for complex, high-risk, or cross-file changes with implicit invariants, error handling, or critical priority. Owns spec compliance, invariants, structural risks, error/recovery semantics, build & test execution, unrequested-changes audit, and build-config integrity. Does NOT do exhaustive test-coverage auditing — that's `review-tests-deep`'s job. For routine mechanical changes, use `review-code`.
 tools: read, grep, find, ls, bash
-model: minimax/MiniMax-M3
+model: zai/glm-5.2
 reviewer_kind: implementation
 requires_parent_reviewers:
 ---
