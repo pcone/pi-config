@@ -124,6 +124,13 @@ describe('CLI integration', () => {
     expect(result.stdout).toContain('## feat');
     expect(result.stdout).toContain('## fix');
     expect(result.stdout).toContain('## docs');
+    // Each commit line is a bullet with hash:subject
+    const lines = result.stdout.split('\n');
+    const bulletLines = lines.filter(l => /^- [0-9a-f]+: /.test(l));
+    expect(bulletLines.length).toBeGreaterThanOrEqual(4);
+    // Breaking section in md uses backtick-wrapped hash: `hash`: subject
+    const breakingBulletLines = lines.filter(l => /^- `[0-9a-f]+`/.test(l));
+    expect(breakingBulletLines.length).toBeGreaterThanOrEqual(1);
   });
 
   it('happy path --format text', () => {
@@ -135,6 +142,10 @@ describe('CLI integration', () => {
     expect(result.stdout).toContain('FEAT');
     expect(result.stdout).toContain('FIX');
     expect(result.stdout).toContain('DOCS');
+    // Each commit line is a bullet with hash:subject
+    const lines = result.stdout.split('\n');
+    const bulletLines = lines.filter(l => /^- [0-9a-f]+: /.test(l));
+    expect(bulletLines.length).toBeGreaterThanOrEqual(4);
   });
 
   it('--help flag prints usage and exits 0', () => {
