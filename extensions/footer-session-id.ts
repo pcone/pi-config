@@ -1015,32 +1015,55 @@ export default function (pi: ExtensionAPI) {
 
 					const lines: string[] = [pwdLine, dimStatsLeft + dimRemainder];
 
-					// Quota line: right-aligned directly below the model name on line 2.
-					// renderQuotaSegment returns '' when not on zai or no data, so this
-					// is a no-op for other providers and pre-fetch state. Extension
-					// statuses (pushed below) then become line 4 when present.
+					// Row 3: statuses on the left, quota on the right (when both
+					// exist). Keeps LHS and RHS items paired row-by-row:
+					//   row 1: pwd                                    session-id
+					//   row 2: stats                                  model
+					//   row 3: [orchestrate] subagents: ...           5h:9% 1.3h ...
+					// When only one exists, it uses the appropriate alignment alone.
 					const quotaStr = renderQuotaSegment(
 						cachedQuota,
 						model?.provider,
 						Math.max(30, width),
 						theme,
 					);
-					if (quotaStr) {
-						const qWidth = visibleWidth(quotaStr);
-						const quotaLine = qWidth <= width
-							? " ".repeat(width - qWidth) + quotaStr
-							: truncateToWidth(quotaStr, width, theme.fg("dim", "..."));
-						lines.push(quotaLine);
-					}
 
-					// Extension statuses (preserved from FooterComponent).
+					let statusesStr = "";
 					const extensionStatuses = footerData.getExtensionStatuses();
 					if (extensionStatuses.size > 0) {
-						const sortedStatuses = Array.from(extensionStatuses.entries())
+						statusesStr = Array.from(extensionStatuses.entries())
 							.sort(([a], [b]) => a.localeCompare(b))
-							.map(([, text]) => sanitizeStatusText(text));
-						const statusLine = sortedStatuses.join(" ");
-						lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+							.map(([, text]) => sanitizeStatusText(text))
+							.join(" ");
+					}
+
+					if (statusesStr && quotaStr) {
+						const sWidth = visibleWidth(statusesStr);
+						const qWidth = visibleWidth(quotaStr);
+						const minGap = 2;
+						if (sWidth + minGap + qWidth <= width) {
+							const fill = " ".repeat(width - sWidth - qWidth);
+							lines.push(statusesStr + fill + quotaStr);
+						} else {
+							// Width-tight: keep quota (primary), drop statuses if
+							// there's not even room for a short fragment + ellipsis.
+							const availForStatus = Math.max(0, width - qWidth - minGap);
+							const truncatedStatus = availForStatus > 6
+								? truncateToWidth(statusesStr, availForStatus, theme.fg("dim", "..."))
+								: "";
+							const tWidth = visibleWidth(truncatedStatus);
+							const fill = " ".repeat(Math.max(0, width - tWidth - qWidth));
+							lines.push(truncatedStatus + fill + quotaStr);
+						}
+					} else if (quotaStr) {
+						const qWidth = visibleWidth(quotaStr);
+						lines.push(
+							qWidth <= width
+								? " ".repeat(width - qWidth) + quotaStr
+								: truncateToWidth(quotaStr, width, theme.fg("dim", "...")),
+						);
+					} else if (statusesStr) {
+						lines.push(truncateToWidth(statusesStr, width, theme.fg("dim", "...")));
 					}
 
 					return lines;
