@@ -85,7 +85,8 @@ export interface GroupedChangelog {
       — create `apps/changelog-gen/{package.json, tsconfig.json, vitest.config.ts, .gitignore, README.md, src/types.ts}` per the data contract above and resolved policy. **Sequential, FIRST.** Items 1–3 branch from the commit this item produces.
       — **Done:** merged `e8095a5` (scaffold impl `20d0a37`; deps: typescript ^5.6.3, tsx ^4.19.2, vitest ^2.1.8). SO-verified: gate clean (review-code + review-tests APPROVED_WITH_NOTES, 2 rounds, 1 HIGH fixed), `tsc --noEmit` clean, `npm test` 2/2 in main.
 - [ ] **ITEM-1: Commit fetcher + parser** — wrap `git log`, parse conventional-commit messages into `Commit[]` (pure module, `src/commits.ts` + `src/commits.test.ts`). *Parallel after ITEM-0.*
-- [ ] **ITEM-2: Classifier/grouper** — `Commit[]` → `GroupedChangelog`, groups ordered by `TYPE_PRECEDENCE`, breaking flagged (pure module, `src/group.ts` + `src/group.test.ts`). *Parallel after ITEM-0.*
+- [x] **ITEM-2: Classifier/grouper** — `Commit[]` → `GroupedChangelog`, groups ordered by `TYPE_PRECEDENCE`, breaking flagged (pure module, `src/group.ts` + `src/group.test.ts`). *Parallel after ITEM-0.*
+      — **Done:** merged `7511198` (impl `pi-subagent-6939c473a88f`). Gate clean: review-code + review-tests APPROVED, 1 round each. `tsc --noEmit` clean, `npm test` 15/15 (13 group + 2 types).
 - [ ] **ITEM-3: Renderers** — `GroupedChangelog` → markdown + plain text (pure module, `src/render.ts` + `src/render.test.ts`). *Parallel after ITEM-0.*
 - [ ] **ITEM-4: CLI** — wire fetcher→grouper→renderer, arg parsing (repo path, `--since`/`--until`, `--format md|text`), stdout output (`src/cli.ts` + bin entry in `package.json`). *After ITEM-1/2/3.*
 
