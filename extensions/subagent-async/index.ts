@@ -407,8 +407,17 @@ async function cleanupWorktree(rs: RunningSubagent): Promise<string> {
 	if (!worktreePath || !isolationBranch || !parentHeadCommit) return "";
 
 	try {
-		// Stage and commit any uncommitted changes in the worktree
+		// Stage and commit any uncommitted changes in the worktree.
 		await git(["add", "-A"], worktreePath);
+		// Unstage scratch/work-order docs so the auto-commit doesn't leak them
+		// into the branch. Orchestrators are told to write these to /tmp; this
+		// is defense-in-depth (007 validation finding F4 — a 290-line WO doc
+		// leaked into the repo this way).
+		const stagedNames = (await git(["diff", "--cached", "--name-only"], worktreePath)).stdout;
+		const scratch = stagedNames.split("\n").filter((p) => p.length > 0 && /^WO-.*\.md$/i.test(p));
+		if (scratch.length > 0) {
+			await git(["reset", "-q", "--", ...scratch], worktreePath);
+		}
 		const diffResult = await git(["diff", "--cached", "--quiet"], worktreePath);
 		if (diffResult.exitCode !== 0) {
 			const commitMsg = `subagent(${rs.agentName}): ${rs.task.slice(0, 72)}`;
