@@ -802,43 +802,37 @@ export default function (pi: ExtensionAPI) {
 					const remainder = statsLine.slice(statsLeft.length);
 					const dimRemainder = theme.fg("dim", remainder);
 
-					// --- Top line: pwd (left) + quota (right) + session words (right). ---
-					// The quota block is inserted between pwd and session words on the
-					// right side. Width-budget conscious: if the full row would overflow,
-					// drop the quota block first, then fall through to existing behavior.
+					// --- Top line: pwd (left) + session words (right). ---
 					const pwdDim = theme.fg("dim", pwd);
 					const pwdVisible = visibleWidth(pwdDim);
 
-					// Build the quota segment (empty string when not applicable).
-					// Width budget here is generous — the real fit check happens below
-					// using exact visible widths (needsBoth / needsPwdSessionOnly).
+					let pwdLine: string;
+					if (pwdVisible + 2 + sessionSideWidth <= width) {
+						const fill = " ".repeat(width - pwdVisible - sessionSideWidth);
+						pwdLine = pwdDim + fill + sessionSide;
+					} else {
+						pwdLine = truncateToWidth(pwdDim, width, theme.fg("dim", "..."));
+					}
+
+					const lines: string[] = [pwdLine, dimStatsLeft + dimRemainder];
+
+					// Quota line: right-aligned directly below the model name on line 2.
+					// renderQuotaSegment returns '' when not on zai or no data, so this
+					// is a no-op for other providers and pre-fetch state. Extension
+					// statuses (pushed below) then become line 4 when present.
 					const quotaStr = renderQuotaSegment(
 						cachedQuota,
 						model?.provider,
 						Math.max(30, width),
 						theme,
 					);
-					const quotaWidth = quotaStr ? visibleWidth(quotaStr) + 1 : 0; // +1 for spacer
-
-					let pwdLine: string;
-					const rightBlockWidth = quotaWidth + sessionSideWidth;
-					const needsBoth = pwdVisible + 2 + rightBlockWidth <= width;
-					const needsPwdSessionOnly = pwdVisible + 2 + sessionSideWidth <= width;
-
-					if (needsBoth && quotaStr) {
-						// Fits everything: pwd ... quota session
-						const fill = " ".repeat(width - pwdVisible - rightBlockWidth);
-						pwdLine = pwdDim + fill + quotaStr + " " + sessionSide;
-					} else if (needsPwdSessionOnly) {
-						// Fits without quota: pwd ... session
-						const fill = " ".repeat(width - pwdVisible - sessionSideWidth);
-						pwdLine = pwdDim + fill + sessionSide;
-					} else {
-						// Not enough room for both — truncate pwd to width on its own.
-						pwdLine = truncateToWidth(pwdDim, width, theme.fg("dim", "..."));
+					if (quotaStr) {
+						const qWidth = visibleWidth(quotaStr);
+						const quotaLine = qWidth <= width
+							? " ".repeat(width - qWidth) + quotaStr
+							: truncateToWidth(quotaStr, width, theme.fg("dim", "..."));
+						lines.push(quotaLine);
 					}
-
-					const lines: string[] = [pwdLine, dimStatsLeft + dimRemainder];
 
 					// Extension statuses (preserved from FooterComponent).
 					const extensionStatuses = footerData.getExtensionStatuses();
