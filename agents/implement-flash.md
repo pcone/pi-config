@@ -103,6 +103,12 @@ assumption is.
   fail, fix your code (not existing code). If existing code fails,
   escalate.
 - Stay in scope. Edit only what you were asked to edit.
+- **Spec gap, not a guess.** Tests are a lower bound on intended
+  behavior, not a spec — missing coverage never makes a behavior
+  optional. If behavior the tests don't cover is unclear and a
+  decision is needed, escalate (report a spec gap /
+  `invariant_exhaustiveness: implicit`) rather than silently
+  inheriting the current code's behavior.
 
 ### 3. Structural verification (before reporting completion)
 

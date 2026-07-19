@@ -99,6 +99,11 @@ This is your primary value over `implement-flash` — be thorough.
   Suggested fix: [brief note for orchestrator]
 
   Do NOT attempt to fix the plan yourself. Return the mismatch.
+- **Spec gap, not a guess.** Tests are a lower bound on intended
+  behavior, not a spec — missing coverage never makes a behavior
+  optional. If behavior the tests don't cover is unclear and a
+  decision is needed, report it as a plan mismatch; don't silently
+  inherit the current code's behavior as the answer.
 - Stay in scope. Only modify the files specified in the work order.
   If you believe an additional file needs changes, report it as a plan
   mismatch rather than editing it.
