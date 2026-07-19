@@ -90,10 +90,13 @@ export interface GroupedChangelog {
       — **Done:** merged `a575cb0` (impl `7511198`). Gate clean: review-code + review-tests both APPROVED, 1 round each; `invariant_exhaustiveness: explicit` (flash routing correct). SO-verified in main: `tsc --noEmit` clean, `npm test` 15/15 (13 group + 2 types).
 - [x] **ITEM-3: Renderers** — `GroupedChangelog` → markdown + plain text (pure module, `src/render.ts` + `src/render.test.ts`). *Parallel after ITEM-0.*
       — **Done:** merged `9323ab2` (render impl worktree `pi-subagent-d7648ca3ba64`; 27 tests, 2 reviewers APPROVED, 1 round). SO-verified: gate clean, `tsc --noEmit` clean, `npm test` 29/29.
-- [ ] **ITEM-4: CLI** — wire fetcher→grouper→renderer, arg parsing (repo path, `--since`/`--until`, `--format md|text`), stdout output (`src/cli.ts` + bin entry in `package.json`). *After ITEM-1/2/3.*
+- [x] **ITEM-4: CLI** — wire fetcher→grouper→renderer, arg parsing (repo path, `--since`/`--until`, `--format md|text`), stdout output (`src/cli.ts` + bin entry in `package.json`). *After ITEM-1/2/3.*
+      — **Done:** merged `81ad72d` (impl worktree `pi-subagent-20c69f380972`; gate: review-code + review-tests APPROVED_WITH_NOTES, 1 round, 5 LOW accepted + 1 MED fixed; `invariant_exhaustiveness: explicit`). `tsc --noEmit` clean, `npm test` 82/82, `--help` works, `@ts-expect-error` removed + `@types/node` added. No ROADMAP conflict (orchestrator left doc to SO — mitigation held). **⚠ SO end-to-end smoke FAILED:** real `git log` output corrupts every commit's `hash` field (latent `parseGitLog` separator bug → ITEM-5) and `--since <ref>` is silently date-only. CLI wiring itself is correct; defects live in `commits.ts`.
+- [ ] **ITEM-5: Parser + `--since`/`--until` correctness (fix-up)** — (1) **[HIGH]** `parseGitLog` mis-splits real `git log` output: empty-body records emit `subject\0\0\n\n` but the splitter keys on `\x00\n`, leaving a stray leading `\n` on every commit's `hash` field after the first → corrupts hashes + breaks every rendered bullet. Fix the record separator (e.g. trim records/fields, or a robust delimiter) and **harden `commits.test.ts` fixtures to real git byte layout** (multi-record, mix of empty-body + multiline-body) asserting `hash` matches `/^[0-9a-f]+$/`. (2) **[MED]** `--since`/`--until` map to git date filters but CLI help says `<ref>` — make docs and behavior agree (prefer ref support via git revision ranges; else change help to `<date>` + add a date-path test + clear error on bad input). (3) Tighten `cli.test.ts` integration assertions to check the exact `- <hash>: <subject>` bullet format. *After ITEM-4; surfaced by the SO smoke test — the gate missed it.*
 
 **Dependencies:** ITEM-0 first (sequential). ITEM-1/2/3 parallel after ITEM-0
-(they share only the frozen `src/types.ts`). ITEM-4 after ITEM-1/2/3 land.
+(they share only the frozen `src/types.ts`). ITEM-4 after ITEM-1/2/3 land. ITEM-5
+after ITEM-4 (fix-up from the SO smoke test; defects are in `commits.ts` + `cli.ts`).
 
 ## Deferred / blocked
 
