@@ -86,7 +86,8 @@ export interface GroupedChangelog {
       — **Done:** merged `e8095a5` (scaffold impl `20d0a37`; deps: typescript ^5.6.3, tsx ^4.19.2, vitest ^2.1.8). SO-verified: gate clean (review-code + review-tests APPROVED_WITH_NOTES, 2 rounds, 1 HIGH fixed), `tsc --noEmit` clean, `npm test` 2/2 in main.
 - [ ] **ITEM-1: Commit fetcher + parser** — wrap `git log`, parse conventional-commit messages into `Commit[]` (pure module, `src/commits.ts` + `src/commits.test.ts`). *Parallel after ITEM-0.*
 - [ ] **ITEM-2: Classifier/grouper** — `Commit[]` → `GroupedChangelog`, groups ordered by `TYPE_PRECEDENCE`, breaking flagged (pure module, `src/group.ts` + `src/group.test.ts`). *Parallel after ITEM-0.*
-- [ ] **ITEM-3: Renderers** — `GroupedChangelog` → markdown + plain text (pure module, `src/render.ts` + `src/render.test.ts`). *Parallel after ITEM-0.*
+- [x] **ITEM-3: Renderers** — `GroupedChangelog` → markdown + plain text (pure module, `src/render.ts` + `src/render.test.ts`). *Parallel after ITEM-0.*
+      — **Done:** merged `fe341ce` (render impl `pi-subagent-d7648ca3ba64`; 27 tests, 2 reviewers APPROVED, 1 round). SO-verified: gate clean (review-code + review-tests APPROVED), `tsc --noEmit` clean, `npm test` 29/29 in branch.
 - [ ] **ITEM-4: CLI** — wire fetcher→grouper→renderer, arg parsing (repo path, `--since`/`--until`, `--format md|text`), stdout output (`src/cli.ts` + bin entry in `package.json`). *After ITEM-1/2/3.*
 
 **Dependencies:** ITEM-0 first (sequential). ITEM-1/2/3 parallel after ITEM-0
