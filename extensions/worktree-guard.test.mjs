@@ -149,6 +149,51 @@ describe("isBlocked", () => {
 	});
 });
 
+// ── isBlocked: parent-repo read allowlist (skills/, agents/) ──────────────
+//
+// Isolated subagents legitimately need to READ parent-repo skill and agent
+// definitions (e.g. the work-order-template SKILL.md). Writes remain blocked.
+describe("isBlocked — parent-repo read allowlist (skills/, agents/)", () => {
+	const parentCwd = "/Users/scott/Developer/pi-config";
+	const ctx = makeGuardContext(productionWorktree("abc123"), parentCwd);
+
+	test("READ of a skill file under skills/ is allowed", () => {
+		expect(isBlocked(`${parentCwd}/skills/work-order-template/SKILL.md`, ctx, "read").blocked).toBe(false);
+	});
+
+	test("READ of an agent prompt under agents/ is allowed", () => {
+		expect(isBlocked(`${parentCwd}/agents/orchestrator.md`, ctx, "read").blocked).toBe(false);
+	});
+
+	test("READ of the skills/ dir itself is allowed", () => {
+		expect(isBlocked(`${parentCwd}/skills`, ctx, "read").blocked).toBe(false);
+	});
+
+	test("default op (no third arg) is read → skills/ allowed", () => {
+		expect(isBlocked(`${parentCwd}/skills/foo.md`, ctx).blocked).toBe(false);
+	});
+
+	test("WRITE to a file under skills/ is still blocked", () => {
+		const r = isBlocked(`${parentCwd}/skills/foo.md`, ctx, "write");
+		expect(r.blocked).toBe(true);
+		expect(r.reasonShort).toMatch(/parent repo/);
+	});
+
+	test("EDIT of a file under agents/ is still blocked", () => {
+		expect(isBlocked(`${parentCwd}/agents/orchestrator.md`, ctx, "edit").blocked).toBe(true);
+	});
+
+	test("READ of a non-allowlisted parent-repo path is still blocked (regression)", () => {
+		const r = isBlocked(`${parentCwd}/extensions/foo.ts`, ctx, "read");
+		expect(r.blocked).toBe(true);
+		expect(r.reasonShort).toMatch(/parent repo/);
+	});
+
+	test("prefix-safety: a dir named skills-evil is NOT treated as skills/", () => {
+		expect(isBlocked(`${parentCwd}/skills-evil/foo`, ctx, "read").blocked).toBe(true);
+	});
+});
+
 // ── resolveAnchor ─────────────────────────────────────────────────────────
 
 describe("resolveAnchor", () => {
@@ -408,6 +453,28 @@ describe("makeGuardWrapper", () => {
 			wrapped("id1", { path: siblingRaw }, undefined, undefined, extCtx),
 		).rejects.toThrow(/another concurrent subagent/);
 
+		expect(original.calls.length).toBe(0);
+	});
+
+	test("read wrapper DELEGATES for a skills/ path (skill loading works)", async () => {
+		const parentCwd = "/Users/scott/Developer/pi-config";
+		const ctx = makeGuardContext("/wt-mine", parentCwd);
+		const original = makeMockOriginal();
+		const wrapped = makeGuardWrapper("read", original, ctx);
+		const extCtx = { cwd: "/wt-mine" };
+		await wrapped("id1", { path: `${parentCwd}/skills/work-order-template/SKILL.md` }, undefined, undefined, extCtx);
+		expect(original.calls.length).toBe(1);
+	});
+
+	test("write wrapper THROWS for a skills/ path (writes still blocked)", async () => {
+		const parentCwd = "/Users/scott/Developer/pi-config";
+		const ctx = makeGuardContext("/wt-mine", parentCwd);
+		const original = makeMockOriginal();
+		const wrapped = makeGuardWrapper("write", original, ctx);
+		const extCtx = { cwd: "/wt-mine" };
+		await expect(
+			wrapped("id1", { path: `${parentCwd}/skills/foo.md` }, undefined, undefined, extCtx),
+		).rejects.toThrow(/parent repo/);
 		expect(original.calls.length).toBe(0);
 	});
 });

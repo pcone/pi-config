@@ -113,6 +113,26 @@ export function makeGuardContext(worktreeEnv: string, parentCwdEnv: string): Gua
 }
 
 /**
+ * Parent-repo subdirectories that isolated subagents may READ (but not write).
+ * These hold static config the agent legitimately needs — skill definitions
+ * (e.g. the work-order-template SKILL.md) and agent prompts. Listed as dir
+ * names relative to parentCwd; the comparison in {@link isAllowlistedParentRead}
+ * is separator-aware so `skills-evil` does not match `skills`.
+ */
+const PARENT_READ_ALLOWLIST = ["skills", "agents"];
+
+/** Returns true if `absPath` is the dir itself or under it, separator-aware. */
+function isAllowlistedParentRead(absPath: string, parentCwd: string): boolean {
+	for (const dir of PARENT_READ_ALLOWLIST) {
+		const allowedRoot = parentCwd + sep + dir;
+		if (absPath === allowedRoot || absPath.startsWith(allowedRoot + sep)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
  * Returns whether `absPath` falls inside a protected directory (another
  * concurrent subagent's worktree, or the parent repo's checkout).
  *
@@ -120,8 +140,18 @@ export function makeGuardContext(worktreeEnv: string, parentCwdEnv: string): Gua
  * to normalize inputs before calling this. The `ctx` values must be
  * symlink-resolved as well — use {@link resolveAnchor} (or the convenience
  * {@link makeGuardContext}).
+ *
+ * `op` is the operation kind: `"read"` (read/find/grep) or `"write"`
+ * (write/edit). Reads of allowlisted parent-repo doc dirs (skills/,
+ * agents/) are permitted so isolated subagents can load skill and agent
+ * definitions; writes to the parent repo are always blocked. Defaults to
+ * `"read"`.
  */
-export function isBlocked(absPath: string, ctx: GuardContext): BlockResult {
+export function isBlocked(
+	absPath: string,
+	ctx: GuardContext,
+	op: "read" | "write" = "read",
+): BlockResult {
 	// 1. Block other concurrent subagents' worktrees.
 	//    Any path under the system worktree root (`<tmpdir>/pi-subagent-wt-`)
 	//    that is NOT inside `myWorktree` is forbidden. This includes the
@@ -142,11 +172,17 @@ export function isBlocked(absPath: string, ctx: GuardContext): BlockResult {
 		}
 	}
 
-	// 2. Block the parent repo's checkout.
+	// 2. Block the parent repo's checkout — EXCEPT read-category access to
+	//    allowlisted doc dirs (skills/, agents/), which isolated subagents
+	//    legitimately need (e.g. loading the work-order-template SKILL.md).
+	//    Writes/edits to the parent repo remain fully blocked.
 	if (
 		ctx.parentCwd.length > 0 &&
 		(absPath === ctx.parentCwd || absPath.startsWith(ctx.parentCwd + sep))
 	) {
+		if (op === "read" && isAllowlistedParentRead(absPath, ctx.parentCwd)) {
+			return { blocked: false };
+		}
 		return {
 			blocked: true,
 			reasonShort: "this is the parent repo's checkout",
@@ -242,7 +278,10 @@ export function makeGuardWrapper(
 		const target = getTargetPath(name, params);
 		if (target.length > 0 && extCtx) {
 			const absTarget = resolveAbsolute(target, extCtx.cwd);
-			const block = isBlocked(absTarget, ctx);
+			// write/edit mutate; read/find/grep only read. Reads of allowlisted
+			// parent-repo doc dirs (skills/, agents/) are permitted.
+			const op: "read" | "write" = name === "write" || name === "edit" ? "write" : "read";
+			const block = isBlocked(absTarget, ctx, op);
 			if (block.blocked) {
 				throw new Error(formatViolation(absTarget, block, ctx));
 			}
