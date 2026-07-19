@@ -97,6 +97,12 @@ guesses.
 If the design is pinned (the spec references a complete design doc and
 the resolved policy covers all open questions), proceed to step 3.
 
+If your item spec says "design only, do not dispatch implementers
+yet", return `status: blocked` with your surfaced questions (or with
+"design complete, ready for implementation" if no questions arose).
+The SO is pacing your work and will resume you via `subagent_resume`
+when the user has signed off on the design.
+
 ### 3. Write work orders and dispatch implementers
 
 For each work order: load `work-order-template` for the schema, fill

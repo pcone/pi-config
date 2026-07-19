@@ -294,6 +294,30 @@ The orchestrator returns a completion report with:
 - `notes_for_orchestrator` — cross-item dependencies flagged,
   reframe requests, calibration data
 
+Capture the orchestrator's `subagent-<uuid>` (returned by the `subagent` dispatch) — you need it for `subagent_resume` on a blocked-status follow-up.
+
+### Blocked status handling
+
+When the orchestrator returns `status: blocked`, distinguish two cases:
+
+- **`reframe_needed: true`** in `notes_for_orchestrator` — use `/attach
+  <id>` (see "Reframes via `/attach`" below). The user converses
+  directly with the orchestrator.
+- **Design questions, no reframe** — the orchestrator has surfaced a
+  list of blocking questions in `notes_for_orchestrator`. The SO
+  relays them to the user verbatim (pass-through is correct here — the
+  orchestrator phrased them for the user, not for the SO), captures
+  the user's answers, and resumes the orchestrator via
+  `subagent_resume(session_id=<orchestrator's session id>, task=<the
+  user answers>)`. The orchestrator continues with the resolved design
+  and proceeds to implementation.
+
+Capture the orchestrator's `subagent-<uuid>` at dispatch time — that
+is the id you pass to `subagent_resume` later. Do NOT re-dispatch a
+fresh orchestrator for blocked items: re-dispatch loses the
+orchestrator's accumulated context (files read, partial design,
+scout-code findings). Use `subagent_resume`.
+
 ### Reconcile-after-every-item (hard rule)
 
 After each orchestrator completes an item, the SO MUST update the
@@ -335,7 +359,9 @@ at one additional layer of nesting.
 
 When an orchestrator-subagent surfaces a design reframe — a question
 that re-opens the design and needs genuine multi-turn conversation
-with the user — the SO uses `/attach <id>` (Half B, merged) to repoint
+with the user; look for `reframe_needed: true` in the orchestrator's
+`notes_for_orchestrator` — the SO uses `/attach <id>` (Half B, merged)
+to repoint
 the TUI at the orchestrator. The user converses directly with the
 orchestrator; the orchestrator writes the reframe's conclusions to the
 roadmap doc; `/detach` returns the user to the SO, which reads the

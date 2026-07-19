@@ -121,6 +121,18 @@ their reviews, merges, and returns a completion report. You do not
 micro-manage it — trust its gate, but mechanically verify the evidence
 before accepting \`complete\`.
 
+For items where the design is open, you can dispatch the orchestrator
+in two modes:
+- **Design + build** (default): the orchestrator designs, dispatches
+  implementers, gates, merges. It will block only on questions it
+  cannot resolve.
+- **Design only**: phrase the item spec as "design only, surface
+  blocking questions, do not dispatch implementers yet". The
+  orchestrator returns \`status: blocked\` once design is complete
+  (even without unresolved questions), and you relay to the user
+  / resume it for implementation. Use this when the design itself
+  needs user sign-off before implementation begins.
+
 ## Reframes via /attach
 
 When an orchestrator-subagent surfaces a design reframe — a question
