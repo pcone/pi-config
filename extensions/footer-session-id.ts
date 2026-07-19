@@ -457,7 +457,7 @@ const QUOTA_LABELS: Record<number, string> = {
  * Format a compact duration-until-reset from a Unix-ms timestamp.
  * Returns "" when the timestamp is missing or already in the past (the next
  * poll tick refreshes with a fresh reset time — never render a stale/reset one).
- *   <1h → "47m",   ≥1h → "4.9h"
+ *   <1h → "47m",   <1d → "4.9h",   ≥1d → "6.5d"
  */
 function formatResetDuration(nextResetTime: number | undefined, now: number): string {
 	if (!nextResetTime) return "";
@@ -465,7 +465,9 @@ function formatResetDuration(nextResetTime: number | undefined, now: number): st
 	if (deltaMs <= 0) return "";
 	const mins = deltaMs / 60000;
 	if (mins < 60) return `${Math.round(mins)}m`;
-	return `${(mins / 60).toFixed(1)}h`;
+	const hrs = mins / 60;
+	if (hrs < 24) return `${hrs.toFixed(1)}h`;
+	return `${(hrs / 24).toFixed(1)}d`;
 }
 
 /**
@@ -496,10 +498,11 @@ function renderQuotaSegment(
 			return theme.fg("success", pct);
 		})();
 		let part = `${label}:${coloredPct}`;
-		// 5h window only: append compact duration until reset, always shown —
-		// it's the actionable "when do I get capacity back" signal. Weekly/
-		// monthly resets are too far out to earn footer space.
-		if (u === 3) {
+		// Append compact duration until reset (always shown) for both token
+		// windows — the "when do I get capacity back" signal. Monthly MCP
+		// (unit 5) reset stays off; it's too far out and MCP only renders
+		// when in use anyway.
+		if (u === 3 || u === 6) {
 			const reset = formatResetDuration(entry.nextResetTime, Date.now());
 			if (reset) part += ` ${theme.fg("dim", reset)}`;
 		}
