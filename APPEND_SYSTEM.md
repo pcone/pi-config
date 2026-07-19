@@ -335,6 +335,30 @@ regressions that nobody caught) is the failure mode this rule attacks.
 A skipped reconciliation is a process defect — the SO's planning
 context degrades the same way the single-orchestrator's does.
 
+### End-to-end smoke before `complete` (hard rule)
+
+The review gate validates each module in isolation. It does NOT
+validate that the modules integrate correctly against real data.
+Before the SO marks any item `[x]` / accepts an orchestrator's
+`complete`, it MUST run a real end-to-end smoke test against actual
+I/O — exercising the integrated pipeline the way a user would, not
+re-reading the orchestrator's verification claims.
+
+This is not optional. It was proven load-bearing during validation:
+a parser defect that corrupted every commit's `hash` field on real
+`git log` output survived **99 passing unit tests + converged review
+rounds across two items**, because the unit fixtures did not
+reproduce git's actual byte layout and the integration assertions
+were too loose. Only the SO's smoke test against real history caught
+it. The orchestrator's "I verified it" claim is necessary but not
+sufficient — the SO verifies independently.
+
+Practically: when an item produces user-facing output (a CLI, an
+export, a rendered doc), run it against real input before
+reconciling. Where practical, require implementers' fixtures to use
+real I/O samples rather than hand-rolled strings, so the gate catches
+what the smoke would.
+
 ### Review gate under nesting
 
 Decision 004 keys the review gate to whoever spawns the reviewers.

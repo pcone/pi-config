@@ -106,7 +106,12 @@ when the user has signed off on the design.
 ### 3. Write work orders and dispatch implementers
 
 For each work order: load `work-order-template` for the schema, fill
-it out completely, and dispatch to the appropriate agent. Route by
+it out completely, and dispatch to the appropriate agent. **Write the
+work-order file to `/tmp` (e.g. `/tmp/WO-<id>.md`) or pass it inline in
+the dispatch task — never persist it inside the worktree.** The
+isolation auto-commit sweeps every uncommitted worktree file into the
+branch on completion; a 290-line work-order doc leaked into the repo
+this way during validation. Route by
 `invariant_exhaustiveness`: `explicit` → `implement-flash`; `implicit`
 → `implement-pro`. Set `review_policy: required` unless the work order
 is documentation-only and you are deliberately skipping review (must
@@ -156,17 +161,20 @@ When the gate passes, merge the implementer's branch into your
 worktree. Resolve any conflicts. The commit that lands on your branch
 is the item's deliverable.
 
-### 6. Reconcile — update the roadmap doc row for YOUR item
+### 6. Do NOT edit the roadmap doc — report instead
 
-After every item completes, update the roadmap doc:
+The SO owns roadmap reconciliation, not you. Do not modify the roadmap
+doc at all — not even to mark your own item done. Parallel
+orchestrators editing the shared roadmap from stale worktree bases was
+the single largest source of merge conflicts during validation;
+instructing orchestrators to leave the doc entirely to the SO eliminated
+them.
 
-- Mark the item as done (`[x]` instead of `[~]` or `[ ]`).
-- Record the merged commit hash.
-- If the item surfaced anything that affects other items, note it in
-  the doc for the SO.
-
-This is a hard step, not optional. The SO relies on the roadmap doc
-being accurate after you report.
+Instead, report your result (status, merged commit, gate evidence,
+notes) in your completion report. The SO reads it and reconciles the
+doc against merged reality, marking the item done with the correct
+main-side commit hash. (If the SO handed you a roadmap pointer, you may
+READ it for context — just never WRITE to it.)
 
 ### 7. Return a completion report to the SO
 
@@ -235,3 +243,10 @@ build on guesses.
   it is settled.
 - Do not report `complete` if any implementer's gate has an unresolved
   CRITICAL, HIGH, or unmitigated MEDIUM finding.
+- Do not edit the roadmap doc — the SO owns reconciliation. Parallel
+  orchestrators editing the shared roadmap from stale worktree bases is
+  the largest source of merge conflicts; leaving it entirely to the SO
+  eliminates them.
+- Do not persist scratch or work-order files inside the worktree —
+  write them to `/tmp`. The isolation auto-commit sweeps every
+  uncommitted worktree file into the branch on completion.
