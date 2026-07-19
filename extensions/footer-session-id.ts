@@ -457,15 +457,15 @@ const QUOTA_LABELS: Record<number, string> = {
  * Format a compact duration-until-reset from a Unix-ms timestamp.
  * Returns "" when the timestamp is missing or already in the past (the next
  * poll tick refreshes with a fresh reset time — never render a stale/reset one).
- *   <1h → "⟳47m",   ≥1h → "⟳4.9h"
+ *   <1h → "47m",   ≥1h → "4.9h"
  */
 function formatResetDuration(nextResetTime: number | undefined, now: number): string {
 	if (!nextResetTime) return "";
 	const deltaMs = nextResetTime - now;
 	if (deltaMs <= 0) return "";
 	const mins = deltaMs / 60000;
-	if (mins < 60) return `⟳${Math.round(mins)}m`;
-	return `⟳${(mins / 60).toFixed(1)}h`;
+	if (mins < 60) return `${Math.round(mins)}m`;
+	return `${(mins / 60).toFixed(1)}h`;
 }
 
 /**
@@ -487,10 +487,9 @@ function renderQuotaSegment(
 		const entry = quota.limits.find((l) => l.unit === u);
 		if (!entry) continue;
 		const usedPct = entry.percentage;
-		const remainPct = Math.max(0, 100 - usedPct);
 		const label = QUOTA_LABELS[u] ?? `u${u}`;
 		const coloredPct = (() => {
-			const pct = `${remainPct}%`;
+			const pct = `${usedPct}%`;
 			if (usedPct >= 85) return theme.fg("error", pct);
 			if (usedPct >= 60) return theme.fg("warning", pct);
 			// used < 60% — green (success)
@@ -511,9 +510,8 @@ function renderQuotaSegment(
 	const mcpEntry = quota.limits.find((l) => l.unit === 5);
 	if (mcpEntry && mcpEntry.currentValue > 0) {
 		const usedPct = mcpEntry.percentage;
-		const remainPct = Math.max(0, 100 - usedPct);
 		const coloredPct = (() => {
-			const pct = `${remainPct}%`;
+			const pct = `${usedPct}%`;
 			if (usedPct >= 85) return theme.fg("error", pct);
 			if (usedPct >= 60) return theme.fg("warning", pct);
 			return theme.fg("success", pct);
