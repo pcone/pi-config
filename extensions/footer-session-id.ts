@@ -354,6 +354,18 @@ let resolvedZaiKey: string | undefined;
 /** True once the API key has been resolved (even if null — prevents re-resolution). */
 let zaiKeyResolved = false;
 
+/** Set to true after the first MiniMax fetch failure to suppress repeated console.warn. */
+let minimaxWarnedOnce = false;
+
+/** Resolved MiniMax API key (cached per-provider after first resolution). */
+let cachedMinimaxKey: { provider: string; key: string } | undefined;
+
+/** Per-provider quota endpoint. Documented in platform.minimax.io Token Plan FAQ. */
+const MINIMAX_ENDPOINTS: Record<string, string> = {
+	"minimax":    "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
+	"minimax-cn": "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+};
+
 interface QuotaLimitItem {
 	type: string;
 	unit: number;
@@ -447,6 +459,152 @@ async function ensureZaiKey(ctx: FooterFactoryCtx): Promise<boolean> {
 }
 
 /**
+ * Fetch MiniMax (minimaxi.com / minimax.io) Token Plan quota. Documented in
+ * platform.minimax.io/docs/token-plan/faq ("Method 2: Use the API Endpoint").
+ *
+ * Returns the same QuotaData shape as fetchQuota, normalized so that
+ * renderQuotaSegment can consume it without knowing the provider. Selects
+ * the "general" bucket (text-model quota); falls back to the first bucket.
+ *
+ * No key-prefix check — endpoint response is the authority (same rationale
+ * as ensureZaiKey: a pay-as-you-go key returns base_resp.status_code != 0
+ * and renderQuotaSegment naturally treats that as "render nothing").
+ */
+async function fetchMinimaxQuota(apiKey: string, provider: string): Promise<QuotaData | undefined> {
+	const url = MINIMAX_ENDPOINTS[provider];
+	if (!url) return undefined;
+
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), 5000);
+	try {
+		const res = await fetch(url, {
+			headers: { Authorization: `Bearer ${apiKey}` },
+			signal: controller.signal,
+		});
+		if (!res.ok) {
+			if (!minimaxWarnedOnce) {
+				console.warn(`[footer-session-id] MiniMax quota fetch failed: HTTP ${res.status}`);
+				minimaxWarnedOnce = true;
+			}
+			return undefined;
+		}
+		const json = await res.json() as {
+			model_remains?: Array<{
+				model_name?: string;
+				current_interval_remaining_percent?: number;
+				current_weekly_remaining_percent?: number;
+				remains_time?: number;
+				weekly_remains_time?: number;
+				current_interval_status?: number;
+			}>;
+			base_resp?: { status_code?: number; status_msg?: string };
+		};
+
+		if (json.base_resp?.status_code !== 0) {
+			if (!minimaxWarnedOnce) {
+				console.warn(
+					`[footer-session-id] MiniMax quota API error: ${json.base_resp?.status_code} ${json.base_resp?.status_msg ?? ""}`,
+				);
+				minimaxWarnedOnce = true;
+			}
+			return undefined;
+		}
+
+		const buckets = json.model_remains;
+		if (!buckets || buckets.length === 0) {
+			if (!minimaxWarnedOnce) {
+				console.warn("[footer-session-id] MiniMax quota response has no model_remains");
+				minimaxWarnedOnce = true;
+			}
+			return undefined;
+		}
+
+		// Prefer "general" (text-model quota); fall back to the first bucket.
+		const bucket = buckets.find((b) => b.model_name === "general") ?? buckets[0];
+		if (!bucket) return undefined;
+
+		const fivePct = bucket.current_interval_remaining_percent;
+		const weeklyPct = bucket.current_weekly_remaining_percent;
+		if (typeof fivePct !== "number" || typeof weeklyPct !== "number") {
+			if (!minimaxWarnedOnce) {
+				console.warn("[footer-session-id] MiniMax quota response missing percentage fields");
+				minimaxWarnedOnce = true;
+			}
+			return undefined;
+		}
+
+		const now = Date.now();
+		const status = bucket.current_interval_status;
+
+		// Status: 1 = normal (limited), 2 = exhausted, 3 = unlimited.
+		// Use `level` to surface notable states only; normal status leaves it
+		// blank so the healthy display stays clean (no `· ok` clutter).
+		let level = "";
+		if (status === 2) level = "exhausted";
+		else if (status === 3) level = "unlimited";
+
+		return {
+			level,
+			limits: [
+				{
+					type: "TOKENS_LIMIT",
+					unit: 3,
+					percentage: Math.max(0, Math.min(100, 100 - fivePct)),  // used %
+					nextResetTime:
+						typeof bucket.remains_time === "number" ? now + bucket.remains_time : undefined,
+				},
+				{
+					type: "TOKENS_LIMIT",
+					unit: 6,
+					percentage: Math.max(0, Math.min(100, 100 - weeklyPct)),
+					nextResetTime:
+						typeof bucket.weekly_remains_time === "number"
+							? now + bucket.weekly_remains_time
+							: undefined,
+				},
+			],
+		};
+	} catch (err: unknown) {
+		if (!minimaxWarnedOnce) {
+			console.warn(
+				"[footer-session-id] MiniMax quota fetch error:",
+				err instanceof Error ? err.message : String(err),
+			);
+			minimaxWarnedOnce = true;
+		}
+		return undefined;
+	} finally {
+		clearTimeout(timeoutId);
+	}
+}
+
+/**
+ * Resolve and cache the MiniMax API key. Cached per-provider so a session
+ * that switches between minimax and minimax-cn re-resolves on the second
+ * provider. No key-prefix check, same rationale as ensureZaiKey.
+ */
+async function ensureMinimaxKey(
+	ctx: FooterFactoryCtx,
+	provider: string,
+): Promise<string | undefined> {
+	if (cachedMinimaxKey && cachedMinimaxKey.provider === provider) {
+		return cachedMinimaxKey.key;
+	}
+	try {
+		const key = await ctx.modelRegistry?.getApiKeyForProvider?.(provider);
+		if (key) {
+			cachedMinimaxKey = { provider, key };
+			return key;
+		}
+		cachedMinimaxKey = undefined;
+		return undefined;
+	} catch {
+		cachedMinimaxKey = undefined;
+		return undefined;
+	}
+}
+
+/**
  * Run one quota cycle: clear stale data on switch-away from zai, fetch on
  * switch-to-zai. Triggers a render whenever cachedQuota is mutated, so the
  * footer reflects the new state without waiting for the 60s polling tick.
@@ -458,24 +616,40 @@ async function refreshQuotaNow(
 	fc: FooterFactoryCtx,
 	requestRender: (() => void) | null | undefined,
 ): Promise<void> {
-	const model = fc.model;
-	if (model?.provider !== "zai") {
-		// Switch-away (or never-zai): drop any stale zai data so it can't
-		// show up under a non-zai model. Render immediately.
-		cachedQuota = undefined;
-		requestRender?.();
+	const provider = fc.model?.provider;
+
+	if (provider === "zai") {
+		const hasKey = await ensureZaiKey(fc);
+		if (!hasKey || !resolvedZaiKey) {
+			cachedQuota = undefined;
+			return;
+		}
+		const quota = await fetchQuota(resolvedZaiKey);
+		if (quota) {
+			cachedQuota = quota;
+			requestRender?.();
+		}
 		return;
 	}
-	const hasKey = await ensureZaiKey(fc);
-	if (!hasKey || !resolvedZaiKey) {
-		cachedQuota = undefined;
+
+	if (provider === "minimax" || provider === "minimax-cn") {
+		const key = await ensureMinimaxKey(fc, provider);
+		if (!key) {
+			cachedQuota = undefined;
+			return;
+		}
+		const quota = await fetchMinimaxQuota(key, provider);
+		if (quota) {
+			cachedQuota = quota;
+			requestRender?.();
+		}
 		return;
 	}
-	const quota = await fetchQuota(resolvedZaiKey);
-	if (quota) {
-		cachedQuota = quota;
-		requestRender?.();
-	}
+
+	// Switch-away (or never-supported): drop any stale quota so it can't
+	// show up under a model that doesn't have a quota fetcher.
+	cachedQuota = undefined;
+	requestRender?.();
 }
 
 /** Unit → display label mapping for quota windows. */
@@ -512,7 +686,12 @@ function renderQuotaSegment(
 	width: number,
 	theme: { fg: (color: string, text: string) => string },
 ): string {
-	if (modelProvider !== "zai" || !quota || !quota.limits.length) return "";
+	if (
+		modelProvider !== "zai" &&
+		modelProvider !== "minimax" &&
+		modelProvider !== "minimax-cn"
+	) return "";
+	if (!quota || !quota.limits.length) return "";
 
 	const parts: string[] = [];
 
@@ -556,9 +735,10 @@ function renderQuotaSegment(
 
 	if (parts.length === 0) return "";
 
-	// Plan tier at the end, dimmed
+	// Plan tier at the end, dimmed (omitted when empty — MiniMax normal
+	// status leaves `level` blank to keep the healthy display clean).
 	const tier = quota.level.toLowerCase();
-	parts.push(`${theme.fg("dim", `· ${tier}`)}`);
+	if (tier) parts.push(`${theme.fg("dim", `· ${tier}`)}`);
 
 	const segment = parts.join(" ");
 
@@ -678,6 +858,8 @@ export default function (pi: ExtensionAPI) {
 					quotaWarnedOnce = false;
 					zaiKeyResolved = false;
 					resolvedZaiKey = undefined;
+					minimaxWarnedOnce = false;
+					cachedMinimaxKey = undefined;
 				},
 				invalidate() {},
 				render(width: number): string[] {
