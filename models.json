@@ -4,14 +4,6 @@
       "modelOverrides": {
         "z-ai/glm-5.2": {
           "cost": { "input": 0.96, "output": 3.01, "cacheRead": 0.18, "cacheWrite": 0 },
-          "thinkingLevelMap": {
-            "off": "none",
-            "minimal": "minimal",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "xhigh"
-          },
           "compat": {
             "openRouterRouting": {
               "order": ["streamlake", "fireworks", "z-ai"],
@@ -21,14 +13,6 @@
         },
         "arcee-ai/trinity-large-thinking": {
           "cost": { "input": 0.25, "output": 0.8, "cacheRead": 0.06, "cacheWrite": 0 },
-          "thinkingLevelMap": {
-            "off": "high",
-            "minimal": "high",
-            "low": "high",
-            "medium": "high",
-            "high": "high",
-            "xhigh": "high"
-          },
           "compat": {
             "openRouterRouting": {
               "only": ["arcee-ai"],
@@ -38,14 +22,6 @@
         },
         "deepseek/deepseek-v4-pro": {
           "cost": { "input": 0.435, "output": 0.87, "cacheRead": 0.003625, "cacheWrite": 0 },
-          "thinkingLevelMap": {
-            "off": "none",
-            "minimal": "minimal",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "xhigh"
-          },
           "compat": {
             "openRouterRouting": {
               "only": ["deepseek"],
@@ -55,14 +31,6 @@
         },
         "deepseek/deepseek-v4-flash": {
           "cost": { "input": 0.14, "output": 0.28, "cacheRead": 0.0028, "cacheWrite": 0 },
-          "thinkingLevelMap": {
-            "off": "none",
-            "minimal": "minimal",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "xhigh"
-          },
           "compat": {
             "openRouterRouting": {
               "order": ["deepseek", "novita", "streamlake"],
@@ -72,14 +40,6 @@
         },
         "qwen/qwen3-coder-next": {
           "cost": { "input": 0.12, "output": 0.8, "cacheRead": 0.07, "cacheWrite": 0 },
-          "thinkingLevelMap": {
-            "off": "none",
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "high"
-          },
           "compat": {
             "openRouterRouting": {
               "only": ["Parasail"],
@@ -89,14 +49,6 @@
         },
         "xiaomi/mimo-v2.5-pro": {
           "cost": { "input": 0.43, "output": 0.87, "cacheRead": 0.0036, "cacheWrite": 0 },
-          "thinkingLevelMap": {
-            "off": "none",
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "high"
-          },
           "compat": {
             "openRouterRouting": {
               "order": ["xiaomi", "novita"],
@@ -106,14 +58,6 @@
         },
         "minimax/minimax-m3": {
           "cost": { "input": 0.30, "output": 1.20, "cacheRead": 0.06, "cacheWrite": 0 },
-          "thinkingLevelMap": {
-            "off": "none",
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "high"
-          },
           "compat": {
             "openRouterRouting": {
               "order": ["minimax", "novita"],
@@ -126,14 +70,6 @@
     "minimax": {
       "modelOverrides": {
         "MiniMax-M3": {
-          "thinkingLevelMap": {
-            "off": "low",
-            "minimal": "high",
-            "low": "high",
-            "medium": "high",
-            "high": "high",
-            "xhigh": "high"
-          },
           "compat": {
             "forceAdaptiveThinking": true
           }
