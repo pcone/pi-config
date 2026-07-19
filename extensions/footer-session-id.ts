@@ -454,6 +454,21 @@ const QUOTA_LABELS: Record<number, string> = {
 };
 
 /**
+ * Format a compact duration-until-reset from a Unix-ms timestamp.
+ * Returns "" when the timestamp is missing or already in the past (the next
+ * poll tick refreshes with a fresh reset time — never render a stale/reset one).
+ *   <1h → "⟳47m",   ≥1h → "⟳4.9h"
+ */
+function formatResetDuration(nextResetTime: number | undefined, now: number): string {
+	if (!nextResetTime) return "";
+	const deltaMs = nextResetTime - now;
+	if (deltaMs <= 0) return "";
+	const mins = deltaMs / 60000;
+	if (mins < 60) return `⟳${Math.round(mins)}m`;
+	return `⟳${(mins / 60).toFixed(1)}h`;
+}
+
+/**
  * Build the quota segment string for the footer top line.
  * Returns empty string when no quota data is available or model is not zai.
  */
@@ -481,7 +496,15 @@ function renderQuotaSegment(
 			// used < 60% — green (success)
 			return theme.fg("success", pct);
 		})();
-		parts.push(`${label}:${coloredPct}`);
+		let part = `${label}:${coloredPct}`;
+		// 5h window only: append compact duration until reset, always shown —
+		// it's the actionable "when do I get capacity back" signal. Weekly/
+		// monthly resets are too far out to earn footer space.
+		if (u === 3) {
+			const reset = formatResetDuration(entry.nextResetTime, Date.now());
+			if (reset) part += ` ${theme.fg("dim", reset)}`;
+		}
+		parts.push(part);
 	}
 
 	// MCP (unit 5) — only if non-zero usage
