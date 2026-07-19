@@ -11,3 +11,6 @@ date: 2026-07-14
 | 002 | Parent-as-supervisor with RPC mode | superseded by 003 |
 | 003 | Async subagents with organic parent supervision | done |
 | 004 | Parallel review gate (review-code + review-tests) for code-changing work | amended (reviewer invocation guard, WO-2026-011) |
+| 005 | Review tiers: standard (Mimo) vs thorough (GLM) | done |
+| 006 | Reviewer-driven re-review signal and round cap | done |
+| 007 | Super-orchestrator (`plan` mode): role separation for multi-workstream work | planned |

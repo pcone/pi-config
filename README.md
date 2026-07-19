@@ -12,6 +12,7 @@ ln -sf ~/Developer/pi-config/settings.json ~/.pi/agent/settings.json
 ln -sf ~/Developer/pi-config/skills ~/.pi/agent/skills
 ln -sf ~/Developer/pi-config/themes ~/.pi/agent/themes
 ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
+ln -sf ~/Developer/pi-config/rules ~/.pi/agent/rules   # whole dir (first time: rm -rf the existing ~/.pi/agent/rules dir first)
 ```
 
 ## Structure
@@ -25,6 +26,10 @@ ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
 - `extensions/footer-session-id.ts` — Replaces the footer with one that adds a themed, reversible identifier (e.g. `arcane-phoenix-archmage`) for the current session on the right side. The phrase is bijective with the first 4 hex chars of the UUID session ID — look up the words in the lists to recover the prefix. Each session also gets a per-session hue (derived from the same bits) and a staleness indicator (`●◐◌○`) that tracks time since the most recent entry — the words themselves fade along the same axis, so freshness reads at a glance.
 - `extensions/modes.ts` — Toggles the parent session between `implement` (default — parent does work directly) and `orchestrate` (parent dispatches to subagents). Per-project state at `<cwd>/.pi/mode.json`. Commands: `/mode` toggles, `/mode <implement|orchestrate>` sets explicit. Footer shows current mode.
 - `skills/decision-log` — On-demand skill instructions
+- `rules/` — Global path-scoped rules, symlinked whole-dir into `~/.pi/agent/rules/` (mirrors the skills/extensions pattern). The whole dir is version-controlled here:
+  - `writing-rules.md` — meta: how to write/format pi rules (fires on `.pi/rules/**/*.md`)
+  - `re-litigation-proof.md` — write docs that settle their own "why" (fires on `decisions/**` + `docs/**`)
+  - `tfd-decisions.md`, `tfd-syntax.md` — tfd-format rules (global, path-scoped to `decisions/**` / tfd source)
 - `themes/catppuccin-macchiato.json` — Color theme
 
 ## Extension caches
