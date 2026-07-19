@@ -327,18 +327,202 @@ type FooterFactoryCtx = {
 		getSessionId(): string;
 	};
 	model: { id: string; provider: string; reasoning?: boolean; contextWindow?: number } | undefined;
-	modelRegistry?: { isUsingOAuth?: (model: unknown) => boolean };
+	modelRegistry?: {
+		isUsingOAuth?: (model: unknown) => boolean;
+		getApiKeyForProvider?: (provider: string) => Promise<string | undefined>;
+	};
 	getContextUsage?: () => {
 		contextWindow?: number;
 		percent?: number | null;
 	} | undefined;
 };
 
-// Auto-compact indicator. The extension context doesn't expose the toggle state
-// directly — pi keeps it in the session's autoCompactionEnabled getter — but the
-// underlying setting (`compaction.enabled` in settings.json) is plain JSON. Read
-// it from disk and cache, refreshing via the render interval. Default true when
-// the file is missing or the field is unset (matches pi's built-in default).
+// ---------------------------------------------------------------------------
+// Z.ai coding-plan quota — undocumented endpoint consumed by community tools.
+// https://api.z.ai/api/monitor/usage/quota/limit
+// ---------------------------------------------------------------------------
+
+/** Cached quota data, written by the poll interval and read by render(). */
+let cachedQuota: QuotaData | undefined;
+
+/** Set to true after the first fetch failure to suppress repeated console.warn. */
+let quotaWarnedOnce = false;
+
+/** Resolved z.ai API key (cached after first resolution), or undefined if unavailable. */
+let resolvedZaiKey: string | undefined;
+
+/** True once the API key has been resolved (even if null — prevents re-resolution). */
+let zaiKeyResolved = false;
+
+interface QuotaLimitItem {
+	type: string;
+	unit: number;
+	percentage: number;
+	usage: number;
+	currentValue: number;
+	nextResetTime?: number;
+}
+
+interface QuotaData {
+	level: string;
+	limits: QuotaLimitItem[];
+}
+
+/**
+ * Fetch z.ai coding-plan quota from the undocumented endpoint.
+ * No Authorization header prefix — bare key.
+ */
+async function fetchQuota(apiKey: string): Promise<QuotaData | undefined> {
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), 5000);
+	try {
+		const res = await fetch(
+			"https://api.z.ai/api/monitor/usage/quota/limit",
+			{
+				headers: { Authorization: apiKey },
+				signal: controller.signal,
+			},
+		);
+		if (!res.ok) {
+			if (!quotaWarnedOnce) {
+				console.warn(`[footer-session-id] quota fetch failed: HTTP ${res.status}`);
+				quotaWarnedOnce = true;
+			}
+			return undefined;
+		}
+		const json = await res.json() as {
+			code?: number;
+			data?: { level?: string; limits?: QuotaLimitItem[] };
+			success?: boolean;
+		};
+		if (!json.data?.limits || json.success === false) {
+			if (!quotaWarnedOnce) {
+				console.warn("[footer-session-id] quota response missing limits field");
+				quotaWarnedOnce = true;
+			}
+			return undefined;
+		}
+		return {
+			level: json.data.level ?? "unknown",
+			limits: json.data.limits,
+		};
+	} catch (err: unknown) {
+		if (!quotaWarnedOnce) {
+			console.warn(
+				"[footer-session-id] quota fetch error:",
+				err instanceof Error ? err.message : String(err),
+			);
+			quotaWarnedOnce = true;
+		}
+		return undefined;
+	} finally {
+		clearTimeout(timeoutId);
+	}
+}
+
+/** Resolve and cache the z.ai API key. Returns true if a valid sk-sp- key is available. */
+async function ensureZaiKey(ctx: FooterFactoryCtx): Promise<boolean> {
+	if (zaiKeyResolved) return !!resolvedZaiKey && resolvedZaiKey.startsWith("sk-sp-");
+	zaiKeyResolved = true;
+	try {
+		const key = await ctx.modelRegistry?.getApiKeyForProvider?.("zai");
+		if (key && key.startsWith("sk-sp-")) {
+			resolvedZaiKey = key;
+			return true;
+		}
+		resolvedZaiKey = undefined;
+		return false;
+	} catch {
+		resolvedZaiKey = undefined;
+		return false;
+	}
+}
+
+/** Unit → display label mapping for quota windows. */
+const QUOTA_LABELS: Record<number, string> = {
+	3: "5h",   // TOKENS_LIMIT, 5-hour rolling window
+	6: "7d",   // TOKENS_LIMIT, weekly
+	5: "MCP",  // TIME_LIMIT, monthly MCP cap (web search / reader / Zread)
+};
+
+/**
+ * Build the quota segment string for the footer top line.
+ * Returns empty string when no quota data is available or model is not zai.
+ */
+function renderQuotaSegment(
+	quota: QuotaData | undefined,
+	modelProvider: string | undefined,
+	width: number,
+	theme: { fg: (color: string, text: string) => string },
+): string {
+	if (modelProvider !== "zai" || !quota || !quota.limits.length) return "";
+
+	const parts: string[] = [];
+
+	// Unit 3 = 5h window, unit 6 = 7d window (always show when available)
+	for (const u of [3, 6] as const) {
+		const entry = quota.limits.find((l) => l.unit === u);
+		if (!entry) continue;
+		const usedPct = entry.percentage;
+		const remainPct = Math.max(0, 100 - usedPct);
+		const label = QUOTA_LABELS[u] ?? `u${u}`;
+		const coloredPct = (() => {
+			const pct = `${remainPct}%`;
+			if (usedPct >= 85) return theme.fg("error", pct);
+			if (usedPct >= 60) return theme.fg("warning", pct);
+			// used < 60% — green (success)
+			return theme.fg("success", pct);
+		})();
+		parts.push(`${label}:${coloredPct}`);
+	}
+
+	// MCP (unit 5) — only if non-zero usage
+	const mcpEntry = quota.limits.find((l) => l.unit === 5);
+	if (mcpEntry && mcpEntry.currentValue > 0) {
+		const usedPct = mcpEntry.percentage;
+		const remainPct = Math.max(0, 100 - usedPct);
+		const coloredPct = (() => {
+			const pct = `${remainPct}%`;
+			if (usedPct >= 85) return theme.fg("error", pct);
+			if (usedPct >= 60) return theme.fg("warning", pct);
+			return theme.fg("success", pct);
+		})();
+		parts.push(`MCP:${coloredPct}`);
+	}
+
+	if (parts.length === 0) return "";
+
+	// Plan tier at the end, dimmed
+	const tier = quota.level.toLowerCase();
+	parts.push(`${theme.fg("dim", `· ${tier}`)}`);
+
+	const segment = parts.join(" ");
+
+	// Width-budget check: drop MCP first, then tier, if too wide
+	const segWidth = visibleWidth(segment);
+	if (segWidth <= width) return segment;
+
+	// Try dropping MCP
+	const noMcpParts = parts.filter((elem) => !elem.startsWith("MCP:"));
+	if (noMcpParts.length >= 2) {
+		const noMcp = noMcpParts.join(" ");
+		if (visibleWidth(noMcp) <= width) return noMcp;
+		// Drop tier too
+		const noTierParts = noMcpParts.filter((_, i) => {
+			// tier is the last entry (starts with dim "· ")
+			return i < noMcpParts.length - 1;
+		});
+		if (noTierParts.length >= 1) {
+			const noTier = noTierParts.join(" ");
+			if (visibleWidth(noTier) <= width) return noTier;
+			// Drastic: just show the first entry
+			return parts[0]!;
+		}
+	}
+	// Fallback: just return the first entry
+	return parts[0]!;
+}
+
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -366,6 +550,9 @@ let cachedAutoCompactEnabled = readAutoCompactEnabled();
 // Holds the active footer's requestRender so thinking_level_select can
 // trigger a redraw without waiting for the 30s interval or a branch change.
 let requestRenderRef: (() => void) | null = null;
+
+/** Export for testing — pure function mapping quota data to footer segment string. */
+export { renderQuotaSegment };
 
 export default function (pi: ExtensionAPI) {
 	// Re-render the footer whenever the thinking level changes. The footer
@@ -396,11 +583,52 @@ export default function (pi: ExtensionAPI) {
 				cachedAutoCompactEnabled = readAutoCompactEnabled();
 				tui.requestRender();
 			}, 30_000);
+
+			// Quota polling: every 60s, fetch z.ai coding-plan quota when the active
+			// provider is zai and a valid sk-sp- key is configured. Silently retains
+			// last-known value on failure. The interval is cheap — the guard inside
+			// checks provider at tick time, and render() checks per-call.
+			const fc = ctx as FooterFactoryCtx;
+			const quotaInterval = setInterval(async () => {
+				const model = fc.model;
+				if (model?.provider !== "zai") {
+					cachedQuota = undefined;
+					return;
+				}
+				const hasKey = await ensureZaiKey(fc);
+				if (!hasKey || !resolvedZaiKey) {
+					cachedQuota = undefined;
+					return;
+				}
+				const quota = await fetchQuota(resolvedZaiKey);
+				if (quota) cachedQuota = quota;
+			}, 60_000);
+
+			// Kick off the first quota fetch immediately (don't wait 60s).
+			// This is async; cachedQuota stays undefined until it resolves.
+			(async () => {
+				const model = fc.model;
+				if (model?.provider !== "zai") return;
+				const hasKey = await ensureZaiKey(fc);
+				if (!hasKey || !resolvedZaiKey) return;
+				const quota = await fetchQuota(resolvedZaiKey);
+				if (quota) {
+					cachedQuota = quota;
+					tui.requestRender();
+				}
+			})();
+
 			return {
 				dispose() {
 					requestRenderRef = null;
 					unsub();
 					clearInterval(refreshInterval);
+					clearInterval(quotaInterval);
+					// Reset module-level state so a future re-install starts fresh.
+					cachedQuota = undefined;
+					quotaWarnedOnce = false;
+					zaiKeyResolved = false;
+					resolvedZaiKey = undefined;
 				},
 				invalidate() {},
 				render(width: number): string[] {
@@ -542,15 +770,35 @@ export default function (pi: ExtensionAPI) {
 					const remainder = statsLine.slice(statsLeft.length);
 					const dimRemainder = theme.fg("dim", remainder);
 
-					// --- Top line: pwd (left) + session words (right, same row). ---
-					// Putting both on the top row keeps the footer at 2 lines (same as
-					// pi's default) instead of growing it by one row, which would create
-					// a visually empty middle row.
+					// --- Top line: pwd (left) + quota (right) + session words (right). ---
+					// The quota block is inserted between pwd and session words on the
+					// right side. Width-budget conscious: if the full row would overflow,
+					// drop the quota block first, then fall through to existing behavior.
 					const pwdDim = theme.fg("dim", pwd);
 					const pwdVisible = visibleWidth(pwdDim);
+
+					// Build the quota segment (empty string when not applicable).
+					// Width budget here is generous — the real fit check happens below
+					// using exact visible widths (needsBoth / needsPwdSessionOnly).
+					const quotaStr = renderQuotaSegment(
+						cachedQuota,
+						model?.provider,
+						Math.max(30, width),
+						theme,
+					);
+					const quotaWidth = quotaStr ? visibleWidth(quotaStr) + 1 : 0; // +1 for spacer
+
 					let pwdLine: string;
-					if (pwdVisible + 2 + sessionSideWidth <= width) {
-						// Fits — pad the gap between pwd and session words.
+					const rightBlockWidth = quotaWidth + sessionSideWidth;
+					const needsBoth = pwdVisible + 2 + rightBlockWidth <= width;
+					const needsPwdSessionOnly = pwdVisible + 2 + sessionSideWidth <= width;
+
+					if (needsBoth && quotaStr) {
+						// Fits everything: pwd ... quota session
+						const fill = " ".repeat(width - pwdVisible - rightBlockWidth);
+						pwdLine = pwdDim + fill + quotaStr + " " + sessionSide;
+					} else if (needsPwdSessionOnly) {
+						// Fits without quota: pwd ... session
 						const fill = " ".repeat(width - pwdVisible - sessionSideWidth);
 						pwdLine = pwdDim + fill + sessionSide;
 					} else {
