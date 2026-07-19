@@ -1,7 +1,7 @@
 ---
 title: "Super-orchestrator (plan mode): role separation for multi-workstream work"
 type: decision
-status: planned
+status: done
 date: 2026-07-19
 ---
 
@@ -338,3 +338,54 @@ design.
   Early items relay a lot; later items relay little.
 - **Nesting introduces new failure modes** (O misreports, nesting
   depth, attach state bugs). Each has a named mitigation above.
+
+## Validation result (2026-07-19)
+
+Validated live by building a self-contained app (`apps/changelog-gen/`, a
+git-log → grouped-changelog TS CLI) as a 5-item roadmap: ITEM-0 scaffold
+(sequential) → ITEM-1/2/3 (parser / grouper / renderers, dispatched in
+**parallel**) → ITEM-4 (CLI) → ITEM-5 (fix-up). Six `orchestrator`-subagent
+dispatches total — the first live use of `plan` mode and the `orchestrator`
+agent. Every item passed a bounded parallel review gate (mimo-v2.5-pro
+shallow reviewers); gate-keying via `subagent_review_status(<implementer
+inner 019f… id>)` confirmed both reviewer kinds on all six, no cap reached.
+Final artifact: `tsc` clean, 99/99 tests, and `npx tsx src/cli.ts --since
+<date> --format md` produces a correct changelog from real history.
+
+**Verdict: the machinery works.** Plan mode, the `orchestrator` agent,
+parallel dispatch + reconcile, and the review gate all functioned under
+real load. Ship as-is. The validation surfaced concrete harness improvements:
+
+1. **The SO end-to-end smoke test is load-bearing; the per-module gate is
+   not sufficient for integration correctness.** A real parser defect
+   (`parseGitLog` left a stray `\n` on every commit's `hash` field on real
+   `git log` output, corrupting all rendered output) survived **99 unit
+   tests + converged review rounds across two items** — the unit fixtures
+   didn't reproduce git's actual byte layout and the integration assertions
+   were too loose. Only the SO's smoke test against real history caught it.
+   *Action:* the SO smoke step is mandatory, not optional; consider feeding
+   real I/O samples into implementer fixtures by default.
+2. **Stall detector fires false positives on nested `wait` chains**
+   (orchestrator parked in `wait` on an implementer parked in `wait` on its
+   reviewers reads as "no turn in 5 min"). Recurred on most items. *Action:*
+   the detector should treat nested-wait as activity, or raise a softer
+   "nested-wait, probably fine" signal.
+3. **Parallel orchestrators editing the shared roadmap churn merge
+   conflicts.** Mitigation **proven**: instructing orchestrators to leave the
+   roadmap to the SO (ITEM-4/5) eliminated all conflicts. *Action:* bake
+   "do not edit the roadmap doc" into the `orchestrator` agent prompt.
+4. **Orchestrator work-order scratch files leak into the repo** — the
+   isolation auto-commit swept a 290-line `WO-ITEM-5.md` into the branch.
+   *Action:* orchestrators should write scratch artifacts to `/tmp`, or the
+   harness should exclude `WO-*.md` from the auto-commit.
+5. **Benign worktree-guard blocks** — implementers repeatedly tried to read
+   `skills/work-order-template/SKILL.md` (protected dir), got blocked,
+   continued. *Action:* make skills readable in worktrees, or stop agents
+   trying.
+6. **mimo-v2.5-pro shallow reviewers validated** — thorough (ran their own
+   bash checks on isolation, `@types/node` presence, test counts), verdicts
+   converged in 1–2 rounds, no cap hits. The re-tier holds.
+
+Open loose ends (non-blocking): unpushed commits on `main`; dead
+`openrouter` minimax/minimax-m3 override in `models.json`; orphan
+`pi-subagent-*` worktree branches from this validation (safe to delete).
