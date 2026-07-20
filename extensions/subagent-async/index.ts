@@ -126,7 +126,7 @@ function recordReviewerSpawn(parentKey: string, entry: SpawnEntry): void {
  * Never throws — this is a best-effort signal; gate enforcement belongs to the
  * orchestrator, not the harness.
  */
-function readPersistedSpawns(parentSessionId: string): TrackerState {
+export function readPersistedSpawns(parentSessionId: string): TrackerState {
 	try {
 		const path = reviewStatusPath(parentSessionId);
 		const raw = fs.readFileSync(path, "utf-8");
@@ -236,6 +236,35 @@ export function resolveSubagentMeta(sessionId: string): { sid: string; meta: Rec
 		`Ambiguous partial session id "${sessionId}" matches multiple sessions: ${ids}. ` +
 			`Use a longer suffix or the full id.`,
 	);
+}
+
+/**
+ * Resolve an orchestrator-supplied parent_session_id to the actual tracker
+ * key. The orchestrator passes the RPC handle returned by the subagent
+ * dispatch (e.g. `subagent-81f2a34c-...`), but the tracker file is keyed by
+ * the child's piSessionId (UUIDv7 from sessionManager.getSessionId()), which
+ * updateMetaJson persists into the meta JSON on get_state.
+ *
+ * If the arg looks like an RPC handle, look up the meta file and return
+ * meta.piSessionId if it's a non-empty string. Otherwise (no meta, malformed
+ * meta, missing piSessionId, arg isn't a handle) return the arg unchanged —
+ * preserves prior behavior for direct piSessionId args and handles called
+ * before get_state fired.
+ */
+export function resolveTrackerKey(requestedId: string): string {
+	// Detection: starts with "subagent-" followed by at least 8 hex/dash chars
+	if (!/^subagent-[0-9a-f-]{8,}$/i.test(requestedId)) {
+		return requestedId;
+	}
+	try {
+		const meta = readMetaJson(requestedId);
+		if (meta && typeof meta.piSessionId === "string" && meta.piSessionId.length > 0) {
+			return meta.piSessionId;
+		}
+	} catch {
+		// Swallow all errors — fall through to return requestedId unchanged
+	}
+	return requestedId;
 }
 
 // ── Progress tracking ───────────────────────────────────────────────────────
@@ -1992,7 +2021,7 @@ export default function (pi: ExtensionAPI) {
 			"`reviewRounds`, `reviewCapReached`, and `spawns` (one entry per spawn).",
 		parameters: ReviewStatusParams,
 		async execute(_toolCallId, params) {
-			const parentSessionId = params.parent_session_id;
+			const parentSessionId = resolveTrackerKey(params.parent_session_id);
 			const trackerState = readPersistedSpawns(parentSessionId);
 			// updatedAt is informational; recompute from file mtime if available
 			let updatedAt: number | null = null;
