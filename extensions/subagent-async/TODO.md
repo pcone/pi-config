@@ -183,3 +183,63 @@ via absolute paths), not by the worktree-handling code itself.
    written to.
 
 Status: awaiting user decision on scope.
+
+---
+
+## Bug — orchestrator `subagent_review_status` keys the tracker by the wrong id (mechanical review gate silently non-functional)
+
+**Symptom (observed 2026-07-20, tfd orchestrator session):** An orchestrator
+calls `subagent_review_status(parent_session_id=<id returned by the subagent
+dispatch>)` to mechanically gate an implementer's `complete`. It returns empty
+(`kindsPresent: [], spawns: [], reviewRounds: 0`) even though the implementer
+DID spawn both reviewers (review-code + review-tests) and both returned
+verdicts. The orchestrator cannot mechanically verify the gate.
+
+**Two ids, one tracker — the mismatch:**
+
+| id | example | source | tracker key? |
+|---|---|---|---|
+| RPC handle | `subagent-81f2a34c-…` (random UUID) | `index.ts:1759` `sessionId = \`subagent-${randomUUID()}\`` — **returned to the orchestrator** | no |
+| piSessionId | `019f7e6c-…` (UUIDv7) | `index.ts:809`, from child's `get_state`; child writes tracker via `getParentTrackerKey` (`index.ts:75` → `sessionManager.getSessionId()`) | **yes** |
+
+`subagent_review_status` (`index.ts:1995-1996`) uses its `parent_session_id`
+arg **directly** as the tracker key: `readPersistedSpawns(parentSessionId)` →
+`reviewStatusPath(...)` → `/tmp/pi-subagent-<arg>.reviewers.json`. The
+orchestrator passes the RPC handle → the file doesn't exist (the real one is
+keyed by `piSessionId`) → empty.
+
+**Why the soft-prompt guard works but the orchestrator gate doesn't:** the
+internal soft-prompt guard (`index.ts:958`) reads `const trackerKey =
+rs.piSessionId` — it has the real id in memory. The orchestrator is a separate
+process with no access to `rs.piSessionId`; it only has the RPC handle. So the
+documented mechanical gate is non-functional from the only vantage point that
+calls it.
+
+**The mapping already exists but is unused:** `index.ts:816`
+`updateMetaJson(sessionId, { sessionFile, piSessionId })` persists `piSessionId`
+into the child's meta file, keyed by the RPC handle. `subagent_review_status`
+never consults it.
+
+**Impact:** silent. Reviews still run (soft-prompt works), so nothing
+obviously breaks. But an orchestrator following the docs gets an empty gate for
+every nested-review implementer → it either wrongly rejects every `complete` as
+"gate failure" or learns to ignore the gate entirely (defeating its purpose;
+the reporter fell back to grepping `/tmp/pi-subagent-*.reviewers.json` by hand).
+The "orchestrator-spawned review sweep" path is also affected: the orchestrator
+doesn't know its *own* `piSessionId` either, so
+`subagent_review_status(parent_session_id=<self>)` has the same problem.
+
+**Fix (small, single file, `index.ts`):** in `subagent_review_status`
+(`index.ts:1995`), before `readPersistedSpawns(parentSessionId)`: if the arg is
+a `subagent-<uuid>` RPC handle, resolve it to `piSessionId` via the meta JSON
+that `updateMetaJson` already writes (`index.ts:816`), and use *that* as the
+tracker key. Fall back to the raw arg if no meta exists / arg isn't a handle.
+No change to the dispatch return value or the orchestrator contract — the
+resolution is internal. (Complementary option: also surface `piSessionId` in
+the `subagent` completion result so the orchestrator *can* pass it directly —
+but resolving in-tool is sufficient and backward-compatible.)
+
+**Cross-ref:** `decisions/subagents/004-parallel-review-gate.md` (the gate's
+design); this is an implementation defect, not a design problem.
+
+Status: awaiting fix.
