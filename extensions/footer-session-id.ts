@@ -677,14 +677,39 @@ function formatResetDuration(nextResetTime: number | undefined, now: number): st
 }
 
 /**
+ * Determine the z.ai peak/off-peak quota multiplier for the given model.
+ * Returns undefined when the model is not subject to peak pricing.
+ * Peak hours: 14:00–18:00 Beijing time (Asia/Shanghai, UTC+8).
+ * Off-peak: 2× (1× promo through 2026-09-30; hard-code 2× until then).
+ */
+function getZaiMultiplier(
+	modelId: string | undefined,
+	now?: Date,
+): 3 | 2 | undefined {
+	if (!modelId) return undefined;
+	const lower = modelId.toLowerCase();
+	if (!lower.includes("glm-5.2") && !lower.includes("glm-5-turbo")) return undefined;
+
+	const beijing = new Date(
+		(now ?? new Date()).toLocaleString("en-US", { timeZone: "Asia/Shanghai" }),
+	);
+	const hour = beijing.getHours();
+
+	if (hour >= 14 && hour < 18) return 3;
+	return 2;
+}
+
+/**
  * Build the quota segment string for the footer top line.
  * Returns empty string when no quota data is available or model is not zai.
  */
 function renderQuotaSegment(
 	quota: QuotaData | undefined,
 	modelProvider: string | undefined,
+	modelId: string | undefined,
 	width: number,
 	theme: { fg: (color: string, text: string) => string },
+	now?: Date,
 ): string {
 	if (
 		modelProvider !== "zai" &&
@@ -731,6 +756,15 @@ function renderQuotaSegment(
 			return theme.fg("success", pct);
 		})();
 		parts.push(`MCP:${coloredPct}`);
+	}
+
+	// Z.ai peak/off-peak multiplier prefix — prepended when a subject model
+	// (GLM-5.2 or GLM-5-Turbo) is active. The 1× off-peak promo runs through
+	// 2026-09-30; hard-code 2× until then.
+	if (modelProvider === "zai") {
+		const mult = getZaiMultiplier(modelId, now);
+		if (mult === 3) parts.unshift(theme.fg("warning", "3\u00d7"));
+		else if (mult === 2) parts.unshift(theme.fg("dim", "2\u00d7"));
 	}
 
 	if (parts.length === 0) return "";
@@ -796,7 +830,7 @@ let cachedAutoCompactEnabled = readAutoCompactEnabled();
 let requestRenderRef: (() => void) | null = null;
 
 /** Export for testing — pure function mapping quota data to footer segment string. */
-export { renderQuotaSegment };
+export { getZaiMultiplier, renderQuotaSegment };
 
 export default function (pi: ExtensionAPI) {
 	// Re-render the footer whenever the thinking level changes. The footer
@@ -1024,6 +1058,7 @@ export default function (pi: ExtensionAPI) {
 					const quotaStr = renderQuotaSegment(
 						cachedQuota,
 						model?.provider,
+						model?.id,
 						Math.max(30, width),
 						theme,
 					);
