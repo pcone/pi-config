@@ -72,7 +72,7 @@ interface TrackerState {
 const parentReviewerSpawns = new Map<string, TrackerState>();
 
 /** Stable key for tracker persistence and cross-process lookup. */
-function getParentTrackerKey(ctx: any): string {
+export function getParentTrackerKey(ctx: any): string {
 	try {
 		const id = ctx?.sessionManager?.getSessionId?.();
 		if (typeof id === "string" && id.length > 0) return id;
@@ -343,6 +343,25 @@ interface RunningSubagent {
 }
 
 const running = new Map<string, RunningSubagent>();
+/** @internal test hook — allows tests to inject entries into the running map. */
+export const _testRunning = running;
+
+/**
+ * Resolve a session id to a RunningSubagent by exact match first, then
+ * partial match via resolveSubagentMeta. Returns the RunningSubagent if
+ * found, null otherwise.
+ * @throws {Error} If resolveSubagentMeta finds multiple meta files matching
+ *   the partial suffix (ambiguous match). The caller should let this
+ *   propagate — the pi tool framework surfaces it as an informative error
+ *   response telling the user to use a longer suffix.
+ */
+export function resolveRunningSession(sessionId: string): RunningSubagent | null {
+	const exact = running.get(sessionId);
+	if (exact) return exact;
+	const r = resolveSubagentMeta(sessionId);
+	if (!r) return null;
+	return running.get(r.sid) ?? null;
+}
 
 // ── Attach state ────────────────────────────────────────────────────────────
 
@@ -1963,7 +1982,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Check the progress of a running async subagent.",
 		parameters: StatusParams,
 		async execute(_toolCallId, params) {
-			const rs = running.get(params.session_id);
+			const rs = resolveRunningSession(params.session_id);
 			if (!rs) {
 				// Check if it finished recently — result might still be in flight
 				return {
@@ -2001,9 +2020,9 @@ export default function (pi: ExtensionAPI) {
 	// harness on each spawn). If the file is missing or unreadable, returns
 	// an empty spawns list — never throws.
 	const ReviewStatusParams = Type.Object({
-		parent_session_id: Type.String({
-			description: "Session id of the parent whose reviewer spawns you want to inspect (e.g. the implementer's session id).",
-		}),
+		parent_session_id: Type.Optional(Type.String({
+			description: "Session id of the parent whose reviewer spawns you want to inspect (e.g. the implementer's session id). Defaults to the caller's own session id.",
+		})),
 	});
 
 	pi.registerTool({
@@ -2020,8 +2039,9 @@ export default function (pi: ExtensionAPI) {
 			"`kindsPresent`, `kindsMissing` (relative to no requirement list — always empty), " +
 			"`reviewRounds`, `reviewCapReached`, and `spawns` (one entry per spawn).",
 		parameters: ReviewStatusParams,
-		async execute(_toolCallId, params) {
-			const parentSessionId = resolveTrackerKey(params.parent_session_id);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const resolvedId = params.parent_session_id ?? getParentTrackerKey(ctx);
+			const parentSessionId = resolveTrackerKey(resolvedId);
 			const trackerState = readPersistedSpawns(parentSessionId);
 			// updatedAt is informational; recompute from file mtime if available
 			let updatedAt: number | null = null;
@@ -2275,7 +2295,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Inject a steering message into a running async subagent. The message is delivered before the subagent's next LLM call.",
 		parameters: SteerParams,
 		async execute(_toolCallId, params) {
-			const rs = running.get(params.session_id);
+			const rs = resolveRunningSession(params.session_id);
 			if (!rs) {
 				return {
 					content: [
@@ -2312,7 +2332,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Tell a running async subagent to wrap up and return a summary. Waits up to 5 minutes for the subagent to finish.",
 		parameters: StopParams,
 		async execute(_toolCallId, params, signal) {
-			const rs = running.get(params.session_id);
+			const rs = resolveRunningSession(params.session_id);
 			if (!rs) {
 				return {
 					content: [
@@ -2401,7 +2421,7 @@ export default function (pi: ExtensionAPI) {
 			"Hard-kill a stuck subagent by terminating its underlying `pi` process. Use this when `subagent_stop` has not worked because the subagent is genuinely stuck and no longer reading its RPC stdin (e.g. deadlocked, infinite loop, blocked provider call). Sends SIGTERM, then SIGKILL after a short grace period if the child is still alive. The result is delivered as a user message with a clear marker so the orchestrator can see the kill happened. This is destructive — any in-flight work in the subagent is lost. Prefer `subagent_stop` when the subagent is responsive.",
 		parameters: KillParams,
 		async execute(_toolCallId, params) {
-			const rs = running.get(params.session_id);
+			const rs = resolveRunningSession(params.session_id);
 			if (!rs) {
 				return {
 					content: [
