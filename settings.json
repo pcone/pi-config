@@ -15,5 +15,6 @@
   ],
   "defaultThinkingLevel": "high",
   "hideThinkingBlock": true,
+  "httpIdleTimeoutMs": 900000,
   "shellCommandPrefix": "shopt -s expand_aliases"
 }
