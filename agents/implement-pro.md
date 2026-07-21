@@ -3,7 +3,7 @@ name: implement-pro
 description: "Default path for non-trivial feature work. Use for any implementation task that involves implicit invariants, multi-file changes with cross-file dependencies, new API surface, complex error handling / retry logic / state machines, or tasks where a broken first pass would be expensive to recover (downstream passes depend on the output, verification gate won't catch structural failures). Reads code, discovers patterns, makes implementation decisions, and produces working code. The orchestrator should delegate here when the work order has invariant_exhaustiveness: implicit."
 model: deepseek/deepseek-v4-pro
 requires_parent_reviewers: implementation,tests
-allowedSubagents: scout-code, review-code, review-tests
+allowedSubagents: scout-code, review-code, review-code-deep, review-tests, review-tests-deep
 excludeTools: checkpoint_fork, checkpoint_search
 ---
 
