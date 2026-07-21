@@ -3,6 +3,7 @@
     "openrouter": {
       "modelOverrides": {
         "z-ai/glm-5.2": {
+          "maxTokens": 128000,
           "cost": { "input": 0.96, "output": 3.01, "cacheRead": 0.18, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
