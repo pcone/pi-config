@@ -30,6 +30,7 @@
           }
         },
         "deepseek/deepseek-v4-flash": {
+          "maxTokens": 131072,
           "cost": { "input": 0.14, "output": 0.28, "cacheRead": 0.0028, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
