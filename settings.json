@@ -10,7 +10,8 @@
     "extensions/auto-checkpoint.ts",
     "extensions/subagent-async/index.ts",
     "extensions/kagi-search.ts",
-    "extensions/model-tiers/index.ts"
+    "extensions/model-tiers/index.ts",
+    "extensions/compaction-model.ts"
   ],
   "defaultThinkingLevel": "max",
   "hideThinkingBlock": true,
