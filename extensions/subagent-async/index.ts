@@ -33,6 +33,9 @@ const SUBAGENT_STALE_TURN_MS = 5 * 60 * 1000; // 5 minutes
 const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
 const REVIEW_ROUND_CAP = 3;
 
+/** Module-level debug flag — set once at load time. Used for timing instrumentation. */
+const PI_ASYNC_DEBUG = process.env.PI_ASYNC_DEBUG === "1";
+
 // ── Reviewer-spawn tracker ────────────────────────────────────────────────
 //
 // Tracks which post-implementation reviewer kinds each parent (the running pi
@@ -155,7 +158,7 @@ function clearParentTracker(parentKey: string): void {
  * tracker logic can log too).
  */
 function debugLog(msg: string): void {
-	if (!process.env.PI_ASYNC_DEBUG) return;
+	if (!PI_ASYNC_DEBUG) return;
 	try { fs.appendFileSync("/tmp/pi-async-debug.log", `[${process.pid}] ${msg}\n`); } catch { /* */ }
 }
 
@@ -415,13 +418,18 @@ async function createWorktree(
 	sessionId: string,
 	baseRef?: string,
 ): Promise<{ worktreePath: string; branchName: string; parentHeadCommit: string } | null> {
+	const t0 = PI_ASYNC_DEBUG ? Date.now() : 0;
 	try {
-		const topLevel = await git(["rev-parse", "--show-toplevel"], parentCwd);
-		if (topLevel.exitCode !== 0) return null;
-
-		// Resolve the base commit — use provided ref (branch/tag/commit) or HEAD
 		const baseCommitRef = baseRef || "HEAD";
-		const headResult = await git(["rev-parse", baseCommitRef], parentCwd);
+
+		// Run the two independent rev-parse calls concurrently.
+		const [topLevel, headResult] = await Promise.all([
+			git(["rev-parse", "--show-toplevel"], parentCwd),
+			git(["rev-parse", baseCommitRef], parentCwd),
+		]);
+		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: rev-parse (parallel): ${Date.now() - t0}ms`);
+
+		if (topLevel.exitCode !== 0) return null;
 		if (headResult.exitCode !== 0) return null;
 		const parentHeadCommit = headResult.stdout.trim();
 
@@ -429,30 +437,48 @@ async function createWorktree(
 		const branchName = `pi-subagent-${suffix}`;
 		const worktreePath = path.join(os.tmpdir(), `pi-subagent-wt-${suffix}`);
 
-		// Remove stale leftovers from a previous run with the same session id
-		try { await git(["worktree", "remove", "--force", worktreePath], parentCwd); } catch { /* */ }
-		try { await git(["branch", "-D", branchName], parentCwd); } catch { /* */ }
+		// Remove stale leftovers from a previous run with the same session id.
+		// These are independent best-effort cleanups — run them concurrently.
+		const tCleanup = PI_ASYNC_DEBUG ? Date.now() : 0;
+		await Promise.allSettled([
+			git(["worktree", "remove", "--force", worktreePath], parentCwd),
+			git(["branch", "-D", branchName], parentCwd),
+		]);
+		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: stale-cleanup (parallel): ${Date.now() - tCleanup}ms`);
 
+		// worktree add must be last and fatal on failure.
+		const tAdd = PI_ASYNC_DEBUG ? Date.now() : 0;
 		const wtResult = await git(
 			["worktree", "add", worktreePath, "-b", branchName, parentHeadCommit],
 			parentCwd,
 		);
+		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: worktree add: ${Date.now() - tAdd}ms`);
 		if (wtResult.exitCode !== 0) return null;
 
+		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: total: ${Date.now() - t0}ms`);
 		return { worktreePath, branchName, parentHeadCommit };
 	} catch {
 		return null;
 	}
 }
 
-/** Clean up a worktree after subagent completion. Auto-commits uncommitted
- *  changes, removes the worktree directory, and keeps the branch for review.
- *  If the branch has no commits beyond the parent HEAD it is deleted.
- *  Returns a status note for the delivered result. */
-async function cleanupWorktree(rs: RunningSubagent): Promise<string> {
+/** Pre-delivery commit steps: stage, commit, and capture the final commit
+ *  hash. Runs BEFORE deliverResult so the parent sees the result immediately.
+ *  Returns a status note for the delivered result plus metadata for post-delivery
+ *  cleanup. Never throws — failures produce an error note and worktree is left
+ *  for inspection (same as the existing failure path). */
+async function preCommitSteps(rs: RunningSubagent): Promise<{
+	note: string;
+	finalCommit: string;
+	hadChanges: boolean;
+}> {
 	const notes: string[] = [];
-	const { worktreePath, isolationBranch, parentHeadCommit, parentCwd } = rs;
-	if (!worktreePath || !isolationBranch || !parentHeadCommit) return "";
+	const { worktreePath, isolationBranch, parentHeadCommit } = rs;
+	if (!worktreePath || !isolationBranch || !parentHeadCommit) {
+		return { note: "", finalCommit: "", hadChanges: false };
+	}
+
+	const t0 = PI_ASYNC_DEBUG ? Date.now() : 0;
 
 	try {
 		// Stage and commit any uncommitted changes in the worktree.
@@ -476,25 +502,68 @@ async function cleanupWorktree(rs: RunningSubagent): Promise<string> {
 		// Check whether the branch has diverged from the parent HEAD
 		const finalHead = await git(["rev-parse", "HEAD"], worktreePath);
 		const finalCommit = finalHead.stdout.trim();
+		const hadChanges = diffResult.exitCode !== 0;
 
-		// Remove the worktree directory (branch ref stays in the repo)
-		await git(["worktree", "remove", "--force", worktreePath], parentCwd);
-
-		if (finalCommit === parentHeadCommit) {
-			// No changes — delete the useless branch
-			await git(["branch", "-D", isolationBranch], parentCwd);
-			notes.push("No changes made — worktree cleaned up.");
-		} else {
+		if (hadChanges) {
 			notes.push(`Changes preserved on branch \`${isolationBranch}\`.`);
 			notes.push(`Merge with: \`git merge ${isolationBranch}\``);
 		}
+
+		if (PI_ASYNC_DEBUG) debugLog(`preCommitSteps: ${Date.now() - t0}ms (hadChanges=${hadChanges})`);
+
+		return {
+			note: notes.length > 0 ? `\n\n[Isolation] ${notes.join(" ")}` : "",
+			finalCommit,
+			hadChanges,
+		};
 	} catch (e: any) {
-		notes.push(`Worktree cleanup error: ${e.message || e}`);
+		notes.push(`Worktree commit error: ${e.message || e}`);
+		if (PI_ASYNC_DEBUG) debugLog(`preCommitSteps: FAILED after ${Date.now() - t0}ms: ${e.message || e}`);
+		return {
+			note: notes.length > 0 ? `\n\n[Isolation] ${notes.join(" ")}` : "",
+			finalCommit: "",
+			hadChanges: false,
+		};
+	}
+}
+
+/** Post-delivery cleanup: remove the worktree directory and delete the branch
+ *  when no changes were committed. Runs async after deliverResult; failures are
+ *  logged and surfaced as a steer warning, never fatal. */
+async function postDeliveryCleanup(
+	pi: ExtensionAPI,
+	rs: RunningSubagent,
+	finalCommit: string,
+	hadChanges: boolean,
+): Promise<void> {
+	const { worktreePath, isolationBranch, parentHeadCommit, parentCwd } = rs;
+	if (!worktreePath || !isolationBranch || !parentHeadCommit) return;
+
+	const t0 = PI_ASYNC_DEBUG ? Date.now() : 0;
+
+	try {
+		// Remove the worktree directory (branch ref stays in the repo)
+		await git(["worktree", "remove", "--force", worktreePath], parentCwd);
+
+		if (!hadChanges || finalCommit === parentHeadCommit) {
+			// No changes — delete the useless branch
+			await git(["branch", "-D", isolationBranch], parentCwd);
+		}
+
+		if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: ${Date.now() - t0}ms`);
+	} catch (e: any) {
+		if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: FAILED after ${Date.now() - t0}ms: ${e.message || e}`);
 		// Best-effort: force-remove the worktree directory
 		try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch { /* */ }
-	}
 
-	return notes.length > 0 ? `\n\n[Isolation] ${notes.join(" ")}` : "";
+		// Surface the warning to the parent via steer
+		try {
+			pi.sendUserMessage(
+				`[subagent ${rs.sessionId.slice(-8)}] warning: worktree cleanup failed: ${e instanceof Error ? e.message : String(e)} — worktree at ${worktreePath} may need manual removal`,
+				{ deliverAs: "steer" },
+			);
+		} catch { /* steer failed — nothing we can do */ }
+	}
 }
 
 async function writeTempFile(name: string, content: string): Promise<{ dir: string; filePath: string }> {
@@ -831,12 +900,16 @@ async function spawnSubagent(
 	let stdoutBuffer = "";
 
 	// Debug logging, enabled via PI_ASYNC_DEBUG=1
-	const debugLog = process.env.PI_ASYNC_DEBUG
+	const debugLog = PI_ASYNC_DEBUG
 		? (msg: string) => {
 			try { fs.appendFileSync("/tmp/pi-async-debug.log", `[${rs.sessionId}] ${msg}\n`); } catch { /* */ }
 		  }
 		: () => {};
 	debugLog("spawned cwd=" + cwd);
+
+	// Track spawn-to-first-RPC-response latency for timing instrumentation.
+	const spawnTime = PI_ASYNC_DEBUG ? Date.now() : 0;
+	let firstRpcSeen = false;
 
 	const processLine = (line: string) => {
 		if (!line.trim()) return;
@@ -845,6 +918,11 @@ async function spawnSubagent(
 			event = JSON.parse(line);
 		} catch {
 			return;
+		}
+
+		if (PI_ASYNC_DEBUG && !firstRpcSeen) {
+			firstRpcSeen = true;
+			debugLog(`spawn-to-first-rpc (${event.type}): ${Date.now() - spawnTime}ms`);
 		}
 
 		debugLog("ev:" + event.type);
@@ -1132,31 +1210,44 @@ async function spawnSubagent(
 			ctx.ui.notify(`Subagent ${sessionId.slice(-8)} ended — detached.`, "info");
 		}
 
-		// Mark the session as no longer running BEFORE cleanupWorktree (which
-		// runs multiple git commands and can take seconds). Otherwise
-		// subagent_resume would incorrectly reject with "already running"
-		// during the cleanup window for a session that has completed.
+		// Mark the session as no longer running BEFORE preCommitSteps (which
+		// runs multiple git commands). Otherwise subagent_resume would
+		// incorrectly reject with "already running" during the commit window
+		// for a session that has completed.
 		running.delete(sessionId);
 		updateFooter(ctx);
 
-		// Worktree isolation: commit changes, remove worktree, keep branch
-		const isolationNote = await cleanupWorktree(rs);
+		// PRE-DELIVERY: commit-producing git steps (add, diff, commit, rev-parse).
+		// Split from post-delivery cleanup so the result reaches the parent
+		// immediately rather than waiting seconds for worktree removal.
+		const tDeliver = PI_ASYNC_DEBUG ? Date.now() : 0;
+		const { note: commitNote, finalCommit, hadChanges } = await preCommitSteps(rs);
 
 		// Clean up temp files
 		if (tmpPath) try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
 		if (tmpDir) try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
 
-		// If stop was requested, resolve that waiter (don't double-deliver).
+		// DELIVER: the result reaches the parent now.
+		// No double delivery: resolveOnStop and deliverResult are mutually exclusive.
 		if (rs.resolveOnStop) {
-			let stoppedText = getFinalOutput(rs.messages) + isolationNote;
+			let stoppedText = getFinalOutput(rs.messages) + commitNote;
 			if (rs.killedExplicitly) {
 				stoppedText = "[Killed via subagent_kill — process terminated, work in this subagent is lost]\n" + stoppedText;
 			}
 			rs.resolveOnStop(stoppedText);
 			rs.resolveOnStop = null;
+			if (PI_ASYNC_DEBUG) debugLog(`deliverResult (stop): ${Date.now() - tDeliver}ms`);
 		} else {
-			deliverResult(pi, rs, code ?? 0, isolationNote);
+			deliverResult(pi, rs, code ?? 0, commitNote);
+			if (PI_ASYNC_DEBUG) debugLog(`deliverResult: ${Date.now() - tDeliver}ms`);
 		}
+
+		// POST-DELIVERY: worktree removal and branch cleanup. Fire-and-forget —
+		// must not block the close handler, and failures are surfaced as steer
+		// warnings, never fatal.
+		postDeliveryCleanup(pi, rs, finalCommit, hadChanges).catch((e) => {
+			debugLog(`postDeliveryCleanup: unhandled rejection: ${e instanceof Error ? e.message : String(e)}`);
+		});
 	});
 
 	proc.on("error", () => {

@@ -871,22 +871,27 @@ export default function (pi: ExtensionAPI) {
 			// Quota polling: every 60s, run a quota cycle (refreshQuotaNow).
 			// The helper itself decides whether to fetch or clear based on
 			// the current provider, so this stays a one-liner.
+			// Skip entirely in subagent sessions — they never see the footer
+			// usefully, and the HTTP fetch adds latency to spawn.
 			const fc = ctx as FooterFactoryCtx;
-			const quotaInterval = setInterval(() => {
-				void refreshQuotaNow(fc, requestRenderRef);
-			}, 60_000);
+			let quotaInterval: ReturnType<typeof setInterval> | undefined;
+			if (process.env.PI_IS_SUBAGENT !== "1") {
+				quotaInterval = setInterval(() => {
+					void refreshQuotaNow(fc, requestRenderRef);
+				}, 60_000);
 
-			// Kick off the first quota fetch immediately (don't wait 60s).
-			// Fire-and-forget; cachedQuota stays undefined until it resolves,
-			// at which point refreshQuotaNow requests a render.
-			void refreshQuotaNow(fc, requestRenderRef);
+				// Kick off the first quota fetch immediately (don't wait 60s).
+				// Fire-and-forget; cachedQuota stays undefined until it resolves,
+				// at which point refreshQuotaNow requests a render.
+				void refreshQuotaNow(fc, requestRenderRef);
+			}
 
 			return {
 				dispose() {
 					requestRenderRef = null;
 					unsub();
 					clearInterval(refreshInterval);
-					clearInterval(quotaInterval);
+					if (quotaInterval) clearInterval(quotaInterval);
 					// Reset module-level state so a future re-install starts fresh.
 					cachedQuota = undefined;
 					quotaWarnedOnce = false;
