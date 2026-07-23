@@ -16,6 +16,7 @@ import json, os
 # name: (AA_intelligence, AA_coding, AA_agentic, cost_per_M, ctx_K, multimodal)
 CACHE = {
  "Claude Fable 5":(59.9,76.5,52.8,6.06,1000,True),"GPT-5.6 Sol":(58.9,77.4,54.0,3.53,1050,True),
+ "Kimi K3":(57.1,76.2,50.1,1.80,1048,True),  # main-session driver (settings.json defaultModel); released 2026-07-15
  "Claude Opus 4.8":(55.7,74.3,47.2,3.03,1000,True),"GPT-5.6 Terra":(55.0,76.7,47.4,1.77,1050,True),
  "GPT-5.5":(54.8,74.9,44.9,3.53,1050,True),"Grok 4.5":(53.8,72.4,45.7,1.08,500,True),
  "Claude Opus 4.7":(53.5,73.6,44.4,3.03,1000,True),"Claude Sonnet 5":(53.4,71.5,46.7,1.21,1000,True),
@@ -28,7 +29,12 @@ CACHE = {
  "Hy3":(41.2,58.8,30.7,0.04,262,False),"Nex-N2-Pro":(41.0,59.1,31.0,0.13,262,True),
  "DeepSeek V4 Flash":(40.3,56.2,31.1,0.04,1048,False),"GLM-5.1":(40.2,55.8,29.9,0.48,202,False),
  "GPT-5.4 mini":(40.0,56.1,30.2,0.53,400,True),
+ # added 2026-07-23 refresh (AA indices from OpenRouter/AA cache fetched 2026-07-22):
+ "Qwen3.7 Plus":(39.0,55.9,20.8,0.30,1000,True),"GPT-5.4 nano":(38.2,56.1,27.5,0.30,400,True),
+ "MiMo-V2.5":(37.2,56.8,23.7,0.05,1048,True),
 }
+# NOTE: Hy3's AA indices are still for the *preview* (tencent/hy3-preview-20260421) — the
+# 2026-07-06 release has no AA scores yet. Preview quality + release pricing = doubly stale row.
 MODELS=list(CACHE)
 # NOTE: CACHE index 3 is a legacy 90/10 cost — IGNORED. Live cost is computed in COST[]
 # from raw prices below at the I/O ratio knob (currently 95/5, per user's input-heavy load).
@@ -37,19 +43,25 @@ MODELS=list(CACHE)
 CACHE_HIT=0.98; IN_RATIO=0.95; OUT_RATIO=0.05   # <-- I/O ratio knob
 PRICES={  # name: (prompt, input_cache_read, completion)  $/token
  "Claude Fable 5":(1e-05,1e-06,5e-05),"GPT-5.6 Sol":(5e-06,5e-07,3e-05),
+ "Kimi K3":(3e-06,3e-07,1.5e-05),
  "Claude Opus 4.8":(5e-06,5e-07,2.5e-05),"GPT-5.6 Terra":(2.5e-06,2.5e-07,1.5e-05),
- "GPT-5.5":(5e-06,5e-07,3e-05),"Grok 4.5":(2e-06,5e-07,6e-06),
+ "GPT-5.5":(5e-06,5e-07,3e-05),"Grok 4.5":(2e-06,3e-07,6e-06),
  "Claude Opus 4.7":(5e-06,5e-07,2.5e-05),"Claude Sonnet 5":(2e-06,2e-07,1e-05),
  "GPT-5.4":(2.5e-06,2.5e-07,1.5e-05),"GPT-5.6 Luna":(1e-06,1e-07,6e-06),
- "GLM-5.2":(9.674e-07,1.7966e-07,3.0404e-06),"Gemini 3.5 Flash":(1.5e-06,1.5e-07,9e-06),
+ "GLM-5.2":(8.36e-07,1.552e-07,2.627e-06),"Gemini 3.5 Flash":(1.5e-06,1.5e-07,9e-06),
  "Claude Sonnet 4.6":(3e-06,3e-07,1.5e-05),"Gemini 3.1 Pro":(2e-06,2e-07,1.2e-05),
  "Qwen3.7 Max":(1.475e-06,2.95e-07,4.425e-06),"MiniMax-M3":(3e-07,6e-08,1.2e-06),
- "DeepSeek V4 Pro":(4.35e-07,3.625e-09,8.7e-07),"Kimi K2.6":(6.6e-07,1.44e-07,3.41e-06),
- "MiMo-V2.5-Pro":(4.35e-07,3.6e-09,8.7e-07),"Kimi K2.7 Code":(7.19e-07,1.49e-07,3.49e-06),
- "Hy3":(6.3e-08,2.1e-08,2.1e-07),"Nex-N2-Pro":(2.5e-07,2.5e-08,1e-06),
- "DeepSeek V4 Flash":(9.8e-08,2e-08,1.96e-07),"GLM-5.1":(9.66e-07,1.794e-07,3.036e-06),
+ "DeepSeek V4 Pro":(4.35e-07,3.625e-09,8.7e-07),"Kimi K2.6":(6.84e-07,1.44e-07,3.42e-06),
+ "MiMo-V2.5-Pro":(4.35e-07,3.6e-09,8.7e-07),"Kimi K2.7 Code":(8.2e-07,1.6e-07,3.75e-06),
+ "Hy3":(1.4e-07,3.5e-08,5.8e-07),"Nex-N2-Pro":(2.5e-07,2.5e-08,1e-06),
+ "DeepSeek V4 Flash":(9.4e-08,1.88e-08,1.88e-07),"GLM-5.1":(9.66e-07,1.794e-07,3.036e-06),
  "GPT-5.4 mini":(7.5e-07,7.5e-08,4.5e-06),
+ "Qwen3.7 Plus":(3.2e-07,6.4e-08,1.28e-06),"GPT-5.4 nano":(2e-07,2e-08,1.25e-06),
+ "MiMo-V2.5":(1.4e-07,2.8e-09,2.8e-07),
 }
+# 2026-07-23 refresh: GLM-5.2 cut to (8.36e-07,1.552e-07,2.627e-06); Grok 4.5 cache-read cut to 3e-07;
+# Hy3 release pricing is ~2.8x the preview pricing the old row used (cache-read 3.5e-08 vs 2.1e-08,
+# prompt 1.4e-07 vs 6.3e-08, completion 5.8e-07 vs 2.1e-07).
 def cost_per_M(m):
     pr,cr,co=PRICES[m]
     eff=(0.02*pr+CACHE_HIT*cr) if cr>0 else pr   # 2% miss @ prompt, 98% hit @ cache-read
@@ -106,19 +118,20 @@ MINMAX_ROLES={
 }
 GRANULAR={"Orchestrator":[AA_LCR,TB2,SWE_PRO,IFBENCH],"Implementer":[SWE_PRO,SWE_VER,TB2,LCB],
  "Review-Code":[AA_LCR,SWE_PRO,IFBENCH],"Review-Tests":[AA_LCR,SWE_PRO,IFBENCH]}
-LAB={"Claude Fable 5":"Anthropic","GPT-5.6 Sol":"OpenAI","Claude Opus 4.8":"Anthropic",
+LAB={"Claude Fable 5":"Anthropic","GPT-5.6 Sol":"OpenAI","Kimi K3":"Moonshot","Claude Opus 4.8":"Anthropic",
  "GPT-5.6 Terra":"OpenAI","GPT-5.5":"OpenAI","Grok 4.5":"xAI","Claude Opus 4.7":"Anthropic",
  "Claude Sonnet 5":"Anthropic","GPT-5.4":"OpenAI","GPT-5.6 Luna":"OpenAI","GLM-5.2":"Zhipu",
  "Gemini 3.5 Flash":"Google","Claude Sonnet 4.6":"Anthropic","Gemini 3.1 Pro":"Google",
  "Qwen3.7 Max":"Alibaba","MiniMax-M3":"MiniMax","DeepSeek V4 Pro":"DeepSeek","Kimi K2.6":"Moonshot",
- "MiMo-V2.5-Pro":"Xiaomi","Kimi K2.7 Code":"Moonshot","Hy3":"?","Nex-N2-Pro":"?",
- "DeepSeek V4 Flash":"DeepSeek","GLM-5.1":"Zhipu","GPT-5.4 mini":"OpenAI"}
+ "MiMo-V2.5-Pro":"Xiaomi","Kimi K2.7 Code":"Moonshot","Hy3":"Tencent","Nex-N2-Pro":"NexAGI",
+ "DeepSeek V4 Flash":"DeepSeek","GLM-5.1":"Zhipu","GPT-5.4 mini":"OpenAI",
+ "Qwen3.7 Plus":"Alibaba","GPT-5.4 nano":"OpenAI","MiMo-V2.5":"Xiaomi"}
 IMPL_LAB="DeepSeek"  # the implementer's lab -> reviewer should differ for decorrelation
 ORACLE_W=[(LCB,5),(HARDMATH,4),(AIME,3)]
 # Value-tier membership is FIXED (the cost-conscious set the user endorsed: <=$1.10/M at
 # 90/10, flagships excluded). Pinned so changing the I/O ratio doesn't re-admit flagships.
 EXCLUDE={"Claude Fable 5","GPT-5.6 Sol","Claude Opus 4.8","GPT-5.6 Terra","GPT-5.5",
- "Claude Opus 4.7","Claude Sonnet 5","GPT-5.4","Gemini 3.1 Pro","Claude Sonnet 4.6"}
+ "Claude Opus 4.7","Claude Sonnet 5","GPT-5.4","Gemini 3.1 Pro","Claude Sonnet 4.6","Kimi K3"}
 VALUE=[m for m in MODELS if m not in EXCLUDE]
 
 def minmax(d,subset):
