@@ -61,7 +61,7 @@ risk. Judge by invariant complexity and failure cost, not file count.
 
 ## Cost comparison
 
-Assuming 98% cache hit rate, 90/10 input/output split:
+Assuming 98% cache hit rate, 95/5 input/output split:
 
 | Model | Cache Read | Blended Cost |
 |---|---|---|

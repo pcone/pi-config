@@ -6,7 +6,7 @@
  * Startup: 2D Pareto (avg score × cost) with thresholds — compact tier picks.
  * /tiers:  3D Pareto (avg score × cost × multimodal) — full frontier, no thresholds.
  *
- * Pricing assumes 98% cache hit, 90/10 input/output split.
+ * Pricing assumes 98% cache hit, 95/5 input/output split.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -103,8 +103,8 @@ const THRESHOLDS = {
 
 const CACHE_HIT_RATE = 0.98;
 const MISS_RATE = 0.02;
-const INPUT_RATIO = 0.90;
-const OUTPUT_RATIO = 0.10;
+const INPUT_RATIO = 0.95;
+const OUTPUT_RATIO = 0.05;
 
 // ---------------------------------------------------------------------------
 // Tier definitions
@@ -453,7 +453,7 @@ export function renderTable(models: ScoredModel[], title = "MODEL TIERS", oCostM
 
   lines.push(
     bold(`  ${title}`) +
-      dim(`  ·  98% cache, 90/10 I/O  ·  I≥${THRESHOLDS.intelligence} C≥${THRESHOLDS.coding} A≥${THRESHOLDS.agentic}`),
+      dim(`  ·  98% cache, 95/5 I/O  ·  I≥${THRESHOLDS.intelligence} C≥${THRESHOLDS.coding} A≥${THRESHOLDS.agentic}`),
   );
 
   for (const tier of TIERS) {
@@ -511,7 +511,7 @@ function renderFullTable(models: ScoredModel[], dominatedCount: number, title: s
   const hidden = dominatedCount > 0 ? dim(`, −${dominatedCount} dominated`) : "";
   lines.push(
     bold(`  ${title}`) +
-      dim("  ·  98% cache, 90/10 I/O") +
+      dim("  ·  98% cache, 95/5 I/O") +
       hidden,
   );
 
