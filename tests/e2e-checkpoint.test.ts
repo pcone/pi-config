@@ -15,10 +15,10 @@ import { mkdtemp, writeFile, rm, readdir, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-	AuthStorage,
 	createAgentSession,
 	DefaultResourceLoader,
-	ModelRegistry,
+	getAgentDir,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 	type AgentSession,
@@ -132,10 +132,14 @@ async function setupSession(opts?: { keepRecentTokens?: number }) {
 		retry: { enabled: false },
 	});
 
-	const authStorage = AuthStorage.create();
-	const modelRegistry = ModelRegistry.create(authStorage);
-	const model = modelRegistry.find("openrouter", "deepseek/deepseek-v4-flash");
-	if (!model) throw new Error("Model deepseek/deepseek-v4-flash not found");
+	// ModelRuntime replaces the old AuthStorage + ModelRegistry pair.
+	// It picks up auth.json (and models.json) from getAgentDir() by default.
+	const modelRuntime = await ModelRuntime.create({
+		authPath: join(getAgentDir(), "auth.json"),
+		modelsPath: join(getAgentDir(), "models.json"),
+	});
+	const model = modelRuntime.getModel("openrouter", "deepseek/deepseek-v4-flash");
+	if (!model) throw new Error("Model openrouter/deepseek/deepseek-v4-flash not found");
 
 	const loader = new DefaultResourceLoader({
 		cwd: tmpCwd,
@@ -163,8 +167,7 @@ async function setupSession(opts?: { keepRecentTokens?: number }) {
 		cwd: tmpCwd,
 		model,
 		thinkingLevel: "off",
-		authStorage,
-		modelRegistry,
+		modelRuntime,
 		resourceLoader: loader,
 		tools: TOOLS,
 		sessionManager,

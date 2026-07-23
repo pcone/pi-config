@@ -1,7 +1,7 @@
 {
-  "lastChangelogVersion": "0.80.10",
-  "defaultProvider": "minimax",
-  "defaultModel": "MiniMax-M3",
+  "lastChangelogVersion": "0.81.1",
+  "defaultProvider": "openrouter",
+  "defaultModel": "z-ai/glm-5.2",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
@@ -14,7 +14,7 @@
     "extensions/compaction-model.ts"
   ],
   "defaultThinkingLevel": "high",
-  "hideThinkingBlock": true,
-  "httpIdleTimeoutMs": 900000,
+  "hideThinkingBlock": false,
+  "httpIdleTimeoutMs": 0,
   "shellCommandPrefix": "shopt -s expand_aliases"
 }
