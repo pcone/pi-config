@@ -57,7 +57,60 @@ export interface AgentDiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
-function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
+// ── Agent directory cache ──────────────────────────────────────────────────
+// Module-level cache keyed by (dir, source) to avoid re-reading agent .md
+// files on every `subagent` tool call. Validated by comparing max mtime of
+// the directory and each .md file, plus file count — any change (edit, add,
+// remove) invalidates the cache.
+
+type DirCacheKey = string; // `${dir}:${source}`
+
+interface DirCacheEntry {
+	mtime: number;    // max mtime of the dir + all .md files
+	fileCount: number; // count of .md files seen
+	agents: AgentConfig[];
+}
+
+const dirCache = new Map<DirCacheKey, DirCacheEntry>();
+
+/** @internal test hook — allows tests to inspect and clear the cache. */
+export const _testDirCache = dirCache;
+
+function computeDirFingerprint(dir: string): { maxMtime: number; fileCount: number } {
+	let maxMtime = 0;
+	let fileCount = 0;
+
+	if (!fs.existsSync(dir)) return { maxMtime, fileCount };
+
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return { maxMtime, fileCount };
+	}
+
+	for (const entry of entries) {
+		if (!entry.name.endsWith(".md")) continue;
+		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+		try {
+			const stat = fs.statSync(path.join(dir, entry.name));
+			if (stat.mtimeMs > maxMtime) maxMtime = stat.mtimeMs;
+			fileCount++;
+		} catch {
+			// unreadable file — skip
+		}
+	}
+
+	// Also include the dir mtime as a coarse signal
+	try {
+		const dirStat = fs.statSync(dir);
+		if (dirStat.mtimeMs > maxMtime) maxMtime = dirStat.mtimeMs;
+	} catch { /* */ }
+
+	return { maxMtime, fileCount };
+}
+
+function loadAgentsFromDirUncached(dir: string, source: "user" | "project"): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
 	if (!fs.existsSync(dir)) {
@@ -174,6 +227,22 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 
 	return agents;
 }
+
+function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
+	const { maxMtime, fileCount } = computeDirFingerprint(dir);
+	const cacheKey: DirCacheKey = `${dir}:${source}`;
+	const cached = dirCache.get(cacheKey);
+	if (cached && cached.mtime === maxMtime && cached.fileCount === fileCount) {
+		return cached.agents;
+	}
+	const agents = loadAgentsFromDirUncached(dir, source);
+	dirCache.set(cacheKey, { mtime: maxMtime, fileCount, agents });
+	return agents;
+}
+
+/** @internal test hook — exposes the cached loader so tests can prime and
+ *  inspect the cache against temp directories. */
+export const _loadAgentsFromDir = loadAgentsFromDir;
 
 function isDirectory(p: string): boolean {
 	try {
