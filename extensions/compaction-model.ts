@@ -1,18 +1,23 @@
 /**
  * Compaction Model Extension
  *
- * Forces /compact and auto-compaction to use the minimax/MiniMax-M3 model
+ * Forces /compact and auto-compaction to use DeepSeek V4 Flash (via OpenRouter)
  * while keeping every other aspect of compaction identical to the default.
  *
- * If the M3 model cannot be resolved or auth fails, falls through to pi's
+ * Why V4 Flash: compaction is a one-shot, uncached-heavy workload, so the
+ * *prompt* price dominates — V4 Flash ($0.094/M) is ~3x cheaper than the
+ * previous MiniMax-M3 ($0.30/M) with comparable summarization ability and
+ * the same 1M context. See decisions/subagents/008-orchestrator-compaction-models.md
+ *
+ * If the model cannot be resolved or auth fails, falls through to pi's
  * default compaction behavior.
  */
 
 import { compact } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const COMPACTION_PROVIDER = "minimax";
-const COMPACTION_MODEL_ID = "MiniMax-M3";
+const COMPACTION_PROVIDER = "openrouter";
+const COMPACTION_MODEL_ID = "deepseek/deepseek-v4-flash";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {

@@ -14,3 +14,4 @@ date: 2026-07-14
 | 005 | Review tiers: standard (Mimo) vs thorough (GLM) | done |
 | 006 | Reviewer-driven re-review signal and round cap | done |
 | 007 | Super-orchestrator (`plan` mode): role separation for multi-workstream work | done |
+| 008 | Orchestrator → GLM-5.2, compaction → DeepSeek V4 Flash | done |
