@@ -221,7 +221,7 @@ Pi has three modes, chosen by work-shape, not by preference:
 
 | Mode | Owns | Use when |
 |---|---|---|
-| `implement` | one task | You have a single, well-scoped task and should act directly. |
+| `implement` | one task | You have a single, well-scoped task. Work directly, but dispatch subagents freely whenever delegation helps (parallel work, research, context hygiene) — that's tool use, not a mode change. |
 | `orchestrate` | one work item | The work item needs tight, exploratory user↔agent loops — e.g. core type-system R&D where the user is reasoning alongside the orchestrator. The orchestrator designs, dispatches implementers, gates, and merges. |
 | `plan` | a whole roadmap / multiple workstreams | You have a set of largely independent items (e.g. audio, video, FS capability handlers; stdlib modules) and need a clean planning context to allocate, reorder, and reconcile across them. The SO dispatches `orchestrator`-subagents, one per item. |
 
