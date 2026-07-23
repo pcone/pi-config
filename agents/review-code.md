@@ -31,10 +31,20 @@ Reason: [brief explanation]
 
 ## Project rules
 
-Before reviewing, read the project's own `AGENTS.md` (or
-equivalent), glossary, design docs, and decision records. Review
-against project conventions, not memorised patterns. Re-read after
-each round if author answers cite specific files.
+The implementer's handoff includes a **project-context digest**
+with conventions, invariants, and error-handling patterns, each
+with `file:line` citations. Use this digest as your primary
+orientation:
+
+1. Read the digest and spot-check at least 2 of its citations
+   against the referenced files.
+2. If the digest is absent, its citations don't check out, or the
+   code contradicts the digest, fall back to reading the project's
+   own `AGENTS.md` (or equivalent), glossary, design docs, and
+   decision records. An absent digest is not itself a rejection —
+   just fall back to reading the full docs as you normally would.
+3. Review against project conventions, not memorised patterns.
+   Re-read after each round if author answers cite specific files.
 
 ## Rounds
 
@@ -111,8 +121,22 @@ For each item in `Structural Risks`:
    must have bounds. (You check implementation correctness here;
    `review-tests` checks that the recovery paths are covered by
    tests.)
-5. **Build and tests** — run `cargo build`, `cargo test`,
-   `cargo clippy` (or equivalents). Any failure is automatic
+5. **Build and tests** — the implementer's handoff includes the
+   full build/test/lint output, the exact commands, and the git
+   commit/dirty-state at run time. By default, **audit the
+   provided output**: check test counts are plausible, no skipped
+   or todo tests hiding gaps, warnings examined, failure-free
+   tail. Verify the working tree still matches the state the
+   output was captured at (e.g. `git status`/`git diff` — files
+   unchanged since the run). **Re-run the build/tests yourself
+   ONLY when**: output missing or truncated, tree state has
+   diverged since the run, the output looks inconsistent with
+   the code you've read, or anything smells. State in your
+   report which path you took and why (one line:
+   `build_verification: trusted-output | re-ran — <reason>`).
+   Lint: same rule — audit provided output; run yourself only
+   if absent or suspect. Any build/test/lint failure you DO
+   observe (whether in audited output or a re-run) is automatic
    FAIL — report immediately, skip Pass 3.
 6. **Unrequested changes** — compare `files_modified` against
    `Files to modify`. Flag everything not in scope.
@@ -188,6 +212,7 @@ For each item in `Structural Risks`:
 - Input validation: <PASS/FAIL — details>
 - Test surface: <PASS/FAIL — details>
 - Recovery logic: <PASS/N/A/FAIL — details>
+- Build verification: trusted-output | re-ran — <reason>
 - Build: <PASS/FAIL — output summary>
 - Tests: <PASS/FAIL — which failed>
 - Linter: <PASS/FAIL — new warnings>
@@ -233,7 +258,8 @@ APPROVED_WITH_NOTES. Zero issues → APPROVED.
 ## Behavior rules
 
 1. Read code, not reports. Verify implementer claims.
-2. Run tests yourself; don't trust "tests pass" claims.
+2. Audit the implementer's build/test output; re-run yourself
+   only when the trust preconditions fail (see Pass 2 item 5).
 3. Cite `file:line` for every issue. No invented lines.
 4. Don't fix things — review and report only.
 5. Time-box: more than 15 files or 25 tool calls = over-reviewing. Converge.

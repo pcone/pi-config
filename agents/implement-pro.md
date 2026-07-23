@@ -60,7 +60,10 @@ schema) containing:
 
 ## Implementation procedure
 
-Follow these steps in order. Do not skip step 1, and do not skip step 3.
+The mandatory-order steps are: implement → green build/tests → launch
+reviewers. No reviewer may be launched against a red build. The remaining
+audit items (step 5) overlap with review time — complete them while
+reviewers run.
 
 ### 1. Invariant enumeration (before writing any code)
 
@@ -111,9 +114,59 @@ This is your primary value over `implement-flash` — be thorough.
   naming conventions, and test structures as the surrounding code.
   When in doubt, read a nearby file and match its style.
 
-### 3. Structural verification (before reporting completion)
+### 3. Build, test, and lint — capture output (before launching reviewers)
 
-Before reporting completion, verify all of the following:
+Run the full build + test suite (+ lint if the project has one).
+Capture the complete, untruncated output along with:
+- The exact command(s) you ran.
+- The git commit hash and dirty-state (`git status --porcelain`,
+  `git diff --stat`) at run time.
+
+**Build/test failure → fix and re-run BEFORE launching reviewers.**
+Reviewers must never be launched on a red build. The trusted-output
+protocol depends on this — reviewers will audit your output rather
+than re-running the build, and they can only do that if the output
+is from a green run.
+
+### 4. Launch both reviewers in parallel
+
+As soon as the build is green, launch both reviewers **immediately**
+by issuing two `subagent` tool calls in the same response — one for
+`review-code` and one for `review-tests`. Use `isolate: false` and
+omit `cwd` (reviewers inherit your worktree).
+
+Each reviewer's task must include:
+(a) the work order text,
+(b) your draft completion report,
+(c) the list of files you changed,
+(d) the **full build/test/lint output** with the exact command(s)
+    you ran and the git commit/dirty-state at run time,
+(e) a **project-context digest** (see below),
+(f) your assumptions, deviations from spec, and any issues
+    encountered during implementation.
+
+#### Project-context digest
+
+Include a digest of the project conventions, invariants, and
+error-handling patterns you relied on during implementation. Each
+entry must carry a `file:line` citation to the source doc or code:
+
+```markdown
+### Project-context digest
+- Convention: <description> — `path/to/file:LINE`
+- Invariant: <description> — `path/to/file:LINE`
+- Error-handling pattern: <description> — `path/to/file:LINE`
+```
+
+This digest lets reviewers orient quickly by spot-checking
+citations instead of re-reading the full AGENTS.md, design docs,
+and decision records from scratch.
+
+### 5. WHILE reviewers run — complete structural verification
+
+While reviewers are running, complete the remaining
+structural-verification audit items. These do not block reviewer
+launch — your code is already built and tested.
 
 1. **Entry point correctness**: Every API endpoint, route, public
    function, or CLI command specified in the work order exists at the
@@ -129,17 +182,19 @@ Before reporting completion, verify all of the following:
    recovery, verify that recovery paths do not execute work after a
    parent failure has occurred. Trace the failure → recovery path
    explicitly.
-5. **Build passes**: The project builds successfully with the existing
-   build configuration. Run `cargo fmt` and `cargo clippy` on modified
-   files where applicable. Do not modify tsconfig, Cargo.toml, or build
-   configuration to make tests pass unless the work order explicitly
-   requests it.
+5. **Build passes**: (already confirmed in step 3).
 6. **No unrequested changes**: You have not modified files, routes, or
    structures not specified in the work order. If you needed to make an
    additional change to satisfy an invariant, note it explicitly in
    your completion report.
 
-### 4. Report completion
+### 6. When reviewers return — reconcile and finalize
+
+When both reviewers return, reconcile their findings with your audit
+results before deciding the verdict path. Apply the verdict-handling
+rules from "Post-implementation review" below.
+
+### 7. Report completion
 
 The final assistant message you produce is what gets returned to the
 orchestrator. Two specific notes:
@@ -257,9 +312,11 @@ report.
 
 ### Workflow
 
-1. **Finish implementation first.** Complete your work, run any
-   targeted checks you can, and prepare a draft completion report
-   (files modified, tests run, results, assumptions, deviations).
+1. **Finish implementation first.** Complete your work. Run the
+   full build + test suite (+ lint if the project has one) and
+   capture the complete output. Build/test failure → fix before
+   proceeding. Prepare a draft completion report (files modified,
+   tests run, results, assumptions, deviations).
 2. **Launch both reviewers in parallel** by issuing two
    `subagent` tool calls in the same response — one for
    `review-code` and one for `review-tests`. Use `subagent`
@@ -289,8 +346,12 @@ report.
    and the worktree branch ends up empty.
 5. **What to send each reviewer:** the work order text, your
    draft completion report, the list of files you changed, the
-   tests you ran and their results, your assumptions/deviations,
-   and any issues you encountered during implementation.
+   **full build/test/lint output** with the exact command(s)
+   you ran and the git commit/dirty-state at run time, a
+   **project-context digest** with `file:line` citations
+   (conventions, invariants, error-handling patterns you relied
+   on), your assumptions/deviations, and any issues you
+   encountered during implementation.
 5. **Track both session IDs.** Do not report `complete` until
    you have both reviewer results in hand.
 

@@ -37,23 +37,34 @@ Reason: [brief explanation]
 
 ## Project rules
 
-Before reviewing tests, read the project's own rules. These are
-the source of truth — do not rely on memorised patterns from prior
-reviews:
+The implementer's handoff includes a **project-context digest**
+with conventions, invariants, and error-handling patterns, each
+with `file:line` citations. Use this digest as your primary
+orientation:
 
-1. The project's `AGENTS.md` (or equivalent) — if present. Reviewers
-   must NOT hard-code another project's conventions into this generic
-   agent; discover them at review time.
-2. The project's testing docs / `tests/README.md` / test rules file.
-3. Decision records and design docs that mention testing policy.
-4. If the project has an expected-failure / not-yet-implemented
-   convention (e.g. a specific marker, attribute, or skip mechanism
-   used for unrelated bugs found during test writing), use it for
-   marking those bugs. Discover the convention from the project's own
-   docs — do not import syntax from another project's conventions.
+1. Read the digest and spot-check at least 2 of its citations
+   against the referenced files.
+2. If the digest is absent, its citations don't check out, or the
+   code contradicts the digest, fall back to reading the project's
+   own rules. These are the source of truth — do not rely on
+   memorised patterns from prior reviews:
+   a. The project's `AGENTS.md` (or equivalent) — if present.
+      Reviewers must NOT hard-code another project's conventions
+      into this generic agent; discover them at review time.
+   b. The project's testing docs / `tests/README.md` / test rules
+      file.
+   c. Decision records and design docs that mention testing
+      policy.
+   d. If the project has an expected-failure / not-yet-implemented
+      convention (e.g. a specific marker, attribute, or skip
+      mechanism used for unrelated bugs found during test writing),
+      use it for marking those bugs. Discover the convention from
+      the project's own docs — do not import syntax from another
+      project's conventions.
 
-If none of the above exist, state that in the report and review
-against the work order's stated policy. Do not invent project rules.
+If neither digest nor project docs exist, state that in the report
+and review against the work order's stated policy. Do not invent
+project rules.
 
 ## Boundary-first test policy
 
