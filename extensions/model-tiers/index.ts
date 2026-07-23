@@ -216,9 +216,26 @@ function buildLookup(models: ModelsResponse): Map<string, ModelInfo> {
   return map;
 }
 
-/** Check whether a model has open weights (hugging_face_id is non-null). */
+/**
+ * Model ids treated as open-weights before their `hugging_face_id` is populated.
+ * Used to surface upcoming open-weight releases in the open-weights tier
+ * lists. Remove an entry once the weights ship. Canonical slugs with a
+ * date suffix (e.g. `<base>-20260727`) are matched via prefix.
+ */
+const UPCOMING_OPEN_WEIGHTS: readonly string[] = [
+  "moonshotai/kimi-k3", // open-weights release planned 2026-07-27
+];
+
+/** Check whether a model has open weights (hugging_face_id is non-null),
+ *  or is an upcoming open-weights release listed in UPCOMING_OPEN_WEIGHTS. */
 function isOpenWeights(mi: ModelInfo | undefined): boolean {
-  return !!(mi?.hugging_face_id);
+  if (mi?.hugging_face_id) return true;
+  if (!mi) return false;
+  for (const base of UPCOMING_OPEN_WEIGHTS) {
+    if (mi.id === base) return true;
+    if (mi.canonical_slug && (mi.canonical_slug === base || mi.canonical_slug.startsWith(base + "-"))) return true;
+  }
+  return false;
 }
 
 /** Check whether a model supports image input. */
