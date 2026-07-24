@@ -66,9 +66,9 @@ The task is:
 ## Implementation procedure
 
 The mandatory-order steps are: implement → green build/tests → launch
-reviewers. No reviewer may be launched against a red build. The remaining
-audit items (step 5) overlap with review time — complete them while
-reviewers run.
+reviewers → structural verification (step 5) → `wait`. No reviewer may
+be launched against a red build. Step 5 runs after launching the
+reviewers but before calling `wait` — see that step for why.
 
 ### 1. Invariant enumeration (before writing any code)
 
@@ -161,11 +161,17 @@ This digest lets reviewers orient quickly by spot-checking
 citations instead of re-reading the full AGENTS.md, design docs,
 and decision records from scratch.
 
-### 5. WHILE reviewers run — complete structural verification
+### 5. Structural verification (run after launching reviewers, before calling `wait`)
 
-While reviewers are running, complete the remaining
-structural-verification audit items. These do not block reviewer
-launch — your code is already built and tested.
+`wait` ends your turn the moment it's called — the agent does not run
+in the background during the wait. So "while reviewers run" means
+*during this turn, before you call `wait`*: launch the reviewers, then
+immediately complete the audit items below using your own tools, then
+call `wait` once. Do not narrate continuing work "while I wait" — that
+work is not happening.
+
+These audit items do not depend on reviewer results; they are
+answerable from your own code. Run them now:
 
 1. **Entry point correctness**: Every API endpoint, route, public
    function, or CLI command specified in the work order exists at the
@@ -345,18 +351,21 @@ report.
 
 Subagent results arrive asynchronously as injected user messages,
 which trigger a fresh turn. Use this to your advantage — you do
-NOT block waiting for both reviewers. `wait` owns no timer — it
-ends your turn and yields until a subagent completes. Do NOT
-assume "one completed → both are done." Instead:
+NOT block waiting for both reviewers. By default `wait` owns no
+timer — it ends your turn and yields until a subagent completes.
+Do NOT assume "one completed → both are done." Instead:
 
-- After launching both reviewers, call `wait` once (no interval).
+- After launching both reviewers, call `wait` once (no argument).
 - When the wake-up arrives (a reviewer's result), check progress
   on the outstanding reviewer with `subagent_status`. If it is
   still running, call `wait` again for it.
-- `wait` has no timer; wake-up comes only from subagent
-  completion. If a reviewer is genuinely stuck, use
-  `subagent_stop` — but never silently treat a missing review as
-  complete.
+- The optional `seconds` parameter arms a fallback wake-up timer
+  — only use it when you have a concrete concern a reviewer is
+  going off the rails and may need steering. If you trust the
+  reviewers, omit `seconds` so the wake-up comes solely from
+  completion (no token cost in between). If a reviewer is
+  genuinely stuck, use `subagent_stop` — but never silently
+  treat a missing review as complete.
 
 ### Verdict handling
 
