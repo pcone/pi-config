@@ -1,7 +1,7 @@
 /**
  * Behavioral tests for the model-tiers IO ratio change.
  * Exercises exported renderTable and scoreModels with
- * synthetic data to verify the 95/5 split is reflected
+ * synthetic data to verify the 99/1 split is reflected
  * in rendered output and blended cost computation.
  */
 import { describe, it, expect } from "bun:test";
@@ -54,10 +54,10 @@ const MOCK_MODELS = {
 // ---------------------------------------------------------------------------
 
 describe("renderTable header", () => {
-  it("contains '95/5 I/O' in the rendered header when given a scored model", () => {
+  it("contains '99/1 I/O' in the rendered header when given a scored model", () => {
     const models = scoreModels(MOCK_BENCHMARKS, MOCK_MODELS);
     const output = renderTable(models, "TEST TABLE");
-    expect(output).toMatch(/95\/5 I\/O/);
+    expect(output).toMatch(/99\/1 I\/O/);
   });
 
   it("does NOT contain '75/25 I/O' in the rendered header", () => {
@@ -70,19 +70,19 @@ describe("renderTable header", () => {
     const models = scoreModels(MOCK_BENCHMARKS, MOCK_MODELS);
     const output = renderTable(models, "MY TITLE");
     expect(output).toContain("MY TITLE");
-    expect(output).toMatch(/98% cache/);
-    expect(output).toMatch(/95\/5 I\/O/);
+    expect(output).toMatch(/96% cache/);
+    expect(output).toMatch(/99\/1 I\/O/);
   });
 });
 
 describe("scoreModels blended cost", () => {
-  it("computes blended cost using 95/5 ratio for a model with pricing", () => {
+  it("computes blended cost using 99/1 ratio for a model with pricing", () => {
     const models = scoreModels(MOCK_BENCHMARKS, MOCK_MODELS);
     const modelA = models.find((m) => m.slug === "mock-model-a");
     expect(modelA).toBeDefined();
     // promptPrice=2, completionPrice=10, no cacheRead → effectiveInput = promptPrice = 2
-    // blended = 2 * 0.95 + 10 * 0.05 = 1.90 + 0.50 = 2.40
-    expect(modelA!.blendedCost).toBeCloseTo(2.4, 5);
+    // blended = 2 * 0.99 + 10 * 0.01 = 1.98 + 0.10 = 2.08
+    expect(modelA!.blendedCost).toBeCloseTo(2.08, 5);
     expect(modelA!.promptPrice).toBe(2);
     expect(modelA!.completionPrice).toBe(10);
   });
@@ -92,14 +92,14 @@ describe("scoreModels blended cost", () => {
     const modelB = models.find((m) => m.slug === "mock-model-b");
     expect(modelB).toBeDefined();
     // promptPrice=1, completionPrice=5, no cacheRead → effectiveInput = 1
-    // blended (95/5) = 1 * 0.95 + 5 * 0.05 = 0.95 + 0.25 = 1.20
+    // blended (99/1) = 1 * 0.99 + 5 * 0.01 = 0.99 + 0.05 = 1.04
     // old blended (75/25) = 1 * 0.75 + 5 * 0.25 = 0.75 + 1.25 = 2.00
-    expect(modelB!.blendedCost).toBeCloseTo(1.2, 5);
+    expect(modelB!.blendedCost).toBeCloseTo(1.04, 5);
     // Confirm it's NOT the old 75/25 value
     expect(modelB!.blendedCost).not.toBeCloseTo(2.0, 5);
   });
 
-  it("handles cacheRead pricing with 95/5 ratio", () => {
+  it("handles cacheRead pricing with 99/1 ratio", () => {
     // Model with cacheRead pricing
     const cacheBenchmarks = {
       data: [
@@ -130,20 +130,22 @@ describe("scoreModels blended cost", () => {
     const models = scoreModels(cacheBenchmarks, cacheModels);
     const m = models.find((x) => x.slug === "cache-model");
     expect(m).toBeDefined();
-    // effectiveInput = MISS_RATE(0.02) * prompt(10) + CACHE_HIT_RATE(0.98) * cacheRead(0.5)
-    //               = 0.02*10 + 0.98*0.5 = 0.2 + 0.49 = 0.69
-    // blended = 0.69 * 0.95 + 40 * 0.05 = 0.6555 + 2.0 = 2.6555
-    expect(m!.blendedCost).toBeCloseTo(2.6555, 5);
-    // Old ratio would be: 0.69 * 0.75 + 40 * 0.25 = 0.5175 + 10.0 = 10.5175
-    expect(m!.blendedCost).not.toBeCloseTo(10.5175, 5);
+    // effectiveInput = MISS_RATE(0.04) * prompt(10) + CACHE_HIT_RATE(0.96) * cacheRead(0.5)
+    //               = 0.04*10 + 0.96*0.5 = 0.4 + 0.48 = 0.88
+    // blended = 0.88 * 0.99 + 40 * 0.01 = 0.8712 + 0.4 = 1.2712
+    expect(m!.blendedCost).toBeCloseTo(1.2712, 5);
+    // Old ratio would be: 0.88 * 0.75 + 40 * 0.25 = 0.66 + 10.0 = 10.66
+    expect(m!.blendedCost).not.toBeCloseTo(10.66, 5);
   });
 });
 
 describe("source-level invariants (supplementary)", () => {
-  it("source file contains INPUT_RATIO = 0.95 and OUTPUT_RATIO = 0.05", async () => {
+  it("source file contains CACHE_HIT_RATE = 0.96, MISS_RATE = 0.04, INPUT_RATIO = 0.99, OUTPUT_RATIO = 0.01", async () => {
     const src = await Bun.file("extensions/model-tiers/index.ts").text();
-    expect(src).toMatch(/INPUT_RATIO\s*=\s*0\.95/);
-    expect(src).toMatch(/OUTPUT_RATIO\s*=\s*0\.05/);
+    expect(src).toMatch(/CACHE_HIT_RATE\s*=\s*0\.96/);
+    expect(src).toMatch(/MISS_RATE\s*=\s*0\.04/);
+    expect(src).toMatch(/INPUT_RATIO\s*=\s*0\.99/);
+    expect(src).toMatch(/OUTPUT_RATIO\s*=\s*0\.01/);
   });
 
   it("source file does NOT contain old 0.75 or 0.25 numeric literals belonging to the split", async () => {
