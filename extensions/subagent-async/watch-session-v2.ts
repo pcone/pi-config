@@ -26,6 +26,7 @@
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as readline from "node:readline";
+import { pathToFileURL } from "node:url";
 import {
 	Box,
 	Container,
@@ -359,38 +360,203 @@ function openSessionSocket(
 	};
 }
 
-// ── Layout (shared rows/cols + dynamic body height per pane) ────────────────
+// ── Layout — aspect-aware 2D grid with vertical-merge compaction ───────────
+
+const MIN_CELL_W = 40;
+const W_MIN = 80;
+const W_MAX = 200;
+const MIN_CELL_H = 6;
+const TARGET_H = 40;
+const FOOTER_ROWS = 1;
+const SEP = 1;
+const COL_SEP = "│";
+
+interface Cell {
+	row: number;
+	col: number;
+}
 
 class Layout {
-	rows: number;
-	cols: number;
-	paneCount = 1;
+	rows = 24;
+	cols = 80;
+	_paneCount = 1;
 
-	constructor() {
-		this.rows = process.stdout.rows || 24;
-		this.cols = process.stdout.columns || 80;
+	gridRows = 1;
+	gridCols = 1;
+	cellH = 1;
+	cellW = 1;
+	lastColRemainder = 0;
+	paneCells: Array<Cell[]> = [];
+
+	get paneCount(): number { return this._paneCount; }
+	set paneCount(n: number) {
+		this._paneCount = Math.max(0, n);
+		this.recompute();
 	}
 
 	resize(cols: number, rows: number): void {
 		this.cols = cols;
 		this.rows = rows;
+		this.recompute();
 	}
 
-	bodyHeight(): number {
-		// 1 line per pane header + (N-1) separators + 1 global footer
-		const overhead = this.paneCount * 1 + Math.max(0, this.paneCount - 1) + 1;
-		return Math.max(3, Math.floor((this.rows - overhead) / Math.max(1, this.paneCount)));
-	}
-
-	paneRowRanges(): Array<{ start: number; end: number }> {
-		const ranges: Array<{ start: number; end: number }> = [];
-		let row = 0;
-		for (let i = 0; i < this.paneCount; i++) {
-			const h = this.bodyHeight() + 1; // body + header
-			ranges.push({ start: row, end: row + h - 1 });
-			row += h + (i < this.paneCount - 1 ? 1 : 0); // +separator
+	recompute(): void {
+		const N = this._paneCount;
+		if (N <= 0) {
+			this.gridRows = 0;
+			this.gridCols = 0;
+			this.cellH = 1;
+			this.cellW = 1;
+			this.lastColRemainder = 0;
+			this.paneCells = [];
+			return;
 		}
-		return ranges;
+
+		// Scoring search
+		let best: { r: number; c: number; score: number } = { r: 1, c: N, score: Infinity };
+		let foundValid = false;
+		for (let r = 1; r <= N; r++) {
+			const c = Math.ceil(N / r);
+			const cellW_c = Math.floor((this.cols - (c - 1) * SEP) / c);
+			const cellH_r = Math.floor((this.rows - FOOTER_ROWS - (r - 1) * SEP) / r);
+			if (cellW_c < MIN_CELL_W || cellH_r < MIN_CELL_H) continue;
+			if (r * c < N) continue;
+			foundValid = true;
+			let wp: number;
+			if (cellW_c < W_MIN) wp = (W_MIN - cellW_c) ** 2 * 2.0;
+			else if (cellW_c > W_MAX) wp = (cellW_c - W_MAX) ** 2 * 0.3;
+			else wp = 0;
+			const hp = Math.max(0, TARGET_H - cellH_r) * 0.15;
+			const ep = 0.1 * (r * c - N) / N;
+			const score = wp + hp + ep;
+			if (score < best.score) { best = { r, c, score }; }
+		}
+
+		if (!foundValid) {
+			// Tiny-terminal fallback: use 1×N with sub-min cells
+			best = { r: 1, c: N, score: 0 };
+		}
+
+		this.gridRows = best.r;
+		this.gridCols = best.c;
+		this.cellH = Math.floor((this.rows - FOOTER_ROWS - (this.gridRows - 1) * SEP) / this.gridRows);
+		this.cellW = Math.floor((this.cols - (this.gridCols - 1) * SEP) / this.gridCols);
+		this.lastColRemainder = this.cols - this.gridCols * this.cellW - (this.gridCols - 1) * SEP;
+
+		// Cell assignment
+		this.paneCells = [];
+		const totalCells = this.gridRows * this.gridCols;
+		for (let i = 0; i < N; i++) {
+			this.paneCells.push([{ row: Math.floor(i / this.gridCols), col: i % this.gridCols }]);
+		}
+
+		// Merge empty cells into vertical neighbors
+		for (let slot = N; slot < totalCells; slot++) {
+			const row = Math.floor(slot / this.gridCols);
+			const col = slot % this.gridCols;
+			const candidates: Cell[] = [
+				{ row: row + 1, col },
+				{ row: row - 1, col },
+				{ row, col: col + 1 },
+				{ row, col: col - 1 },
+			];
+			let merged = false;
+			for (const cand of candidates) {
+				if (cand.row < 0 || cand.row >= this.gridRows || cand.col < 0 || cand.col >= this.gridCols) continue;
+				const s2 = cand.row * this.gridCols + cand.col;
+				if (s2 >= N) continue; // also empty, skip
+				this.paneCells[s2].push({ row, col });
+				merged = true;
+				break;
+			}
+			if (!merged) {
+				// Defensive: attach to nearest (shouldn't happen with reading-order fill)
+			}
+		}
+
+		// Assert purely-vertical merge invariant
+		for (let i = 0; i < this.paneCells.length; i++) {
+			const cells = this.paneCells[i];
+			if (cells.length > 0) {
+				const col0 = cells[0].col;
+				if (!cells.every((c) => c.col === col0)) {
+					throw new Error(`Layout invariant violated: pane ${i} has cells in multiple columns`);
+				}
+			}
+		}
+	}
+
+	paneColumn(i: number): number {
+		return this.paneCells[i]?.[0]?.col ?? 0;
+	}
+
+	cellsInPane(i: number): number {
+		return this.paneCells[i]?.length ?? 0;
+	}
+
+	paneHeight(i: number): number {
+		const n = this.cellsInPane(i);
+		return n * this.cellH + Math.max(0, n - 1);
+	}
+
+	paneBodyHeight(i: number): number {
+		return this.paneHeight(i) - 1;
+	}
+
+	paneWidth(i: number): number {
+		const col = this.paneColumn(i);
+		return this.cellW + (col === this.gridCols - 1 ? this.lastColRemainder : 0);
+	}
+
+	panesByColumn(): Array<Array<number>> {
+		const result: number[][] = [];
+		for (let cx = 0; cx < this.gridCols; cx++) {
+			const colPanes: number[] = [];
+			for (let i = 0; i < this._paneCount; i++) {
+				const cells = this.paneCells[i];
+				if (cells.length > 0 && cells[0].col === cx) {
+					colPanes.push(i);
+				}
+			}
+			// Sort by row to ensure top-to-bottom order (natural from reading-order assignment)
+			colPanes.sort((a, b) => this.paneCells[a][0].row - this.paneCells[b][0].row);
+			result.push(colPanes);
+		}
+		return result;
+	}
+
+	paneAt(screenRow: number, screenCol: number): number {
+		let colStart = 0;
+		let targetCol = -1;
+		for (let cx = 0; cx < this.gridCols; cx++) {
+			const colW = this.cellW + (cx === this.gridCols - 1 ? this.lastColRemainder : 0);
+			if (screenCol >= colStart && screenCol < colStart + colW) {
+				targetCol = cx;
+				break;
+			}
+			colStart += colW + SEP;
+		}
+		if (targetCol < 0) return -1;
+
+		const byCol = this.panesByColumn();
+		const panesInCol = byCol[targetCol];
+		if (!panesInCol) return -1;
+
+		let rowStart = 0;
+		for (let k = 0; k < panesInCol.length; k++) {
+			const idx = panesInCol[k];
+			const ph = this.paneHeight(idx);
+			if (screenRow >= rowStart && screenRow < rowStart + ph) {
+				return idx;
+			}
+			rowStart += ph + SEP;
+		}
+		return -1;
+	}
+
+	gridHeight(): number {
+		if (this.gridRows <= 0) return 0;
+		return this.gridRows * this.cellH + (this.gridRows - 1) * SEP;
 	}
 }
 
@@ -611,6 +777,7 @@ class ScrollBody implements Component {
 		private dataRef: () => PaneData,
 		getShowThinking: () => boolean,
 		private getBodyHeight: () => number,
+		private getWidth: () => number,
 	) {
 		this.buffer = new EntryBuffer(getShowThinking);
 	}
@@ -620,7 +787,7 @@ class ScrollBody implements Component {
 	}
 
 	scrollBy(delta: number): void {
-		const width = process.stdout.columns || 80;
+		const width = this.getWidth();
 		const total = this.buffer.lineCount(width);
 		const max = Math.max(0, total - this.getBodyHeight());
 		const next = Math.max(0, Math.min(this.scrollOffset + delta, max));
@@ -630,7 +797,7 @@ class ScrollBody implements Component {
 	}
 
 	scrollToBottom(): void {
-		const width = process.stdout.columns || 80;
+		const width = this.getWidth();
 		const total = this.buffer.lineCount(width);
 		this.scrollOffset = Math.max(0, total - this.getBodyHeight());
 		this.userScrolled = false;
@@ -668,6 +835,7 @@ class Pane extends Container implements Focusable {
 	private closeSocket: () => void = () => {};
 	focused: boolean;
 	showThinking = true;
+	gridIndex = 0;
 	private currentAssistant?: AssistantEntry;
 	private currentThinking?: ThinkingEntry;
 	private lastTool?: ToolEntry;
@@ -691,7 +859,8 @@ class Pane extends Container implements Focusable {
 		this.body = new ScrollBody(
 			() => this.data,
 			() => this.showThinking,
-			() => this.layout.bodyHeight(),
+			() => this.layout.paneBodyHeight(this.gridIndex),
+			() => this.layout.paneWidth(this.gridIndex),
 		);
 
 		this.addChild(this.headerText);
@@ -895,6 +1064,7 @@ class MultiPaneViewer extends Container {
 	panes: Pane[] = [];
 	focused = false;
 	private focusedIdx = 0;
+	get focusedIndex(): number { return this.focusedIdx; }
 	private footer: Text;
 	private newSessionAlert = false;
 	private knownRunningIds = new Set<string>();
@@ -914,12 +1084,17 @@ class MultiPaneViewer extends Container {
 		for (const p of this.panes) p.invalidate();
 	}
 
+	private syncGridIndices(): void {
+		for (let i = 0; i < this.panes.length; i++) this.panes[i].gridIndex = i;
+	}
+
 	addPane(id: string, focused = false): Pane {
 		const pane = new Pane(id, this.layout, focused);
 		// Insert before footer
 		this.children.splice(this.children.length - 1, 0, pane);
 		this.panes.push(pane);
 		this.layout.paneCount = this.panes.length;
+		this.syncGridIndices();
 		this.knownRunningIds.add(id);
 		this.invalidate();
 		return pane;
@@ -933,6 +1108,7 @@ class MultiPaneViewer extends Container {
 		const ci = this.children.indexOf(p);
 		if (ci >= 0) this.children.splice(ci, 1);
 		this.layout.paneCount = this.panes.length;
+		this.syncGridIndices();
 		this.focusedIdx = Math.min(this.focusedIdx, Math.max(0, this.panes.length - 1));
 		this.invalidate();
 	}
@@ -1019,16 +1195,37 @@ class MultiPaneViewer extends Container {
 	}
 
 	render(width: number): string[] {
-		// Render each pane with separator gaps
-		const out: string[] = [];
-		for (let i = 0; i < this.panes.length; i++) {
-			out.push(...this.panes[i].render(width));
-			if (i < this.panes.length - 1) {
-				out.push(TS.border("─".repeat(Math.max(1, width))));
+		// 1. Render each column independently
+		const byCol = this.layout.panesByColumn();
+		const colRender: string[][] = [];
+		for (let cx = 0; cx < byCol.length; cx++) {
+			const lines: string[] = [];
+			const panesInCol = byCol[cx];
+			for (let k = 0; k < panesInCol.length; k++) {
+				const idx = panesInCol[k];
+				const w = this.layout.paneWidth(idx);
+				lines.push(...this.panes[idx].render(w));
+				if (k < panesInCol.length - 1) {
+					lines.push(TS.border("─".repeat(Math.max(1, w))));
+				}
 			}
+			colRender.push(lines);
 		}
-		// Footer
-		const t = this.layout;
+
+		// 2. Zip columns horizontally
+		const out: string[] = [];
+		const gh = this.layout.gridHeight();
+		for (let y = 0; y < gh; y++) {
+			let line = "";
+			for (let cx = 0; cx < colRender.length; cx++) {
+				const seg = colRender[cx][y] ?? "";
+				line += truncateToWidth(seg, this.layout.paneWidth(byCol[cx][0]), "", true);
+				if (cx < colRender.length - 1) line += COL_SEP;
+			}
+			out.push(line);
+		}
+
+		// 3. Footer (unchanged)
 		const think = `${TS.muted("[t]")} thinking`;
 		const cycle = this.autoCycleEnabled
 			? `${TS.muted("[c]")} ${TS.accent("cycle")}`
@@ -1202,7 +1399,7 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 	process.stdout.write(`\x1b[?1000h\x1b[?1006h`);
 
 	// Resize handler — tui.start wires the terminal onResize to requestRender,
-	// but the layout also needs updated rows/cols for bodyHeight() to recompute.
+	// but the layout also needs updated rows/cols for paneBodyHeight() to recompute.
 	const onStdoutResize = () => {
 		viewer.resize(process.stdout.columns || 80, process.stdout.rows || 24);
 		tui.requestRender();
@@ -1213,15 +1410,15 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 
 	// ── Input ────────────────────────────────────────────────────────
 	removeInput = tui.addInputListener((data: string) => {
-		// Mouse SGR first. Row is 1-indexed; paneRowRanges() is 0-indexed.
+		// Mouse SGR first. Row/col are 1-indexed; paneAt is 0-indexed.
 		const mm = data.match(MOUSE_SGR_RE);
 		if (mm) {
 			const button = parseInt(mm[1], 10);
+			const col0 = parseInt(mm[2], 10) - 1;
 			const row1 = parseInt(mm[3], 10);
 			const row0 = row1 - 1;
-			const ranges = viewer.layout.paneRowRanges();
-			let target = viewer.panes.findIndex((_, i) => row0 >= ranges[i].start && row0 <= ranges[i].end);
-			if (target < 0) target = (viewer as unknown as { focusedIdx: number }).focusedIdx;
+			let target = viewer.layout.paneAt(row0, col0);
+			if (target < 0) target = viewer.focusedIndex;
 			if (button === 64) {
 				viewer.panes[target]?.body.scrollBy(-3);
 				tui.requestRender();
@@ -1342,4 +1539,6 @@ function main(): void {
 	void runViewer([running[0].id], false);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+
+export { Layout, SEP };
