@@ -78,7 +78,7 @@ Manage it:
 
 - **Plans go in a todo doc, not in chat.** Use \`todo\` \`setDoc\`
   (e.g. \`docs/TODO.md\`) and write the full plan there. Put tracking/plan
-  docs **in the repo** (e.g. under `docs/`), never in `tmp/` — `tmp/` is
+  docs **in the repo** (e.g. under \`docs/\`), never in \`tmp/\` — \`tmp/\` is
   scratch/build artifacts only.
 - **Keep the in-pi todo list accurate** — one-line summaries
   referencing the doc, marked \`in_progress\` / \`done\` as work moves.
@@ -160,7 +160,7 @@ Manage it:
 
 - **Plans go in a todo doc, not in chat.** Use \`todo\` \`setDoc\`
   (e.g. \`docs/TODO.md\`) and write the full plan there. Put tracking/plan
-  docs **in the repo** (e.g. under `docs/`), never in `tmp/` — `tmp/` is
+  docs **in the repo** (e.g. under \`docs/\`), never in \`tmp/\` — \`tmp/\` is
   scratch/build artifacts only.
 - **Keep the in-pi todo list accurate** — one-line summaries
   referencing the doc, marked \`in_progress\` / \`done\` as work moves.
