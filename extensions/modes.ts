@@ -77,7 +77,9 @@ yourself burn context that won't matter once the task moves on.
 Manage it:
 
 - **Plans go in a todo doc, not in chat.** Use \`todo\` \`setDoc\`
-  (e.g. \`tmp/TODO.md\`) and write the full plan there.
+  (e.g. \`docs/TODO.md\`) and write the full plan there. Put tracking/plan
+  docs **in the repo** (e.g. under `docs/`), never in `tmp/` — `tmp/` is
+  scratch/build artifacts only.
 - **Keep the in-pi todo list accurate** — one-line summaries
   referencing the doc, marked \`in_progress\` / \`done\` as work moves.
 - **Checkpoint after every context-heavy loop or subtask lands.**
@@ -157,7 +159,9 @@ yourself burn context that won't matter once the task moves on.
 Manage it:
 
 - **Plans go in a todo doc, not in chat.** Use \`todo\` \`setDoc\`
-  (e.g. \`tmp/TODO.md\`) and write the full plan there.
+  (e.g. \`docs/TODO.md\`) and write the full plan there. Put tracking/plan
+  docs **in the repo** (e.g. under `docs/`), never in `tmp/` — `tmp/` is
+  scratch/build artifacts only.
 - **Keep the in-pi todo list accurate** — one-line summaries
   referencing the doc, marked \`in_progress\` / \`done\` as work moves.
 - **Checkpoint after every orchestrator item lands.** Summary must be
