@@ -310,6 +310,17 @@ interface RunningSubagent {
 	// `subagent_stop` — that path uses the regular `Stopped` footer and
 	// resolves the waiter directly without delivering as a user message.
 	killedExplicitly: boolean;
+	// Set by the `subagent_stop` tool BEFORE it dispatches the wrap-up
+	// steer so the review-gate soft-prompt block (msg_end handler) can tell
+	// the final text-only message that follows a stop apart from a normal
+	// completion. An explicit stop means "wrap up and report, do not start
+	// new work" — so the post-implementation review soft-prompt (which
+	// would re-enter the agent loop to launch reviewers) is suppressed and
+	// the subagent is allowed to exit cleanly. The orchestrator's
+	// mechanical `subagent_review_status` gate is report-driven (it keys
+	// off an implementer `complete` report, not a `subagent_stop` result),
+	// so a stopped result is never gated on either.
+	stoppedExplicitly: boolean;
 	logPath: string;   // live human-readable event log
 	logLines: string[];     // in-memory buffer for live TUI widget
 	stderrLines: string[];  // captured stderr from the child pi process;
@@ -799,6 +810,7 @@ async function spawnSubagent(
 		resolveOnStop: null,
 		isDone: false,
 		killedExplicitly: false,
+		stoppedExplicitly: false,
 		logPath,
 		logLines: [],
 		stderrLines: [],
@@ -1084,7 +1096,7 @@ async function spawnSubagent(
 				// prompt is a polite nudge; the orchestrator's mechanical
 				// `subagent_review_status` check is the actual gate.
 				const required = rs.reviewParentRequirements;
-				if (required && required.length > 0) {
+				if (required && required.length > 0 && !rs.stoppedExplicitly) {
 					// The child's harness writes its reviewer-spawn tracker file
 					// keyed by its own pi session ID (obtained via
 					// getParentTrackerKey inside the child process). We read
@@ -1624,7 +1636,9 @@ export default function (pi: ExtensionAPI) {
 					// session; the kill flag never applies (the previous
 					// session died, not killed). Initialize to false to
 					// satisfy the RunningSubagent interface contract.
+					// `stoppedExplicitly` is likewise N/A on recovery.
 					killedExplicitly: false,
+					stoppedExplicitly: false,
 					logPath,
 					logLines: [],
 					watchHandle: null,
@@ -2504,6 +2518,15 @@ export default function (pi: ExtensionAPI) {
 					],
 				};
 			}
+
+			// Mark this session as explicitly stopped BEFORE the wrap-up steer
+			// ships. The subagent's final text-only message (produced in
+			// response to the steer below) otherwise trips the review-gate
+			// soft-prompt in the msg_end handler, which would re-enter the
+			// agent loop to launch reviewers — the opposite of "wrap up".
+			// An explicit stop means "report only"; the review machinery is
+			// bypassed for this session.
+			rs.stoppedExplicitly = true;
 
 			// Send final steer if provided
 			const finalMsg = params.final_message || "Wrap up your current work and return a summary. Do not start new tasks.";
