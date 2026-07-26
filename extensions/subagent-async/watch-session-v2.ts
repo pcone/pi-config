@@ -250,6 +250,21 @@ function timeAgo(ms: number): string {
 
 export type SessionStatus = "RUNNING" | "COMPLETED" | "STOPPED" | "EMPTY";
 
+export interface SessionMeta {
+	/** Agent type (implement-pro, review-code, etc.) */
+	agentName: string;
+	/** Full task text from the meta.json */
+	task: string;
+	/** Extracted work order ID (e.g., "WO-C15b") or undefined */
+	workOrderId?: string;
+	/** Short subject line extracted from task */
+	subject: string;
+	/** Model name */
+	model?: string;
+	/** Session start time (epoch ms) */
+	startedAt?: number;
+}
+
 export interface SessionInfo {
 	id: string;
 	sockPath: string;
@@ -257,6 +272,76 @@ export interface SessionInfo {
 	status: SessionStatus;
 	mtimeMs: number;
 	turns: number;
+	/** Rich metadata extracted from meta.json (if available) */
+	meta?: SessionMeta;
+}
+
+/**
+ * Extract a short subject line from task text.
+ * Strategy: take the first non-empty, non-header line, strip markdown, truncate.
+ */
+function extractSubject(task: string): string {
+	if (!task) return "";
+	const lines = task.split("\n");
+	for (const line of lines) {
+		const trimmed = line.trim();
+		// Skip empty lines and markdown headers
+		if (!trimmed || trimmed.startsWith("#")) continue;
+		// Strip markdown bold/italic markers and inline code backticks
+		const cleaned = trimmed.replace(/[*_`]/g, "").replace(/\s+/g, " ");
+		// Truncate to ~60 chars at word boundary
+		if (cleaned.length <= 60) return cleaned;
+		const truncated = cleaned.slice(0, 57);
+		const lastSpace = truncated.lastIndexOf(" ");
+		return (lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated) + "…";
+	}
+	return "";
+}
+
+/**
+ * Extract work order ID from task text.
+ * Looks for patterns like WO-C15b, WO-123, etc.
+ */
+function extractWorkOrderId(task: string): string | undefined {
+	if (!task) return undefined;
+	const match = task.match(/\bWO-[A-Za-z0-9]+\b/);
+	return match ? match[0] : undefined;
+}
+
+/**
+ * Load session metadata from the meta.json file.
+ * Returns undefined if the file doesn't exist or can't be parsed.
+ */
+function loadSessionMeta(id: string): SessionMeta | undefined {
+	// The meta.json file follows the same naming pattern as .log and .sock
+	const metaPath = `/tmp/pi-subagent-${id}.meta.json`;
+	try {
+		const raw = fs.readFileSync(metaPath, "utf8");
+		const data = JSON.parse(raw);
+		const task = data.task || "";
+		return {
+			agentName: data.agentName || "unknown",
+			task,
+			workOrderId: extractWorkOrderId(task),
+			subject: extractSubject(task),
+			model: data.model,
+			startedAt: data.startedAt,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Get a color function for an agent type.
+ * Different agent categories get different colors for quick visual scanning.
+ */
+function agentColor(agentName: string): (s: string) => string {
+	if (agentName.startsWith("implement")) return S.success;   // green
+	if (agentName.startsWith("review")) return S.warning;      // yellow
+	if (agentName.startsWith("scout")) return S.accent;        // cyan
+	if (agentName === "orchestrator") return (s: string) => `\x1b[1;35m${s}${RESET}`; // magenta
+	return S.muted; // fallback
 }
 
 export function discoverSessions(): SessionInfo[] {
@@ -280,7 +365,8 @@ export function discoverSessions(): SessionInfo[] {
 		try { mtime = fs.statSync(sockPath).mtimeMs; } catch {}
 		try { mtime = Math.max(mtime, fs.statSync(logPath).mtimeMs); } catch {}
 		const turns = countTurns(logPath);
-		sessions.push({ id, sockPath, logPath, status: "RUNNING", mtimeMs: mtime, turns });
+		const meta = loadSessionMeta(id);
+		sessions.push({ id, sockPath, logPath, status: "RUNNING", mtimeMs: mtime, turns, meta });
 	}
 
 	for (const f of logFiles) {
@@ -297,7 +383,8 @@ export function discoverSessions(): SessionInfo[] {
 			: content.includes("── Exited") || content.includes("── Stopped")
 				? "STOPPED"
 				: content.trim().length === 0 ? "EMPTY" : "STOPPED";
-		sessions.push({ id, sockPath: logPath.replace(/\.log$/, ".sock"), logPath, status, mtimeMs: stat.mtimeMs, turns: countTurns(logPath) });
+		const meta = loadSessionMeta(id);
+		sessions.push({ id, sockPath: logPath.replace(/\.log$/, ".sock"), logPath, status, mtimeMs: stat.mtimeMs, turns: countTurns(logPath), meta });
 	}
 
 	sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
@@ -839,12 +926,15 @@ class Pane extends Container implements Focusable {
 	private currentAssistant?: AssistantEntry;
 	private currentThinking?: ThinkingEntry;
 	private lastTool?: ToolEntry;
+	/** Rich metadata for the pane header (if available) */
+	meta?: SessionMeta;
 
-	constructor(id: string, layout: Layout, focused = false) {
+	constructor(id: string, layout: Layout, focused = false, meta?: SessionMeta) {
 		super();
 		this.id = id;
 		this.layout = layout;
 		this.focused = focused;
+		this.meta = meta;
 
 		this.data = {
 			done: false,
@@ -878,9 +968,10 @@ class Pane extends Container implements Focusable {
 		this.closeSocket = conn.close;
 	}
 
-	retarget(newId: string): void {
+	retarget(newId: string, meta?: SessionMeta): void {
 		this.closeSocket();
 		this.id = newId;
+		this.meta = meta;
 		this.body.buffer.clear();
 		this.currentAssistant = undefined;
 		this.currentThinking = undefined;
@@ -1046,12 +1137,25 @@ class Pane extends Container implements Focusable {
 			: this.data.connected
 				? TS.accent(`${Math.floor(elapsed / 60)}m ${elapsed % 60}s`)
 				: TS.muted(this.data.missing ? "missing" : "connecting");
-		const idShort = this.shortId();
+		
+		// Build identifier: prefer WO ID, then agent name, then short session ID
+		let identifier = "";
+		if (this.meta?.workOrderId) {
+			identifier = agentColor(this.meta.agentName)(this.meta.workOrderId);
+		} else if (this.meta?.agentName) {
+			identifier = agentColor(this.meta.agentName)(this.meta.agentName);
+		} else {
+			identifier = this.shortId();
+		}
+		
+		// Add subject if available (truncated to fit)
+		const subject = this.meta?.subject ? ` ${TS.dim("·")} ${TS.muted(this.meta.subject)}` : "";
+		
 		const turns = this.data.turns > 0 ? ` ${TS.dim("|")} ${this.data.turns}t` : "";
 		const focusMark = this.focused ? ` ${TS.accent("●")}` : "";
 		const bg = this.focused ? INVERSE_ON : "";
 		const bgOff = this.focused ? INVERSE_OFF : "";
-		const line = `${bg} ${idShort}  ${TS.dim("|")}  ${status}${turns}${focusMark} ${bgOff}`;
+		const line = `${bg} ${identifier}${subject}  ${TS.dim("|")}  ${status}${turns}${focusMark} ${bgOff}`;
 		this.headerText.setText(padRight(line, width));
 		return super.render(width);
 	}
@@ -1088,8 +1192,8 @@ class MultiPaneViewer extends Container {
 		for (let i = 0; i < this.panes.length; i++) this.panes[i].gridIndex = i;
 	}
 
-	addPane(id: string, focused = false): Pane {
-		const pane = new Pane(id, this.layout, focused);
+	addPane(id: string, focused = false, meta?: SessionMeta): Pane {
+		const pane = new Pane(id, this.layout, focused, meta);
 		// Insert before footer
 		this.children.splice(this.children.length - 1, 0, pane);
 		this.panes.push(pane);
@@ -1127,12 +1231,12 @@ class MultiPaneViewer extends Container {
 	focusNext(): void { this.setFocused((this.focusedIdx + 1) % Math.max(1, this.panes.length)); }
 	focusPrev(): void { this.setFocused((this.focusedIdx - 1 + this.panes.length) % Math.max(1, this.panes.length)); }
 
-	resizePanes(n: number, pickFresh: () => string | null): void {
+	resizePanes(n: number, pickFresh: () => SessionInfo | null): void {
 		n = Math.max(1, Math.min(n, MAX_PANES));
 		while (this.panes.length < n) {
-			const id = pickFresh();
-			if (!id) break;
-			this.addPane(id, this.panes.length === 0);
+			const session = pickFresh();
+			if (!session) break;
+			this.addPane(session.id, this.panes.length === 0, session.meta);
 		}
 		while (this.panes.length > n) {
 			this.removePane(this.panes.length - 1);
@@ -1141,25 +1245,25 @@ class MultiPaneViewer extends Container {
 		this.invalidate();
 	}
 
-	cyclePane(idx: number, pickFresh: () => string | null): boolean {
+	cyclePane(idx: number, pickFresh: () => SessionInfo | null): boolean {
 		const pane = this.panes[idx];
 		if (!pane) return false;
-		const id = pickFresh();
-		if (!id) return false;
-		this.knownRunningIds.add(id);
-		pane.retarget(id);
+		const session = pickFresh();
+		if (!session) return false;
+		this.knownRunningIds.add(session.id);
+		pane.retarget(session.id, session.meta);
 		this.invalidate();
 		return true;
 	}
 
-	autoCycleTick(pickFresh: () => string | null): void {
+	autoCycleTick(pickFresh: () => SessionInfo | null): void {
 		let changed = false;
 		for (const p of this.panes) {
 			if (p.data.done) {
-				const id = pickFresh();
-				if (id) {
-					this.knownRunningIds.add(id);
-					p.retarget(id);
+				const session = pickFresh();
+				if (session) {
+					this.knownRunningIds.add(session.id);
+					p.retarget(session.id, session.meta);
 					changed = true;
 				}
 			}
@@ -1203,10 +1307,13 @@ class MultiPaneViewer extends Container {
 			const panesInCol = byCol[cx];
 			for (let k = 0; k < panesInCol.length; k++) {
 				const idx = panesInCol[k];
-				const w = this.layout.paneWidth(idx);
-				lines.push(...this.panes[idx].render(w));
-				if (k < panesInCol.length - 1) {
-					lines.push(TS.border("─".repeat(Math.max(1, w))));
+				// Safety check: ensure pane exists at this index
+				if (idx >= 0 && idx < this.panes.length) {
+					const w = this.layout.paneWidth(idx);
+					lines.push(...this.panes[idx].render(w));
+					if (k < panesInCol.length - 1) {
+						lines.push(TS.border("─".repeat(Math.max(1, w))));
+					}
 				}
 			}
 			colRender.push(lines);
@@ -1251,11 +1358,34 @@ interface PickerResult {
 
 function buildPicker(sessions: SessionInfo[], onSelect: (s: SessionInfo) => void, onCancel: () => void): PickerResult {
 	const now = Date.now();
-	const items: SelectItem[] = sessions.map((s) => ({
-		value: s.id,
-		label: `${s.id.startsWith("subagent-") ? s.id.slice(9, 17) : s.id.slice(0, 8)}  ${TS.muted("[" + s.status + "]")}`,
-		description: `${s.turns}t  ·  ${timeAgo(now - s.mtimeMs)}`,
-	}));
+	const items: SelectItem[] = sessions.map((s) => {
+		// Build a rich label from metadata
+		const agentLabel = s.meta?.agentName ? TS.muted(`[${s.meta.agentName}]`) : "";
+		const woLabel = s.meta?.workOrderId ? TS.accent(s.meta.workOrderId) : "";
+		const subject = s.meta?.subject || (s.id.startsWith("subagent-") ? s.id.slice(9, 17) : s.id.slice(0, 8));
+		
+		// Compose label: WO ID + subject (or fallback to session ID)
+		let label = "";
+		if (woLabel && subject) {
+			label = `${woLabel} ${TS.dim("·")} ${subject}`;
+		} else if (subject) {
+			label = subject;
+		} else {
+			label = s.id.startsWith("subagent-") ? s.id.slice(9, 17) : s.id.slice(0, 8);
+		}
+		
+		// Compose description: agent type + turns + time ago
+		const descParts: string[] = [];
+		if (agentLabel) descParts.push(agentLabel);
+		descParts.push(`${s.turns}t`);
+		descParts.push(timeAgo(now - s.mtimeMs));
+		
+		return {
+			value: s.id,
+			label,
+			description: descParts.join(` ${TS.dim("·")} `),
+		};
+	});
 
 	const container = new Container();
 	container.addChild(new Text(TS.accent(`Pick a session (${items.length})`), 1, 0));
@@ -1332,15 +1462,16 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 	// Seed pane count for layout
 	viewer.layout.paneCount = withPicker ? 1 : Math.max(1, initialIds.length);
 	for (const id of initialIds.slice(0, MAX_PANES)) {
-		viewer.addPane(id);
+		const meta = loadSessionMeta(id);
+		viewer.addPane(id, false, meta);
 	}
 	if (viewer.panes.length > 0) viewer.setFocused(0);
 
-	const pickFresh = (): string | null => {
+	const pickFresh = (): SessionInfo | null => {
 		const sessions = discoverSessions();
 		const assigned = new Set(viewer.panes.map((p) => p.id));
 		const candidate = sessions.find((s) => s.status === "RUNNING" && !assigned.has(s.id));
-		return candidate?.id ?? null;
+		return candidate ?? null;
 	};
 
 	// Picker overlay (closes itself when a session is chosen)
@@ -1357,7 +1488,7 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 				pickerHandle?.hide();
 				pickerHandle = null;
 				while (viewer.panes.length > 0) viewer.removePane(viewer.panes.length - 1);
-				viewer.addPane(session.id, true);
+				viewer.addPane(session.id, true, session.meta);
 				tui.requestRender();
 			},
 			() => {
