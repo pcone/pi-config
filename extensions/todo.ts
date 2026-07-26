@@ -28,6 +28,9 @@ const TodoParams = Type.Object({
 	action: StringEnum(["list", "add", "start", "complete", "defer", "clear", "setDoc", "remove", "edit"] as const),
 	text: Type.Optional(Type.String({ description: "Task description (for add), new text (for edit), or doc path (for setDoc)" })),
 	id: Type.Optional(Type.Number({ description: "Task ID (for start/complete/defer/remove/edit)" })),
+	includeComplete: Type.Optional(
+		Type.Boolean({ description: "For list, include completed tasks (default: false)" }),
+	),
 });
 
 const MAX_VISIBLE = 4;
@@ -137,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: `Track tasks for this session. Actions: list, add (text), start (id), complete (id), defer (id), remove (id), edit (id, text), clear, setDoc (text).
+		description: `Track tasks for this session. Actions: list (returns non-completed tasks by default; set includeComplete to true to include completed tasks), add (text), start (id), complete (id), defer (id), remove (id), edit (id, text), clear, setDoc (text).
 
 Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with text "docs/TODO.md"). Then add one-sentence summaries referencing step numbers from that doc (e.g. "Step 3: wire up the new auth middleware"). The doc path is shown in the widget so you always know where the details live.`,
 		parameters: TodoParams,
@@ -151,13 +154,16 @@ Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with
 			});
 
 			switch (params.action) {
-				case "list":
+				case "list": {
+					const listedTodos = params.includeComplete
+						? todos
+						: todos.filter((t) => t.status !== "done");
 					return {
 						content: [
 							{
 								type: "text",
-								text: todos.length
-									? todos
+								text: listedTodos.length
+									? listedTodos
 											.map((t) => {
 												const mark =
 													t.status === "done"
@@ -170,11 +176,14 @@ Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with
 												return `${mark} #${t.id}: ${t.text}`;
 											})
 											.join("\n")
-									: "No tasks.",
+									: params.includeComplete
+										? "No tasks."
+										: "No incomplete tasks.",
 							},
 						],
 						details: snapshot(),
 					};
+				}
 
 				case "start": {
 					if (params.id === undefined) {
