@@ -349,6 +349,22 @@ const running = new Map<string, RunningSubagent>();
 /** @internal test hook — allows tests to inject entries into the running map. */
 export const _testRunning = running;
 
+// Active wait timer — set when `wait` is called with the optional `seconds`
+// parameter. We hold a single module-level handle because at most one wait
+// can be active at a time (the tool terminates the turn, so the next call
+// only happens after a wake-up). The timer fires a wake-up steer message
+// after N seconds if no subagent has completed; we cancel it from the
+// subagent close handler so a completing subagent doesn't get followed
+// by a redundant "still running" wakeup.
+let activeWaitTimer: NodeJS.Timeout | null = null;
+
+function clearActiveWait(): void {
+	if (activeWaitTimer) {
+		clearTimeout(activeWaitTimer);
+		activeWaitTimer = null;
+	}
+}
+
 /**
  * Resolve a session id to a RunningSubagent by exact match first, then
  * partial match via resolveSubagentMeta. Returns the RunningSubagent if
@@ -1179,6 +1195,13 @@ async function spawnSubagent(
 		// Cancel the stalled-turn watchdog — the subagent is leaving the
 		// running set, so the timer must not fire again.
 		if (rs.staleTimer) { clearTimeout(rs.staleTimer); rs.staleTimer = null; }
+		// Cancel any active wait timer — the subagent's completion delivers
+		// its own result as a steer message, so a follow-up "still running"
+		// wakeup would be redundant. Multiple subagents share one timer, so
+		// clearing on the *first* completion is correct: the caller will be
+		// woken by the result and can re-issue wait() for any still-running
+		// subagents.
+		clearActiveWait();
 		if (stdoutBuffer.trim()) processLine(stdoutBuffer);
 
 		// Write completion footer to live log
@@ -2350,29 +2373,76 @@ export default function (pi: ExtensionAPI) {
 	// ends the turn; the tool is just the well-named hook.
 
 	// `wait` ends the current turn and yields until a running subagent
-	// completes. It owns no timer — wake-up is triggered solely by
-	// subagent completion (delivered as a steer message by the close
-	// handler). This replaces the old N-second timer, which caused the
-	// caller to wake, see "not done", and re-arm the timer in a loop,
-	// burning tokens. `wait` is the only thing this tool is for: do not
-	// use it as a sleep or a general timer.
+	// completes. By default it owns no timer — wake-up is triggered
+	// solely by subagent completion (delivered as a steer message by
+	// the close handler). The optional `seconds` parameter arms a
+	// wake-up timer that fires after N seconds if no subagent has
+	// completed by then; the timer is cancelled when a subagent
+	// completes, so completion never triggers a redundant "still
+	// running" wakeup. Only use the timer when you have a concrete
+	// concern that the subagent may need steering — if you're
+	// confident in its direction, call `wait` with no argument and
+	// you'll be woken exactly when it finishes. `wait` is not a
+	// sleep or general timer.
 
-	const WaitParams = Type.Object({});
+	const WaitParams = Type.Object({
+		seconds: Type.Optional(
+			Type.Number({
+				description:
+					"Optional wake-up timer in seconds (1-600). If provided, you will be woken up after this many seconds if no subagent has completed by then — only use this when you have a specific concern the subagent may need steering. If you trust the subagent's direction, omit this and call wait() with no argument; you'll be woken when it finishes, with no token cost in the meantime. The timer is cancelled automatically when a subagent completes, so the two wake-ups never collide.",
+				minimum: 1,
+				maximum: 600,
+			}),
+		),
+	});
 
 	pi.registerTool({
 		name: "wait",
 		label: "Wait",
-		description: "End the current turn and yield until a running subagent completes and delivers its result. There is no timer — wake-up is triggered solely by subagent completion, so call this exactly once after launching subagents and stop; do not poll. If a subagent already finished while you were working, its result arrives instead. Only call this when at least one subagent is running; with nothing running there is nothing to wake you. This is the only thing this tool is for — not a sleep or general timer.",
+		description: "End the current turn and yield until a running subagent completes and delivers its result. With no argument, wake-up is triggered solely by subagent completion — call this exactly once after launching subagents and stop; do not poll. With the optional `seconds` argument, a wake-up timer is armed: you will also be woken if N seconds pass with no subagent completed (only use this when you have a specific concern the subagent may need steering; if you trust the direction, omit `seconds` and you'll be woken when it finishes with no token cost in between). The two wake-ups never collide — a completing subagent cancels the timer. Only call this when at least one subagent is running; with nothing running there is nothing to wake you. This is not a sleep or general timer.",
 		parameters: WaitParams,
-		async execute() {
+		async execute(_toolCallId, params) {
 			if (running.size === 0) {
 				return {
 					content: [{ type: "text", text: "No running subagents — nothing to wait for. Launch a subagent first, or continue your work." }],
 				};
 			}
 			const names = [...running.values()].map((rs) => `${rs.agentName} (${rs.sessionId.slice(-8)})`);
+
+			// No timer requested — default behavior: terminate and wait for
+			// subagent completion only.
+			if (params.seconds === undefined) {
+				return {
+					content: [{ type: "text", text: `Waiting for ${running.size} running subagent${running.size === 1 ? "" : "s"}: ${names.join(", ")}. I will be woken when one completes.` }],
+					terminate: true,
+				};
+			}
+
+			// Timer requested. Replace any existing timer (defensive — the
+			// tool terminates the turn, so a second call only happens after a
+			// wake-up, but clean up just in case).
+			clearActiveWait();
+
+			const seconds = params.seconds;
+			activeWaitTimer = setTimeout(() => {
+				activeWaitTimer = null;
+				// Skip if a subagent completed in the race window between
+				// timer arm and timer fire — the close handler clears
+				// activeWaitTimer and delivers the result as a steer, so a
+				// "still running" message on top of that would be noise. The
+				// close handler's clearTimeout cancels us, but checking
+				// running.size here is belt-and-braces in case the callback
+				// was already queued.
+				if (running.size === 0) return;
+				const liveNames = [...running.values()].map((rs) => `${rs.agentName} (${rs.sessionId.slice(-8)})`);
+				pi.sendUserMessage(
+					`[wait timer] ${seconds}s elapsed — ${running.size} subagent${running.size === 1 ? "" : "s"} still running: ${liveNames.join(", ")}. If concerned about direction, use subagent_status to inspect or subagent_steer to redirect. If you trust the work, call wait() again with no argument to keep waiting.`,
+					{ deliverAs: "steer" },
+				);
+			}, seconds * 1000);
+
 			return {
-				content: [{ type: "text", text: `Waiting for ${running.size} running subagent${running.size === 1 ? "" : "s"}: ${names.join(", ")}. I will be woken when one completes.` }],
+				content: [{ type: "text", text: `Waiting for ${running.size} running subagent${running.size === 1 ? "" : "s"}: ${names.join(", ")}. I will be woken either when one completes or after ${seconds}s if still running.` }],
 				terminate: true,
 			};
 		},

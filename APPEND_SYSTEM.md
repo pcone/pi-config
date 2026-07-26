@@ -2,7 +2,7 @@ Subagent invocations are asynchronous — they run in the background and you rem
 
 Subagents survive parent session reloads. Closing or reloading the parent does not kill running subagents — they continue working and commit results to their branches. Use `watch-session` to monitor them after a reload.
 
-Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results. `wait` ends your turn and yields until a running subagent completes — there is no timer, so call it exactly once after launching subagents and stop. Wake-up is triggered solely by subagent completion; do not poll or re-arm. Only call `wait` when at least one subagent is running.
+Use `subagent_status` to check progress and the `wait` tool (not `sleep`) to pause for results. `wait` ends your turn and yields until a running subagent completes. By default there is no timer — call `wait()` once after launching subagents and stop; wake-up is triggered solely by subagent completion. If you have a specific concern the subagent may need steering, pass an optional `seconds` argument (`wait({seconds: 120})`) to also be woken after that many seconds if no completion — but only do this when steering is plausible; if you trust the direction, omit `seconds` so you aren't woken (and billed) pointlessly. The timer is cancelled automatically when a subagent completes, so the two wake-ups never collide. Only call `wait` when at least one subagent is running.
 
 Subagents run in isolated git worktrees branched off HEAD (or `baseRef` when set). Each completes on its own branch; the calling session reviews and merges. Concurrent subagents cannot race on files.
 
