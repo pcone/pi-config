@@ -76,3 +76,20 @@ date: 2026-04-11      # creation date — set once, never updated
 ### Completing a feature
 
 Set `status: done` on all decision files. The `README.md` stays `status: active` — it's a living index.
+
+## Point-in-time integrity + supersession
+
+Decision records are **point-in-time captures** — they record *why X was chosen then*. Don't rewrite a settled decision's content when a later decision changes the outcome; the original reasoning is the record's value.
+
+When a later decision, plan, or design doc supersedes part (or all) of a settled decision:
+
+- **Keep the original content intact.** Do not edit the `What` / `Why` / `Alternatives` / etc.
+- **Append a dated footnote** at the end of the body, linking forward:
+  ```
+  > **Superseded (YYYY-MM-DD):** <one line — what moved> — see [decision/NNN-slug](path) (or a plan/doc link).
+  ```
+- **Partial supersession** (a clause or aspect moved, the rest stands) → keep the original `status` (`done`) + add the footnote. **Full supersession** (the whole decision is obsolete) → set `status: superseded` + add the footnote.
+
+The footnote is the *only* sanctioned edit to a settled decision body — it's a forward-pointer, not a rewrite. This keeps the decision history readable as a sequence of point-in-time captures, while still leading a reader from any old decision to the current truth.
+
+Do the same in reverse when useful: a new decision may link back to the ones it supersedes in its `Why` / `Alternatives considered`.
