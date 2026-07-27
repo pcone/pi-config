@@ -6,6 +6,8 @@
 
 Read relevant docs before implementing a feature or change. Keep docs up to date.
 
+**Write terse docs and comments.** State each idea once; if a sentence restates the previous one in different words, cut it. Code comments state the point and point to the design doc for detail — don't duplicate the doc in a comment or vice versa. Re-litigation-proof means covering the *load-bearing* ideas (ground in observation, refute the obvious alternative), not saying each one three ways. Long reads as thorough; it usually means the idea wasn't pinned down. Re-read and prune before committing.
+
 ## Testing
 
 **Tests are a lower bound on intended behavior, not a definition of it.** The suite captures what's been pinned down — it is not the full spec. Missing coverage never makes a behavior undefined or optional. When you encounter behavior the suite doesn't cover:
