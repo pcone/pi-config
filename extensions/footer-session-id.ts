@@ -311,7 +311,14 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
-type Theme = { fg: (color: string, text: string) => string; bold: (s: string) => string };
+type Theme = {
+	fg: (color: string, text: string) => string;
+	bold: (s: string) => string;
+	// Optional — absent on stubs/older theme objects. darkenAccentFg degrades
+	// to the dim token when either member is missing.
+	getFgAnsi?: (color: string) => string;
+	getColorMode?: () => "truecolor" | "256color";
+};
 type FooterData = {
 	getGitBranch: () => string | null;
 	getExtensionStatuses: () => ReadonlyMap<string, string>;
@@ -831,7 +838,7 @@ let cachedAutoCompactEnabled = readAutoCompactEnabled();
 let requestRenderRef: (() => void) | null = null;
 
 // ---------------------------------------------------------------------------
-// Activity timeline — 3-day logarithmic timeline row
+// Activity timeline — 3-day logarithmic timeline row (half-cell resolution)
 // ---------------------------------------------------------------------------
 
 const WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 259 200 000
@@ -839,9 +846,9 @@ const MIN_AGE_MS = 60 * 1000; // 60 000 (log floor)
 const R_LOG = Math.log(WINDOW_MS / MIN_AGE_MS); // ln(4320) ≈ 8.37
 
 /**
- * Map an age (ms) to a column index. Left = 3 days ago, right = now.
- * Ages < MIN_AGE_MS map to the rightmost column; ages ≥ WINDOW_MS
- * clamp to 0 (leftmost). width < 1 → 0.
+ * Map an age (ms) to a virtual half-column index (v2 scale: 2× width).
+ * Left = 3 days ago, right = now. Ages < MIN_AGE_MS map to the rightmost
+ * half-column; ages ≥ WINDOW_MS clamp to 0 (leftmost). width < 1 → 0.
  */
 export function timelineColumn(ageMs: number, width: number): number {
 	if (width < 1) return 0;
@@ -852,22 +859,36 @@ export function timelineColumn(ageMs: number, width: number): number {
 	return Math.max(0, Math.min(width - 1, col));
 }
 
+/**
+ * One physical column = two half-cells. `left` covers the earlier sub-slot,
+ * `right` the later one. State per half: user activity is `bright`, llm-only
+ * activity is `dark`, nothing is `none`.
+ */
 export type TimelineCell = {
-	status: "solid" | "half" | "empty";
+	left: "bright" | "dark" | "none"; // earlier sub-slot
+	right: "bright" | "dark" | "none"; // later sub-slot
 	isSessionStart: boolean;
 };
 
 const HALF_ROLES = new Set(["assistant", "toolResult", "bashExecution"]);
 
-/** Compute one TimelineCell per column from session entries. */
+/**
+ * Compute one TimelineCell per column (exactly `width` cells) from session
+ * entries. Each in-range message maps to a half-cell via the virtual 2×width
+ * scale: v = timelineColumn(ageMs, 2*width) → column floor(v/2), half v%2
+ * (0 = left/earlier, 1 = right/later).
+ */
 export function computeTimelineCells(
 	entries: unknown[],
 	nowMs: number,
 	width: number,
 	sessionStartMs: number | undefined,
 ): TimelineCell[] {
+	if (width < 1) return [];
+
 	const cells: TimelineCell[] = Array.from({ length: width }, () => ({
-		status: "empty",
+		left: "none",
+		right: "none",
 		isSessionStart: false,
 	}));
 
@@ -878,33 +899,35 @@ export function computeTimelineCells(
 		const ageMs = nowMs - ts;
 		if (ageMs >= WINDOW_MS) continue; // outside window
 
-		const col = timelineColumn(ageMs, width);
-		const current = cells[col]!;
-
-		// Only upgrade status (solid > half > empty)
-		if (current.status === "solid") continue;
+		const v = timelineColumn(ageMs, 2 * width);
+		const k = Math.floor(v / 2); // physical column
+		const h = v % 2; // 0 = left half (earlier), 1 = right half (later)
+		const current = cells[k]!;
 
 		const e = entry as { type?: string; message?: { role?: string } };
-		if (e.type === "message" && e.message?.role === "user") {
-			current.status = "solid";
-		} else if (
-			e.type === "message" &&
-			e.message?.role &&
-			HALF_ROLES.has(e.message.role)
-		) {
-			if (current.status === "empty") {
-				current.status = "half";
+		if (e.type !== "message" || !e.message?.role) continue;
+
+		// Per-half precedence: bright (user) > dark (llm) > none.
+		if (e.message.role === "user") {
+			if (h === 0) current.left = "bright";
+			else current.right = "bright";
+		} else if (HALF_ROLES.has(e.message.role)) {
+			if (h === 0) {
+				if (current.left === "none") current.left = "dark";
+			} else if (current.right === "none") {
+				current.right = "dark";
 			}
 		}
 		// Non-message entries and unrecognised roles are ignored
 	}
 
 	// Session-start marker: computed once, applied last (overrides).
+	// Column-level — which half the start age lands in doesn't matter.
 	if (sessionStartMs !== undefined) {
 		const startAge = nowMs - sessionStartMs;
 		if (startAge < WINDOW_MS) {
-			const markerCol = timelineColumn(startAge, width);
-			cells[markerCol]!.isSessionStart = true;
+			const markerV = timelineColumn(startAge, 2 * width);
+			cells[Math.floor(markerV / 2)]!.isSessionStart = true;
 		}
 	}
 
@@ -931,25 +954,88 @@ export function resolveSessionStartMs(
 	return undefined;
 }
 
-/** Render a timeline row. Exactly `width` visible columns. */
+/**
+ * Convert an RGB color to HSL. h ∈ [0, 360), s/l as percentages (0–100) —
+ * the same parameter convention hslToAnsiFg expects.
+ */
+export function rgbToHsl(
+	r: number,
+	g: number,
+	b: number,
+): { h: number; s: number; l: number } {
+	const rn = r / 255;
+	const gn = g / 255;
+	const bn = b / 255;
+	const max = Math.max(rn, gn, bn);
+	const min = Math.min(rn, gn, bn);
+	const l = (max + min) / 2;
+	let h = 0;
+	let s = 0;
+	if (max !== min) {
+		const d = max - min;
+		s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+		if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+		else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+		else h = ((rn - gn) / d + 4) * 60;
+	}
+	return { h, s: s * 100, l: l * 100 };
+}
+
+/**
+ * Darkened accent foreground: same hue/saturation at ~half lightness.
+ * Returns null when the accent isn't an RGB truecolor ANSI code (default
+ * `\x1b[39m`, 256-color `38;5`, or a theme stub without getFgAnsi) — the
+ * caller then falls back to the `dim` token.
+ */
+export function darkenAccentFg(theme: Theme): string | null {
+	const ansi = theme.getFgAnsi?.("accent");
+	if (ansi === undefined) return null;
+	const m = /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(ansi);
+	if (!m) return null;
+	const { h, s, l } = rgbToHsl(Number(m[1]), Number(m[2]), Number(m[3]));
+	return hslToAnsiFg(h, s, Math.max(15, l * 0.5));
+}
+
+/**
+ * Render a timeline row. Exactly `width` visible columns.
+ * `darkFg` is the darkened-accent ANSI code (computed once by the caller);
+ * when undefined it is computed internally, falling back to the dim token.
+ */
 export function renderTimelineRow(
 	cells: TimelineCell[],
 	theme: Theme,
 	width: number,
+	darkFg?: string,
 ): string {
 	if (width < 1) return "";
+	const dark = darkFg ?? darkenAccentFg(theme);
 	const n = Math.min(cells.length, width);
 	let out = "";
 	for (let i = 0; i < n; i++) {
 		const cell = cells[i]!;
 		if (cell.isSessionStart) {
 			out += theme.fg("warning", "\u2588");
-		} else if (cell.status === "solid") {
-			out += theme.fg("accent", "\u2588");
-		} else if (cell.status === "half") {
-			out += theme.fg("accent", "\u2592");
-		} else {
+		} else if (cell.left === "none" && cell.right === "none") {
 			out += " ";
+		} else if (cell.left === "none" || cell.right === "none") {
+			// Exactly one half active: ▌ (left/earlier) or ▐ (right/later).
+			const isLeft = cell.left !== "none";
+			const state = isLeft ? cell.left : cell.right;
+			const char = isLeft ? "\u258c" : "\u2590";
+			if (state === "bright") {
+				out += theme.fg("accent", char);
+			} else {
+				out += dark ? `${dark}${char}\x1b[39m` : theme.fg("dim", char);
+			}
+		} else {
+			// Both halves active: █ in the winning state (bright wins).
+			const state =
+				cell.left === "bright" || cell.right === "bright" ? "bright" : "dark";
+			if (state === "bright") {
+				out += theme.fg("accent", "\u2588");
+			} else {
+				out += dark ? `${dark}\u2588\x1b[39m` : theme.fg("dim", "\u2588");
+			}
 		}
 	}
 	// Pad to width with spaces (defensive; cells.length should equal width).
@@ -1249,7 +1335,8 @@ export default function (pi: ExtensionAPI) {
 						width,
 						startMs,
 					);
-					lines.push(renderTimelineRow(cells, theme, width));
+					const darkFg = darkenAccentFg(theme);
+					lines.push(renderTimelineRow(cells, theme, width, darkFg));
 
 					return lines;
 				},

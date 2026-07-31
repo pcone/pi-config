@@ -1,9 +1,15 @@
 /**
- * Tests for the 3-day logarithmic activity timeline footer row.
+ * Tests for the 3-day logarithmic activity timeline footer row (v2).
  *
- * Covers all 21 matrix rows from WO-2026-016. Every test hits the exported
+ * v2 (WO-2026-017) doubles the time resolution: each physical column is two
+ * half-cells (▌ earlier / ▐ later) on a virtual 2×width scale, and the
+ * user-vs-LLM distinction moved from glyph (v1's ▒ dither) to color (bright
+ * accent vs darkened accent). TimelineCell is now {left, right, isSessionStart}.
+ *
+ * Covers all 22 matrix rows from WO-2026-017. Every test hits the exported
  * pure helpers (timelineColumn, computeTimelineCells, resolveSessionStartMs,
- * renderTimelineRow) — the same boundary the existing multiplier test uses.
+ * renderTimelineRow, rgbToHsl, darkenAccentFg) — the same boundary the
+ * existing multiplier test uses.
  *
  * Deterministic time: a fixed NOW instant, explicit ageMs/nowMs parameters —
  * never Date.now() inside helpers. Theme stubs match the multiplier test
@@ -16,6 +22,8 @@ import {
 	computeTimelineCells,
 	resolveSessionStartMs,
 	renderTimelineRow,
+	rgbToHsl,
+	darkenAccentFg,
 	type TimelineCell,
 } from "../extensions/footer-session-id";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -46,6 +54,15 @@ const ansiTheme = {
 	bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
 };
 
+/** Theme stub with a truecolor accent (rows 16, 7-through-getFgAnsi). */
+const trueColorTheme = {
+	fg: (color: string, text: string) => `[${color}:${text}]`,
+	bold: (s: string) => `[bold:${s}]`,
+	getFgAnsi: (color: string) =>
+		color === "accent" ? "\x1b[38;2;255;100;0m" : "\x1b[39m",
+	getColorMode: () => "truecolor" as const,
+};
+
 /** Build a message entry with the given age (ms before NOW) and role. */
 function msg(ageMs: number, role: string): unknown {
 	return {
@@ -63,8 +80,26 @@ function nonMsg(ageMs: number, type: string): unknown {
 	};
 }
 
+/**
+ * v2 half-cell decomposition of the exported mapping:
+ * v = timelineColumn(ageMs, 2*width) → (physical column, half).
+ */
+function halfCell(
+	ageMs: number,
+	width: number,
+): { col: number; side: "left" | "right" } {
+	const v = timelineColumn(ageMs, 2 * width);
+	return { col: Math.floor(v / 2), side: v % 2 === 0 ? "left" : "right" };
+}
+
+/** All-null cell for readability. */
+function emptyCell(): TimelineCell {
+	return { left: "none", right: "none", isSessionStart: false };
+}
+
 // ---------------------------------------------------------------------------
-// timelineColumn — boundary matrix (rows 1–3, 5, 7–8)
+// timelineColumn — boundary matrix (rows 1–3, 5, 7–8 of the v1 spec; kept
+// unchanged per WO-2026-017 row 22)
 // ---------------------------------------------------------------------------
 
 describe("timelineColumn", () => {
@@ -111,12 +146,47 @@ describe("timelineColumn", () => {
 });
 
 // ---------------------------------------------------------------------------
-// computeTimelineCells — classification matrix (rows 4, 6, 9–13, 16–17, 20)
+// Half-cell mapping anchors (v2 scale) — rows 1, 2, 5
+// ---------------------------------------------------------------------------
+
+describe("half-cell mapping (v2 scale, v = timelineColumn(age, 2W))", () => {
+	// Row 1: age = MIN_AGE_MS → v = 2W−1 → (W−1, right half)
+	it("age = MIN_AGE_MS → (W−1, right half)", () => {
+		expect(halfCell(MIN_AGE_MS, 80)).toEqual({ col: 79, side: "right" });
+		expect(halfCell(MIN_AGE_MS, 40)).toEqual({ col: 39, side: "right" });
+	});
+
+	// Row 2: age = WINDOW_MS → v = 0 → (0, left half)
+	// (computeTimelineCells excludes age ≥ WINDOW_MS, so this is a mapping
+	// anchor check on the exported timelineColumn at the 2W scale.)
+	it("age = WINDOW_MS → (0, left half)", () => {
+		expect(halfCell(WINDOW_MS, 80)).toEqual({ col: 0, side: "left" });
+		expect(timelineColumn(WINDOW_MS, 160)).toBe(0);
+	});
+
+	// Row 5: half boundary at W=80 (between right and left half of col 79
+	// at age ≈ 63.22 s) → 63.0 s → col 79 right; 63.4 s → col 79 left
+	it("63.0 s → col 79 right half; 63.4 s → col 79 left half (W=80)", () => {
+		expect(halfCell(63_000, 80)).toEqual({ col: 79, side: "right" });
+		expect(halfCell(63_400, 80)).toEqual({ col: 79, side: "left" });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// computeTimelineCells — half-cell classification matrix (rows 1–12, 15)
 // ---------------------------------------------------------------------------
 
 describe("computeTimelineCells", () => {
-	// Row 4: age just over WINDOW_MS → excluded (no contribution)
-	it("age just over WINDOW_MS → excluded (all cells empty)", () => {
+	// Row 1: age = MIN_AGE_MS → rightmost column, right half
+	it("age = MIN_AGE_MS → (W−1, right half) state set", () => {
+		const cells = computeTimelineCells([msg(MIN_AGE_MS, "user")], NOW, 80, undefined);
+		expect(cells).toHaveLength(80);
+		expect(cells[79]).toEqual({ left: "none", right: "bright", isSessionStart: false });
+		expect(cells.slice(0, 79).every((c) => c.left === "none" && c.right === "none")).toBe(true);
+	});
+
+	// Row 3: age just over WINDOW_MS → excluded (no state)
+	it("age just over WINDOW_MS → excluded (all halves none)", () => {
 		const cells = computeTimelineCells(
 			[msg(WINDOW_MS + 1, "user")],
 			NOW,
@@ -124,57 +194,92 @@ describe("computeTimelineCells", () => {
 			undefined,
 		);
 		expect(cells).toHaveLength(40);
-		expect(cells.every((c) => c.status === "empty")).toBe(true);
+		expect(cells.every((c) => c.left === "none" && c.right === "none")).toBe(true);
 	});
 
-	// Row 6: width = 1 → single column, in-range message contributes
-	it("width = 1 → single column with in-range message", () => {
-		const cells = computeTimelineCells([msg(100_000, "user")], NOW, 1, undefined);
-		expect(cells).toHaveLength(1);
-		expect(cells[0]!.status).toBe("solid");
-	});
-
-	// Row 9: user + assistant in same column → solid
-	it("user + assistant in same column → solid (user wins)", () => {
-		// 100_000 ms → col 37 at width 40
+	// Row 4: age < MIN / negative → rightmost column, right half (clamp).
+	// NaN is NOT rightmost: timelineColumn's non-finite defense maps it to
+	// v = 0 → (0, left half) — pinned by the unchanged v1 NaN test.
+	it("age below MIN_AGE_MS (user) → (W−1, right half) bright", () => {
 		const cells = computeTimelineCells(
-			[msg(100_000, "assistant"), msg(100_001, "user")],
+			[msg(MIN_AGE_MS - 1, "user")],
 			NOW,
-			40,
+			80,
 			undefined,
 		);
-		const col = timelineColumn(100_000, 40);
-		expect(cells[col]!.status).toBe("solid");
+		expect(cells[79]).toEqual({ left: "none", right: "bright", isSessionStart: false });
 	});
 
-	// Row 10: assistant only → half
-	it("assistant only → half", () => {
-		const cells = computeTimelineCells([msg(100_000, "assistant")], NOW, 40, undefined);
-		const col = timelineColumn(100_000, 40);
-		expect(cells[col]!.status).toBe("half");
+	it("negative age (assistant) → (W−1, right half) dark", () => {
+		const cells = computeTimelineCells([msg(-5000, "assistant")], NOW, 80, undefined);
+		expect(cells[79]).toEqual({ left: "none", right: "dark", isSessionStart: false });
 	});
 
-	// Row 11: toolResult only → half
-	it("toolResult only → half", () => {
-		const cells = computeTimelineCells([msg(100_000, "toolResult")], NOW, 40, undefined);
-		const col = timelineColumn(100_000, 40);
-		expect(cells[col]!.status).toBe("half");
+	it("NaN nowMs → no crash; lands (0, left half) per timelineColumn defense", () => {
+		const cells = computeTimelineCells([msg(100_000, "user")], NaN, 40, undefined);
+		expect(Array.isArray(cells)).toBe(true);
+		expect(cells[0]).toEqual({ left: "bright", right: "none", isSessionStart: false });
 	});
 
-	// Row 12: bashExecution only → half
-	it("bashExecution only → half", () => {
+	// Row 6: user only in earlier half
+	it("user in earlier half → left bright, right none", () => {
+		// 63.4 s → col 79 left half (row 5 anchor)
+		const cells = computeTimelineCells([msg(63_400, "user")], NOW, 80, undefined);
+		expect(cells[79]).toEqual({ left: "bright", right: "none", isSessionStart: false });
+	});
+
+	// Row 7: llm only in later half
+	it("llm in later half → left none, right dark", () => {
+		const cells = computeTimelineCells([msg(MIN_AGE_MS, "assistant")], NOW, 80, undefined);
+		expect(cells[79]).toEqual({ left: "none", right: "dark", isSessionStart: false });
+	});
+
+	// Row 8: user earlier + llm later → both active, bright wins
+	it("user earlier + llm later → left bright, right dark", () => {
 		const cells = computeTimelineCells(
-			[msg(100_000, "bashExecution")],
+			[msg(63_400, "user"), msg(MIN_AGE_MS, "assistant")],
 			NOW,
-			40,
+			80,
 			undefined,
 		);
-		const col = timelineColumn(100_000, 40);
-		expect(cells[col]!.status).toBe("half");
+		expect(cells[79]).toEqual({ left: "bright", right: "dark", isSessionStart: false });
 	});
 
-	// Row 13: non-message entries + unrecognised roles → empty
-	it("non-message entries + compactionSummary/branchSummary/custom roles → empty", () => {
+	// Row 9: llm both halves → both dark
+	it("llm in both halves → left dark, right dark", () => {
+		const cells = computeTimelineCells(
+			[msg(63_400, "assistant"), msg(MIN_AGE_MS, "assistant")],
+			NOW,
+			80,
+			undefined,
+		);
+		expect(cells[79]).toEqual({ left: "dark", right: "dark", isSessionStart: false });
+	});
+
+	// Row 10: user both halves → both bright
+	it("user in both halves → left bright, right bright", () => {
+		const cells = computeTimelineCells(
+			[msg(63_400, "user"), msg(MIN_AGE_MS, "user")],
+			NOW,
+			80,
+			undefined,
+		);
+		expect(cells[79]).toEqual({ left: "bright", right: "bright", isSessionStart: false });
+	});
+
+	// Precedence: a later llm entry cannot downgrade a bright half.
+	it("dark never downgrades an existing bright half", () => {
+		const cells = computeTimelineCells(
+			[msg(MIN_AGE_MS, "user"), msg(MIN_AGE_MS, "assistant")],
+			NOW,
+			80,
+			undefined,
+		);
+		expect(cells[79].right).toBe("bright");
+	});
+
+	// Row 11: non-message entries + unrecognised roles → halves stay none
+	it("non-message entries + compactionSummary/branchSummary/custom roles → none", () => {
 		const cells = computeTimelineCells(
 			[
 				nonMsg(100_000, "model_change"),
@@ -193,58 +298,61 @@ describe("computeTimelineCells", () => {
 			40,
 			undefined,
 		);
-		expect(cells.every((c) => c.status === "empty")).toBe(true);
+		expect(cells.every((c) => c.left === "none" && c.right === "none")).toBe(true);
 	});
 
-	// Row 16: sessionStartMs older than window → no marker
+	// Row 12: empty entries → all halves none, exactly width cells
+	it("empty entries array → all none, exactly width cells", () => {
+		const cells = computeTimelineCells([], NOW, 20, undefined);
+		expect(cells).toHaveLength(20);
+		expect(cells.every((c) => c.left === "none" && c.right === "none" && !c.isSessionStart)).toBe(true);
+	});
+
+	// Row 15: sessionStartMs older than window → no marker
 	it("sessionStartMs older than window → no isSessionStart", () => {
 		const oldStart = NOW - WINDOW_MS - 1;
-		const cells = computeTimelineCells(
-			[msg(100_000, "user")],
-			NOW,
-			40,
-			oldStart,
-		);
+		const cells = computeTimelineCells([msg(100_000, "user")], NOW, 40, oldStart);
 		expect(cells.every((c) => !c.isSessionStart)).toBe(true);
 	});
 
-	// Row 17: sessionStartMs undefined → no marker
+	// Row 15: sessionStartMs undefined → no marker
 	it("sessionStartMs undefined → no marker", () => {
-		const cells = computeTimelineCells(
-			[msg(100_000, "user")],
-			NOW,
-			40,
-			undefined,
-		);
+		const cells = computeTimelineCells([msg(100_000, "user")], NOW, 40, undefined);
 		expect(cells.every((c) => !c.isSessionStart)).toBe(true);
 	});
 
-	// Row 17b: sessionStartMs in-range → assigns isSessionStart
+	// Row 15b: in-range sessionStartMs → marker on the mapped column
 	it("sessionStartMs in-range → assigns isSessionStart on correct column", () => {
 		const startMs = NOW - 100_000; // 100s ago, in range
-		const cells = computeTimelineCells(
-			[msg(50_000, "user")],
-			NOW,
-			40,
-			startMs,
-		);
-		const markerCol = timelineColumn(100_000, 40);
+		const cells = computeTimelineCells([msg(50_000, "user")], NOW, 40, startMs);
+		const markerCol = halfCell(100_000, 40).col;
 		expect(cells[markerCol]!.isSessionStart).toBe(true);
-		// Other columns should not have the marker
 		const otherCols = cells.filter((_, i) => i !== markerCol);
 		expect(otherCols.every((c) => !c.isSessionStart)).toBe(true);
 	});
 
-	// Row 20: empty entries array → all empty cells, exactly width
-	it("empty entries array → all empty, exactly width cells", () => {
-		const cells = computeTimelineCells([], NOW, 20, undefined);
-		expect(cells).toHaveLength(20);
-		expect(cells.every((c) => c.status === "empty" && !c.isSessionStart)).toBe(true);
+	// width = 1 → single column, in-range message contributes
+	it("width = 1 → single column with in-range message", () => {
+		const cells = computeTimelineCells([msg(100_000, "user")], NOW, 1, undefined);
+		expect(cells).toHaveLength(1);
+		// age 100s at 2W=2 → v=1 → col 0, right half
+		expect(cells[0]).toEqual({ left: "none", right: "bright", isSessionStart: false });
+	});
+
+	// width = 0 → empty array, no throw (v1 would crash on cells[0])
+	it("width = 0 → empty array, no throw even with in-range marker", () => {
+		const cells = computeTimelineCells(
+			[msg(100_000, "user")],
+			NOW,
+			0,
+			NOW - 50_000,
+		);
+		expect(cells).toEqual([]);
 	});
 });
 
 // ---------------------------------------------------------------------------
-// resolveSessionStartMs — resolution matrix (row 18)
+// resolveSessionStartMs — resolution matrix (row 18 of v1; kept unchanged)
 // ---------------------------------------------------------------------------
 
 describe("resolveSessionStartMs", () => {
@@ -283,49 +391,218 @@ describe("resolveSessionStartMs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// renderTimelineRow — rendering matrix (rows 7, 14–15, 20–21)
+// rgbToHsl — standard RGB→HSL conversion (row 16's round-trip source)
+// ---------------------------------------------------------------------------
+
+describe("rgbToHsl", () => {
+	it("white → h 0, s 0, l 100", () => {
+		expect(rgbToHsl(255, 255, 255)).toEqual({ h: 0, s: 0, l: 100 });
+	});
+
+	it("black → h 0, s 0, l 0", () => {
+		expect(rgbToHsl(0, 0, 0)).toEqual({ h: 0, s: 0, l: 0 });
+	});
+
+	it("pure red → h 0, s 100, l 50", () => {
+		expect(rgbToHsl(255, 0, 0)).toEqual({ h: 0, s: 100, l: 50 });
+	});
+
+	it("(255, 100, 0) → h ≈ 23.5, s 100, l 50", () => {
+		const hsl = rgbToHsl(255, 100, 0);
+		expect(hsl.h).toBeCloseTo(23.5, 0);
+		expect(hsl.s).toBeCloseTo(100, 0);
+		expect(hsl.l).toBeCloseTo(50, 0);
+	});
+
+	it("gray (128, 128, 128) → s 0", () => {
+		const hsl = rgbToHsl(128, 128, 128);
+		expect(hsl.s).toBe(0);
+		expect(hsl.h).toBe(0);
+		expect(hsl.l).toBeCloseTo(50.2, 0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// darkenAccentFg — darkened accent derivation (rows 16–19)
+// ---------------------------------------------------------------------------
+
+describe("darkenAccentFg", () => {
+	// Row 16: truecolor accent → same hue/sat, lightness ≈ half
+	it("truecolor accent → same hue/sat, lightness ≈ half (via RGB→HSL of output)", () => {
+		const out = darkenAccentFg(trueColorTheme);
+		expect(out).not.toBeNull();
+		expect(out).toMatch(/^\x1b\[38;2;\d+;\d+;\d+m$/);
+		const m = /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(out!);
+		const hsl = rgbToHsl(Number(m![1]), Number(m![2]), Number(m![3]));
+		// Source accent (255,100,0): h 23.5, s 100, l 50 → darkened l ≈ 25
+		expect(hsl.h).toBeCloseTo(23.5, 0);
+		expect(hsl.s).toBeCloseTo(100, 0);
+		expect(hsl.l).toBeCloseTo(25, 0);
+		expect(hsl.l).toBeLessThan(30);
+	});
+
+	// Row 17: default accent (\x1b[39m) → null
+	it("default accent (\\x1b[39m) → null", () => {
+		const theme = {
+			...trueColorTheme,
+			getFgAnsi: () => "\x1b[39m",
+		};
+		expect(darkenAccentFg(theme)).toBeNull();
+	});
+
+	// Row 18: 256-color accent (38;5) → null
+	it("256-color accent (\\x1b[38;5;242m) → null", () => {
+		const theme = {
+			...trueColorTheme,
+			getFgAnsi: () => "\x1b[38;5;242m",
+		};
+		expect(darkenAccentFg(theme)).toBeNull();
+	});
+
+	it("malformed ANSI from getFgAnsi → null (anything non-truecolor)", () => {
+		const theme = { ...trueColorTheme, getFgAnsi: () => "garbage" };
+		expect(darkenAccentFg(theme)).toBeNull();
+	});
+
+	// Row 19: theme lacking getFgAnsi → null
+	it("theme without getFgAnsi → null", () => {
+		expect(darkenAccentFg(testTheme)).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// renderTimelineRow — half-cell rendering matrix (rows 6–14, 20–21)
 // ---------------------------------------------------------------------------
 
 describe("renderTimelineRow", () => {
-	// Row 7 (renderTimelineRow part): width < 1 → ""
+	// width < 1 → ""
 	it("width < 1 → empty string", () => {
 		expect(renderTimelineRow([], testTheme, 0)).toBe("");
 		expect(renderTimelineRow([], testTheme, -1)).toBe("");
 	});
 
-	// Row 14: marker on solid/half cell → warning █ overrides
-	it("marker on solid cell → warning █ (overrides accent)", () => {
-		const cells: TimelineCell[] = [
-			{ status: "solid", isSessionStart: true },
-		];
-		const row = renderTimelineRow(cells, testTheme, 1);
-		expect(row).toContain("[warning:█]");
-		expect(row).not.toContain("[accent:█]");
+	// Row 6: single bright left half → accent ▌
+	it("bright left half → accent ▌", () => {
+		const cells = computeTimelineCells([msg(63_400, "user")], NOW, 80, undefined);
+		const row = renderTimelineRow(cells, testTheme, 80);
+		expect(row.slice(0, 79)).toBe(" ".repeat(79));
+		expect(row.slice(79)).toBe("[accent:▌]");
 	});
 
-	it("marker on half cell → warning █ (overrides accent)", () => {
-		const cells: TimelineCell[] = [
-			{ status: "half", isSessionStart: true },
-		];
-		const row = renderTimelineRow(cells, testTheme, 1);
-		expect(row).toContain("[warning:█]");
-		expect(row).not.toContain("[accent:▒]");
+	it("bright right half → accent ▐", () => {
+		const cells: TimelineCell[] = [{ ...emptyCell(), right: "bright" }];
+		expect(renderTimelineRow(cells, testTheme, 1)).toBe("[accent:▐]");
 	});
 
-	// Row 15: marker on empty cell → warning █ (still visible)
+	// Row 7: llm in later half → dark ▐ (raw ANSI when darkFg provided,
+	// dim fallback when not; row 20 covers the no-getFgAnsi path)
+	it("dark right half with explicit darkFg → darkFg + ▐ + reset", () => {
+		const cells = computeTimelineCells([msg(MIN_AGE_MS, "assistant")], NOW, 80, undefined);
+		const darkFg = "\x1b[38;2;128;50;0m";
+		const row = renderTimelineRow(cells, testTheme, 80, darkFg);
+		expect(row.endsWith(`${darkFg}\u2590\x1b[39m`)).toBe(true);
+	});
+
+	it("dark right half, darkFg undefined, theme with getFgAnsi → darkened accent used", () => {
+		const cells = computeTimelineCells([msg(MIN_AGE_MS, "assistant")], NOW, 80, undefined);
+		const row = renderTimelineRow(cells, trueColorTheme, 80);
+		expect(row).toMatch(/\x1b\[38;2;\d+;\d+;\d+m\u2590\x1b\[39m$/);
+	});
+
+	// Row 20: darkFg undefined + no getFgAnsi → dim fallback
+	it("dark half, no darkFg and no getFgAnsi → dim fallback", () => {
+		const cells: TimelineCell[] = [{ ...emptyCell(), right: "dark" }];
+		expect(renderTimelineRow(cells, testTheme, 1)).toBe("[dim:▐]");
+	});
+
+	it("dark left half → dim ▌", () => {
+		const cells: TimelineCell[] = [{ ...emptyCell(), left: "dark" }];
+		expect(renderTimelineRow(cells, testTheme, 1)).toBe("[dim:▌]");
+	});
+
+	// Row 8: user earlier + llm later → both active, █ bright (user wins)
+	it("bright left + dark right → accent █ (bright wins)", () => {
+		const cells = computeTimelineCells(
+			[msg(63_400, "user"), msg(MIN_AGE_MS, "assistant")],
+			NOW,
+			80,
+			undefined,
+		);
+		const row = renderTimelineRow(cells, testTheme, 80);
+		expect(row.endsWith("[accent:█]")).toBe(true);
+	});
+
+	// Row 9: llm both halves → █ dark
+	it("dark both halves with explicit darkFg → darkFg + █ + reset", () => {
+		const cells = computeTimelineCells(
+			[msg(63_400, "assistant"), msg(MIN_AGE_MS, "assistant")],
+			NOW,
+			80,
+			undefined,
+		);
+		const darkFg = "\x1b[38;2;128;50;0m";
+		const row = renderTimelineRow(cells, testTheme, 80, darkFg);
+		expect(row.endsWith(`${darkFg}\u2588\x1b[39m`)).toBe(true);
+	});
+
+	it("dark both halves, no darkFg → dim █", () => {
+		const cells = computeTimelineCells(
+			[msg(63_400, "assistant"), msg(MIN_AGE_MS, "assistant")],
+			NOW,
+			80,
+			undefined,
+		);
+		expect(renderTimelineRow(cells, testTheme, 80).endsWith("[dim:█]")).toBe(true);
+	});
+
+	// Row 10: user both halves → █ bright
+	it("bright both halves → accent █", () => {
+		const cells = computeTimelineCells(
+			[msg(63_400, "user"), msg(MIN_AGE_MS, "user")],
+			NOW,
+			80,
+			undefined,
+		);
+		const row = renderTimelineRow(cells, testTheme, 80);
+		expect(row.endsWith("[accent:█]")).toBe(true);
+	});
+
+	// Row 12: empty cells → all-space row, width intact
+	it("empty cells → all-space row, width wide", () => {
+		const cells = computeTimelineCells([], NOW, 20, undefined);
+		const row = renderTimelineRow(cells, testTheme, 20);
+		expect(row).toBe(" ".repeat(20));
+	});
+
+	// Row 13: marker on active cell → warning █ overrides halves
+	it("marker on active cell → warning █ (overrides bright)", () => {
+		const cells: TimelineCell[] = [
+			{ left: "bright", right: "bright", isSessionStart: true },
+		];
+		const row = renderTimelineRow(cells, testTheme, 1);
+		expect(row).toBe("[warning:█]");
+		expect(row).not.toContain("[accent:");
+	});
+
+	it("marker on half-active cell → warning █ (overrides dark)", () => {
+		const cells: TimelineCell[] = [
+			{ left: "none", right: "dark", isSessionStart: true },
+		];
+		const row = renderTimelineRow(cells, testTheme, 1);
+		expect(row).toBe("[warning:█]");
+		expect(row).not.toContain("[dim:");
+	});
+
+	// Row 14: marker on empty cell → warning █ still rendered
 	it("marker on empty cell → warning █", () => {
-		const cells: TimelineCell[] = [
-			{ status: "empty", isSessionStart: true },
-		];
+		const cells: TimelineCell[] = [{ ...emptyCell(), isSessionStart: true }];
 		const row = renderTimelineRow(cells, testTheme, 1);
-		expect(row).toContain("[warning:█]");
+		expect(row).toBe("[warning:█]");
 	});
 
 	// cells.length < width → padded with spaces
 	it("cells shorter than width → padded with spaces", () => {
-		const cells: TimelineCell[] = [
-			{ status: "empty", isSessionStart: false },
-		];
+		const cells: TimelineCell[] = [emptyCell()];
 		const row = renderTimelineRow(cells, testTheme, 5);
 		expect(row).toBe(" ".repeat(5));
 	});
@@ -333,30 +610,24 @@ describe("renderTimelineRow", () => {
 	// cells.length > width → truncated
 	it("cells longer than width → truncated", () => {
 		const cells: TimelineCell[] = [
-			{ status: "solid", isSessionStart: false },
-			{ status: "half", isSessionStart: false },
-			{ status: "empty", isSessionStart: false },
+			{ left: "bright", right: "bright", isSessionStart: false },
+			{ left: "dark", right: "dark", isSessionStart: false },
+			emptyCell(),
 		];
 		const row = renderTimelineRow(cells, testTheme, 1);
 		expect(row).toBe("[accent:█]");
 	});
 
-	// Row 20: empty cells array → all-space row, still width wide
-	it("empty cells → all-space row, width wide", () => {
-		const cells = computeTimelineCells([], NOW, 20, undefined);
-		const row = renderTimelineRow(cells, testTheme, 20);
-		expect(row).toBe(" ".repeat(20));
-	});
-
 	// Row 21: visibleWidth === width for W ∈ {20, 40, 80, 120}
 	it("visibleWidth === width for various widths", () => {
-		// Use ANSI theme so visibleWidth strips escape codes correctly.
+		// ANSI theme so visibleWidth strips escape codes; includes bright
+		// halves, dark halves (dim fallback), and a marker column.
 		for (const w of [20, 40, 80, 120]) {
 			const cells = computeTimelineCells(
-				[msg(100_000, "user"), msg(200_000, "assistant")],
+				[msg(63_400, "user"), msg(1_000_000, "assistant"), msg(100_000, "user")],
 				NOW,
 				w,
-				NOW - 50_000,
+				NOW - 3_000_000,
 			);
 			const row = renderTimelineRow(cells, ansiTheme, w);
 			expect(visibleWidth(row)).toBe(w);
@@ -365,34 +636,7 @@ describe("renderTimelineRow", () => {
 });
 
 // ---------------------------------------------------------------------------
-// renderTimelineRow — status rendering symbols
-// ---------------------------------------------------------------------------
-
-describe("renderTimelineRow symbols", () => {
-	it("solid → accent █", () => {
-		const cells: TimelineCell[] = [
-			{ status: "solid", isSessionStart: false },
-		];
-		expect(renderTimelineRow(cells, testTheme, 1)).toBe("[accent:█]");
-	});
-
-	it("half → accent ▒", () => {
-		const cells: TimelineCell[] = [
-			{ status: "half", isSessionStart: false },
-		];
-		expect(renderTimelineRow(cells, testTheme, 1)).toBe("[accent:▒]");
-	});
-
-	it("empty → space", () => {
-		const cells: TimelineCell[] = [
-			{ status: "empty", isSessionStart: false },
-		];
-		expect(renderTimelineRow(cells, testTheme, 1)).toBe(" ");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Row 19: unparseable entry timestamps → skipped, no crash
+// Defensive parsing — unparseable timestamps skipped, no crash
 // ---------------------------------------------------------------------------
 
 describe("defensive parsing", () => {
@@ -403,13 +647,13 @@ describe("defensive parsing", () => {
 			message: { role: "user" },
 		};
 		const cells = computeTimelineCells([badEntry], NOW, 40, undefined);
-		expect(cells.every((c) => c.status === "empty")).toBe(true);
+		expect(cells.every((c) => c.left === "none" && c.right === "none")).toBe(true);
 	});
 
 	it("entry with no timestamp field → skipped", () => {
 		const noTs = { type: "message", message: { role: "user" } };
 		const cells = computeTimelineCells([noTs], NOW, 40, undefined);
-		expect(cells.every((c) => c.status === "empty")).toBe(true);
+		expect(cells.every((c) => c.left === "none" && c.right === "none")).toBe(true);
 	});
 
 	it("entry with null timestamp → skipped", () => {
@@ -419,7 +663,7 @@ describe("defensive parsing", () => {
 			message: { role: "user" },
 		};
 		const cells = computeTimelineCells([nullTs], NOW, 40, undefined);
-		expect(cells.every((c) => c.status === "empty")).toBe(true);
+		expect(cells.every((c) => c.left === "none" && c.right === "none")).toBe(true);
 	});
 
 	it("mixed valid and invalid → valid contributes", () => {
@@ -432,14 +676,13 @@ describe("defensive parsing", () => {
 			40,
 			undefined,
 		);
-		const col = timelineColumn(100_000, 40);
-		expect(cells[col]!.status).toBe("solid");
+		const k = halfCell(100_000, 40).col;
+		const h = halfCell(100_000, 40).side;
+		expect(cells[k]![h]).toBe("bright");
 	});
 
 	it("computeTimelineCells does not throw for NaN nowMs", () => {
-		// Defensive: nowMs could be NaN if caller passes bad value
 		const cells = computeTimelineCells([msg(100_000, "user")], NaN, 40, undefined);
-		// Should not throw; specific output is unspecified but should be safe
 		expect(Array.isArray(cells)).toBe(true);
 	});
 });
@@ -453,5 +696,7 @@ describe("existing exports unchanged", () => {
 		const mod = await import("../extensions/footer-session-id");
 		expect(typeof mod.getZaiMultiplier).toBe("function");
 		expect(typeof mod.renderQuotaSegment).toBe("function");
+		expect(typeof mod.rgbToHsl).toBe("function");
+		expect(typeof mod.darkenAccentFg).toBe("function");
 	});
 });
