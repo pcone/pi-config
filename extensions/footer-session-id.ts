@@ -325,6 +325,7 @@ type FooterFactoryCtx = {
 		getCwd(): string;
 		getSessionName(): string | undefined;
 		getSessionId(): string;
+		getHeader(): { timestamp?: string } | null;
 	};
 	model: { id: string; provider: string; reasoning?: boolean; contextWindow?: number } | undefined;
 	modelRegistry?: {
@@ -829,8 +830,138 @@ let cachedAutoCompactEnabled = readAutoCompactEnabled();
 // trigger a redraw without waiting for the 30s interval or a branch change.
 let requestRenderRef: (() => void) | null = null;
 
+// ---------------------------------------------------------------------------
+// Activity timeline — 3-day logarithmic timeline row
+// ---------------------------------------------------------------------------
+
+const WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 259 200 000
+const MIN_AGE_MS = 60 * 1000; // 60 000 (log floor)
+const R_LOG = Math.log(WINDOW_MS / MIN_AGE_MS); // ln(4320) ≈ 8.37
+
+/**
+ * Map an age (ms) to a column index. Left = 3 days ago, right = now.
+ * Ages < MIN_AGE_MS map to the rightmost column; ages ≥ WINDOW_MS
+ * clamp to 0 (leftmost). width < 1 → 0.
+ */
+export function timelineColumn(ageMs: number, width: number): number {
+	if (width < 1) return 0;
+	if (!Number.isFinite(ageMs)) return 0;
+	const age = Math.max(ageMs, MIN_AGE_MS);
+	const f = Math.log(age / MIN_AGE_MS) / R_LOG;
+	const col = width - 1 - Math.floor(f * width);
+	return Math.max(0, Math.min(width - 1, col));
+}
+
+export type TimelineCell = {
+	status: "solid" | "half" | "empty";
+	isSessionStart: boolean;
+};
+
+const HALF_ROLES = new Set(["assistant", "toolResult", "bashExecution"]);
+
+/** Compute one TimelineCell per column from session entries. */
+export function computeTimelineCells(
+	entries: unknown[],
+	nowMs: number,
+	width: number,
+	sessionStartMs: number | undefined,
+): TimelineCell[] {
+	const cells: TimelineCell[] = Array.from({ length: width }, () => ({
+		status: "empty",
+		isSessionStart: false,
+	}));
+
+	for (const entry of entries) {
+		const ts = Date.parse((entry as { timestamp?: string }).timestamp ?? "");
+		if (!Number.isFinite(ts)) continue;
+
+		const ageMs = nowMs - ts;
+		if (ageMs >= WINDOW_MS) continue; // outside window
+
+		const col = timelineColumn(ageMs, width);
+		const current = cells[col]!;
+
+		// Only upgrade status (solid > half > empty)
+		if (current.status === "solid") continue;
+
+		const e = entry as { type?: string; message?: { role?: string } };
+		if (e.type === "message" && e.message?.role === "user") {
+			current.status = "solid";
+		} else if (
+			e.type === "message" &&
+			e.message?.role &&
+			HALF_ROLES.has(e.message.role)
+		) {
+			if (current.status === "empty") {
+				current.status = "half";
+			}
+		}
+		// Non-message entries and unrecognised roles are ignored
+	}
+
+	// Session-start marker: computed once, applied last (overrides).
+	if (sessionStartMs !== undefined) {
+		const startAge = nowMs - sessionStartMs;
+		if (startAge < WINDOW_MS) {
+			const markerCol = timelineColumn(startAge, width);
+			cells[markerCol]!.isSessionStart = true;
+		}
+	}
+
+	return cells;
+}
+
+/**
+ * Resolve the session start timestamp from the header, falling back to
+ * the first entry's timestamp, or returning undefined.
+ */
+export function resolveSessionStartMs(
+	headerTimestamp: string | undefined,
+	entries: unknown[],
+): number | undefined {
+	if (headerTimestamp !== undefined) {
+		const ts = Date.parse(headerTimestamp);
+		if (Number.isFinite(ts)) return ts;
+	}
+	// Fallback: first entry's parseable timestamp
+	for (const entry of entries) {
+		const ts = Date.parse((entry as { timestamp?: string }).timestamp ?? "");
+		if (Number.isFinite(ts)) return ts;
+	}
+	return undefined;
+}
+
+/** Render a timeline row. Exactly `width` visible columns. */
+export function renderTimelineRow(
+	cells: TimelineCell[],
+	theme: Theme,
+	width: number,
+): string {
+	if (width < 1) return "";
+	const n = Math.min(cells.length, width);
+	let out = "";
+	for (let i = 0; i < n; i++) {
+		const cell = cells[i]!;
+		if (cell.isSessionStart) {
+			out += theme.fg("warning", "\u2588");
+		} else if (cell.status === "solid") {
+			out += theme.fg("accent", "\u2588");
+		} else if (cell.status === "half") {
+			out += theme.fg("accent", "\u2592");
+		} else {
+			out += " ";
+		}
+	}
+	// Pad to width with spaces (defensive; cells.length should equal width).
+	out += " ".repeat(width - n);
+	return out;
+}
+
 /** Export for testing — pure function mapping quota data to footer segment string. */
-export { getZaiMultiplier, renderQuotaSegment };
+export {
+	getZaiMultiplier,
+	renderQuotaSegment,
+};
 
 export default function (pi: ExtensionAPI) {
 	// Re-render the footer whenever the thinking level changes. The footer
@@ -912,7 +1043,8 @@ export default function (pi: ExtensionAPI) {
 					let totalCacheWrite = 0;
 					let totalCost = 0;
 					let latestCacheHitRate: number | undefined;
-					for (const entry of sm.getEntries()) {
+					const allEntries = sm.getEntries();
+					for (const entry of allEntries) {
 						const e = entry as { type: string; message?: { role: string } & AssistantMessage };
 						if (e.type === "message" && e.message?.role === "assistant") {
 							const m = e.message;
@@ -1105,6 +1237,19 @@ export default function (pi: ExtensionAPI) {
 					} else if (statusesStr) {
 						lines.push(truncateToWidth(statusesStr, width, theme.fg("dim", "...")));
 					}
+
+					// Row 4: activity timeline (3-day logarithmic window).
+					const startMs = resolveSessionStartMs(
+						sm.getHeader()?.timestamp,
+						allEntries,
+					);
+					const cells = computeTimelineCells(
+						allEntries,
+						Date.now(),
+						width,
+						startMs,
+					);
+					lines.push(renderTimelineRow(cells, theme, width));
 
 					return lines;
 				},
