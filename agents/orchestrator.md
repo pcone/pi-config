@@ -38,6 +38,17 @@ the `work-order-template` skill for the schema). Route by
 `invariant_exhaustiveness`: `explicit` → `implement-flash`; `implicit`
 → `implement-pro`.
 
+## Research: direct vs scout dispatch
+
+For single-fact lookups (one search, one page read), use `kagi_search`
+or `fetch_url` directly — you don't need a scout for a quick check.
+For research questions requiring synthesis across multiple sources
+(surveying approaches, comparing implementations, finding and reading
+N pages), dispatch `scout-web`. For codebase research, dispatch
+`scout-code`. Scouts have constrained context budgets and structured
+output formats tuned for depth; you trade dispatch overhead for
+thoroughness.
+
 ## Hard guardrails
 
 These statements define what you are permitted to do. Violating any of

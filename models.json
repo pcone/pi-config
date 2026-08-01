@@ -4,7 +4,6 @@
       "modelOverrides": {
         "z-ai/glm-5.2": {
           "maxTokens": 128000,
-          "cost": { "input": 0.836, "output": 2.627, "cacheRead": 0.1552, "cacheWrite": 0 },
           "thinkingLevelMap": { "xhigh": null, "max": null },
           "compat": {
             "openRouterRouting": {
@@ -14,7 +13,6 @@
           }
         },
         "arcee-ai/trinity-large-thinking": {
-          "cost": { "input": 0.25, "output": 0.8, "cacheRead": 0.06, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
               "only": ["arcee-ai"],
@@ -23,7 +21,6 @@
           }
         },
         "deepseek/deepseek-v4-pro": {
-          "cost": { "input": 0.435, "output": 0.87, "cacheRead": 0.003625, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
               "only": ["deepseek"],
@@ -33,7 +30,15 @@
         },
         "deepseek/deepseek-v4-flash": {
           "maxTokens": 131072,
-          "cost": { "input": 0.094, "output": 0.188, "cacheRead": 0.0188, "cacheWrite": 0 },
+          "compat": {
+            "openRouterRouting": {
+              "order": ["deepseek", "novita", "streamlake"],
+              "allow_fallbacks": true
+            }
+          }
+        },
+        "deepseek/deepseek-v4-flash-0731": {
+          "maxTokens": 131072,
           "compat": {
             "openRouterRouting": {
               "order": ["deepseek", "novita", "streamlake"],
@@ -42,7 +47,6 @@
           }
         },
         "qwen/qwen3-coder-next": {
-          "cost": { "input": 0.12, "output": 0.8, "cacheRead": 0.07, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
               "only": ["Parasail"],
@@ -51,7 +55,6 @@
           }
         },
         "xiaomi/mimo-v2.5-pro": {
-          "cost": { "input": 0.43, "output": 0.87, "cacheRead": 0.0036, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
               "order": ["xiaomi", "novita"],
@@ -60,7 +63,6 @@
           }
         },
         "minimax/minimax-m3": {
-          "cost": { "input": 0.30, "output": 1.20, "cacheRead": 0.06, "cacheWrite": 0 },
           "compat": {
             "openRouterRouting": {
               "order": ["minimax", "novita"],

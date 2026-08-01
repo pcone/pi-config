@@ -17,7 +17,7 @@ ln -sf ~/Developer/pi-config/rules ~/.pi/agent/rules   # whole dir (first time: 
 
 ## Structure
 
-- `APPEND_SYSTEM.md` — Instructions appended to every system prompt (subagent guidance, implementation quality)
+- `APPEND_SYSTEM.md` — Instructions appended to every system prompt (subagent guidance, implementation quality). See `extensions/append-system-local.ts` for an optional personal/local tail that is **not** committed.
 - `settings.json` — Global settings (default provider/model, thinking level, extensions)
 - `models.json` — Custom provider overrides (currently empty; using pi's built-in `minimax` provider on the MiniMax Token Plan)
 - `extensions/checkpoint.ts` — Archive-and-compact on demand; archives stored under `.pi/checkpoints/`
@@ -25,6 +25,7 @@ ln -sf ~/Developer/pi-config/rules ~/.pi/agent/rules   # whole dir (first time: 
 - `extensions/subagent/` — (disabled) Original synchronous subagent extension, kept for reference.
 - `extensions/footer-session-id.ts` — Replaces the footer with one that adds a themed, reversible identifier (e.g. `arcane-phoenix-archmage`) for the current session on the right side. The phrase is bijective with the first 4 hex chars of the UUID session ID — look up the words in the lists to recover the prefix. Each session also gets a per-session hue (derived from the same bits) and a staleness indicator (`●◐◌○`) that tracks time since the most recent entry — the words themselves fade along the same axis, so freshness reads at a glance.
 - `extensions/modes.ts` — Toggles the parent session between `implement` (default — parent does work directly) and `orchestrate` (parent dispatches to subagents). Per-project state at `<cwd>/.pi/mode.json`. Commands: `/mode` toggles, `/mode <implement|orchestrate>` sets explicit. Footer shows current mode.
+- `extensions/append-system-local.ts` — Appends a second system-prompt fragment from `~/.pi/agent/APPEND_SYSTEM.local.md` (a real file, **not** symlinked into this repo, so it never gets committed) directly after `APPEND_SYSTEM.md`. Optional and missing-file-safe — for personal/local nudges you want to experiment with without touching shared config. Cached by mtime, so edits apply live on the next agent run with no restart.
 - `skills/decision-log` — On-demand skill instructions
 - `rules/` — Global path-scoped rules, symlinked whole-dir into `~/.pi/agent/rules/` (mirrors the skills/extensions pattern). The whole dir is version-controlled here:
   - `writing-rules.md` — meta: how to write/format pi rules (fires on `.pi/rules/**/*.md`)
@@ -32,12 +33,12 @@ ln -sf ~/Developer/pi-config/rules ~/.pi/agent/rules   # whole dir (first time: 
   - `tfd-decisions.md`, `tfd-syntax.md` — tfd-format rules (global, path-scoped to `decisions/**` / tfd source)
 - `themes/catppuccin-macchiato.json` — Color theme
 
-## Extension caches
+## Extension temp data
 
-Three extensions cache data on disk under `~/.pi/cache/<extension>/`. This is outside the repo (under HOME, not in `~/Developer/pi-config`), so no `.gitignore` entries are needed for it. The dir is created on first write by the extension itself.
+fetch-url and kagi-search save large pages / search responses under `~/.pi/tmp/<extension>/` (72h TTL; this is NOT a cache — every call hits the network fresh). model-tiers still uses `~/.pi/cache/<extension>/` for benchmark data (24h TTL). All outside the repo (under HOME), so no `.gitignore` entries are needed; dirs are created on first write by the extension itself.
 
-- `~/.pi/cache/fetch-url/` — large fetched pages (HTML→Markdown); 72h TTL
-- `~/.pi/cache/kagi-search/` — Kagi API search responses; 72h TTL
+- `~/.pi/tmp/fetch-url/` — large fetched pages (HTML→Markdown); 72h TTL
+- `~/.pi/tmp/kagi-search/` — Kagi API search responses; 72h TTL
 - `~/.pi/cache/model-tiers/` — OpenRouter benchmarks and model info; 24h TTL
 
 ## Tools added

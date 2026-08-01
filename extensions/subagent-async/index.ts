@@ -489,6 +489,15 @@ async function createWorktree(
 	}
 }
 
+/** First non-empty line of a task, truncated to a git commit subject.
+ *  Handles multi-line work-order tasks without dumping the body into `-m`.
+ *  Callers must pass the CLEAN task identity (never the worktree-isolation
+ *  preamble wrapper) — see decisions/subagents/009-clean-task-identity.md. */
+function subjectFromTask(task: string): string {
+	const firstLine = task.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+	return (firstLine ?? "(no task)").slice(0, 72);
+}
+
 /** Pre-delivery commit steps: stage, commit, and capture the final commit
  *  hash. Runs BEFORE deliverResult so the parent sees the result immediately.
  *  Returns a status note for the delivered result plus metadata for post-delivery
@@ -521,7 +530,7 @@ async function preCommitSteps(rs: RunningSubagent): Promise<{
 		}
 		const diffResult = await git(["diff", "--cached", "--quiet"], worktreePath);
 		if (diffResult.exitCode !== 0) {
-			const commitMsg = `subagent(${rs.agentName}): ${rs.task.slice(0, 72)}`;
+			const commitMsg = `subagent(${rs.agentName}): ${subjectFromTask(rs.task)}`;
 			await git(["commit", "-m", commitMsg], worktreePath);
 			notes.push(`Uncommitted changes auto-committed to \`${isolationBranch}\`.`);
 		}
@@ -774,8 +783,18 @@ async function spawnSubagent(
 	// the harness's post-implementation review guard for this spawn. Ad-hoc
 	// dispatches without a work order should pass `"skip"` here.
 	reviewPolicy?: "required" | "skip",
+	// Full message delivered to the child. Defaults to `task`. The worktree-
+	// isolation preamble + review-policy annotation are delivery wrappers that
+	// must reach the child but must NOT pollute `task` — `task` is the clean
+	// identity used for the auto-commit subject and result display.
+	// See decisions/subagents/009-clean-task-identity.md.
+	promptMessage?: string,
 ): Promise<RunningSubagent> {
-	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash");
+	// Message actually delivered to the child process. `task` stays the clean
+	// identity (commit subject / "Task:" display); the preamble and
+	// review-policy annotation live only in promptForChild.
+	const promptForChild = promptMessage ?? task;
+	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash-0731");
 
 	// Build spawn args via shared helper (also used by tests).
 	const args = buildSubagentArgs({
@@ -880,7 +899,7 @@ async function spawnSubagent(
 	const hdr = (lbl: string) => S.headerFg + lbl + S.reset + S.dim;
 
 	logEntry(`${hdr("Agent:")} ${agent.name}  ${hdr("Session:")} ${sessionId}  ${hdr("CWD:")} ${cwd}${S.reset}`);
-	logEntry(`${S.dim}Task: ${task.slice(0, 300)}${task.length > 300 ? "…" : ""}${S.reset}`);
+	logEntry(`${S.dim}Task: ${promptForChild.slice(0, 300)}${promptForChild.length > 300 ? "…" : ""}${S.reset}`);
 	logEntry("");
 
 	let currentTurn = 0;
@@ -1298,7 +1317,7 @@ async function spawnSubagent(
 	// gracefully for that session.
 	const getStateId = `get-state-${randomUUID()}`;
 	rpcSend(proc.stdin, { id: getStateId, type: "get_state" });
-	rpcSend(proc.stdin, { type: "prompt", message: task });
+	rpcSend(proc.stdin, { type: "prompt", message: promptForChild });
 
 	// Arm the stalled-turn watchdog — the subagent is now running and
 	// will reset the timer on every assistant turn.
@@ -2016,7 +2035,7 @@ export default function (pi: ExtensionAPI) {
 				pi,
 				ctx,
 				agent,
-				maybeInjectReviewPolicySkip(taskForAgent, params.review_policy),
+				params.task, // clean task identity (commit subject / display)
 				effectiveCwd,
 				sessionId,
 				parentModel,
@@ -2027,6 +2046,9 @@ export default function (pi: ExtensionAPI) {
 				cwd,
 				undefined, // resumeSessionFile
 				params.review_policy,
+				// Full delivery payload: worktree-isolation preamble + (possibly
+				// review-policy-annotated) task. Reaches the child only.
+				maybeInjectReviewPolicySkip(taskForAgent, params.review_policy),
 			);
 
 			running.set(sessionId, rs);
@@ -2039,7 +2061,7 @@ export default function (pi: ExtensionAPI) {
 		// reads.
 		const effectiveModel = params.inheritParentModel
 			? parentModel
-			: (agent.model ?? "deepseek/deepseek-v4-flash");
+			: (agent.model ?? "deepseek/deepseek-v4-flash-0731");
 		writeMetaJson(sessionId, {
 			agentName: agent.name,
 			task: params.task,

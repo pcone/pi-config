@@ -44,43 +44,27 @@ Rules get injected into the model's context window. Every line counts.
 - **One rule per concern.** Don't bundle unrelated knowledge into one file.
   Multiple rules with different path patterns inject independently.
 
-## Choosing a trigger path
+## Trigger paths
+
+Use `paths` with picomatch globs. Only rules with `paths` auto-trigger; rules without `paths` AND without `disable-model-invocation` get a warning. Negation patterns (`!pattern`) are stripped with a warning in v1.
 
 ```yaml
-# Broad — fires for any file in the project
 paths:
-  - "**/**"
-
-# Specific — fires only when editing files of this type
-paths:
-  - "**/*.rs"
-
-# Multiple patterns
-paths:
-  - "src/**/*.rs"
+  - "**/*.rs"          # specific file type
+  - "src/**/*.rs"       # directory scoped
+  - "src/**/*.rs"       # multiple patterns
   - "tests/**/*.rs"
 ```
 
-Only rules with a `paths` field auto-trigger. Rules without `paths` AND
-without `disable-model-invocation` get a warning — they never fire.
-
-Negation patterns (`!pattern`) are stripped with a warning in v1.
-
 ## Rule modes
 
-| Mode | Requires | Triggered by |
-|---|---|---|
-| Path-triggered | `paths` field | First read/edit/write of a matching file |
-| Manual-only | `disable-model-invocation: true` | `/rule <name>` command |
+| Mode | Trigger |
+|---|---|
+| Path-triggered | First read/edit/write of a matching file |
+| Manual-only (`disable-model-invocation: true`) | `/rule <name>` command |
 
-## In-scope tracking
-
-Rules inject once per session segment. After a `session_compact` the
-in-scope set is cleared, so rules re-inject on next matching file touch.
-Use `/rule <name>` to force re-injection mid-segment.
+Rules inject once per session segment. After `session_compact`, rules re-inject on next matching touch. Use `/rule <name>` to force re-injection.
 
 ## Debugging
 
-- `/rules` — list all discovered rules with status (`[active]`, `[manual]`).
-- `--no-rules` — disable all rule discovery.
-- `--rule <path>` — load an additional rule file or directory.
+`/rules` lists all discovered rules with status. `--no-rules` disables discovery. `--rule <path>` loads additional rules.

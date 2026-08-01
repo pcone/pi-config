@@ -37,18 +37,7 @@ already answered it with evidence.
 
 ## Anti-patterns
 
-- **Conclusion without evidence** — "this is better" with nothing
-  anchoring it.
-- **Missing the obvious alternative** — a reader immediately thinks
-  of a simpler path the doc ignored.
-- **Hypothetical justification** — "this might help if…" rather than
-  "we observed…".
+- **Conclusion without evidence** — "this is better" with nothing anchoring it.
+- **Missing the obvious alternative** — a reader immediately thinks of a simpler path the doc ignored.
+- **Hypothetical justification** — "this might help if…" rather than "we observed…".
 - **Hidden tradeoffs** — presenting only the upsides.
-
-## Exemplar
-
-`decisions/subagents/007-super-orchestrator.md`: "Diagnosis" grounds
-the why in measured session-log data; "What the data refutes" preempts
-the naive framing; "Alternatives considered" closes off the lighter
-options; "Tradeoffs" names the downsides. Use that shape for any
-decision or design doc that should not need to be re-argued.

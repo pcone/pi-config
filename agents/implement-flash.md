@@ -1,7 +1,7 @@
 ---
 name: implement-flash
 description: "Cheap variant for mechanical, well-scoped implementation — boilerplate, test scaffolding, simple function implementations, straightforward pattern-matching, formatting/renaming, fixture generation. Route here when the work order has invariant_exhaustiveness: explicit, touches 1–2 files, has no new API surface, and the approach is obvious from the spec. Do NOT use for tasks involving implicit invariants, IR/type system logic, multi-file cross-dependencies, or anything requiring deep reasoning. Use proactively to conserve implement-pro budget."
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-v4-flash-0731
 requires_parent_reviewers: implementation,tests
 allowedSubagents: scout-code, review-code, review-code-deep, review-tests, review-tests-deep
 excludeTools: checkpoint_fork, checkpoint_search

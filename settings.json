@@ -1,7 +1,7 @@
 {
-  "lastChangelogVersion": "0.82.0",
-  "defaultProvider": "zai",
-  "defaultModel": "glm-5.2",
+  "lastChangelogVersion": "0.83.0",
+  "defaultProvider": "openrouter",
+  "defaultModel": "deepseek/deepseek-v4-flash-0731",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
@@ -11,7 +11,8 @@
     "extensions/subagent-async/index.ts",
     "extensions/kagi-search.ts",
     "extensions/model-tiers/index.ts",
-    "extensions/compaction-model.ts"
+    "extensions/compaction-model.ts",
+    "extensions/append-system-local.ts"
   ],
   "defaultThinkingLevel": "high",
   "hideThinkingBlock": true,

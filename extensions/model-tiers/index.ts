@@ -656,11 +656,7 @@ export default async function (pi: ExtensionAPI) {
           "OPEN-WEIGHTS MODELS (2D Pareto: score × cost)",
         );
 
-        pi.sendMessage({
-          customType: "model-tiers-open",
-          content,
-          display: true,
-        });
+        pi.appendEntry("model-tiers", { content });
       } catch (err) {
         console.log(`[model-tiers] /tiers-open error: ${(err as Error).message}`);
       }
@@ -699,11 +695,7 @@ export default async function (pi: ExtensionAPI) {
 
         const content = sideBySide(left, right);
 
-        pi.sendMessage({
-          customType: "model-tiers-full",
-          content,
-          display: true,
-        });
+        pi.appendEntry("model-tiers", { content });
       } catch (err) {
         console.log(`[model-tiers] /tiers error: ${(err as Error).message}`);
       }

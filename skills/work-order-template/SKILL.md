@@ -11,24 +11,6 @@ You are generating a work order to dispatch to an implementation agent. Fill in 
 
 Your work order quality directly determines whether the implementer succeeds on the first pass. Be exhaustive. If you cannot fully specify all invariants, set `invariant_exhaustiveness: implicit` so the router sends the task to `implement-pro`.
 
-**Routing reference** (also lives in `APPEND_SYSTEM.md`):
-
-- Route to `implement-flash` when ALL are true:
-  - Task touches 1–2 files
-  - `invariant_exhaustiveness: explicit`
-  - No new API surface or route definitions
-  - Mechanical, boilerplate, or straightforward implementation
-  - No complex recovery/error-handling state machines
-- Route to `implement-pro` when ANY are true:
-  - Task touches 3+ files with cross-file dependencies
-  - `invariant_exhaustiveness: implicit`
-  - New API endpoints, routes, or HTTP surface involved
-  - Complex error handling, retry logic, or state machines
-  - A broken first pass would be expensive to recover (downstream
-    passes depend on output, verification gate won't catch structural
-    failures)
-- Default when uncertain: `implement-pro`
-
 ---
 
 ## Work Order
@@ -42,30 +24,8 @@ Your work order quality directly determines whether the implementer succeeds on 
 - **invariant_exhaustiveness**: explicit | implicit
 - **priority**: critical | normal | low
 - **estimated_complexity**: trivial | moderate | complex
-- **review_policy**: required | skip
-  - Default `required` for any work order that changes executable code,
-    tests, configuration, APIs/routes, or observable behavior. Set
-    `skip` only for documentation-only changes, or when there is an
-    explicit justified exception (state the reason in the task
-    summary). The implementer will not silently skip — a `skip`
-    value is a deliberate orchestrator choice.
-  - For ad-hoc dispatches without a formal work order, the harness also
-    accepts `review_policy: "skip"` as a tool parameter on the `subagent`
-    call. The two signals share this name and are equivalent; pick the
-    one that matches your dispatch shape (work order text vs. tool arg).
-- **review_depth**: standard | thorough
-  - `standard` (default) — uses Mimo-V2.5-Pro reviewers
-    (`review-code`, `review-plan`, `review-tests`). Appropriate for
-    explicit invariants, mechanical work, no error handling.
-  - `thorough` — uses GLM-5.2 reviewers (`review-code-deep`,
-    `review-plan-deep`, `review-tests-deep`). Use when: implicit
-    invariants, error handling/recovery, critical priority, new API
-    surface, type system changes, or prior review rejections.
-  - File count is not a useful signal — judge by invariant
-    complexity and failure cost.
-  - The implementer must spawn the correct agent variant. A
-    mismatch between `review_depth` and the spawned agent name
-    is a gate failure.
+- **review_policy**: required | skip — default `required`. Set `skip` only for documentation-only changes or explicit justified exceptions (state the reason).
+- **review_depth**: standard | thorough — `standard` (default) for explicit invariants, mechanical work. `thorough` for implicit invariants, error handling, critical priority, new API surface, or prior rejections. Mismatch between depth and spawned agent name = gate failure.
 
 ### Task Summary
 
@@ -222,64 +182,25 @@ If you are `implement-flash` and during your invariant enumeration step you disc
 
 ### Completion Report Format
 
-The implementer must produce a completion report in their final assistant
-message. The schema depends on which agent:
+The implementer must produce a completion report in their final assistant message. All implementers use: status / invariant_exhaustiveness / files_modified / tests / structural_checks / deviations_from_spec / notes_for_orchestrator.
 
-- **`implement-flash`** uses: status / invariant_exhaustiveness / files_modified / tests / structural_checks / deviations_from_spec / notes_for_orchestrator
-- **`implement-pro`** uses the same fields plus: deviations_from_spec (required), plan_mismatches (when applicable), notes_for_orchestrator (with explicit routing feedback)
+For code-changing work (`review_policy: required`), also include:
+- **assumptions_made** — invariants assumed, not explicit in work order
+- **unexpected_changes** — files touched outside scope, with justification
+- **issues_encountered** — bugs found, workarounds applied
+- **test_coverage** — one-line summary (per-case matrix is `review-tests`'s job)
+- **adversarial_reviews** — both reviewer verdicts, session IDs, rounds used, remaining findings
+- **review_cap_reached** — `true` if 3-round cap hit
+- **accepted_notes** (optional) — low-severity notes intentionally not fixed, with rationale
 
-For code-changing work that ran the post-implementation review (i.e.
-`review_policy: required` and not explicitly skipped), every
-completion report — regardless of which implementer ran it — must
-also include:
-
-- **`assumptions_made`** — any invariant the implementer assumed that
-  was not explicit in the work order
-- **`unexpected_changes`** — files touched outside `Files to modify`,
-  with justification
-- **`issues_encountered`** — bugs found, workarounds applied,
-  expected-failure reproductions (with the project's
-  expected-failure convention cited, if any)
-- **`test_coverage`** — one-line summary of what tests exist and
-  what they exercise (the per-case matrix is `review-tests`'s job)
-- **`adversarial_reviews`** — both reviewer verdicts, session IDs,
-  rounds used, and remaining findings. When the implementer has
-  done rework rounds, the `childSessionId` values are stable
-  across rounds — the same reviewer's session is resumed via
-  `subagent_resume` between rounds, so the session id from round
-  1 == session id in round 2. Format:
-  ```
-  adversarial_reviews:
-    review-code:    { verdict: APPROVED|APPROVED_WITH_NOTES|REJECT_AND_REWORK,
-                     session_id: subagent-..., rounds: N,
-                     re_review_required: true|false,
-                     remaining_findings: [...] or none }
-    review-tests:   { verdict: ..., session_id: ..., rounds: N,
-                     re_review_required: true|false,
-                     remaining_findings: [...] or none }
-    rounds_total: N
-  ```
-- **`review_cap_reached`** (boolean) — `true` if the review loop
-  hit the 3-round cap. The orchestrator must flag this to the user
-  and decide if another round is needed.
-- **`accepted_notes`** (optional) — low-severity notes the
-  implementer intentionally did not fix, with rationale
-
-See the agent's system prompt for the exact schema.
-
-A `complete` status requires both reviewers to be APPROVED (or
-APPROVED_WITH_NOTES with all notes resolved or accepted). Any
-REJECT_AND_REWORK, any critical/high finding, any unmitigated medium
-finding, any reviewer failure or timeout, or any missing review →
-not complete. Report `partial` or `blocked` instead.
+See the agent's system prompt for exact schema. A `complete` status requires both reviewers APPROVED (or APPROVED_WITH_NOTES with notes resolved/accepted).
 
 ---
 
 ## Notes for the Orchestrator
 
-- **Always set `invariant_exhaustiveness`**. If you cannot determine exhaustiveness, default to `implicit` and route to `implement-pro`.
-- **Always set `routed_to`** consistent with the routing criteria. If the routing criteria and `invariant_exhaustiveness` disagree, `invariant_exhaustiveness` wins (it directly encodes the routing decision).
-- **Always list files NOT to modify** when adjacent files could plausibly be touched. This is the strongest single signal against scope creep.
-- **Use repo-relative paths everywhere.** Every `Files to modify`, `Files to read`, code excerpt, and line reference must be repo-relative (e.g. `decisions/effect-row-typing/003-...md`). Never prefix with the parent repo's absolute path; subagents operate inside an isolated git worktree, and absolute parent-repo paths make them `cd` back to the parent checkout and bypass isolation.
-- **Cross-reference AGENTS.md** for project-specific conventions to populate the Invariants section (build commands, naming rules, error handling style).
-- **Consider pre-dispatch simplification.** If the planned change looks larger than the goal warrants, route through `review-plan` first — a small surrounding refactor might make it trivial. (`review-plan` §6 owns the full trigger taxonomy.)
+- **Always set `invariant_exhaustiveness`**. Default to `implicit` if uncertain.
+- **Always list files NOT to modify** when adjacent files could plausibly be touched — strongest signal against scope creep.
+- **Use repo-relative paths everywhere.** Subagents run in isolated worktrees; absolute parent-repo paths bypass isolation.
+- **Cross-reference AGENTS.md** for project-specific conventions.
+- **Consider pre-dispatch simplification.** If the change looks larger than the goal warrants, route through `review-plan` first.

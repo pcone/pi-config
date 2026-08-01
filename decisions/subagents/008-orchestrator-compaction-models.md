@@ -81,3 +81,9 @@ irrelevant here because each compaction is a fresh, single-pass input.
 
 **Verification:** `tsc --noEmit` on the edited extension; `bun test tests/` —
 72/72 pass.
+
+> **Partially superseded (2026-08-01):** the `models.json` cost overrides this
+> decision corrected are now removed — pricing flows from the pi.dev remote
+> catalog (live OpenRouter `/models` mirror) instead. The model *assignments*
+> (orchestrator → GLM-5.2, compaction → flash) stand; see
+> [decision/010-pricing-source-pi-dev-catalog](010-pricing-source-pi-dev-catalog.md).

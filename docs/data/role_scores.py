@@ -1,224 +1,297 @@
 #!/usr/bin/env python3
-"""Combined role-fit scores (Orchestrator / Implementer / Oracle) for frontier
-OpenRouter models, plus a cost score. Weights reflect user steering:
-  Orchestrator = balanced (planning leads, execution counts) + IFBench + (Omniscience*)
-  Implementer  = balanced blend (repo-SWE + self-contained coding) + IFBench
-  Oracle       = math/algo focused (LiveCodeBench, IMO/HMMT, AIME)
+"""Combined role-fit scores (Orchestrator / Implementer / Oracle / Reviewer) for
+frontier OpenRouter models, plus a cost score. Reads docs/data/benchlm_snapshot.json
+(see fetch_benchlm.py) + the manual framia dict below for LiveCodeBench and IMO/HMMT,
+which BenchLM does not track for DeepSeek.
+
+Model rows include thinking-level variants where BenchLM publishes them
+(DeepSeek V4 Pro/Flash: High/Max). The fleet runs DeepSeek at `high`
+(defaultThinkingLevel), so the operative row is the (High) variant; Max is the
+ceiling. `DeepSeek V4 Flash 0731` is the 2026-07-31 checkpoint — BenchLM has not
+ingested it, so its granular benchmarks (SWE-Pro, TB2, SWE-Ver, AA-LCR, IFBench,
+Codeforces, GPQA, Omniscience, LCB, IMO/HMMT) are null pending manual fill.
+
 Normalization: well-covered benchmarks -> min-max WITHIN the scored set (mode 'mm');
 sparsely-reported benchmarks (IFBench, LiveCodeBench) -> raw %/100 ('raw') to avoid
 tiny-sample min-max artifacts. Oracle uses a raw weighted-% composite. Cost = blended
-$/M at 90/10 I/O + 98% cache. Missing data -> confidence flag.
-(*) AA-Omniscience is unpublished for every value-tier model, so it's carried as an
-informational column only, NOT in the composite.
+$/M at 95/5 I/O + 98% cache. Missing data -> confidence flag.
+
+Run: python3 docs/data/role_scores.py   (needs benchlm_snapshot.json)
 """
 import json, os
 
-# name: (AA_intelligence, AA_coding, AA_agentic, cost_per_M, ctx_K, multimodal)
-CACHE = {
- "Claude Fable 5":(59.9,76.5,52.8,6.06,1000,True),"GPT-5.6 Sol":(58.9,77.4,54.0,3.53,1050,True),
- "Kimi K3":(57.1,76.2,50.1,1.80,1048,True),  # main-session driver (settings.json defaultModel); released 2026-07-15
- "Claude Opus 4.8":(55.7,74.3,47.2,3.03,1000,True),"GPT-5.6 Terra":(55.0,76.7,47.4,1.77,1050,True),
- "GPT-5.5":(54.8,74.9,44.9,3.53,1050,True),"Grok 4.5":(53.8,72.4,45.7,1.08,500,True),
- "Claude Opus 4.7":(53.5,73.6,44.4,3.03,1000,True),"Claude Sonnet 5":(53.4,71.5,46.7,1.21,1000,True),
- "GPT-5.4":(51.4,71.1,41.1,1.77,1050,True),"GPT-5.6 Luna":(51.2,71.4,45.6,0.71,1050,True),
- "GLM-5.2":(51.1,68.8,43.1,0.48,1048,False),"Gemini 3.5 Flash":(50.2,70.1,37.4,1.06,1048,True),
- "Claude Sonnet 4.6":(47.2,63.0,40.8,1.82,1000,True),"Gemini 3.1 Pro":(46.5,68.8,21.4,1.41,1048,True),
- "Qwen3.7 Max":(46.0,66.0,30.6,0.73,1000,False),"MiniMax-M3":(44.4,58.6,35.4,0.18,1048,True),
- "DeepSeek V4 Pro":(44.3,59.4,36.4,0.10,1048,False),"Kimi K2.6":(44.2,61.8,30.3,0.48,262,True),
- "MiMo-V2.5-Pro":(42.2,60.2,29.1,0.10,1048,False),"Kimi K2.7 Code":(41.9,60.8,29.6,0.49,262,True),
- "Hy3":(41.2,58.8,30.7,0.04,262,False),"Nex-N2-Pro":(41.0,59.1,31.0,0.13,262,True),
- "DeepSeek V4 Flash":(40.3,56.2,31.1,0.04,1048,False),"GLM-5.1":(40.2,55.8,29.9,0.48,202,False),
- "GPT-5.4 mini":(40.0,56.1,30.2,0.53,400,True),
- # added 2026-07-23 refresh (AA indices from OpenRouter/AA cache fetched 2026-07-22):
- "Qwen3.7 Plus":(39.0,55.9,20.8,0.30,1000,True),"GPT-5.4 nano":(38.2,56.1,27.5,0.30,400,True),
- "MiMo-V2.5":(37.2,56.8,23.7,0.05,1048,True),
+HERE = os.path.dirname(os.path.abspath(__file__))
+SNAP = os.path.join(HERE, "benchlm_snapshot.json")
+if not os.path.exists(SNAP):
+    raise SystemExit(f"{SNAP} missing — run `python3 docs/data/fetch_benchlm.py` first")
+S = json.load(open(SNAP))
+BL = {k: v["scores"] for k, v in S["benchlm"].items()}
+OR_AA = S["openrouter_aa"]
+OR_MODELS = S["openrouter_models"]
+
+CACHE_HIT = 0.98
+IN_RATIO = 0.95
+OUT_RATIO = 0.05  # <-- I/O ratio knob
+
+# ---- Manual framia dict (BenchLM does not track these for DeepSeek) ----
+LCB = {"DeepSeek V4 Pro": 93.5, "DeepSeek V4 Flash": 91.6, "Qwen3.7 Max": 91.6}
+HARDMATH = {"DeepSeek V4 Pro": 89.8, "DeepSeek V4 Flash": 88.4}
+# AIME is on BenchLM (aime26) — GLM-5.2 99.2, Kimi K2.6 96.4, GLM-5.1 95.3.
+
+# ---- Model registry: (name, lab, benchlm display name, openrouter model id, ctx_K, multimodal) ----
+# benchlm display name None = no BenchLM rows (0731, Nex-N2-Pro).
+REG = [
+    ("Claude Fable 5", "Anthropic", "Claude Fable 5", "anthropic/claude-fable-5", 1000, True),
+    ("GPT-5.6 Sol", "OpenAI", "GPT-5.6 Sol", "openai/gpt-5.6-sol", 1050, True),
+    ("GPT-5.6 Terra", "OpenAI", "GPT-5.6 Terra", "openai/gpt-5.6-terra", 1050, True),
+    ("GPT-5.5", "OpenAI", "GPT-5.5", "openai/gpt-5.5", 1050, True),
+    ("Grok 4.5", "xAI", "Grok 4.5", "x-ai/grok-4.5", 500, True),
+    ("Claude Opus 4.8", "Anthropic", "Claude Opus 4.8", "anthropic/claude-opus-4.8", 1000, True),
+    ("Claude Opus 4.7", "Anthropic", "Claude Opus 4.7", "anthropic/claude-opus-4.7", 1000, True),
+    ("Claude Sonnet 5", "Anthropic", "Claude Sonnet 5", "anthropic/claude-sonnet-5", 1000, True),
+    ("GPT-5.4", "OpenAI", "GPT-5.4", "openai/gpt-5.4", 1050, True),
+    ("GPT-5.6 Luna", "OpenAI", "GPT-5.6 Luna", "openai/gpt-5.6-luna", 1050, True),
+    ("GLM-5.2", "Zhipu", "GLM-5.2", "z-ai/glm-5.2", 1048, False),
+    ("Gemini 3.5 Flash", "Google", "Gemini 3.5 Flash", "google/gemini-3.5-flash", 1048, True),
+    ("Claude Sonnet 4.6", "Anthropic", "Claude Sonnet 4.6", "anthropic/claude-sonnet-4.6", 1000, True),
+    ("Gemini 3.1 Pro", "Google", "Gemini 3.1 Pro", "google/gemini-3.1-pro-preview", 1048, True),
+    ("Qwen3.7 Max", "Alibaba", "Qwen3.7 Max", "qwen/qwen3.7-max", 1000, False),
+    ("MiniMax-M3", "MiniMax", "MiniMax M3", "minimax/minimax-m3", 1048, True),
+    ("DeepSeek V4 Pro", "DeepSeek", "DeepSeek V4 Pro", "deepseek/deepseek-v4-pro", 1048, False),
+    ("Kimi K2.6", "Moonshot", "Kimi K2.6", "moonshotai/kimi-k2.6", 262, True),
+    ("MiMo-V2.5-Pro", "Xiaomi", "MiMo-V2.5-Pro", "xiaomi/mimo-v2.5-pro", 1048, False),
+    ("Kimi K2.7 Code", "Moonshot", "Kimi K2.7 Code", "moonshotai/kimi-k2.7-code", 262, True),
+    ("Hy3", "Tencent", "Hy3", "tencent/hy3", 262, False),
+    ("Nex-N2-Pro", "NexAGI", None, "nex-agi/nex-n2-pro", 262, True),
+    ("DeepSeek V4 Flash", "DeepSeek", "DeepSeek V4 Flash", "deepseek/deepseek-v4-flash", 1048, False),
+    ("GLM-5.1", "Zhipu", "GLM-5.1", "z-ai/glm-5.1", 202, False),
+    ("GPT-5.4 mini", "OpenAI", "GPT-5.4 mini", "openai/gpt-5.4-mini", 400, True),
+    ("Qwen3.7 Plus", "Alibaba", "Qwen3.7 Plus", "qwen/qwen3.7-plus", 1000, True),
+    ("GPT-5.4 nano", "OpenAI", "GPT-5.4 nano", "openai/gpt-5.4-nano", 400, True),
+    ("MiMo-V2.5", "Xiaomi", "MiMo-V2.5", "xiaomi/mimo-v2.5", 1048, True),
+    ("Kimi K3", "Moonshot", "Kimi K3", "moonshotai/kimi-k3", 1048, True),
+    # 2026-07-31 checkpoint — BenchLM not yet ingested; granular benchmarks pending.
+    ("DeepSeek V4 Flash 0731", "DeepSeek", None, "deepseek/deepseek-v4-flash-0731", 1048, False),
+]
+
+# ---- Rows: expand variants for models BenchLM splits (High/Max); drop the base
+# row when a High variant exists — the fleet runs DeepSeek at `high`, so base
+# (no thinking level) is never used and min-max normalization turns it to noise.
+ROWS = []  # (rowkey, variant, benchlm name, or model id)
+for name, lab, bl_name, or_id, ctx, mm in REG:
+    if bl_name and f"{bl_name} (High)" in BL["aa_int"]:
+        for v in ("(High)", "(Max)"):
+            ROWS.append((f"{name} {v}", v, f"{bl_name} {v}", or_id))
+    else:
+        ROWS.append((name, "base", bl_name, or_id))
+
+def bench_val(page, benchlm_name):
+    return BL[page].get(benchlm_name) if benchlm_name else None
+
+AA_KEY = {"aa_int": "intel", "aa_coding": "coding", "aa_agentic": "agentic"}
+
+def aa_val(row, page, fallback_slug=None):
+    v = bench_val(page, row[2])
+    if v is not None:
+        return v
+    if fallback_slug and fallback_slug in OR_AA:
+        return OR_AA[fallback_slug][AA_KEY[page]]
+    return None
+
+# Map or_model_id -> AA slug from OpenRouter (canonical slugs match /benchmarks keys)
+OR_ID_TO_SLUG = {mid: m.get("canonical_slug") for mid, m in OR_MODELS.items()}
+
+def row_data(row):
+    rk, variant, bl_name, or_id = row
+    slug = OR_ID_TO_SLUG.get(or_id)
+    def g(page):
+        v = bench_val(page, bl_name)
+        if v is not None:
+            return v, True
+        if slug and slug in OR_AA:
+            return OR_AA[slug][AA_KEY[page]], True
+        return None, False
+    aa_int, _ = g("aa_int")
+    aa_cod, _ = g("aa_coding")
+    aa_agt, _ = g("aa_agentic")
+    d = {
+        "aa_int": aa_int, "aa_cod": aa_cod, "aa_agt": aa_agt,
+        "swe_pro": bench_val("swe_pro", bl_name),
+        "swe_ver": bench_val("swe_ver", bl_name),
+        "tb2": bench_val("tb2", bl_name),
+        "lcr": bench_val("aa_lcr", bl_name),
+        "ifbench": bench_val("aa_ifbench", bl_name),
+        "aime": bench_val("aime26", bl_name),
+        "codeforces": bench_val("codeforces", bl_name),
+        "gpqa": bench_val("gpqa_d", bl_name),
+        "omni_acc": bench_val("omni_acc", bl_name),
+        "omni_halluc": bench_val("omni_halluc", bl_name),
+    }
+    base = rk.split(" (")[0]
+    d["lcb"] = LCB.get(base)
+    d["hardmath"] = HARDMATH.get(base)
+    return d
+
+DATA = {rk: row_data(row) for row in ROWS for rk in [row[0]]}
+
+def name_of(rowkey):
+    return rowkey
+
+REG_BY_BASE = {r[0]: r for r in REG}
+LAB = {rk: REG_BY_BASE[rk.split(" (")[0]][1] for rk in DATA}
+CTX = {rk: next(r[4] for r in REG if r[0] == rk.split(" (")[0]) for rk in DATA}
+MM = {rk: next(r[5] for r in REG if r[0] == rk.split(" (")[0]) for rk in DATA}
+
+def cost_per_M(rk):
+    or_id = next(r[3] for r in ROWS if r[0] == rk)
+    m = OR_MODELS.get(or_id)
+    if not m or not m.get("prompt"):
+        return None
+    pr, cr, co = (float(m["prompt"]), float(m["cache_read"] or 0), float(m["completion"]))
+    eff = (0.02 * pr + CACHE_HIT * cr) if cr > 0 else pr
+    return (eff * IN_RATIO + co * OUT_RATIO) * 1e6
+
+COST = {rk: cost_per_M(rk) for rk in DATA}
+
+# Value-tier membership FIXED (cost-conscious set, flagships excluded).
+EXCLUDE = {"Claude Fable 5", "GPT-5.6 Sol", "Claude Opus 4.8", "GPT-5.6 Terra", "GPT-5.5",
+ "Claude Opus 4.7", "Claude Sonnet 5", "GPT-5.4", "Gemini 3.1 Pro", "Claude Sonnet 4.6", "Kimi K3"}
+VALUE = [rk for rk in DATA if rk.split(" (")[0] not in EXCLUDE]
+
+# ---- Role weights (unchanged from prior snapshots) ----
+MINMAX_ROLES = {
+ "Orchestrator": [("lcr", 5, "mm"), ("aa_int", 5, "mm"), ("ifbench", 4, "raw"), ("tb2", 4, "mm"),
+                  ("swe_pro", 3, "mm"), ("aa_agt", 3, "mm")],
+ "Implementer": [("swe_pro", 5, "mm"), ("lcb", 5, "raw"), ("aa_cod", 4, "mm"), ("swe_ver", 3, "mm"),
+                 ("tb2", 3, "mm"), ("ifbench", 2, "raw")],
+ "Review-Code": [("aa_cod", 5, "mm"), ("aa_int", 4, "mm"), ("ifbench", 4, "raw"), ("lcr", 3, "mm"),
+                 ("swe_pro", 3, "mm")],
+ "Review-Tests": [("aa_int", 5, "mm"), ("ifbench", 4, "raw"), ("lcr", 4, "mm"), ("aa_cod", 3, "mm"),
+                  ("swe_pro", 2, "mm")],
 }
-# NOTE: Hy3's AA indices are still for the *preview* (tencent/hy3-preview-20260421) — the
-# 2026-07-06 release has no AA scores yet. Preview quality + release pricing = doubly stale row.
-MODELS=list(CACHE)
-# NOTE: CACHE index 3 is a legacy 90/10 cost — IGNORED. Live cost is computed in COST[]
-# from raw prices below at the I/O ratio knob (currently 95/5, per user's input-heavy load).
+GRANULAR = {"Orchestrator": ["lcr", "tb2", "swe_pro", "ifbench"],
+            "Implementer": ["swe_pro", "swe_ver", "tb2", "lcb"],
+            "Review-Code": ["lcr", "swe_pro", "ifbench"],
+            "Review-Tests": ["lcr", "swe_pro", "ifbench"]}
+ORACLE_W = [("lcb", 5), ("hardmath", 4), ("aime", 3)]
+LAB_SRC = {rk: LAB[rk] for rk in DATA}
+IMPL_LAB = "DeepSeek"
 
-# ---- Pricing (raw $/token from model-tiers cache) & blended cost ----
-CACHE_HIT=0.98; IN_RATIO=0.95; OUT_RATIO=0.05   # <-- I/O ratio knob
-PRICES={  # name: (prompt, input_cache_read, completion)  $/token
- "Claude Fable 5":(1e-05,1e-06,5e-05),"GPT-5.6 Sol":(5e-06,5e-07,3e-05),
- "Kimi K3":(3e-06,3e-07,1.5e-05),
- "Claude Opus 4.8":(5e-06,5e-07,2.5e-05),"GPT-5.6 Terra":(2.5e-06,2.5e-07,1.5e-05),
- "GPT-5.5":(5e-06,5e-07,3e-05),"Grok 4.5":(2e-06,3e-07,6e-06),
- "Claude Opus 4.7":(5e-06,5e-07,2.5e-05),"Claude Sonnet 5":(2e-06,2e-07,1e-05),
- "GPT-5.4":(2.5e-06,2.5e-07,1.5e-05),"GPT-5.6 Luna":(1e-06,1e-07,6e-06),
- "GLM-5.2":(8.36e-07,1.552e-07,2.627e-06),"Gemini 3.5 Flash":(1.5e-06,1.5e-07,9e-06),
- "Claude Sonnet 4.6":(3e-06,3e-07,1.5e-05),"Gemini 3.1 Pro":(2e-06,2e-07,1.2e-05),
- "Qwen3.7 Max":(1.475e-06,2.95e-07,4.425e-06),"MiniMax-M3":(3e-07,6e-08,1.2e-06),
- "DeepSeek V4 Pro":(4.35e-07,3.625e-09,8.7e-07),"Kimi K2.6":(6.84e-07,1.44e-07,3.42e-06),
- "MiMo-V2.5-Pro":(4.35e-07,3.6e-09,8.7e-07),"Kimi K2.7 Code":(8.2e-07,1.6e-07,3.75e-06),
- "Hy3":(1.4e-07,3.5e-08,5.8e-07),"Nex-N2-Pro":(2.5e-07,2.5e-08,1e-06),
- "DeepSeek V4 Flash":(9.4e-08,1.88e-08,1.88e-07),"GLM-5.1":(9.66e-07,1.794e-07,3.036e-06),
- "GPT-5.4 mini":(7.5e-07,7.5e-08,4.5e-06),
- "Qwen3.7 Plus":(3.2e-07,6.4e-08,1.28e-06),"GPT-5.4 nano":(2e-07,2e-08,1.25e-06),
- "MiMo-V2.5":(1.4e-07,2.8e-09,2.8e-07),
-}
-# 2026-07-23 refresh: GLM-5.2 cut to (8.36e-07,1.552e-07,2.627e-06); Grok 4.5 cache-read cut to 3e-07;
-# Hy3 release pricing is ~2.8x the preview pricing the old row used (cache-read 3.5e-08 vs 2.1e-08,
-# prompt 1.4e-07 vs 6.3e-08, completion 5.8e-07 vs 2.1e-07).
-def cost_per_M(m):
-    pr,cr,co=PRICES[m]
-    eff=(0.02*pr+CACHE_HIT*cr) if cr>0 else pr   # 2% miss @ prompt, 98% hit @ cache-read
-    return (eff*IN_RATIO+co*OUT_RATIO)*1e6
-COST={m:cost_per_M(m) for m in MODELS}
+def minmax(key, subset):
+    vals = [DATA[r][key] for r in subset if DATA[r].get(key) is not None]
+    if not vals:
+        return {r: None for r in subset}
+    lo, hi = min(vals), max(vals)
+    rng = hi - lo or 1.0
+    return {r: (None if DATA[r].get(key) is None else (DATA[r][key] - lo) / rng) for r in subset}
 
-AA_LCR={"Claude Fable 5":70.0,"GPT-5.6 Sol":73.7,"Claude Opus 4.8":67.7,"GPT-5.6 Terra":74.0,
- "GPT-5.5":74.3,"Grok 4.5":67.7,"Claude Opus 4.7":70.3,"Claude Sonnet 5":70.7,"GPT-5.4":74.0,
- "GPT-5.6 Luna":74.0,"GLM-5.2":71.3,"Gemini 3.5 Flash":69.3,"Claude Sonnet 4.6":57.7,
- "Gemini 3.1 Pro":72.7,"Qwen3.7 Max":69.0,"MiniMax-M3":74.0,"DeepSeek V4 Pro":66.3,"Kimi K2.6":69.7,
- "MiMo-V2.5-Pro":73.3,"Kimi K2.7 Code":66.3,"Hy3":66.7,"Nex-N2-Pro":None,"DeepSeek V4 Flash":63.0,
- "GLM-5.1":62.3,"GPT-5.4 mini":69.3}
-TB2={"Claude Fable 5":84.3,"GPT-5.6 Sol":91.9,"Claude Opus 4.8":74.6,"GPT-5.6 Terra":87.4,
- "GPT-5.5":82.0,"Grok 4.5":83.3,"Claude Opus 4.7":69.4,"Claude Sonnet 5":80.4,"GPT-5.4":None,
- "GPT-5.6 Luna":84.7,"GLM-5.2":81.0,"Gemini 3.5 Flash":76.2,"Claude Sonnet 4.6":None,
- "Gemini 3.1 Pro":80.2,"Qwen3.7 Max":69.7,"MiniMax-M3":66.0,"DeepSeek V4 Pro":67.9,"Kimi K2.6":66.7,
- "MiMo-V2.5-Pro":68.4,"Kimi K2.7 Code":None,"Hy3":54.4,"Nex-N2-Pro":None,"DeepSeek V4 Flash":56.9,
- "GLM-5.1":None,"GPT-5.4 mini":None}
-SWE_PRO={"Claude Fable 5":80.0,"GPT-5.6 Sol":64.6,"Claude Opus 4.8":69.2,"GPT-5.6 Terra":63.4,
- "GPT-5.5":58.6,"Grok 4.5":64.7,"Claude Opus 4.7":64.3,"Claude Sonnet 5":63.2,"GPT-5.4":57.7,
- "GPT-5.6 Luna":62.7,"GLM-5.2":62.1,"Gemini 3.5 Flash":55.1,"Claude Sonnet 4.6":None,
- "Gemini 3.1 Pro":None,"Qwen3.7 Max":60.6,"MiniMax-M3":59.0,"DeepSeek V4 Pro":55.4,"Kimi K2.6":58.6,
- "MiMo-V2.5-Pro":57.2,"Kimi K2.7 Code":None,"Hy3":None,"Nex-N2-Pro":None,"DeepSeek V4 Flash":52.6,
- "GLM-5.1":58.4,"GPT-5.4 mini":None}
-SWE_VER={"Claude Fable 5":95.0,"GPT-5.6 Sol":None,"Claude Opus 4.8":88.6,"GPT-5.6 Terra":None,
- "GPT-5.5":88.7,"Grok 4.5":86.6,"Claude Opus 4.7":87.6,"Claude Sonnet 5":85.2,"GPT-5.4":None,
- "GPT-5.6 Luna":None,"GLM-5.2":None,"Gemini 3.5 Flash":78.8,"Claude Sonnet 4.6":79.6,
- "Gemini 3.1 Pro":80.6,"Qwen3.7 Max":80.4,"MiniMax-M3":80.5,"DeepSeek V4 Pro":80.6,"Kimi K2.6":80.2,
- "MiMo-V2.5-Pro":None,"Kimi K2.7 Code":None,"Hy3":74.4,"Nex-N2-Pro":None,"DeepSeek V4 Flash":79.0,
- "GLM-5.1":None,"GPT-5.4 mini":None}
-IFBENCH={"Qwen3.7 Max":79.1,"Gemini 3.5 Flash":76.3,"MiniMax-M3":82.9,"Hy3":63.1}  # sparse
-OMNISCIENCE={"Claude Fable 5":40.0,"Gemini 3.1 Pro":32.9,"Claude Opus 4.8":27.0}  # informational only
-AA_INT={m:CACHE[m][0] for m in MODELS}; AA_COD={m:CACHE[m][1] for m in MODELS}
-AA_AGT={m:CACHE[m][2] for m in MODELS}
-
-# Oracle math/algo
-LCB={"DeepSeek V4 Pro":93.5,"DeepSeek V4 Flash":91.6,"Qwen3.7 Max":91.6}
-HARDMATH={"DeepSeek V4 Pro":89.8,"DeepSeek V4 Flash":88.4}
-AIME={"GLM-5.2":99.2,"Kimi K2.6":96.4,"GLM-5.1":95.3}
-CODEFORCES={"DeepSeek V4 Pro":3206,"DeepSeek V4 Flash":3052}
-
-# role weights: (dict, weight, mode)  mode 'mm'=min-max in-set, 'raw'=value/100
-MINMAX_ROLES={
- "Orchestrator":[(AA_LCR,5,'mm'),(AA_INT,5,'mm'),(IFBENCH,4,'raw'),(TB2,4,'mm'),
-                 (SWE_PRO,3,'mm'),(AA_AGT,3,'mm')],
- "Implementer": [(SWE_PRO,5,'mm'),(LCB,5,'raw'),(AA_COD,4,'mm'),(SWE_VER,3,'mm'),
-                 (TB2,3,'mm'),(IFBENCH,2,'raw')],
- # Adversarial review, split into two passes. Decorrelation from the implementer is a
- # separate flag (see LAB), not a score term.
- # review-code  = comprehension-tilt: find bugs in the implementation (code first).
- # review-tests = reasoning-tilt: find coverage gaps / weak or tautological tests.
- "Review-Code":  [(AA_COD,5,'mm'),(AA_INT,4,'mm'),(IFBENCH,4,'raw'),(AA_LCR,3,'mm'),(SWE_PRO,3,'mm')],
- "Review-Tests": [(AA_INT,5,'mm'),(IFBENCH,4,'raw'),(AA_LCR,4,'mm'),(AA_COD,3,'mm'),(SWE_PRO,2,'mm')],
-}
-GRANULAR={"Orchestrator":[AA_LCR,TB2,SWE_PRO,IFBENCH],"Implementer":[SWE_PRO,SWE_VER,TB2,LCB],
- "Review-Code":[AA_LCR,SWE_PRO,IFBENCH],"Review-Tests":[AA_LCR,SWE_PRO,IFBENCH]}
-LAB={"Claude Fable 5":"Anthropic","GPT-5.6 Sol":"OpenAI","Kimi K3":"Moonshot","Claude Opus 4.8":"Anthropic",
- "GPT-5.6 Terra":"OpenAI","GPT-5.5":"OpenAI","Grok 4.5":"xAI","Claude Opus 4.7":"Anthropic",
- "Claude Sonnet 5":"Anthropic","GPT-5.4":"OpenAI","GPT-5.6 Luna":"OpenAI","GLM-5.2":"Zhipu",
- "Gemini 3.5 Flash":"Google","Claude Sonnet 4.6":"Anthropic","Gemini 3.1 Pro":"Google",
- "Qwen3.7 Max":"Alibaba","MiniMax-M3":"MiniMax","DeepSeek V4 Pro":"DeepSeek","Kimi K2.6":"Moonshot",
- "MiMo-V2.5-Pro":"Xiaomi","Kimi K2.7 Code":"Moonshot","Hy3":"Tencent","Nex-N2-Pro":"NexAGI",
- "DeepSeek V4 Flash":"DeepSeek","GLM-5.1":"Zhipu","GPT-5.4 mini":"OpenAI",
- "Qwen3.7 Plus":"Alibaba","GPT-5.4 nano":"OpenAI","MiMo-V2.5":"Xiaomi"}
-IMPL_LAB="DeepSeek"  # the implementer's lab -> reviewer should differ for decorrelation
-ORACLE_W=[(LCB,5),(HARDMATH,4),(AIME,3)]
-# Value-tier membership is FIXED (the cost-conscious set the user endorsed: <=$1.10/M at
-# 90/10, flagships excluded). Pinned so changing the I/O ratio doesn't re-admit flagships.
-EXCLUDE={"Claude Fable 5","GPT-5.6 Sol","Claude Opus 4.8","GPT-5.6 Terra","GPT-5.5",
- "Claude Opus 4.7","Claude Sonnet 5","GPT-5.4","Gemini 3.1 Pro","Claude Sonnet 4.6","Kimi K3"}
-VALUE=[m for m in MODELS if m not in EXCLUDE]
-
-def minmax(d,subset):
-    vals=[d[m] for m in subset if d.get(m) is not None]; lo,hi=min(vals),max(vals); rng=hi-lo or 1.0
-    return {m:(None if d.get(m) is None else (d[m]-lo)/rng) for m in subset}
-
-def score_role(bmks,subset):
-    norm=[]
-    for d,w,mode in bmks:
-        nb=minmax(d,subset) if mode=='mm' else {m:(None if d.get(m) is None else d[m]/100.0) for m in subset}
-        norm.append((nb,w))
-    out={}
-    for m in subset:
-        num=den=0.0
-        for nb,w in norm:
-            if nb[m] is not None: num+=nb[m]*w; den+=w
-        out[m]=(num/den*100 if den else None)
+def score_role(bmks, subset):
+    norm = []
+    for key, w, mode in bmks:
+        nb = minmax(key, subset) if mode == "mm" else \
+             {r: (None if DATA[r].get(key) is None else DATA[r][key] / 100.0) for r in subset}
+        norm.append((nb, w))
+    out = {}
+    for r in subset:
+        num = den = 0.0
+        for nb, w in norm:
+            if nb[r] is not None:
+                num += nb[r] * w
+                den += w
+        out[r] = (num / den * 100 if den else None)
     return out
 
 def score_oracle(subset):
-    out={}
-    for m in subset:
-        num=den=0.0
-        for b,w in ORACLE_W:
-            if m in b: num+=b[m]*w; den+=w
-        out[m]=(num/den if den else None)
+    out = {}
+    for r in subset:
+        num = den = 0.0
+        for key, w in ORACLE_W:
+            v = DATA[r].get(key)
+            if v is not None:
+                num += v * w
+                den += w
+        out[r] = (num / den if den else None)
     return out
 
-def conf_oi(m,role):
-    g=GRANULAR[role]; present=sum(1 for b in g if b.get(m) is not None); total=len(g)
-    if present==0: return f"proxy (0/{total})"
-    if present<=total//3: return f"partial ({present}/{total})"
+def conf_oi(r, role):
+    g = GRANULAR[role]
+    present = sum(1 for b in g if DATA[r].get(b) is not None)
+    total = len(g)
+    if present == 0:
+        return f"proxy (0/{total})"
+    if present <= total // 3:
+        return f"partial ({present}/{total})"
     return f"solid ({present}/{total})"
 
-def conf_oracle(m):
-    if m in LCB or m in HARDMATH: return "solid (hard/algo)"
-    if m in AIME: return "aime-only"
+def conf_oracle(r):
+    if DATA[r].get("lcb") is not None or DATA[r].get("hardmath") is not None:
+        return "solid (hard/algo)"
+    if DATA[r].get("aime") is not None:
+        return "aime-only"
     return "proxy (0 math/algo)"
 
 def compute(subset):
-    r={role:score_role(b,subset) for role,b in MINMAX_ROLES.items()}
-    r["Oracle"]=score_oracle(subset); return r
+    r = {role: score_role(b, subset) for role, b in MINMAX_ROLES.items()}
+    r["Oracle"] = score_oracle(subset)
+    return r
 
-vres=compute(VALUE); fres=compute(MODELS)
+VRES = compute(VALUE)
+FRES = compute([rk for rk in DATA])
 
-def f(x): return f"{x:6.1f}" if x is not None else "   -- "
-def table(res,subset,title):
+def f(x):
+    return f"{x:6.1f}" if x is not None else "   -- "
+
+def table(res, subset, title):
     print(f"\n=== {title} ===")
-    print(f"{'MODEL':<20}{'ORCH':>7}{'IMPL':>7}{'ORAC':>7}{'$/M':>7}  {'ctx':>5}  conf(orch/impl/oracle)")
-    for m in sorted(subset,key=lambda m:-(res['Orchestrator'][m] or -1)):
-        print(f"{m:<20}{f(res['Orchestrator'][m]):>7}{f(res['Implementer'][m]):>7}"
-              f"{f(res['Oracle'][m]):>7}{COST[m]:>7.3f}  {CACHE[m][4]:>4}K  "
-              f"{conf_oi(m,'Orchestrator')} | {conf_oi(m,'Implementer')} | {conf_oracle(m)}")
+    print(f"{'MODEL':<26}{'ORCH':>7}{'IMPL':>7}{'ORAC':>7}{'$/M':>7}  {'ctx':>5}  conf(orch/impl/oracle)")
+    for rk in sorted(subset, key=lambda r: -(res['Orchestrator'][r] or -1)):
+        print(f"{rk:<26}{f(res['Orchestrator'][rk]):>7}{f(res['Implementer'][rk]):>7}"
+              f"{f(res['Oracle'][rk]):>7}{COST[rk]:>7.3f}  {CTX[rk]:>4}K  "
+              f"{conf_oi(rk,'Orchestrator')} | {conf_oi(rk,'Implementer')} | {conf_oracle(rk)}")
 
 def oracle_detail(subset):
     print(f"\n=== ORACLE math/algo detail (value tier) ===")
-    print(f"{'MODEL':<20}{'LCB':>6}{'IMO/HMMT':>9}{'AIME':>6}{'CForces':>8}{'SCORE':>7}  conf")
-    sc=score_oracle(subset)
-    for m in sorted([x for x in subset if sc[x] is not None],key=lambda m:-sc[m]):
-        print(f"{m:<20}{f(LCB.get(m)):>6}{f(HARDMATH.get(m)):>9}{f(AIME.get(m)):>6}"
-              f"{str(CODEFORCES.get(m,'--')):>8}{sc[m]:>7.1f}  {conf_oracle(m)}")
-    print(f"  unknown (no math/algo eval): {', '.join(m for m in subset if sc[m] is None)}")
+    print(f"{'MODEL':<26}{'LCB':>6}{'IMO/HMMT':>9}{'AIME':>6}{'CForces':>8}{'SCORE':>7}  conf")
+    sc = score_oracle(subset)
+    for rk in sorted([x for x in subset if sc[x] is not None], key=lambda r: -sc[r]):
+        print(f"{rk:<26}{f(DATA[rk].get('lcb')):>6}{f(DATA[rk].get('hardmath')):>9}"
+              f"{f(DATA[rk].get('aime')):>6}{str(DATA[rk].get('codeforces') or '--'):>8}"
+              f"{sc[rk]:>7.1f}  {conf_oracle(rk)}")
+    print(f"  unknown (no math/algo eval): {', '.join(r for r in subset if sc[r] is None)}")
 
 def reviewer_view(subset):
     print(f"\n=== ADVERSARIAL REVIEW (review-code / review-tests) — value tier ===")
-    print(f"{'MODEL':<18}{'R-CODE':>7}{'R-TEST':>7}{'$/M':>7}  {'ctx':>5}  {'lab':<9} decorr")
-    res=vres if subset is VALUE else fres
-    key=lambda m:-((res['Review-Code'][m] or -1)+(res['Review-Tests'][m] or -1))
-    for m in sorted(subset,key=key):
-        decorr='same-lab ✗' if LAB[m]==IMPL_LAB else 'ok ✓'
-        print(f"{m:<18}{f(res['Review-Code'][m]):>7}{f(res['Review-Tests'][m]):>7}{COST[m]:>7.3f}  "
-              f"{CACHE[m][4]:>4}K  {LAB[m]:<9} {decorr}")
+    print(f"{'MODEL':<26}{'R-CODE':>7}{'R-TEST':>7}{'$/M':>7}  {'ctx':>5}  {'lab':<9} decorr")
+    res = VRES if subset is VALUE else FRES
+    key = lambda r: -((res['Review-Code'][r] or -1) + (res['Review-Tests'][r] or -1))
+    for rk in sorted(subset, key=key):
+        decorr = 'same-lab ✗' if LAB[rk] == IMPL_LAB else 'ok ✓'
+        print(f"{rk:<26}{f(res['Review-Code'][rk]):>7}{f(res['Review-Tests'][rk]):>7}{COST[rk]:>7.3f}  "
+              f"{CTX[rk]:>4}K  {LAB[rk]:<9} {decorr}")
 
-table(vres,VALUE,f"PRIMARY: value tier, {len(VALUE)} cost-conscious models (flagships excluded) @ {int(IN_RATIO*100)}/{int(OUT_RATIO*100)} I/O")
+table(VRES, VALUE, f"PRIMARY: value tier, {len(VALUE)} rows (flagships excluded) @ {int(IN_RATIO*100)}/{int(OUT_RATIO*100)} I/O")
 reviewer_view(VALUE)
 oracle_detail(VALUE)
-table(fres,MODELS,f"APPENDIX: full frontier, all {len(MODELS)} models")
+table(FRES, list(DATA), f"APPENDIX: full frontier, all {len(DATA)} rows")
 
-def pack(res,subset):
-    return {m:{"orchestrator":res['Orchestrator'][m],"implementer":res['Implementer'][m],
-        "oracle":res['Oracle'][m],"review_code":res['Review-Code'][m],"review_tests":res['Review-Tests'][m],
-        "cost_per_M":COST[m],"ctx_K":CACHE[m][4],"multimodal":CACHE[m][5],"lab":LAB[m],
-        "decorrelated_from_impl":LAB[m]!=IMPL_LAB,"aa_int":CACHE[m][0],"aa_cod":CACHE[m][1],
-        "aa_agt":CACHE[m][2],"ifbench":IFBENCH.get(m),"omniscience":OMNISCIENCE.get(m),"lcb":LCB.get(m),
-        "hardmath":HARDMATH.get(m),"aime":AIME.get(m),"codeforces":CODEFORCES.get(m),
-        "conf_orch":conf_oi(m,'Orchestrator'),"conf_impl":conf_oi(m,'Implementer'),
-        "conf_oracle":conf_oracle(m),"conf_review":conf_oi(m,'Review-Code')} for m in subset}
-_out=os.path.join(os.path.dirname(os.path.abspath(__file__)),'role_scores.json')
-json.dump({"value_tier":pack(vres,VALUE),"full":pack(fres,MODELS)},open(_out,'w'),indent=2)
+def pack(res, subset):
+    return {rk: {
+        "orchestrator": res['Orchestrator'][rk], "implementer": res['Implementer'][rk],
+        "oracle": res['Oracle'][rk], "review_code": res['Review-Code'][rk],
+        "review_tests": res['Review-Tests'][rk], "cost_per_M": COST[rk], "ctx_K": CTX[rk],
+        "multimodal": MM[rk], "lab": LAB[rk], "decorrelated_from_impl": LAB[rk] != IMPL_LAB,
+        "variant": next((r[1] for r in ROWS if r[0] == rk), "base"),
+        "aa_int": DATA[rk]["aa_int"], "aa_cod": DATA[rk]["aa_cod"], "aa_agt": DATA[rk]["aa_agt"],
+        "swe_pro": DATA[rk]["swe_pro"], "swe_ver": DATA[rk]["swe_ver"], "tb2": DATA[rk]["tb2"],
+        "lcr": DATA[rk]["lcr"], "ifbench": DATA[rk]["ifbench"], "aime": DATA[rk]["aime"],
+        "codeforces": DATA[rk]["codeforces"], "gpqa": DATA[rk]["gpqa"],
+        "omni_acc": DATA[rk]["omni_acc"], "omni_halluc": DATA[rk]["omni_halluc"],
+        "lcb": DATA[rk]["lcb"], "hardmath": DATA[rk]["hardmath"],
+        "conf_orch": conf_oi(rk, 'Orchestrator'), "conf_impl": conf_oi(rk, 'Implementer'),
+        "conf_oracle": conf_oracle(rk), "conf_review": conf_oi(rk, 'Review-Code'),
+    } for rk in subset}
+
+_out = os.path.join(HERE, "role_scores.json")
+json.dump({"fetchedAt": S.get("fetchedAt"), "value_tier": pack(VRES, VALUE),
+           "full": pack(FRES, list(DATA))}, open(_out, "w"), indent=2)
 print(f"\nwrote {_out}")

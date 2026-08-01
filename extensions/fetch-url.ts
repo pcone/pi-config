@@ -21,8 +21,64 @@ import { mkdir, writeFile, readdir, stat, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+
+// ── Browser fallback (puppeteer-core, optional) ──────────────────────
+// Dynamically imported on first use so the extension loads even when
+// puppeteer-core isn't installed. If the import fails, browser_fallback
+// returns a clear error telling the user how to install it.
+let _puppeteer: any = null;
+async function getPuppeteer(): Promise<any | null> {
+	if (_puppeteer === null) {
+		try {
+			_puppeteer = await import("puppeteer-core");
+		} catch {
+			_puppeteer = undefined;
+		}
+	}
+	return _puppeteer;
+}
+
+/** Resolve a Chromium-based browser binary path. */
+function resolveChromePath(): string | null {
+	// Env vars (user override)
+	for (const key of ["CHROME_PATH", "PUPPETEER_EXECUTABLE_PATH"]) {
+		const v = process.env[key];
+		if (v && existsSync(v)) return v;
+	}
+	// Platform-standard paths
+	const macPaths = [
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+	];
+	const linPaths = [
+		"/usr/bin/google-chrome-stable",
+		"/usr/bin/google-chrome",
+		"/usr/bin/chromium",
+		"/usr/bin/chromium-browser",
+	];
+	for (const p of [...macPaths, ...linPaths]) {
+		if (existsSync(p)) return p;
+	}
+	return null;
+}
+
+// ── Challenge detection ──────────────────────────────────────────────
+// Heuristics for detecting JS-challenge / bot-wall responses.
+// Returns the system name or null if the page looks like real content.
+function detectChallenge(html: string): string | null {
+	const lower = html.toLowerCase();
+	if (/<meta name="generator" content="anubis"/i.test(lower)) return "Anubis";
+	if (/protected by.*anubis/i.test(lower)) return "Anubis";
+	if (/cf-challenge-running/.test(lower)) return "Cloudflare Turnstile";
+	if (/class="g-recaptcha"/.test(lower)) return "reCAPTCHA";
+	if (/class="h-captcha"/.test(lower)) return "hCaptcha";
+	// Generic: noscript with "enable JavaScript" on an otherwise empty page
+	if (/<noscript>[^<]*javascript/i.test(lower) && html.length < 2000) return "JavaScript required";
+	return null;
+}
 
 const USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
@@ -35,22 +91,25 @@ const INLINE_MAX_CHARS = 12_000;
 // Inline cap for non-HTML passthrough bodies (JSON/XML/etc.).
 const MAX_BODY_CHARS = 200_000;
 
-// Cache directory under ~/.pi/cache/<extension-name>/
-const CACHE_DIR = resolve(homedir(), ".pi", "cache", "fetch-url");
-const CACHE_TTL_MS = 72 * 60 * 60 * 1000;
-const FETCH_DIR = CACHE_DIR;
+// Temp directory under ~/.pi/tmp/<extension-name>/. Fetched pages are saved
+// here when too large to inline (the model greps them rather than reading
+// wholesale). This is NOT a cache — every fetch_url call issues a fresh curl.
+// Only the temp-file mechanism reads from this dir (never curl).
+const TEMP_DIR = resolve(homedir(), ".pi", "tmp", "fetch-url");
+const TEMP_TTL_MS = 72 * 60 * 60 * 1000;
+const FETCH_DIR = TEMP_DIR;
 
-// Sweep stale cache files older than CACHE_TTL_MS on each pi startup.
+// Sweep stale temp files older than TEMP_TTL_MS on each pi startup.
 // Cleanup runs only here — no periodic or close-time sweeps.
 (async () => {
 	try {
-		await mkdir(CACHE_DIR, { recursive: true });
+		await mkdir(TEMP_DIR, { recursive: true });
 		const now = Date.now();
-		for (const f of await readdir(CACHE_DIR)) {
-			const fp = join(CACHE_DIR, f);
+		for (const f of await readdir(TEMP_DIR)) {
+			const fp = join(TEMP_DIR, f);
 			try {
 				const { mtimeMs } = await stat(fp);
-				if (now - mtimeMs > CACHE_TTL_MS) await unlink(fp);
+				if (now - mtimeMs > TEMP_TTL_MS) await unlink(fp);
 			} catch { /* race */ }
 		}
 	} catch { /* dir may not exist yet */ }
@@ -147,6 +206,107 @@ async function saveFetch(content: string, url: string, ext: string): Promise<str
 	return p;
 }
 
+// ── Browser fallback via headless Chrome ──────────────────────────
+// At most one Chrome instance is launched per fetch_url call.
+// Returns the page HTML on success, null on failure. Never throws.
+async function browserFetch(
+	url: string,
+	timeoutSec: number,
+	signal: AbortSignal | undefined,
+	_onUpdate: (update: any) => void,
+): Promise<string | null> {
+	const puppeteer = await getPuppeteer();
+	if (!puppeteer) {
+		_onUpdate({ content: [{ type: "text", text: "fetch_url: browser fallback unavailable — puppeteer-core is not installed. Run: npm install puppeteer-core" }] });
+		return null;
+	}
+	const chromePath = resolveChromePath();
+	if (!chromePath) {
+		_onUpdate({ content: [{ type: "text", text: "fetch_url: browser fallback unavailable — no Chromium-based browser found. Set CHROME_PATH env var to the browser binary." }] });
+		return null;
+	}
+
+	let browser: any = null;
+	try {
+		browser = await puppeteer.launch({
+			executablePath: chromePath,
+			headless: true,
+			args: [
+				"--no-sandbox",
+				"--disable-setuid-sandbox",
+				"--disable-dev-shm-usage",
+				"--disable-gpu",
+				// Hide the automation flag. Anubis and similar bot-walls
+				// reject navigator.webdriver === true outright ("Access
+				// Denied") instead of presenting the PoW challenge.
+				"--disable-blink-features=AutomationControlled",
+			],
+		});
+		const page = await browser.newPage();
+		page.setDefaultNavigationTimeout((timeoutSec + 5) * 1000);
+		page.setDefaultTimeout((timeoutSec + 5) * 1000);
+
+		// Override the UA: headless Chrome advertises "HeadlessChrome" in
+		// the UA string, which bot-walls (Anubis included) treat as an
+		// outright bot signal and reject before presenting any challenge.
+		// Present a clean Chrome UA instead.
+		await page.setUserAgent(
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+			"(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+		);
+
+		// Honour the parent tool's abort signal.
+		if (signal) {
+			const onAbort = () => {
+				try { browser?.close(); } catch { /* */ }
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
+
+		try {
+			// "domcontentloaded" lands us on the challenge page fast; the
+			// PoW computation that follows is CPU-bound (network goes idle
+			// while JS crunches), so networkidle0 would fire too early and
+			// we'd harvest the challenge page itself.
+			await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutSec * 1000 });
+		} catch (navErr: any) {
+			// Navigation timeout — the page may still have content.
+			_onUpdate({ content: [{ type: "text", text: `fetch_url: browser navigation timed out after ${timeoutSec}s — extracting current DOM` }] });
+		}
+
+		// Poll until the challenge clears or the timeout elapses. The
+		// challenge page has detectable markers (e.g. "Protected by
+		// Anubis"); the solved page does not. This is what actually waits
+		// out the PoW — it replaces the unreliable networkidle0 signal.
+		// page.content() can throw "Execution context was destroyed" when
+		// the challenge-solve navigation lands mid-read; treat that as
+		// "still challenging" and retry.
+		const safeContent = async (): Promise<string | null> => {
+			try { return await page.content(); } catch { return null; }
+		};
+		const deadline = Date.now() + timeoutSec * 1000;
+		let html = await safeContent();
+		let challenge = html ? detectChallenge(html) : "unknown";
+		while (challenge && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 1000));
+			html = await safeContent();
+			challenge = html ? detectChallenge(html) : "unknown";
+		}
+		await browser.close();
+		browser = null;
+
+		if (html && html.length > 100) return html;
+		return null;
+	} catch (e: any) {
+		_onUpdate({ content: [{ type: "text", text: `fetch_url: browser fallback failed: ${e.message || e}` }] });
+		return null;
+	} finally {
+		if (browser) {
+			try { await browser.close(); } catch { /* */ }
+		}
+	}
+}
+
 export default function (pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "fetch_url",
@@ -159,7 +319,10 @@ export default function (pi: ExtensionAPI): void {
 			"file with a path to grep, not read wholesale. JSON/XML and other non-HTML " +
 			"responses are returned inline. Response headers are off by default " +
 			"(pass include_headers to get them). For JSON APIs, set headers for auth " +
-			"(e.g. ['Authorization: Bearer <token>']).",
+			"(e.g. ['Authorization: Bearer <token>']). " +
+			"Use `browser_fallback: true` to retry JS-challenge pages " +
+			"(Anubis, Cloudflare Turnstile) via headless Chrome. " +
+			"Requires puppeteer-core and a Chromium-based browser.",
 		parameters: Type.Object({
 			url: Type.String({ description: "URL (http/https)." }),
 			method: Type.Optional(
@@ -181,13 +344,41 @@ export default function (pi: ExtensionAPI): void {
 					description: "Include the full response header block in the output (default: off).",
 				})
 			),
+			browser_fallback: Type.Optional(
+				Type.Boolean({
+				description: "If curl returns a JS-challenge page (Anubis, Cloudflare, etc.), retry via headless Chrome which can execute the challenge JS. Requires puppeteer-core and a Chromium-based browser. Default: false.",
+			})
+		),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
+			// Reject non-http/https schemes — the model produces safe URLs
+			// normally, but hallucinated scheme-less or file:// URLs must
+			// not reach curl.
+			try {
+				const scheme = new URL(params.url).protocol;
+				if (scheme !== "http:" && scheme !== "https:") {
+					return {
+						content: [{ type: "text", text: `fetch_url: scheme "${scheme}" is not supported — only http and https are allowed.` }],
+						details: { exitCode: -1, statusCode: "", contentType: "", transform: "error" },
+						isError: true,
+					};
+				}
+			} catch {
+				return {
+					content: [{ type: "text", text: `fetch_url: "${params.url}" is not a valid URL.` }],
+					details: { exitCode: -1, statusCode: "", contentType: "", transform: "error" },
+					isError: true,
+				};
+			}
+
 			const args: string[] = [
 				"-sSL",
 				"-i",
+				"--retry", "2",
+				"--retry-max-time", "10",
 				"--max-time",
 				String(params.timeout ?? 30),
+				"--max-filesize", "52428800",
 				"-A",
 				USER_AGENT,
 			];
@@ -202,14 +393,14 @@ export default function (pi: ExtensionAPI): void {
 			});
 
 			const raw = (result.stdout ?? "").toString();
-			const { status, contentType, headerBlock, body } = splitResponse(raw);
+			let { status, contentType, headerBlock, body } = splitResponse(raw);
 
 			const prefixLines: string[] = [`curl exit: ${result.code}`];
 			if (result.stderr?.trim()) prefixLines.push(`curl stderr:\n${result.stderr.trim()}`);
 			if (params.include_headers && headerBlock) {
 				prefixLines.push(`--- response ---\n${headerBlock}`);
 			}
-			const prefix = prefixLines.join("\n");
+			let prefix = prefixLines.join("\n");
 
 			const details: {
 				exitCode: number;
@@ -228,6 +419,34 @@ export default function (pi: ExtensionAPI): void {
 						: body;
 				const text = `${prefix}\n--- body ---\n${truncated}`;
 				return { content: [{ type: "text", text }], details };
+			}
+
+			// --- JS-challenge detection + browser fallback ---
+			// When curl lands on a challenge page (Anubis PoW, Cloudflare
+			// Turnstile, etc.), retry with headless Chrome. Chrome executes
+			// the challenge JS transparently; we harvest the resulting DOM
+			// and feed it through the same Readability pipeline.
+			const isHtml = /\bhtml\b/i.test(contentType);
+			if (isHtml && body.trim() && params.browser_fallback) {
+				const challenge = detectChallenge(body);
+				if (challenge) {
+					_onUpdate({ content: [{ type: "text", text: `fetch_url: ${challenge} challenge detected, trying browser fallback...` }] });
+					try {
+						const browserHtml = await browserFetch(params.url, params.timeout ?? 60, signal, _onUpdate);
+						if (browserHtml) {
+							body = browserHtml;
+							prefixLines.unshift(`browser fallback (${challenge} challenge solved via headless Chrome)`);
+							prefix = prefixLines.join("\n");
+							details.transform = "none"; // reset — will be re-set by the pipeline below
+						} else {
+							prefixLines.push(`[browser fallback for ${challenge} returned empty — showing curl result]`);
+							prefix = prefixLines.join("\n");
+						}
+					} catch (e: any) {
+						prefixLines.push(`[browser fallback for ${challenge} error: ${e.message || e} — showing curl result]`);
+						prefix = prefixLines.join("\n");
+					}
+				}
 			}
 
 			// --- HTML: extract to markdown. ---

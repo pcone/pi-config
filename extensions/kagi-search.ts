@@ -83,21 +83,24 @@ export default function (pi: ExtensionAPI) {
 
 	const KAGI_API_URL = "https://kagi.com/api/v1/search";
 
-	// Shared cache directory under ~/.pi/cache/<extension-name>/
-	const cacheRoot = resolve(homedir(), ".pi", "cache");
-	const searchDir = join(cacheRoot, "kagi-search");
+	// Shared temp directory under ~/.pi/tmp/<extension-name>/. Search results
+	// are saved here for later inspection via `read`. This is NOT a cache —
+	// every kagi_search call hits the API fresh. Only the saved-JSON mechanism
+	// reads from this dir (never the search).
+	const tempRoot = resolve(homedir(), ".pi", "tmp");
+	const searchDir = join(tempRoot, "kagi-search");
 	mkdirSync(searchDir, { recursive: true });
 
-	// Sweep stale cache files older than CACHE_TTL_MS on each pi startup.
+	// Sweep stale temp files older than TEMP_TTL_MS on each pi startup.
 	// Cleanup runs only here — no periodic or close-time sweeps.
-	const CACHE_TTL_MS = 72 * 60 * 60 * 1000;
+	const TEMP_TTL_MS = 72 * 60 * 60 * 1000;
 	try {
 		const now = Date.now();
 		for (const f of readdirSync(searchDir)) {
 			const fp = join(searchDir, f);
 			try {
 				const age = now - statSync(fp).mtimeMs;
-				if (age > CACHE_TTL_MS) rmSync(fp);
+				if (age > TEMP_TTL_MS) rmSync(fp);
 			} catch { /* race with concurrent removal */ }
 		}
 	} catch { /* dir may not exist yet */ }
@@ -219,19 +222,22 @@ export default function (pi: ExtensionAPI) {
 			const dumpFile = join(searchDir, `${safeName}.json`);
 			writeFileSync(dumpFile, JSON.stringify(json, null, 2));
 
-			// Build truncated summary for the LLM
+			// Build inline summary for the LLM. Respect the requested limit:
+			// if the caller asked for N results, show up to N; otherwise
+			// default to 8. Always save the full response to disk.
 			const results = json.data.search ?? [];
 			const related = json.data.related_search ?? [];
+			const inlineCount = params.limit ? Math.min(params.limit, results.length) : Math.min(8, results.length);
 
 			const lines: string[] = [];
-			for (const item of results.slice(0, 8)) {
+			for (const item of results.slice(0, inlineCount)) {
 				const published = item.time ? ` _(Published: ${item.time})_` : "";
 				lines.push(
 					`- [${item.title}](${item.url})${published}`,
 				);
 			}
-			if (results.length > 8) {
-				lines.push(`- *… and ${results.length - 8} more results*`);
+			if (results.length > inlineCount) {
+				lines.push(`- *… and ${results.length - inlineCount} more results*`);
 			}
 
 			if (related.length > 0) {
