@@ -23,7 +23,7 @@ import {
 	PDF_INLINE_MAX_CHARS,
 	type ExecFn,
 	type PdfConversion,
-} from "../extensions/pdf-convert"
+} from "../extensions/lib/pdf-convert"
 import { writeFile, mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"

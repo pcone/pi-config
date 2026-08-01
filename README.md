@@ -21,7 +21,7 @@ ln -sf ~/Developer/pi-config/rules ~/.pi/agent/rules   # whole dir (first time: 
 - `settings.json` — Global settings (default provider/model, thinking level, extensions)
 - `models.json` — Custom provider overrides (currently empty; using pi's built-in `minimax` provider on the MiniMax Token Plan)
 - `extensions/checkpoint.ts` — Archive-and-compact on demand; archives stored under `.pi/checkpoints/`
-- `extensions/pdf-convert.ts` — PDF detection, conversion (pymupdf4llm → pdftotext), temp-file helpers, and response builders shared by fetch-url and pdf-read-guard
+- `extensions/lib/pdf-convert.ts` — PDF detection, conversion (pymupdf4llm → pdftotext), temp-file helpers, and response builders shared by fetch-url and pdf-read-guard (plain module — under `lib/` so the extension loader's `*.ts` auto-discovery skips it)
 - `extensions/pdf-read-guard.ts` — Intercepts `read` on `.pdf` files; replaces raw binary content with converted Markdown (never raw bytes in context)
 - `extensions/subagent-async/index.ts` — Non-blocking subagents via RPC mode: spawn, check progress (`/subagents`), steer, stop. Subagents fork from HEAD (not working tree) — commit first. Includes live log viewer (`/watch`), external viewer (`watch-session`).
 - `extensions/subagent/` — (disabled) Original synchronous subagent extension, kept for reference.

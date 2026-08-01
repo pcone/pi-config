@@ -33,8 +33,8 @@ pymupdf4llm also prints diagnostics ("=== Document parser messages ===" + OCR an
 
 **Design:**
 
-1. **`extensions/pdf-convert.ts`** (shared module) — detection (`isPdfContentType`, `isPdfBody`, `isPdfBytes`), converter (`createPdfConverter` with engine chain pymupdf4llm → pdftotext → error), temp helpers, response builders (`buildFetchPdfResponse`, `buildReadPdfResponse`).
-2. **`extensions/fetch-url.ts`** — in the non-HTML branch, PDF detection fires BEFORE generic passthrough. Re-fetches with `curl -o`, converts, responds via `buildFetchPdfResponse`, sets `details.transform = "pdf"`.
+1. **`extensions/lib/pdf-convert.ts`** (shared module, not an extension — lives in `lib/` so the extension loader's `*.ts` auto-discovery skips it) — detection (`isPdfContentType`, `isPdfBody`, `isPdfBytes`), converter (`createPdfConverter` with engine chain pymupdf4llm → pdftotext → error), temp helpers, response builders (`buildFetchPdfResponse`, `buildReadPdfResponse`).
+2. **`extensions/fetch-url.ts`** — PDF detection fires BEFORE the HTML/non-HTML split, so even a PDF mislabeled `text/html` routes to the PDF path. Re-fetches with `curl -o`, converts, responds via `buildFetchPdfResponse`, sets `details.transform = "pdf"`.
 3. **`extensions/pdf-read-guard.ts`** — `tool_result` handler intercepting `read` on `.pdf` paths. Replaces content wholesale with converted markdown (inline/saved/error). Follows rules.ts handler pattern.
 4. **`skills/pdf/SKILL.md`** — on-demand skill with verified manual commands for when automatic conversion fails.
 5. **system prompt note** — short behavioral instruction in `APPEND_SYSTEM.md`.

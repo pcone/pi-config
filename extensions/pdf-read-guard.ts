@@ -13,7 +13,7 @@ import {
 	isPdfBytes,
 	createPdfConverter,
 	buildReadPdfResponse,
-} from "./pdf-convert.ts"
+} from "./lib/pdf-convert.ts"
 
 export default function (pi: ExtensionAPI): void {
 	// Lazy converter — probed once per process.

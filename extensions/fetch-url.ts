@@ -31,7 +31,7 @@ import {
 	buildFetchPdfResponse,
 	newTempFilePath,
 	PDF_INLINE_MAX_CHARS,
-} from "./pdf-convert.ts";
+} from "./lib/pdf-convert.ts";
 
 
 // ── Browser fallback (puppeteer-core, optional) ──────────────────────
@@ -429,56 +429,57 @@ export default function (pi: ExtensionAPI): void {
 				savedPath?: string;
 			} = { exitCode: result.code, statusCode: status, contentType, transform: "none" };
 
+			// --- PDF: convert to Markdown. Fires before the HTML/non-HTML split —
+			// content-type OR body sniff, since some servers mislabel PDFs as
+			// text/html. A mislabeled non-PDF body fails cleanly at conversion.
+			if (isPdfContentType(contentType) || isPdfBody(body)) {
+				// Re-fetch with curl -o to avoid the utf-8 decode round-trip
+				// that corrupts binary (verified: 396KB → 626KB).
+				const tempPath = await newTempFilePath("pdf", "pdf")
+				const pdfArgs: string[] = [
+					"-sSL",
+					"-o", tempPath,
+					"--retry", "2",
+					"--retry-max-time", "10",
+					"--max-time",
+					String(params.timeout ?? 30),
+					"--max-filesize", "52428800",
+					"-A",
+					USER_AGENT,
+				]
+				if (params.method) pdfArgs.push("-X", params.method)
+				for (const h of params.headers ?? []) pdfArgs.push("-H", h)
+				if (params.data) pdfArgs.push("--data-raw", params.data)
+				pdfArgs.push(params.url)
+
+				const pdfResult = await pi.exec("curl", pdfArgs, {
+					cwd: ctx.cwd,
+					signal,
+				})
+
+				// Clean up temp pdf regardless of outcome.
+				try {
+					if (pdfResult.code !== 0) {
+						const errText =
+							`${prefix}\n--- body (pdf fetch failed) ---\n` +
+							`curl exit: ${pdfResult.code}\n` +
+							`curl stderr: ${(pdfResult.stderr || "").trim() || "(none)"}`
+						return { content: [{ type: "text", text: errText }], details }
+					}
+
+					const conv = await pdfConverter().convert(tempPath)
+					const pdfDetails = { ...details, transform: "pdf" as const }
+					return buildFetchPdfResponse(prefix, conv, params.url).then((r) => ({
+						content: r.content,
+						details: { ...pdfDetails, savedPath: r.savedPath },
+					}))
+				} finally {
+					unlink(tempPath).catch(() => {})
+				}
+			}
+
 			// --- Non-HTML: return inline (truncated). ---
 			if (!/\bhtml\b/i.test(contentType) || !body.trim()) {
-				// PDF detection — must fire BEFORE generic passthrough.
-				// Content-type OR body sniff (the incident URL serves text/html with a PDF body).
-				if (isPdfContentType(contentType) || isPdfBody(body)) {
-					// Re-fetch with curl -o to avoid the utf-8 decode round-trip
-					// that corrupts binary (verified: 396KB → 626KB).
-					const tempPath = await newTempFilePath("pdf", "pdf")
-					const pdfArgs: string[] = [
-						"-sSL",
-						"-o", tempPath,
-						"--retry", "2",
-						"--retry-max-time", "10",
-						"--max-time",
-						String(params.timeout ?? 30),
-						"--max-filesize", "52428800",
-						"-A",
-						USER_AGENT,
-					]
-					if (params.method) pdfArgs.push("-X", params.method)
-					for (const h of params.headers ?? []) pdfArgs.push("-H", h)
-					if (params.data) pdfArgs.push("--data-raw", params.data)
-					pdfArgs.push(params.url)
-
-					const pdfResult = await pi.exec("curl", pdfArgs, {
-						cwd: ctx.cwd,
-						signal,
-					})
-
-					// Clean up temp pdf regardless of outcome.
-					try {
-						if (pdfResult.code !== 0) {
-							const errText =
-								`${prefix}\n--- body (pdf fetch failed) ---\n` +
-								`curl exit: ${pdfResult.code}\n` +
-								`curl stderr: ${(pdfResult.stderr || "").trim() || "(none)"}`
-							return { content: [{ type: "text", text: errText }], details }
-						}
-
-						const conv = await pdfConverter().convert(tempPath)
-						const pdfDetails = { ...details, transform: "pdf" as const }
-						return buildFetchPdfResponse(prefix, conv, params.url).then((r) => ({
-							content: r.content,
-							details: { ...pdfDetails, savedPath: r.savedPath },
-						}))
-					} finally {
-						unlink(tempPath).catch(() => {})
-					}
-				}
-
 				const truncated =
 					body.length > MAX_BODY_CHARS
 						? body.slice(0, MAX_BODY_CHARS) +
