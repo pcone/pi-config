@@ -217,6 +217,47 @@ describe("createPdfConverter (stub ExecFn)", () => {
 		}
 	})
 
+	it("pymupdf4llm exits non-zero with a multiline traceback → error is the last line only", async () => {
+		const exec = stubExec({
+			"python3 -c import pymupdf4llm": { stdout: "", code: 0 },
+			"python3 -c import sys, io, pymupdf, pymupdf4llm;": {
+				stdout: "",
+				code: 1,
+				stderr:
+					"Traceback (most recent call last):\n" +
+					'  File "<string>", line 1, in <module>\n' +
+					"RuntimeError: code=7: Invalid number of pages",
+			},
+		})
+		const { convert } = createPdfConverter(exec)
+		const result = await convert("/fake/corrupt.pdf")
+		expect(result.ok).toBe(false)
+		if (!result.ok) {
+			expect(result.error).toBe(
+				"pymupdf4llm: RuntimeError: code=7: Invalid number of pages",
+			)
+			expect(result.error).not.toContain("Traceback")
+		}
+	})
+
+	it("password-protected PDF → clear error, no traceback", async () => {
+		const exec = stubExec({
+			"python3 -c import pymupdf4llm": { stdout: "", code: 0 },
+			"python3 -c import sys, io, pymupdf, pymupdf4llm;": {
+				stdout: "",
+				code: 1,
+				stderr: "PDF is password-protected — no text extraction without the password",
+			},
+		})
+		const { convert } = createPdfConverter(exec)
+		const result = await convert("/fake/password.pdf")
+		expect(result.ok).toBe(false)
+		if (!result.ok) {
+			expect(result.error).toContain("password-protected")
+			expect(result.error).not.toContain("Traceback")
+		}
+	})
+
 	it("pymupdf4llm returns only whitespace → { ok: false } 'no extractable text'", async () => {
 		const exec = stubExec({
 			"python3 -c import pymupdf4llm": { stdout: "", code: 0 },
@@ -381,7 +422,7 @@ describe("buildReadPdfResponse", () => {
 	it("error → mentions skill, no binary", async () => {
 		const conv: PdfConversion = {
 			ok: false,
-			error: "pdftotext exited 1: something went wrong",
+			error: "pdftotext: something went wrong",
 		}
 		const r = await buildReadPdfResponse(conv, "/bad.pdf")
 		expect(r.content[0].text).toContain("conversion failed")

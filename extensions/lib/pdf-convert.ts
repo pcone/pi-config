@@ -56,6 +56,11 @@ export interface ExecFn {
 
 // ── Detection ──────────────────────────────────────────────────────────
 
+/** Last non-empty, trimmed line of a stream — keeps only the exception message, drops tracebacks. */
+function lastLine(s: string): string {
+	return s.trim().split("\n").filter(Boolean).pop() ?? ""
+}
+
 /**
  * Test a content-type header for PDF. Case-insensitive, matches
  * "application/pdf", "application/PDF", "text/html; application/pdf", etc.
@@ -135,7 +140,9 @@ export function createPdfConverter(exec: ExecFn) {
 		const cmd = pythonBin
 		const args = [
 			"-c",
-			"import sys, io, pymupdf, pymupdf4llm; pymupdf.set_messages(stream=io.StringIO()); print(pymupdf4llm.to_markdown(sys.argv[1]))",
+			"import sys, io, pymupdf, pymupdf4llm; pymupdf.set_messages(stream=io.StringIO()); d = pymupdf.open(sys.argv[1]); " +
+				"d.is_encrypted and (sys.stderr.write(\"PDF is password-protected — no text extraction without the password\"), sys.exit(1)); " +
+				"print(pymupdf4llm.to_markdown(sys.argv[1]))",
 			pdfPath,
 		]
 		try {
@@ -143,7 +150,7 @@ export function createPdfConverter(exec: ExecFn) {
 			if (r.code !== 0) {
 				return {
 					ok: false,
-					error: `pymupdf4llm exited ${r.code}: ${r.stderr || r.stdout || "(no output)"}`,
+					error: `pymupdf4llm: ${lastLine(r.stderr) || lastLine(r.stdout) || `exited ${r.code}`}`,
 				}
 			}
 			const md = r.stdout.trim()
@@ -155,7 +162,7 @@ export function createPdfConverter(exec: ExecFn) {
 			}
 			return { ok: true, markdown: md, engine: "pymupdf4llm" }
 		} catch (e: any) {
-			return { ok: false, error: `pymupdf4llm failed: ${e.message || e}` }
+			return { ok: false, error: `pymupdf4llm: ${e.message || e}` }
 		}
 	}
 
@@ -169,7 +176,7 @@ export function createPdfConverter(exec: ExecFn) {
 			if (r.code !== 0) {
 				return {
 					ok: false,
-					error: `pdftotext exited ${r.code}: ${r.stderr || r.stdout || "(no output)"}`,
+					error: `pdftotext: ${lastLine(r.stderr) || lastLine(r.stdout) || `exited ${r.code}`}`,
 				}
 			}
 			const md = (r.stdout ?? "").trim()

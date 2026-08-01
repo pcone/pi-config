@@ -44,6 +44,6 @@ Conversion engine order (pymupdf4llm → pdftotext → descriptive error):
 - pdftotext is a lighter fallback for text-heavy PDFs.
 - If both are unavailable, the error names the missing tool and its install command.
 
-All exec paths use a 120s timeout (pymupdf4llm OCR can be slow on scanned docs).
+All exec paths use a 120s timeout (pymupdf4llm OCR can be slow on scanned docs). Conversion failures report a single-line error — the last line of stderr (the exception message), never a full Python traceback — and password-protected PDFs are detected upfront (`is_encrypted` check in the pymupdf4llm snippet) with a clear message.
 
 **Test coverage:** `tests/pdf-convert.test.ts` — detection cases, engine fallback with stub ExecFn, response builder cases (inline/save/error), real end-to-end conversion on a fixture PDF, never-binary invariant assertions.
