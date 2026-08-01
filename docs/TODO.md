@@ -1,60 +1,55 @@
-# WO-2026-018: PDF → Markdown integration + binary-PDF discouragement
+# Post-WO-2026-018 verification battery — done
 
-**Status: done** — merged on `main` at `0c3ee2c` (worktree branch `pi-subagent-7d84fdbf5532`).
+All checks pass; one finding fixed and committed (`e5ceaa6`).
 
-## Problem
+## Results
 
-Session `019fafc6-15e4-7673-8ebf-5afc631cf92b` (tfd work, 2026-07-29) called
-`fetch_url` on Microsoft Research PDFs 6 times. `fetch_url` treated
-`application/pdf` as "non-HTML" and inlined up to 200KB of raw binary per call
-(~1.2MB total across 18 fetch_url calls). Verified from the session JSONL.
+**Unit/integration**
+- `bun test tests/pdf-convert.test.ts` — 29 pass (was 27; +2 new error-format tests)
+- Full `bun test` — 300 pass, 2 fail / 2 errors = the pre-existing typebox
+  resolution issue in subagent-async tests (verified identical on pre-WO tree)
 
-Root cause: `extensions/fetch-url.ts` non-HTML branch dumped body verbatim.
-Core `read` tool had the same hole for local `.pdf` files (no binary detection).
+**Live e2e (fresh `pi -p`, local content-type server + incident URL)**
 
-## Fixes shipped
+| Case | Result |
+|---|---|
+| fetch real.pdf (application/pdf) | converted → saved path (563K chars) ✓ |
+| fetch mislabelled.html (text/html, PDF body) | body-sniff caught → converted ✓ |
+| fetch octet.pdf (application/octet-stream) | sniff caught → converted ✓ |
+| fetch corrupt.pdf (truncated) | single-line error, no binary ✓ |
+| fetch password.pdf (AES-256) | clear "password-protected" error ✓ |
+| fetch data.json | JSON passthrough unchanged ✓ |
+| fetch index.html | Readability unchanged ✓ |
+| fetch incident URL (microsoft genev-icfp21.pdf) | converted → saved (93K chars) ✓ |
+| read scanned.pdf (image-only) | OCR via tesseract → text ✓ |
+| read text-as-pdf.pdf (text misnamed .pdf) | guard pass-through, raw text ✓ |
+| read large.pdf | saved-path pointer ✓ |
 
-1. `extensions/lib/pdf-convert.ts` (new) — detection (`isPdfContentType`,
-   `isPdfBody` prefix-sniff, `isPdfBytes` latin1 sniff), converter factory
-   (pymupdf4llm → pdftotext → descriptive error; `PDF_MD_PYTHON` override),
-   temp helpers (`~/.pi/tmp/pdf-convert/`, 72h TTL), response builders.
-   Lives under `lib/` because the extension loader treats every `*.ts` at the
-   extensions root as an extension (found via `pi -p` startup error).
-2. `extensions/fetch-url.ts` — PDF branch fires BEFORE the HTML/non-HTML split
-   (a PDF served as `text/html` still routes correctly). Re-fetches with
-   `curl -o` (utf-8 string round-trip corrupts binary — verified 396KB→626KB),
-   converts, inlines ≤12K chars else saves `.md` with grep hints, error + skill
-   pointer on failure. Tool description tells the model PDFs auto-convert.
-3. `extensions/pdf-read-guard.ts` (new) — `tool_result` handler for `read` on
-   `.pdf` paths; replaces content wholesale with converted markdown. Never raw
-   bytes, never isError on success (rules.ts injection unaffected).
-4. `APPEND_SYSTEM.md` — 4-line "PDFs" behavioral net (covers bash `cat`).
-5. `skills/pdf/SKILL.md` (new) — on-demand conversion workflow + verified
-   manual commands.
-6. `decisions/fetch-url/002-pdf-conversion.md` — decision record (incident
-   data, corruption mechanisms, alternatives with why-rejected).
-7. `tests/pdf-convert.test.ts` — 27 tests, all pass (detection, engine
-   fallback via stub ExecFn, response builders, real e2e conversion on fixture
-   PDF, never-binary invariant).
+**Binary-leak check** — full session JSONL inspected: **0 `%PDF` occurrences**;
+fetch_url tool results are clean pointers (`--- body (pdf: pymupdf4llm ->
+markdown; N chars — saved to disk) ---` + path + grep hint).
 
-## Verification
+**Discouragement** — fresh session confirms: "PDFs are binary" note present in
+system prompt verbatim; `pdf` skill discovered with correct description.
 
-- `bun test tests/pdf-convert.test.ts` — 27 pass / 0 fail.
-- Full `bun test` — 269 pass; 2 pre-existing failures (typebox resolution in
-  subagent-async tests) confirmed identical on the pre-WO tree — unrelated.
-- Live e2e via fresh `pi -p`: fetch_url on the incident genev-icfp21.pdf →
-  converted to markdown, saved to `~/.pi/tmp/pdf-convert/`, model grepped it.
-  `read` on local `.pdf` → "Hello PDF World" markdown. HTML fetch (example.com)
-  → Readability path unchanged. All three loaded extensions cleanly.
+## Finding fixed this session
 
-## Notes
+Conversion failures dumped full Python tracebacks into the tool result (context
+noise) and password-protected PDFs errored with a cryptic
+`TypeError: 'NoneType' object is not subscriptable`. Fixed in
+`extensions/lib/pdf-convert.ts`:
+- pymupdf4llm snippet pre-checks `is_encrypted` → "PDF is password-protected —
+  no text extraction without the password"
+- error text = last non-empty stderr line (the exception message), never a
+  traceback → corrupt.pdf now reports `pymupdf4llm: RuntimeError: code=7:
+  Invalid number of pages`
+- results shrank from multi-hundred-byte tracebacks to 186-208 chars
+- +2 stub tests (traceback trimming, password case); decision 002 updated
+  with the error contract
 
-- pymupdf4llm 1.28.0 installed user-level (`pip install --user
-  --break-system-packages`); pdftotext (poppler) as fallback.
-- Committed the previously-dirty working tree first (snapshot `95386b6`,
-  junk-cleanup `2f87f6e`) so the worktree forked from the live config.
-- `extensions/bun.lock` gained 161 lines of lockfile reconciliation (puppeteer
-  deps already in package.json) — benign.
-- Known accepted notes: `buildReadPdfResponse`'s `filePath` param unused (kept
-  for spec fidelity); large-response tests write to `~/.pi/tmp/pdf-convert/`
-  (72h TTL sweep).
+## Artifacts (gitignored, under tmp/pdf-test/)
+
+- `large.pdf` (158K, 200pp), `password.pdf`, `scanned.pdf` (6.5MB image-only),
+  `corrupt.pdf` (40K truncated), `text-as-pdf.pdf`
+- `server.py` — content-type test server (port 8741; now stopped)
+- session JSONLs used for leak checks
