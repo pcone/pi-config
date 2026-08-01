@@ -8,3 +8,8 @@ tmp/
 extensions/node_modules/
 extensions/package-lock.json
 extensions/model-tiers/cache.json
+.baba/
+.DS_Store
+__pycache__/
+*.pyc
+models-store.json
