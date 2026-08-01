@@ -28,6 +28,10 @@ Read relevant docs before implementing a feature or change. Keep docs up to date
 
 **Investigate existing mechanisms before adding a parallel one:** The codebase usually already handles (or tried to handle) the concern — often to an older spec or wired to the wrong scope — so grep for the existing enforcement first and fix its wiring rather than duplicating it. Before removing a check on the claim that "X already catches it," verify X actually fires for those cases — a partial backstop is a hole.
 
+## PDFs
+
+PDFs are binary. `fetch_url` and the `read` tool convert PDFs to Markdown automatically — never read raw PDF bytes, don't `cat` a PDF from bash. For page ranges/tables or when conversion fails, use the `pdf` skill.
+
 ## Sessions
 
 Sessions are unlimited. Never stop mid-task to suggest continuing in a new session or wrapping up.
