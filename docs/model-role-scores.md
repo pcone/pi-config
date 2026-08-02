@@ -81,7 +81,7 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 |---|---|---|---|
 | Main session | `settings.json` | deepseek-v4-flash-0731 | ✓ switched 2026-07-31 (was kimi-k3; 0731 is the frontier-tier driver) |
 | Orchestrator-subagent | `agents/orchestrator.md` | glm-5.2 | ✓ keep (0731 projects high Orch but unmeasured; GLM-5.2 solid) |
-| Implementer | `agents/implement-pro.md` | deepseek-v4-flash-0731 | ✓ collapsed to single tier 2026-08-01 (was pro/flash; 0731 AA indices clear Pro on all three axes at ~⅓ the price) |
+| Implementer | `agents/implement.md` | deepseek-v4-flash-0731 | ✓ collapsed to single tier 2026-08-01 (was pro/flash; 0731 AA indices clear Pro on all three axes at ~⅓ the price) |
 | Oracle | `agents/math-algo-oracle.md` | deepseek-v4-pro | ✓ keep (0731 math/algo unpublished) |
 | Review standard ×3 | `agents/review-{code,plan,tests}.md` | mimo-v2.5-pro | ✓ confirmed |
 | Review deep ×3 | `agents/review-*-deep.md` | glm-5.2 | ✓ confirmed |
@@ -247,7 +247,7 @@ Current assignments audited against the refreshed data:
 3. **Implementer — `deepseek-v4-flash-0731`. ✓ Pro/flash tiers collapsed 2026-08-01.**
    The two-tier split (pro for complex work, flash for mechanical) became redundant when
    0731's AA indices cleared Pro on all three axes at $0.019 vs $0.055. The single
-   `implement-pro` agent now runs the 0731 model for all implementation work — mechanical
+   `implement` agent now runs the 0731 model for all implementation work — mechanical
    boilerplate through complex multi-file changes. Pro's old slot existed for implicit-
    invariant resilience; 0731's served-model AA indices (int 49.9 / cod 69.1 / agt 45.7)
    and the invariant-enumeration step in the agent prompt together cover that. See

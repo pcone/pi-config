@@ -112,3 +112,5 @@ into a single `implement-pro` agent running `deepseek/deepseek-v4-flash-0731`. D
 `@earendil-works/pi-*` packages in the isolated worktree, unrelated to this change).
 No new failures. Verification: `grep -rn "implement-flash"` over agents/, extensions/
 non-comment, skills/, docs/ current-state tables returns zero hits.
+
+> **Superseded (2026-08-02):** the agent was renamed implement-pro → implement — see [decision/013](013-implementer-rename.md).

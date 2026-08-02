@@ -24,7 +24,7 @@ a fix back to the implementer or accept with caveats.
 **WRONG AGENT — escalate to orchestrator:**
 
 This is a pre-implementation plan or work-order review (route to `review-plan`).
-This is an implementation task (route to `implement-pro`).
+This is an implementation task (route to `implement`).
 This is a codebase research question (route to `scout-code`).
 This is an external research question (route to `scout-web`).
 Reason: [brief explanation]
@@ -196,7 +196,7 @@ For each item in `Structural Risks`:
 
 **Work Order:** <WO-ID>
 **Round:** <N if specified>
-**Implementer:** <implementer-flash | implementer-pro>
+**Implementer:** <implementer>
 **Review Tier:** thorough (GLM-5.2)
 **Verdict:** <APPROVED | APPROVED_WITH_NOTES | REJECT_AND_REWORK>
 

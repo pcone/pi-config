@@ -6,7 +6,7 @@
  *   `subagent(${name}): ${task.slice(0,72)}`, where `task` was the full
  *   delivery payload — i.e. the harness-injected "## Worktree isolation"
  *   preamble followed by the real task. The commit subject therefore read
- *   `subagent(implement-pro): ## Worktree isolation` and conveyed nothing
+ *   `subagent(implement): ## Worktree isolation` and conveyed nothing
  *   about the work. Repro in this repo's own history: commit 5feef34.
  *
  * Fix: `rs.task` is now the CLEAN task identity; the preamble + review-policy
@@ -102,16 +102,16 @@ const cleanTask = REAL_TASK; // what rs.task holds after the fix
 
 test("OLD derivation leaks the preamble into the subject", () => {
 	// Documents the bug: the subject begins with the boilerplate header.
-	const subject = `subagent(implement-pro): ${oldSubject(payloadForChild)}`.split("\n")[0];
+	const subject = `subagent(implement): ${oldSubject(payloadForChild)}`.split("\n")[0];
 	assert.ok(
-		subject.startsWith("subagent(implement-pro): ## Worktree isolation"),
+		subject.startsWith("subagent(implement): ## Worktree isolation"),
 		`expected preamble leak, got: ${JSON.stringify(subject)}`,
 	);
 });
 
 test("NEW derivation yields the real work as subject", () => {
-	const subject = `subagent(implement-pro): ${subjectFromTask(cleanTask)}`;
-	eq(subject, "subagent(implement-pro): Refactor the widget renderer to use the new batch API");
+	const subject = `subagent(implement): ${subjectFromTask(cleanTask)}`;
+	eq(subject, "subagent(implement): Refactor the widget renderer to use the new batch API");
 });
 
 // ── End-to-end through real git: subject survives `git log --format='%s'` ──
@@ -135,16 +135,16 @@ function withTempRepo(fn) {
 
 withTempRepo((dir, git) => {
 	test("git %s with NEW subject does not mention Worktree isolation", () => {
-		const msg = `subagent(implement-pro): ${subjectFromTask(cleanTask)}`;
+		const msg = `subagent(implement): ${subjectFromTask(cleanTask)}`;
 		fs.writeFileSync(path.join(dir, "f.txt"), "change\n");
 		git(["add", "-A"]);
 		git(["commit", "-q", "-m", msg]);
 		const subject = git(["log", "--format=%s", "-1"]).toString().trim();
-		eq(subject, "subagent(implement-pro): Refactor the widget renderer to use the new batch API");
+		eq(subject, "subagent(implement): Refactor the widget renderer to use the new batch API");
 	});
 
 	test("git %s with OLD (buggy) subject leaks the preamble", () => {
-		const msg = `subagent(implement-pro): ${oldSubject(payloadForChild)}`;
+		const msg = `subagent(implement): ${oldSubject(payloadForChild)}`;
 		fs.writeFileSync(path.join(dir, "f.txt"), "change2\n");
 		git(["add", "-A"]);
 		git(["commit", "-q", "-m", msg]);
@@ -154,7 +154,7 @@ withTempRepo((dir, git) => {
 		// the header, so the whole boilerplate collapses into one subject —
 		// the exact shape of the handoff evidence.
 		assert.ok(
-			subject.startsWith("subagent(implement-pro): ## Worktree isolation"),
+			subject.startsWith("subagent(implement): ## Worktree isolation"),
 			`expected preamble leak, got: ${JSON.stringify(subject)}`,
 		);
 		assert.ok(

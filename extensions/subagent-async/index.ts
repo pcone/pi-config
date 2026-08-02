@@ -52,7 +52,7 @@ const PI_ASYNC_DEBUG = process.env.PI_ASYNC_DEBUG === "1";
 //     orchestrator reads via `subagent_review_status`. Persisted on every
 //     spawn so cross-process visibility survives the harness restarting.
 //
-// When the parent is itself a subagent (e.g. implement-flash running in RPC
+// When the parent is itself a subagent (e.g. implement running in RPC
 // mode), `ctx.sessionManager.getSessionId()` returns the parent's session id;
 // if unavailable, fall back to `pid:<process.pid>`. The fallback only matters
 // in nested-orchestration scenarios; normal pi sessions always have a

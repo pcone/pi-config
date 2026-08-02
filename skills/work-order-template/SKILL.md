@@ -1,6 +1,6 @@
 ---
 name: work-order-template
-description: Work order schema for delegating implementation tasks to subagents (implement-pro). Load this skill when generating, reviewing, or filling out a work order — defines the required sections the orchestrator must populate and the fields the implementer reads.
+description: Work order schema for delegating implementation tasks to subagents (implement). Load this skill when generating, reviewing, or filling out a work order — defines the required sections the orchestrator must populate and the fields the implementer reads.
 ---
 
 # Work Order Template
@@ -20,7 +20,7 @@ Your work order quality directly determines whether the implementer succeeds on 
 - **work_order_id**: <unique identifier, e.g., WO-2026-007>
 - **parent_plan_id**: <ID of the planning session this work order belongs to>
 - **sequence_position**: <N of M work orders in the current plan>
-- **routed_to**: implement-pro
+- **routed_to**: implement
 - **invariant_exhaustiveness**: explicit | implicit
 - **priority**: critical | normal | low
 - **estimated_complexity**: trivial | moderate | complex

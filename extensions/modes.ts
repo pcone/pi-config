@@ -39,8 +39,8 @@ const GLOBAL_FILE = join(homedir(), ".pi", "agent", "modes.json");
 const MODES_BRIEF = `## Modes
 
 You operate in one of three modes (the user sets or cycles via /mode):
-- **implement** (default): work directly in this session — read files, make edits, run commands — and dispatch subagents (implement-pro / scouts) whenever delegation is useful: parallel work, context-heavy research, mechanical multi-file changes. You are the operator; subagents are a tool, not a mode change.
-- **orchestrate**: dispatch implementation work to subagents (implement-pro for all feature work, scout-code/scout-web for research) and synthesize their reports. You are the conductor.
+- **implement** (default): work directly in this session — read files, make edits, run commands — and dispatch subagents (implement / scouts) whenever delegation is useful: parallel work, context-heavy research, mechanical multi-file changes. You are the operator; subagents are a tool, not a mode change.
+- **orchestrate**: dispatch implementation work to subagents (implement for all feature work, scout-code/scout-web for research) and synthesize their reports. You are the conductor.
 - **plan**: act as super-orchestrator — own a roadmap doc, dispatch \`orchestrator\`-subagents one per item, reconcile after each; you never implement directly.
 
 The currently-active mode is delivered as a user-role message at session start and after every /mode switch. The most recent such message is authoritative — read it to see which mode you are in.`;
@@ -49,7 +49,7 @@ const MODE_FULL: Record<Mode, string> = {
 	implement: `## Mode: implement
 
 You are in implementation mode — work directly, and dispatch
-subagents (implement-pro / scouts) whenever
+subagents (implement / scouts) whenever
 delegation is useful; that's tool use, not a mode change. For
 code-changing dispatches, verify the completion report (status,
 adversarial_reviews, structural_checks) before accepting it — you
@@ -59,7 +59,7 @@ are the gate for what you spawn.`,
 
 You are in orchestration mode. Prefer dispatching implementation work
 to subagents. For substantial tasks, generate a work order (load the
-work-order-template skill) and dispatch to implement-pro (the single
+work-order-template skill) and dispatch to implement (the single
 implementation tier). For research, dispatch scout-code/scout-web.
 For trivial changes, pass \`review_policy: "skip"\` on the \`subagent\` call
 (or include \`**review_policy**: skip\` in the work order) and review the

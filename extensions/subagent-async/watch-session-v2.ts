@@ -251,7 +251,7 @@ function timeAgo(ms: number): string {
 export type SessionStatus = "RUNNING" | "COMPLETED" | "STOPPED" | "EMPTY";
 
 export interface SessionMeta {
-	/** Agent type (implement-pro, review-code, etc.) */
+	/** Agent type (implement, review-code, etc.) */
 	agentName: string;
 	/** Full task text from the meta.json */
 	task: string;

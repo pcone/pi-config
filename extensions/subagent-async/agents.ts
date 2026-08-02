@@ -18,7 +18,7 @@ export type AgentScope = "user" | "project" | "both";
 //
 // `reviewParentRequirements` (string[] | undefined): parsed from comma-separated
 // frontmatter `requires_parent_reviewers: review-code,review-tests`. When a
-// parent (e.g. implement-flash / implement-pro) declares this list, the harness
+// parent (e.g. implement) declares this list, the harness
 // emits a soft prompt to the parent at stop time if any required reviewerKind
 // has not yet been spawned from this parent. See the "Reviewer invocation
 // guard" section in `decisions/subagents/004-parallel-review-gate.md`.

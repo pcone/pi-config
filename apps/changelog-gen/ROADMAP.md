@@ -30,7 +30,7 @@ Locked — applies to all items. Orchestrators must not re-litigate these.
 - **Review depth:** **standard (shallow)** per implementer pass. (The 007
   validation also exercises the new `xiaomi/mimo-v2.5-pro` shallow reviewers
   live.)
-- **Scope:** modest — each item is one implementer pass (`implement-pro` at the orchestrator's discretion).
+- **Scope:** modest — each item is one implementer pass (`implement` at the orchestrator's discretion).
 
 ### Data contract
 

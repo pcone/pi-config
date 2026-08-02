@@ -1,5 +1,5 @@
 ---
-name: implement-pro
+name: implement
 description: "Single implementation tier for all feature work — mechanical boilerplate through complex multi-file changes. Use for any task: explicit or implicit invariants, 1-file or N-file, trivial or new API surface, any error-handling complexity. Reads code, discovers patterns, makes implementation decisions, and produces working code. The orchestrator routes all implementation work here."
 model: deepseek/deepseek-v4-flash-0731
 requires_parent_reviewers: implementation,tests
@@ -338,7 +338,7 @@ report.
    `isolate: false` explicitly.
 4. **Use relative paths for edits inside worktrees.** When your
    worktree is active, use repo-relative paths (e.g.,
-   `agents/implement-pro.md`) in `edit`, `write`, and `read`
+   `agents/implement.md`) in `edit`, `write`, and `read`
    calls rather than absolute paths (e.g.,
    `~/Developer/pi-config/agents/...`). Absolute paths resolve
    against the filesystem root, bypassing worktree isolation —
