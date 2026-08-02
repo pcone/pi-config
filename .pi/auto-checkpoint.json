@@ -4,15 +4,15 @@
   "cooldownMs": 30000,
   "models": {
     "deepseek/deepseek-v4-flash": {
-      "threshold": 300000,
+      "threshold": 250000,
       "cooldownTurns": 4
     },
     "deepseek/deepseek-v4-flash-0731": {
-      "threshold": 300000,
+      "threshold": 250000,
       "cooldownTurns": 4
     },
     "deepseek/deepseek-v4-pro": {
-      "threshold": 300000,
+      "threshold": 250000,
       "cooldownTurns": 4
     },
     "z-ai/glm-5.2": {

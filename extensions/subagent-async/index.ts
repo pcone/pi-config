@@ -22,6 +22,7 @@ import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const MAX_TURNS_HARD = 500;
+const TURN_NUDGE_SOFT = 450; // warn once before the hard 500-turn kill
 const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const HARD_KILL_DELAY_MS = 5000;
 // Stalled-turn watchdog: if a subagent hasn't completed a turn in
@@ -321,6 +322,7 @@ interface RunningSubagent {
 	// off an implementer `complete` report, not a `subagent_stop` result),
 	// so a stopped result is never gated on either.
 	stoppedExplicitly: boolean;
+	turnNudged: boolean; // one-shot flag: soft 450-turn wrap-up nudge already sent
 	logPath: string;   // live human-readable event log
 	logLines: string[];     // in-memory buffer for live TUI widget
 	stderrLines: string[];  // captured stderr from the child pi process;
@@ -830,6 +832,7 @@ async function spawnSubagent(
 		isDone: false,
 		killedExplicitly: false,
 		stoppedExplicitly: false,
+		turnNudged: false,
 		logPath,
 		logLines: [],
 		stderrLines: [],
@@ -1077,6 +1080,26 @@ async function spawnSubagent(
 				}
 				updateFooter(ctx);
 
+				// Soft turn nudge: warn once near the hard cap so the agent can wrap
+				// up with a partial result instead of being hard-killed mid-task.
+				if (!rs.turnNudged && rs.progress.turns >= TURN_NUDGE_SOFT) {
+					rs.turnNudged = true;
+					const nudge =
+						`[Turn-limit warning] You have used ${TURN_NUDGE_SOFT} of the ${MAX_TURNS_HARD}-turn ` +
+						`hard limit for this subagent run; the process will be killed at ${MAX_TURNS_HARD} turns. ` +
+						`Do NOT start new work and do NOT launch reviewers. Wrap up now: complete or abandon the ` +
+						`current step, then emit your completion report with **status: partial** (or blocked) — ` +
+						`summarize what was completed, what remains, and any open issues. Your next text-only ` +
+						`message is your final output.`;
+					try {
+						rpcSend(rs.stdin, { type: "prompt", message: nudge, streamingBehavior: "steer" });
+						logEntry(`\x1b[33m[turn-limit] soft nudge injected at ${rs.progress.turns} turns\x1b[0m`);
+						debugLog(`turn-nudge: soft nudge at turns=${rs.progress.turns} child=${rs.sessionId}`);
+					} catch (e) {
+						debugLog(`turn-nudge: rpcSend failed: ${e instanceof Error ? e.message : String(e)}`);
+					}
+				}
+
 				// Hard turn limit
 				if (rs.progress.turns >= MAX_TURNS_HARD) {
 					rs.progress.currentActivity = `hit turn limit (${MAX_TURNS_HARD}), stopping`;
@@ -1115,7 +1138,7 @@ async function spawnSubagent(
 				// prompt is a polite nudge; the orchestrator's mechanical
 				// `subagent_review_status` check is the actual gate.
 				const required = rs.reviewParentRequirements;
-				if (required && required.length > 0 && !rs.stoppedExplicitly) {
+				if (required && required.length > 0 && !rs.stoppedExplicitly && !rs.turnNudged) {
 					// The child's harness writes its reviewer-spawn tracker file
 					// keyed by its own pi session ID (obtained via
 					// getParentTrackerKey inside the child process). We read
@@ -1658,6 +1681,7 @@ export default function (pi: ExtensionAPI) {
 					// `stoppedExplicitly` is likewise N/A on recovery.
 					killedExplicitly: false,
 					stoppedExplicitly: false,
+					turnNudged: false,
 					logPath,
 					logLines: [],
 					watchHandle: null,
