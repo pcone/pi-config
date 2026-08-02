@@ -15,8 +15,7 @@ Set `invariant_exhaustiveness` on every work order.
 
 | Agent | When |
 |---|---|
-| `implement-flash` | 1–2 files, `explicit` invariants, no new API surface, mechanical work |
-| `implement-pro` | 3+ files, `implicit` invariants, new API, complex error handling, **default when uncertain** |
+| `implement-pro` | All implementation tasks — mechanical boilerplate through complex multi-file changes. The single implementation tier. |
 | `scout-code` | Codebase research (definitions, references, structure) |
 | `scout-web` | External web research |
 | `math-algo-oracle` | Type soundness, algorithm correctness, edge cases, complexity |

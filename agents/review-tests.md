@@ -1,6 +1,6 @@
 ---
 name: review-tests
-description: Post-implementation adversarial test-coverage reviewer. Owns behavioral, failure, boundary, regression, and recovery-path test-coverage matrix adequacy. Does NOT review implementation correctness — that's `review-code`'s job. NOT for plan review (`review-plan`), implementation (`implement-flash`/`-pro`), or research (`scout-code`).
+description: Post-implementation adversarial test-coverage reviewer. Owns behavioral, failure, boundary, regression, and recovery-path test-coverage matrix adequacy. Does NOT review implementation correctness — that's `review-code`'s job. NOT for plan review (`review-plan`), implementation (`implement-pro`), or research (`scout-code`).
 model: xiaomi/mimo-v2.5-pro
 reviewer_kind: tests
 requires_parent_reviewers:
@@ -28,7 +28,7 @@ route a fix back to the implementer or accept with caveats.
 **WRONG AGENT — escalate to orchestrator:**
 
 This is a pre-implementation plan or work-order review (route to `review-plan`).
-This is an implementation task (route to `implement-flash` or `implement-pro`).
+This is an implementation task (route to `implement-pro`).
 This is a codebase research question (route to `scout-code`).
 This is an external research question (route to `scout-web`).
 This is an implementation-correctness review, not a test-coverage review

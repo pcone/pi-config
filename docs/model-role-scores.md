@@ -69,11 +69,11 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 **Two value stars, different jobs:**
 - **GLM-5.2** ($0.39, 1M ctx, open weights) — the best **generalist**: top-3 on
   Orchestrator, Implementer, and Reviewer with solid coverage.
-- **DeepSeek V4 Pro / Flash** ($0.055 / **$0.029**) — the **math/algo oracle** and a cheap
-  self-contained coder; weak as an orchestrator (Pro High 37.0) and same-lab as the
-  implementers (so unusable as their reviewer). **Flash 0731** ($0.019) clears Pro on all
-  three AA indices at ~⅓ the price — pending granular confirmation, this collapses the
-  flash/pro worker gap.
+- **DeepSeek V4 Flash 0731** ($0.019) — the **single implementation tier** and a cheap
+  self-contained coder; weak as an orchestrator and same-lab as itself (so unusable as
+  its own reviewer). **Flash 0731** ($0.019) clears Pro on all three AA indices at ~⅓
+  the price — the flash/pro worker gap collapsed 2026-08-01 per
+  [012-implementer-collapse](../decisions/subagents/012-implementer-collapse.md).
 
 **Current assignments vs. the data** (see [Role-by-role review](#role-by-role-review-2026-08-01)):
 
@@ -81,7 +81,7 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 |---|---|---|---|
 | Main session | `settings.json` | deepseek-v4-flash-0731 | ✓ switched 2026-07-31 (was kimi-k3; 0731 is the frontier-tier driver) |
 | Orchestrator-subagent | `agents/orchestrator.md` | glm-5.2 | ✓ keep (0731 projects high Orch but unmeasured; GLM-5.2 solid) |
-| Implementer (pro/flash) | `agents/implement-{pro,flash}.md` | deepseek-v4-pro / **-flash-0731** | ✓ flash → 0731 2026-08-01; pro holds until granular lands |
+| Implementer | `agents/implement-pro.md` | deepseek-v4-flash-0731 | ✓ collapsed to single tier 2026-08-01 (was pro/flash; 0731 AA indices clear Pro on all three axes at ~⅓ the price) |
 | Oracle | `agents/math-algo-oracle.md` | deepseek-v4-pro | ✓ keep (0731 math/algo unpublished) |
 | Review standard ×3 | `agents/review-{code,plan,tests}.md` | mimo-v2.5-pro | ✓ confirmed |
 | Review deep ×3 | `agents/review-*-deep.md` | glm-5.2 | ✓ confirmed |
@@ -244,17 +244,14 @@ Current assignments audited against the refreshed data:
    and 0731's granular evidence for that is zero. GLM-5.2 (81.2) is measured on all four
    Orch granular axes. GPT-5.6 Luna (93.6, $0.04) is now the ceiling *and* cheap — if
    orchestrator quality ever bites, Luna is the upgrade, not 0731.
-3. **Implementers — `deepseek-v4-pro` (High 48.8 / Max 59.6) and `-flash-0731`.
-   ✓ Flash slots shipped → 0731 2026-08-01; pro on watch.** 0731's AA indices exceed
-   Pro's on all three axes at $0.019 vs $0.055. Under the old-flash floor (granular ≈
-   old flash reasoning-variant) it scores ~45.8 IMPL ≈ Pro High's 48.8 at ~⅓ the price;
-   if its SWE-Pro/LCB improved like its AA indices, it *beats* Pro. **But SWE-bench Pro
-   and LiveCodeBench — the ×5 weights — are unpublished for 0731 anywhere** (DeepSeek's
-   0731 launch has no non-agentic evals; BenchLM holds April-24 Preview placeholders;
-   see refresh note 3). Flash slots shipped on served-model AA indices + price (free
-   upgrade: same prompt price, 10× cheaper cache-read); **pro holds until 0731 granular
-   lands** — the escape-hatch routing covers misrouted work if you trial 0731 on
-   pro-routed tasks.
+3. **Implementer — `deepseek-v4-flash-0731`. ✓ Pro/flash tiers collapsed 2026-08-01.**
+   The two-tier split (pro for complex work, flash for mechanical) became redundant when
+   0731's AA indices cleared Pro on all three axes at $0.019 vs $0.055. The single
+   `implement-pro` agent now runs the 0731 model for all implementation work — mechanical
+   boilerplate through complex multi-file changes. Pro's old slot existed for implicit-
+   invariant resilience; 0731's served-model AA indices (int 49.9 / cod 69.1 / agt 45.7)
+   and the invariant-enumeration step in the agent prompt together cover that. See
+   [decision 012](../decisions/subagents/012-implementer-collapse.md).
 4. **Oracle — `deepseek-v4-pro`. ✓ Keep.** Only verified hard-math/algo leader
    (LCB 93.5, IMO 89.8, CF 3206). 0731's math/algo numbers are unpublished; it inherits
    old flash's 90.2 (reasoning-variant) as a floor, not a measurement. Re-check when

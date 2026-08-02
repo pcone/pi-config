@@ -35,8 +35,8 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
 
 | Model | Fleet roles | Real levels | Sweet spot | Evidence |
 |---|---|---|---|---|
-| **DeepSeek V4 Pro** | implement-pro, oracle | high, max | ✅ **`high`** — AA Index 43 vs 44 at max (**~98%** of max quality); high variant is also faster | [AA comparison](https://artificialanalysis.ai/models/comparisons/deepseek-v4-pro-high-vs-deepseek-v4-pro) |
-| **DeepSeek V4 Flash / 0731** | implement-flash, scouts, compaction | high, max | ✅ **`high`** (presumed — same AA variant structure as V4 Pro; exact scores behind JS-rendered pages, single-source) | [AA flash-high](https://artificialanalysis.ai/models/deepseek-v4-flash-high) |
+| **DeepSeek V4 Pro** | oracle | high, max | ✅ **`high`** — AA Index 43 vs 44 at max (**~98%** of max quality); high variant is also faster | [AA comparison](https://artificialanalysis.ai/models/comparisons/deepseek-v4-pro-high-vs-deepseek-v4-pro) |
+| **DeepSeek V4 Flash / 0731** | implement-pro, scouts, compaction | high, max | ✅ **`high`** (presumed — same AA variant structure as V4 Pro; exact scores behind JS-rendered pages, single-source) | [AA flash-high](https://artificialanalysis.ai/models/deepseek-v4-flash-high) |
 | **GPT-5.6 Luna** | *(not in fleet — orchestrator ceiling)* | low, med, high, xhigh, max | ✅ **`high`** — 90.2% of max quality (46 vs 51 AA Index) at **42% of the tokens** (8k vs 19k/task), $0.09 vs $0.21/task. xhigh: 96.1% at 63%. Graceful degradation, no cliff | [AA GPT-5.6 analysis](https://artificialanalysis.ai/articles/gpt-5-6-has-landed), [dataset gist](https://gist.github.com/IgorWarzocha/60bfd11731f15cf8802f0b6e80d47ac7) |
 | **GLM-5.2** | orchestrator, review-*-deep | none, high, max | ⚠️ **Unknown — data gap.** All published numbers (AA Index 51, 43k output tokens/task) are at **max**; nothing published at high | [Z.ai thinking docs](https://docs.z.ai/guides/capabilities/thinking), [AA article](https://artificialanalysis.ai/articles/glm-5-2-is-the-new-leading-open-weights-model-on-the-artificial-analysis-intelligence-index) |
 | **Kimi K3** | main session | low, high, max (default max) | ⚠️ **Unknown — data gap.** All benchmarks at max (AA Index 57, ~132M output tokens across the suite); low/high added post-launch with no published comparisons | [Moonshot reasoning-effort guide](https://platform.kimi.ai/docs/guide/use-reasoning-effort), [K3 blog](https://www.kimi.com/blog/kimi-k3), [AA article](https://artificialanalysis.ai/articles/kimi-k3-achieves-3-in-the-artificial-analysis-intelligence-index-comparable-to-opus-4-8-and-gpt-5-5) |
@@ -47,7 +47,7 @@ GLM-5.2 at `none`/`minimal`, which disables chain-of-thought entirely.
 
 ## What this means for current assignments
 
-1. **DeepSeek fleet (implement-pro, implement-flash, oracle, scouts,
+1. **DeepSeek fleet (implement-pro, oracle, scouts,
    compaction) — already at the sweet spot.** They inherit `high` from
    `defaultThinkingLevel`, and `high` is the documented ~98%-of-max level for
    V4 Pro. Now deliberate rather than accidental: do not raise these to max.

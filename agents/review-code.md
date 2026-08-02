@@ -1,6 +1,6 @@
 ---
 name: review-code
-description: Post-implementation adversarial implementation-correctness reviewer. Owns spec compliance, invariants, structural risks, error/recovery semantics, build & test execution, unrequested-changes audit, and build-config integrity. Does NOT do exhaustive test-coverage auditing — that's `review-tests`'s job. NOT for plan review (`review-plan`), implementation (`implement-flash`/`-pro`), or research (`scout-code`).
+description: Post-implementation adversarial implementation-correctness reviewer. Owns spec compliance, invariants, structural risks, error/recovery semantics, build & test execution, unrequested-changes audit, and build-config integrity. Does NOT do exhaustive test-coverage auditing — that's `review-tests`'s job. NOT for plan review (`review-plan`), implementation (`implement-pro`), or research (`scout-code`).
 tools: read, grep, find, ls, bash
 model: xiaomi/mimo-v2.5-pro
 reviewer_kind: implementation
@@ -24,7 +24,7 @@ a fix back to the implementer or accept with caveats.
 **WRONG AGENT — escalate to orchestrator:**
 
 This is a pre-implementation plan or work-order review (route to `review-plan`).
-This is an implementation task (route to `implement-flash` or `implement-pro`).
+This is an implementation task (route to `implement-pro`).
 This is a codebase research question (route to `scout-code`).
 This is an external research question (route to `scout-web`).
 Reason: [brief explanation]

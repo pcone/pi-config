@@ -1,6 +1,6 @@
 ---
 name: work-order-template
-description: Work order schema for delegating implementation tasks to subagents (implement-flash, implement-pro). Load this skill when generating, reviewing, or filling out a work order — defines the required sections the orchestrator must populate and the fields the implementer reads.
+description: Work order schema for delegating implementation tasks to subagents (implement-pro). Load this skill when generating, reviewing, or filling out a work order — defines the required sections the orchestrator must populate and the fields the implementer reads.
 ---
 
 # Work Order Template
@@ -9,7 +9,7 @@ description: Work order schema for delegating implementation tasks to subagents 
 
 You are generating a work order to dispatch to an implementation agent. Fill in every section below. If a section does not apply to the task, write `N/A` with a brief explanation rather than omitting it.
 
-Your work order quality directly determines whether the implementer succeeds on the first pass. Be exhaustive. If you cannot fully specify all invariants, set `invariant_exhaustiveness: implicit` so the router sends the task to `implement-pro`.
+Your work order quality directly determines whether the implementer succeeds on the first pass. Be exhaustive. If you cannot fully specify all invariants, set `invariant_exhaustiveness: implicit` so the implementer knows to enumerate them.
 
 ---
 
@@ -20,7 +20,7 @@ Your work order quality directly determines whether the implementer succeeds on 
 - **work_order_id**: <unique identifier, e.g., WO-2026-007>
 - **parent_plan_id**: <ID of the planning session this work order belongs to>
 - **sequence_position**: <N of M work orders in the current plan>
-- **routed_to**: implement-flash | implement-pro
+- **routed_to**: implement-pro
 - **invariant_exhaustiveness**: explicit | implicit
 - **priority**: critical | normal | low
 - **estimated_complexity**: trivial | moderate | complex
@@ -170,15 +170,6 @@ Known risk patterns for this task type. The implementer must explicitly check fo
 **Relevant decisions from planning session**:
 - <e.g., "Decided to use visitor pattern rather than match-based traversal for all new passes">
 - <e.g., "Decided to defer SSA validation to a separate pass, not inline it here">
-
-### Escape Hatch (for implement-flash only)
-
-If you are `implement-flash` and during your invariant enumeration step you discover that:
-- The task involves implicit invariants you cannot resolve from the referenced files
-- The task touches more files or has more cross-file dependencies than the scope indicates
-- The structural risks checklist reveals failures you cannot fix without changing the work order's intent
-
-**STOP. Do not guess. Report `invariant_exhaustiveness: implicit` in your completion report with a description of what you could not resolve. The orchestrator will re-route the task to `implement-pro`.**
 
 ### Completion Report Format
 

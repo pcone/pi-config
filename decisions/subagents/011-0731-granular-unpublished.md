@@ -86,3 +86,8 @@ runs standalone.
 > compat + maxTokens 131072), and the `.pi/auto-checkpoint.json` model key all
 > moved to `deepseek/deepseek-v4-flash-0731`. Implement-pro and the oracle remain
 > on Pro per the hold half.
+>
+> **Superseded (2026-08-01):** the hold-half (keep `implement-pro` on Pro) is
+> superseded. `implement-pro` now runs `deepseek/deepseek-v4-flash-0731` — the
+> two-tier split collapsed into a single implementation tier. See
+> [012-implementer-collapse](012-implementer-collapse.md).

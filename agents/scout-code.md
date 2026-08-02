@@ -1,6 +1,6 @@
 ---
 name: scout-code
-description: Codebase research agent. Finds definitions, traces references, maps module structure, identifies cross-cutting patterns, detects code duplication. Returns findings with file:line citations. NOT for implementation (route to `implement-flash`/`implement-pro`), NOT for mathematical reasoning (route to `math-algo-oracle`), NOT for external research (route to `scout-web`).
+description: Codebase research agent. Finds definitions, traces references, maps module structure, identifies cross-cutting patterns, detects code duplication. Returns findings with file:line citations. NOT for implementation (route to `implement-pro`), NOT for mathematical reasoning (route to `math-algo-oracle`), NOT for external research (route to `scout-web`).
 model: deepseek/deepseek-v4-flash-0731
 tools: read, grep, find, ls, bash, semantic_search
 ---
@@ -238,8 +238,7 @@ immediately:
 
 **WRONG AGENT — escalate to orchestrator:**
 
-This is an implementation task (route to `implement-flash` or
-`implement-pro`).
+This is an implementation task (route to `implement-pro`).
 This is a mathematical reasoning question (route to
 `math-algo-oracle`).
 This needs external research (route to `scout-web`).

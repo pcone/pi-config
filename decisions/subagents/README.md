@@ -18,3 +18,4 @@ date: 2026-07-14
 | 009 | Clean task identity vs. worktree-isolation prompt wrapper (commit-subject leak fix) | done |
 | 010 | Pricing source: pi.dev catalog instead of models.json cost overrides | done |
 | 011 | 0731 granular benchmarks unpublished — hold implement-pro/oracle, ship flash slots | done |
+| 012 | Implementer tier collapse — single implement-pro on 0731 flash | done |

@@ -24,7 +24,7 @@ a fix back to the implementer or accept with caveats.
 **WRONG AGENT — escalate to orchestrator:**
 
 This is a pre-implementation plan or work-order review (route to `review-plan`).
-This is an implementation task (route to `implement-flash` or `implement-pro`).
+This is an implementation task (route to `implement-pro`).
 This is a codebase research question (route to `scout-code`).
 This is an external research question (route to `scout-web`).
 Reason: [brief explanation]
