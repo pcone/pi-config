@@ -1771,7 +1771,7 @@ function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, 
 		: null;
 	const prefix = killedNote
 		? killedNote
-		: (wasAborted ? "[Subagent aborted]" : "[Subagent implement finished]");
+		: `[Subagent ${rs.agentName} ${wasAborted ? "aborted" : "finished"}]`;
 
 	// Surface child stderr when the agent never made a turn. The most
 	// common cause is a child `pi` that failed to start (broken extension,
