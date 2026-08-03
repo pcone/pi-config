@@ -446,6 +446,7 @@ async function createWorktree(
 	parentCwd: string,
 	sessionId: string,
 	baseRef?: string,
+	carryUncommitted: boolean = true,
 ): Promise<{ worktreePath: string; branchName: string; parentHeadCommit: string } | null> {
 	const t0 = PI_ASYNC_DEBUG ? Date.now() : 0;
 	try {
@@ -484,10 +485,89 @@ async function createWorktree(
 		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: worktree add: ${Date.now() - tAdd}ms`);
 		if (wtResult.exitCode !== 0) return null;
 
+		// Best-effort overlay of the parent's uncommitted state; a failure
+		// degrades to the plain HEAD-only worktree, never fails the dispatch.
+		if (carryUncommitted && !baseRef) {
+			const tCarry = PI_ASYNC_DEBUG ? Date.now() : 0;
+			try {
+				await carryUncommittedState(topLevel, worktreePath);
+			} catch (e: any) {
+				debugLog(`createWorktree: carry failed — degrading to HEAD-only: ${e.message || e}`);
+			}
+			if (PI_ASYNC_DEBUG) debugLog(`createWorktree: carry: ${Date.now() - tCarry}ms`);
+		}
+
 		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: total: ${Date.now() - t0}ms`);
 		return { worktreePath, branchName, parentHeadCommit };
 	} catch {
 		return null;
+	}
+}
+
+/** Best-effort overlay of the parent's uncommitted working-tree state
+ *  (untracked, modified, staged, deleted, renamed, copied) into a fresh
+ *  worktree, preserving exec bits and symlinks-as-links. Read-only on the
+ *  parent (single `git status`); writes only under `worktreePath`. Returns
+ *  without carrying if `git status` itself fails; fs-level overlay failures
+ *  throw and are caught by the caller, which degrades to the plain HEAD-only
+ *  worktree. Mirrored by test-carry-uncommitted.cjs — keep both in sync. */
+async function carryUncommittedState(topLevel: string, worktreePath: string): Promise<void> {
+	const res = await git(["status", "--porcelain=v1", "-uall", "-z"], topLevel);
+	if (res.exitCode !== 0) return;
+
+	const tokens = res.stdout.split("\0");
+	for (let i = 0; i < tokens.length; i++) {
+		const rec = tokens[i];
+		if (rec.length === 0) continue;
+		const x = rec[0];
+		const y = rec[1];
+		const p = rec.slice(3);
+		if (unsafeCarryPath(p)) continue;
+
+		if (x === "R" || x === "C") {
+			// Rename/copy: the record path is the NEW path; the next NUL
+			// token holds the ORIGINAL path.
+			const orig = tokens[i + 1] ?? "";
+			i++;
+			if (unsafeCarryPath(orig)) continue;
+			if (x === "R") fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
+			copyCarriedFile(topLevel, worktreePath, p);
+			continue;
+		}
+		if (x === "D" || y === "D") {
+			fs.rmSync(path.join(worktreePath, p), { recursive: true, force: true });
+			continue;
+		}
+		if (x === "?" && y === "?") {
+			copyCarriedFile(topLevel, worktreePath, p);
+			continue;
+		}
+		if (x === "M" || x === "A" || x === "T" || x === "U" || y === "M" || y === "A" || y === "T" || y === "U") {
+			if (fs.existsSync(path.join(topLevel, p))) copyCarriedFile(topLevel, worktreePath, p);
+		}
+	}
+}
+
+/** Paths come from git and are trusted, but assert-skip anything odd anyway. */
+function unsafeCarryPath(p: string): boolean {
+	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
+}
+
+/** Copy one file (or symlink-as-link) from the parent tree into the worktree,
+ *  preserving the exec bit. Submodule gitlink dirs are skipped — a known
+ *  limitation, submodule contents are not carried. */
+function copyCarriedFile(topLevel: string, worktreePath: string, rel: string): void {
+	const src = path.join(topLevel, rel);
+	const dst = path.join(worktreePath, rel);
+	fs.mkdirSync(path.dirname(dst), { recursive: true });
+	const st = fs.lstatSync(src);
+	if (st.isSymbolicLink()) {
+		fs.symlinkSync(fs.readlinkSync(src), dst);
+	} else if (st.isDirectory()) {
+		return;
+	} else {
+		fs.copyFileSync(src, dst);
+		fs.chmodSync(dst, st.mode & 0o7777);
 	}
 }
 
@@ -1919,6 +1999,12 @@ export default function (pi: ExtensionAPI) {
 				default: true,
 			}),
 		),
+		carryUncommitted: Type.Optional(
+			Type.Boolean({
+				description: "Carry the parent's uncommitted working-tree state (untracked, modified, staged, deleted files) into the isolated worktree at creation, so the subagent sees what the orchestrator prepared. Default: true. Ignored when baseRef is set — the worktree then branches from that ref's tree. Set false to reproduce HEAD-only behavior.",
+				default: true,
+			}),
+		),
 		baseRef: Type.Optional(
 			Type.String({
 				description: "Git ref (commit hash, branch, or tag) to fork the worktree from. Defaults to HEAD if omitted. Use this when changes are on a feature branch that isn't ready for main — pass the branch name or ref. If changes are only in the working tree, create a feature branch, commit them, and pass that branch.",
@@ -2037,7 +2123,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (params.isolate !== false) {
-				const wt = await createWorktree(cwd, sessionId, params.baseRef);
+				const wt = await createWorktree(cwd, sessionId, params.baseRef, params.carryUncommitted ?? true);
 				if (wt) {
 					effectiveCwd = wt.worktreePath;
 					worktreePath = wt.worktreePath;
