@@ -7,7 +7,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -342,6 +342,13 @@ interface RunningSubagent {
 	isolationBranch: string | null;
 	parentHeadCommit: string | null;
 	parentCwd: string;
+	// Snapshot of the parent's state carried into the worktree (WO-2026-035).
+	// preCommitSteps compares the worktree against it to skip committing files
+	// the subagent never touched. In-memory only: if the parent restarts and
+	// orphans the subagent, this is lost and the filter degrades to committing
+	// everything staged (best-effort). Null when no carry happened
+	// (carryUncommitted:false / baseRef / no worktree).
+	carried: CarriedSnapshot | null;
 	// Cached parent tracker key (session id or `pid:<pid>` fallback) for the
 	// soft-prompt guard and the cross-process persisted status file. Computed
 	// at spawn time when ctx is available; reused at stop time when ctx is
@@ -447,7 +454,7 @@ async function createWorktree(
 	sessionId: string,
 	baseRef?: string,
 	carryUncommitted: boolean = true,
-): Promise<{ worktreePath: string; branchName: string; parentHeadCommit: string } | null> {
+): Promise<{ worktreePath: string; branchName: string; parentHeadCommit: string; carried?: CarriedSnapshot } | null> {
 	const t0 = PI_ASYNC_DEBUG ? Date.now() : 0;
 	try {
 		const baseCommitRef = baseRef || "HEAD";
@@ -487,10 +494,14 @@ async function createWorktree(
 
 		// Best-effort overlay of the parent's uncommitted state; a failure
 		// degrades to the plain HEAD-only worktree, never fails the dispatch.
+		// `carried` is present (possibly empty map) when the overlay ran,
+		// absent when skipped (carryUncommitted:false / baseRef) or when the
+		// overlay threw. In-memory only — no persistence.
+		let carried: CarriedSnapshot | undefined;
 		if (carryUncommitted && !baseRef) {
 			const tCarry = PI_ASYNC_DEBUG ? Date.now() : 0;
 			try {
-				await carryUncommittedState(topLevel, worktreePath);
+				carried = await carryUncommittedState(topLevel, worktreePath);
 			} catch (e: any) {
 				debugLog(`createWorktree: carry failed — degrading to HEAD-only: ${e.message || e}`);
 			}
@@ -498,7 +509,34 @@ async function createWorktree(
 		}
 
 		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: total: ${Date.now() - t0}ms`);
-		return { worktreePath, branchName, parentHeadCommit };
+		return {
+			worktreePath,
+			branchName,
+			parentHeadCommit,
+			...(carried !== undefined ? { carried } : {}),
+		};
+	} catch {
+		return null;
+	}
+}
+
+/** Per-path snapshot of the carried state; the completion filter compares
+ *  the worktree against this to find files the subagent never touched. */
+type CarriedEntry = { state: "present"; hash: string } | { state: "absent" };
+type CarriedSnapshot = Map<string, CarriedEntry>;
+
+/** sha256 hex of a file's bytes, or `"link:" + target` for a symlink,
+ *  or null when the path is absent / not a regular file or symlink.
+ *  Single source of truth for the carry snapshot hashes — used by both
+ *  carryUncommittedState (capture) and the preCommitSteps completion filter
+ *  (compare). Mirrored identically by test-completion-filter.cjs — keep in
+ *  sync. */
+function hashCarriedFile(absPath: string): string | null {
+	try {
+		const st = fs.lstatSync(absPath);
+		if (st.isSymbolicLink()) return "link:" + fs.readlinkSync(absPath);
+		if (!st.isFile()) return null;
+		return createHash("sha256").update(fs.readFileSync(absPath)).digest("hex");
 	} catch {
 		return null;
 	}
@@ -507,13 +545,29 @@ async function createWorktree(
 /** Best-effort overlay of the parent's uncommitted working-tree state
  *  (untracked, modified, staged, deleted, renamed, copied) into a fresh
  *  worktree, preserving exec bits and symlinks-as-links. Read-only on the
- *  parent (single `git status`); writes only under `worktreePath`. Returns
- *  without carrying if `git status` itself fails; fs-level overlay failures
- *  throw and are caught by the caller, which degrades to the plain HEAD-only
- *  worktree. Mirrored by test-carry-uncommitted.cjs — keep both in sync. */
-async function carryUncommittedState(topLevel: string, worktreePath: string): Promise<void> {
+ *  parent (single `git status`); writes only under `worktreePath`. Never
+ *  returns null: a fresh empty map when `git status` fails or there are no
+ *  changes. fs-level overlay failures still throw and are caught by the
+ *  caller (createWorktree), which degrades to the plain HEAD-only worktree.
+ *  Each carried path is recorded in the returned CarriedSnapshot: sha256 of
+ *  the exact bytes written into the worktree (computed via hashCarriedFile,
+ *  the shared helper — copyFileSync kept, hash read separately), `"link:"`
+ *  + target for symlinks, `absent` for carried deletions; `.git`/unsafe
+ *  paths are skipped and absent from the snapshot. Mirrored by
+ *  test-carry-uncommitted.cjs and test-completion-filter.cjs — keep in sync. */
+async function carryUncommittedState(topLevel: string, worktreePath: string): Promise<CarriedSnapshot> {
+	const snapshot: CarriedSnapshot = new Map();
 	const res = await git(["status", "--porcelain=v1", "-uall", "-z"], topLevel);
-	if (res.exitCode !== 0) return;
+	if (res.exitCode !== 0) return snapshot;
+
+	// Record a present-entry for a path just copied into the worktree.
+	// If hashing fails (path gone / not a regular file), the path is left
+	// out of the snapshot — the filter then treats it as touched, which
+	// degrades to today's commit-everything behavior.
+	const recordPresent = (rel: string) => {
+		const hash = hashCarriedFile(path.join(worktreePath, rel));
+		if (hash !== null) snapshot.set(rel, { state: "present", hash });
+	};
 
 	const tokens = res.stdout.split("\0");
 	for (let i = 0; i < tokens.length; i++) {
@@ -530,22 +584,32 @@ async function carryUncommittedState(topLevel: string, worktreePath: string): Pr
 			const orig = tokens[i + 1] ?? "";
 			i++;
 			if (unsafeCarryPath(orig)) continue;
-			if (x === "R") fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
+			if (x === "R") {
+				fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
+				snapshot.set(orig, { state: "absent" });
+			}
 			copyCarriedFile(topLevel, worktreePath, p);
+			recordPresent(p);
 			continue;
 		}
 		if (x === "D" || y === "D") {
 			fs.rmSync(path.join(worktreePath, p), { recursive: true, force: true });
+			snapshot.set(p, { state: "absent" });
 			continue;
 		}
 		if (x === "?" && y === "?") {
 			copyCarriedFile(topLevel, worktreePath, p);
+			recordPresent(p);
 			continue;
 		}
 		if (x === "M" || x === "A" || x === "T" || x === "U" || y === "M" || y === "A" || y === "T" || y === "U") {
-			if (fs.existsSync(path.join(topLevel, p))) copyCarriedFile(topLevel, worktreePath, p);
+			if (fs.existsSync(path.join(topLevel, p))) {
+				copyCarriedFile(topLevel, worktreePath, p);
+				recordPresent(p);
+			}
 		}
 	}
+	return snapshot;
 }
 
 /** Paths come from git and are trusted, but assert-skip anything odd anyway. */
@@ -610,6 +674,35 @@ async function preCommitSteps(rs: RunningSubagent): Promise<{
 		if (scratch.length > 0) {
 			await git(["reset", "-q", "--", ...scratch], worktreePath);
 		}
+
+		// Carried files that are byte-identical to what was carried in are
+		// the parent's state, not the subagent's work — don't commit them.
+		// `git reset -q -- <rel>` restores the index entry for that path to
+		// HEAD, so it also unstages carried *deletions* (file absent on the
+		// branch). Args-array call handles paths with spaces. Any failure
+		// inside the loop degrades via debugLog — never abort preCommitSteps.
+		// Mirrored by test-completion-filter.cjs — keep in sync.
+		const carried = rs.carried;
+		if (carried && carried.size > 0) {
+			const untouched: string[] = [];
+			try {
+				for (const [rel, snap] of carried) {
+					const abs = path.join(worktreePath, rel);
+					if (snap.state === "absent") {
+						if (!fs.existsSync(abs)) untouched.push(rel);
+					} else {
+						const cur = hashCarriedFile(abs);
+						if (cur === snap.hash) untouched.push(rel);
+					}
+				}
+			} catch (e: any) {
+				if (PI_ASYNC_DEBUG) debugLog(`preCommitSteps: carry filter failed — continuing with untouched list: ${e.message || e}`);
+			}
+			if (untouched.length > 0) {
+				await git(["reset", "-q", "--", ...untouched], worktreePath);
+			}
+		}
+
 		const diffResult = await git(["diff", "--cached", "--quiet"], worktreePath);
 		if (diffResult.exitCode !== 0) {
 			const commitMsg = `subagent(${rs.agentName}): ${subjectFromTask(rs.task)}`;
@@ -871,6 +964,11 @@ async function spawnSubagent(
 	// identity used for the auto-commit subject and result display.
 	// See decisions/subagents/009-clean-task-identity.md.
 	promptMessage?: string,
+	// Snapshot of the parent's uncommitted state carried into the worktree
+	// (WO-2026-035), for the preCommitSteps completion filter. Trailing and
+	// optional: undefined/null when no carry happened (carryUncommitted:false,
+	// baseRef, or no worktree). In-memory only — no persistence.
+	carriedSnapshot?: CarriedSnapshot,
 ): Promise<RunningSubagent> {
 	// Message actually delivered to the child process. `task` stays the clean
 	// identity (commit subject / "Task:" display); the preamble and
@@ -929,6 +1027,7 @@ async function spawnSubagent(
 			? undefined
 			: agent.reviewParentRequirements,
 		usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
+		carried: carriedSnapshot ?? null,
 	};
 
 	// Unix socket server for external viewers
@@ -2111,6 +2210,7 @@ export default function (pi: ExtensionAPI) {
 			let worktreePath: string | null = null;
 			let isolationBranch: string | null = null;
 			let parentHeadCommit: string | null = null;
+			let carriedSnapshot: CarriedSnapshot | undefined;
 			let isolationStatus = "";
 			let taskForAgent = params.task;
 
@@ -2129,6 +2229,7 @@ export default function (pi: ExtensionAPI) {
 					worktreePath = wt.worktreePath;
 					isolationBranch = wt.branchName;
 					parentHeadCommit = wt.parentHeadCommit;
+					carriedSnapshot = wt.carried;
 					isolationStatus = `\nIsolated in worktree \`${wt.branchName}\` (off \`${wt.parentHeadCommit.slice(0, 8)}\`)`;
 					taskForAgent =
 						`## Worktree isolation\n` +
@@ -2159,6 +2260,7 @@ export default function (pi: ExtensionAPI) {
 				// Full delivery payload: worktree-isolation preamble + (possibly
 				// review-policy-annotated) task. Reaches the child only.
 				maybeInjectReviewPolicySkip(taskForAgent, params.review_policy),
+				carriedSnapshot, // completion-filter snapshot (WO-2026-035)
 			);
 
 			running.set(sessionId, rs);

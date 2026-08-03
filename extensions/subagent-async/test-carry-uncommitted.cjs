@@ -11,7 +11,8 @@
  * This test cannot import index.ts — `typebox` and `@earendil-works/*`
  * resolve only under jiti at runtime. So, following the test-subject.cjs
  * precedent, it mirrors the carry logic (porcelain parsing + copy/delete
- * decisions) and exercises it end-to-end against REAL temp repos and REAL
+ * decisions + the CarriedSnapshot capture used by the WO-2026-035 completion
+ * filter) and exercises it end-to-end against REAL temp repos and REAL
  * `git worktree add`. Every row of the behavior/failure matrix is a case,
  * and the parser is pinned against real `git status --porcelain=v1 -uall -z`
  * output (including a rename `R  new\0old\0` and a copy `C  new\0old\0`).
@@ -25,15 +26,39 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
 
 // ── carryUncommittedState — KEEP IN SYNC with index.ts ────────────────────
 // Mirror of the carry overlay in extensions/subagent-async/index.ts
-// (carryUncommittedState + unsafeCarryPath + copyCarriedFile). Same porcelain
-// -z parsing, same copy/delete/rename/copy decisions, same path safety, same
-// symlink-as-link and exec-bit handling. When changing one side, change the
+// (carryUncommittedState + unsafeCarryPath + copyCarriedFile + hashCarriedFile).
+// Same porcelain -z parsing, same copy/delete/rename/copy decisions, same path
+// safety, same symlink-as-link and exec-bit handling. It now ALSO returns the
+// CarriedSnapshot (per-path sha256 hash / `"link:" + target` / `absent`) that
+// preCommitSteps' completion filter compares against — the filter itself is
+// mirrored by test-completion-filter.cjs. When changing one side, change the
 // other. Both are pinned below against real `git status` output.
 function unsafeCarryPath(p) {
 	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
+}
+
+// ── hashCarriedFile — KEEP IN SYNC with index.ts ──────────────────────────
+// sha256 hex of a file's bytes, `"link:" + target` for a symlink, null when
+// absent / not a regular file or symlink. Single source of truth for the
+// snapshot hashes (capture here, compare in test-completion-filter.cjs).
+function hashCarriedFile(absPath) {
+	try {
+		const st = fs.lstatSync(absPath);
+		if (st.isSymbolicLink()) return "link:" + fs.readlinkSync(absPath);
+		if (!st.isFile()) return null;
+		return createHash("sha256").update(fs.readFileSync(absPath)).digest("hex");
+	} catch {
+		return null;
+	}
+}
+
+function recordPresent(snapshot, worktreePath, rel) {
+	const hash = hashCarriedFile(path.join(worktreePath, rel));
+	if (hash !== null) snapshot.set(rel, { state: "present", hash });
 }
 
 function copyCarriedFile(topLevel, worktreePath, rel) {
@@ -52,10 +77,16 @@ function copyCarriedFile(topLevel, worktreePath, rel) {
 }
 
 function carryUncommittedState(topLevel, worktreePath) {
-	const out = execFileSync("git", ["status", "--porcelain=v1", "-uall", "-z"], {
-		cwd: topLevel,
-		encoding: "utf8",
-	});
+	const snapshot = new Map();
+	let out;
+	try {
+		out = execFileSync("git", ["status", "--porcelain=v1", "-uall", "-z"], {
+			cwd: topLevel,
+			encoding: "utf8",
+		});
+	} catch {
+		return snapshot; // git status failed — empty snapshot, mirror of index.ts
+	}
 	const tokens = out.split("\0");
 	for (let i = 0; i < tokens.length; i++) {
 		const rec = tokens[i];
@@ -71,22 +102,32 @@ function carryUncommittedState(topLevel, worktreePath) {
 			const orig = tokens[i + 1] ?? "";
 			i++;
 			if (unsafeCarryPath(orig)) continue;
-			if (x === "R") fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
+			if (x === "R") {
+				fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
+				snapshot.set(orig, { state: "absent" });
+			}
 			copyCarriedFile(topLevel, worktreePath, p);
+			recordPresent(snapshot, worktreePath, p);
 			continue;
 		}
 		if (x === "D" || y === "D") {
 			fs.rmSync(path.join(worktreePath, p), { recursive: true, force: true });
+			snapshot.set(p, { state: "absent" });
 			continue;
 		}
 		if (x === "?" && y === "?") {
 			copyCarriedFile(topLevel, worktreePath, p);
+			recordPresent(snapshot, worktreePath, p);
 			continue;
 		}
 		if (["M", "A", "T", "U"].includes(x) || ["M", "A", "T", "U"].includes(y)) {
-			if (fs.existsSync(path.join(topLevel, p))) copyCarriedFile(topLevel, worktreePath, p);
+			if (fs.existsSync(path.join(topLevel, p))) {
+				copyCarriedFile(topLevel, worktreePath, p);
+				recordPresent(snapshot, worktreePath, p);
+			}
 		}
 	}
+	return snapshot;
 }
 
 // ── createWorktree mirror — control flow only ──────────────────────────────
@@ -94,7 +135,9 @@ function carryUncommittedState(topLevel, worktreePath) {
 // cleanup, `git worktree add`, then the optional carry. The pieces under test
 // here are the overlay gate (`carryUncommitted && !baseRef`) and the
 // best-effort catch — a carry failure must never fail the dispatch, while a
-// `worktree add` failure must (returns null).
+// `worktree add` failure must (returns null). Also returns the carried
+// CarriedSnapshot (present — possibly empty — when the overlay ran, absent
+// when skipped or when the overlay threw).
 function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = true) {
 	let topLevel;
 	try {
@@ -129,14 +172,20 @@ function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = 
 	} catch {
 		return null; // worktree add failure is fatal, like the real code
 	}
+	let carried;
 	if (carryUncommitted && !baseRef) {
 		try {
-			carryUncommittedState(topLevel, worktreePath);
+			carried = carryUncommittedState(topLevel, worktreePath);
 		} catch {
 			// best-effort: degrade to HEAD-only, never fail the dispatch
 		}
 	}
-	return { worktreePath, branchName, parentHeadCommit: headCommit };
+	return {
+		worktreePath,
+		branchName,
+		parentHeadCommit: headCommit,
+		...(carried !== undefined ? { carried } : {}),
+	};
 }
 
 // ── Test harness ───────────────────────────────────────────────────────────
@@ -455,6 +504,42 @@ test("18. non-git cwd — createWorktree returns null", () => {
 	} finally {
 		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
 	}
+});
+
+test("19. carried snapshot — present hashes, absent deletions, link-prefixed symlinks", () => {
+	withCarryFlow({}, (dir) => {
+		fs.writeFileSync(path.join(dir, "baseline.txt"), "baseline\n");
+		fs.writeFileSync(path.join(dir, "gone-wt.txt"), "x\n");
+	}, (dir) => {
+		// Mixed uncommitted state: modified file, deleted file, untracked
+		// symlink, untracked file. Each must land in the snapshot correctly.
+		fs.writeFileSync(path.join(dir, "baseline.txt"), "modified\n");
+		fs.rmSync(path.join(dir, "gone-wt.txt"));
+		fs.symlinkSync("baseline.txt", path.join(dir, "newlink"));
+		fs.writeFileSync(path.join(dir, "untracked.txt"), "u\n");
+	}, (result) => {
+		const snap = result.carried;
+		assert.ok(snap instanceof Map, "snapshot is a Map");
+		const h1 = snap.get("baseline.txt");
+		assert.ok(h1 && h1.state === "present", "modified file recorded as present");
+		eq(h1.hash, hashCarriedFile(path.join(result.worktreePath, "baseline.txt")), "hash = sha256 of the carried bytes");
+		eq(h1.hash, hashCarriedFile(path.join(result.worktreePath, "baseline.txt")), "stable across reads");
+		const del = snap.get("gone-wt.txt");
+		assert.deepStrictEqual(del, { state: "absent" }, "deletion recorded as absent");
+		const link = snap.get("newlink");
+		assert.ok(link && link.state === "present", "symlink recorded as present");
+		eq(link.hash, "link:baseline.txt", "symlink hash is the link prefix + target");
+		const unt = snap.get("untracked.txt");
+		assert.ok(unt && unt.state === "present", "untracked file recorded as present");
+		eq(snap.size, 4, "exactly the four carried paths, nothing else");
+	});
+});
+
+test("20. clean tree — snapshot is a present empty map", () => {
+	withCarryFlow({}, defaultBaseline, () => { /* no uncommitted state */ }, (result) => {
+		assert.ok(result.carried instanceof Map, "snapshot present even with no changes");
+		eq(result.carried.size, 0, "empty map for a clean tree");
+	});
 });
 
 // ── Result ─────────────────────────────────────────────────────────────────
