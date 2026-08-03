@@ -76,7 +76,39 @@ function copyCarriedFile(topLevel, worktreePath, rel) {
 	}
 }
 
+// ── carryUncommittedState — KEEP IN SYNC with index.ts ────────────────────
+// Mirror of the carry overlay in extensions/subagent-async/index.ts
+// (carryUncommittedState + unsafeCarryPath + copyCarriedFile + hashCarriedFile).
+// Same porcelain -z parsing, same copy/delete/rename/copy decisions, same path
+// safety, same symlink-as-link and exec-bit handling. It now ALSO returns the
+// CarriedSnapshot (per-path sha256 hash / `"link:" + target` / `absent`) that
+// preCommitSteps' completion filter compares against — the filter itself is
+// mirrored by test-completion-filter.cjs. When changing one side, change the
+// other. Both are pinned below against real `git status` output.
+//
+// WIRING HAZARD (do not "simplify"): index.ts's createWorktree destructures the
+// git() result OBJECT and must extract the path string via .stdout.trim()
+// before calling carryUncommittedState. Passing the object instead of the
+// string makes the overlay silently no-op in production (spawn cwd invalid →
+// best-effort catch). The fail-fast typeof guard below exists on BOTH sides;
+// matrix row 1 pins the end-to-end wiring through createWorktreeMirror, and
+// row 21 pins the guard itself.
+function unsafeCarryPath(p) {
+	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
+}
+
+// ── carryUncommittedState entry — KEEP IN SYNC with index.ts ──────────────
+// The mirror receives the extracted path STRING from createWorktreeMirror,
+// exactly like production. A non-string (e.g. the git result object) throws,
+// matching the production fail-fast guard.
+function assertTopLevelString(topLevel) {
+	if (typeof topLevel !== "string" || topLevel.length === 0) {
+		throw new TypeError("carryUncommittedState: topLevel must be the repo path string");
+	}
+}
+
 function carryUncommittedState(topLevel, worktreePath) {
+	assertTopLevelString(topLevel);
 	const snapshot = new Map();
 	let out;
 	try {
@@ -138,6 +170,13 @@ function carryUncommittedState(topLevel, worktreePath) {
 // `worktree add` failure must (returns null). Also returns the carried
 // CarriedSnapshot (present — possibly empty — when the overlay ran, absent
 // when skipped or when the overlay threw).
+//
+// WIRING: production destructures the git() RESULT OBJECT and extracts the
+// path string via .stdout.trim(); this mirror does the same with the
+// execFileSync stdout string (which is already the raw path). The extract-
+// then-pass-string shape is what row 1 exercises end-to-end; row 21 pins the
+// fail-fast guard that makes an object-wiring regression loud instead of
+// silent.
 function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = true) {
 	let topLevel;
 	try {
@@ -540,6 +579,24 @@ test("20. clean tree — snapshot is a present empty map", () => {
 		assert.ok(result.carried instanceof Map, "snapshot present even with no changes");
 		eq(result.carried.size, 0, "empty map for a clean tree");
 	});
+});
+
+test("21. wiring regression — carryUncommittedState rejects a non-string topLevel (git result object)", () => {
+	// WO-2026-034 production bug: createWorktree passed the git() RESULT
+	// OBJECT as topLevel → spawn cwd invalid → best-effort catch → carry
+	// silently never ran. The fail-fast guard (index.ts + this mirror) makes
+	// that loud. Pinning both sides.
+	const obj = { stdout: "/some/repo\n", stderr: "", exitCode: 0 };
+	assert.throws(
+		() => carryUncommittedState(obj, "/tmp/pi-subagent-wt-wiringpin"),
+		/\btopLevel must be the repo path string\b/,
+		"non-string topLevel must throw the fail-fast TypeError",
+	);
+	// The extracted path STRING must be accepted.
+	assert.doesNotThrow(
+		() => carryUncommittedState("/nonexistent-repo-path", "/tmp/pi-subagent-wt-wiringpin"),
+		"string topLevel must not trigger the guard",
+	);
 });
 
 // ── Result ─────────────────────────────────────────────────────────────────

@@ -460,15 +460,21 @@ async function createWorktree(
 		const baseCommitRef = baseRef || "HEAD";
 
 		// Run the two independent rev-parse calls concurrently.
-		const [topLevel, headResult] = await Promise.all([
+		// NOTE: `topLevelResult` is the git() RESULT OBJECT {stdout, stderr,
+		// exitCode}; the repo path string must be extracted via .stdout.trim()
+		// before passing it around. Passing the object as a path silently kills
+		// the carry overlay (spawn cwd invalid → best-effort catch swallows) —
+		// caught by real-dispatch E2E, not by the mirror tests.
+		const [topLevelResult, headResult] = await Promise.all([
 			git(["rev-parse", "--show-toplevel"], parentCwd),
 			git(["rev-parse", baseCommitRef], parentCwd),
 		]);
 		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: rev-parse (parallel): ${Date.now() - t0}ms`);
 
-		if (topLevel.exitCode !== 0) return null;
+		if (topLevelResult.exitCode !== 0) return null;
 		if (headResult.exitCode !== 0) return null;
 		const parentHeadCommit = headResult.stdout.trim();
+		const topLevel = topLevelResult.stdout.trim();
 
 		const suffix = sessionId.slice(-12);
 		const branchName = `pi-subagent-${suffix}`;
@@ -556,6 +562,12 @@ function hashCarriedFile(absPath: string): string | null {
  *  paths are skipped and absent from the snapshot. Mirrored by
  *  test-carry-uncommitted.cjs and test-completion-filter.cjs — keep in sync. */
 async function carryUncommittedState(topLevel: string, worktreePath: string): Promise<CarriedSnapshot> {
+	// Fail-fast: a non-string here means the caller passed the git() result
+	// object instead of the extracted path (see createWorktree). Throwing makes
+	// the caller's best-effort catch log it instead of silently no-oping.
+	if (typeof topLevel !== "string" || topLevel.length === 0) {
+		throw new TypeError("carryUncommittedState: topLevel must be the repo path string");
+	}
 	const snapshot: CarriedSnapshot = new Map();
 	const res = await git(["status", "--porcelain=v1", "-uall", "-z"], topLevel);
 	if (res.exitCode !== 0) return snapshot;
