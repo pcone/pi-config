@@ -22,3 +22,4 @@ date: 2026-07-14
 | 013 | Implementer rename — implement-pro → implement (drop the "pro" suffix) | done |
 | 014 | Review-skip single source of truth — work order as first-class spawn parameter (`workOrderPath`) | done |
 | 015 | Silence-based progress-kill timeout (activates 001) | done |
+| 016 | Fleet speed experiment — standard reviewers to GPT-5.6 Luna, implementer stays Flash | done |
