@@ -31,6 +31,15 @@ const HARD_KILL_DELAY_MS = 5000;
 // subagent_stop. The watchdog resets on every assistant turn, so it
 // only fires when the subagent is genuinely stuck.
 const SUBAGENT_STALE_TURN_MS = 5 * 60 * 1000; // 5 minutes
+// Decision 015 stage-2: a child SILENT for SILENCE_TIMEOUT_DEFAULT_MS (no
+// tool calls AND no assistant messages, per `lastActivityMs` tracking) is
+// auto-killed via the shared subagent_kill machinery (SIGTERM → SIGKILL),
+// with a `[Killed via progress-timeout]` marker delivered so the parent's
+// wait resolves and the session stays resumable. The default (30 min) is
+// strictly longer than SUBAGENT_STALE_TURN_MS (5 min) — the stage-1 wake
+// gives the caller four chances to intervene before stage 2 fires.
+// 0/negative per-spawn (silenceTimeoutMs param) disables stage 2 entirely.
+const SILENCE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes
 const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
 const REVIEW_ROUND_CAP = 3;
 
@@ -363,6 +372,21 @@ interface RunningSubagent {
 	// Stalled-turn watchdog timer. Resets on every assistant message_end;
 	// fires a wake-up steer message after SUBAGENT_STALE_TURN_MS.
 	staleTimer: NodeJS.Timeout | null;
+	// Decision 015 stage-2: last-activity timestamp — updated on any log
+	// line written to the child's log, tool_execution_start/end, and
+	// assistant message_end. The silence-kill timer compares this to
+	// silenceTimeoutMs to tell a hung child from a slow-but-healthy one.
+	lastActivityMs: number;
+	// Stage-2 silence-kill timer handle. Cleaned up in the same teardown as
+	// the stage-1 watchdog (close handler + kill dispatch). Null when
+	// disabled or not armed.
+	silenceTimer: NodeJS.Timeout | null;
+	// Resolved stage-2 timeout for this child (undefined → 30-min default;
+	// 0/negative/NaN → disabled). Per-spawn; no global setting.
+	silenceTimeoutMs: number;
+	// Kill source for the delivered marker: "kill-tool" (subagent_kill) or
+	// "progress-timeout" (stage-2 auto-kill). Null until killedExplicitly.
+	killedVia: "kill-tool" | "progress-timeout" | null;
 }
 
 const running = new Map<string, RunningSubagent>();
@@ -909,6 +933,8 @@ function rpcSend(stdin: NodeJS.WritableStream | null, command: Record<string, an
  * handler is still the single owner of footer/status rendering.
  */
 function appendRunningLogLine(rs: RunningSubagent, text: string): void {
+	// Decision 015: same activity signal as the closure-scoped `logEntry`.
+	bumpActivity(rs);
 	try { fs.appendFileSync(rs.logPath, text + "\n"); } catch { /* */ }
 	rs.logLines.push(text);
 	rs.watchHandle?.requestRender();
@@ -998,6 +1024,10 @@ async function spawnSubagent(
 	// single source of truth for the review gate — it wins over
 	// `reviewPolicy` and the task-text bullet on disagreement.
 	workOrderPolicy?: "required" | "skip",
+	// Decision 015 stage-2: silence-based auto-kill. The child is killed
+	// after `silenceTimeoutMs` with no activity (no tool calls AND no
+	// assistant messages). Default 30 min; 0 or negative disables.
+	silenceTimeoutMs?: number,
 ): Promise<RunningSubagent> {
 	// Message actually delivered to the child process. `task` stays the clean
 	// identity (commit subject / "Task:" display); the preamble and
@@ -1036,6 +1066,12 @@ async function spawnSubagent(
 		effectiveReviewPolicy === "skip" ||
 		(workOrderPolicy === undefined && /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task));
 
+	// Decision 015 stage-2: resolve the per-spawn silence timeout. Undefined
+	// → 30-min default; 0/negative (and NaN/Infinity) → disabled (0).
+	const effectiveSilenceTimeoutMs = silenceTimeoutMs === undefined
+		? SILENCE_TIMEOUT_DEFAULT_MS
+		: (Number.isFinite(silenceTimeoutMs) && silenceTimeoutMs > 0 ? silenceTimeoutMs : 0);
+
 	const rs: RunningSubagent = {
 		proc: null as any,
 		sessionId,
@@ -1066,6 +1102,10 @@ async function spawnSubagent(
 		reviewParentRequirements: gateSkipped ? undefined : agent.reviewParentRequirements,
 		usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
 		carried: carriedSnapshot ?? null,
+		lastActivityMs: Date.now(),
+		silenceTimer: null,
+		silenceTimeoutMs: effectiveSilenceTimeoutMs,
+		killedVia: null,
 	};
 
 	// Unix socket server for external viewers
@@ -1085,6 +1125,9 @@ async function spawnSubagent(
 
 	// Open the live log file and write the header.
 	const logEntry = (text: string) => {
+		// Decision 015: any log output counts as activity — a child emitting
+		// logs is alive, so the stage-2 silence-kill timer must not fire.
+		bumpActivity(rs);
 		try { fs.appendFileSync(logPath, text + "\n"); } catch { /* */ }
 		rs.logLines.push(text);
 		rs.watchHandle?.requestRender();
@@ -1219,6 +1262,9 @@ async function spawnSubagent(
 
 		// ── Live log: tool start ───────────────────────────────────────
 		if (event.type === "tool_execution_start") {
+			// Decision 015: tool execution counts as activity (the logEntry
+			// below also bumps — explicit here for the spec's signal union).
+			bumpActivity(rs);
 			const tn: string = event.toolName || "";
 			const ta: Record<string, any> = event.args || {};
 			const summary = formatToolAction(tn, ta);
@@ -1228,6 +1274,7 @@ async function spawnSubagent(
 
 		// ── Live log: tool end ─────────────────────────────────────────
 		if (event.type === "tool_execution_end") {
+			bumpActivity(rs);
 			const summary = pendingToolCalls.get(event.toolCallId) || event.toolName || "tool";
 			pendingToolCalls.delete(event.toolCallId);
 			if (event.isError) {
@@ -1285,6 +1332,8 @@ async function spawnSubagent(
 				rs.progress.turns++;
 				// Reset stalled-turn watchdog — fresh progress means no wake-up needed.
 				bumpStaleWatchdog(pi, rs);
+				// Decision 015: an assistant message is activity too.
+				bumpActivity(rs);
 				// Accumulate usage stats
 				rs.usageStats.input += msg.usage.input;
 				rs.usageStats.output += msg.usage.output;
@@ -1463,9 +1512,10 @@ async function spawnSubagent(
 
 	proc.on("close", async (code) => {
 		debugLog("close: code=" + code + " resolve=" + !!rs.resolveOnStop + " done=" + rs.isDone + " turns=" + rs.progress.turns);
-		// Cancel the stalled-turn watchdog — the subagent is leaving the
-		// running set, so the timer must not fire again.
+		// Cancel the stalled-turn watchdog and the stage-2 silence timer —
+		// the subagent is leaving the running set, so neither may fire again.
 		if (rs.staleTimer) { clearTimeout(rs.staleTimer); rs.staleTimer = null; }
+		if (rs.silenceTimer) { clearTimeout(rs.silenceTimer); rs.silenceTimer = null; }
 		// Cancel any active wait timer — the subagent's completion delivers
 		// its own result as a steer message, so a follow-up "still running"
 		// wakeup would be redundant. Multiple subagents share one timer, so
@@ -1525,8 +1575,11 @@ async function spawnSubagent(
 		// No double delivery: resolveOnStop and deliverResult are mutually exclusive.
 		if (rs.resolveOnStop) {
 			let stoppedText = getFinalOutput(rs.messages) + commitNote;
-			if (rs.killedExplicitly) {
-				stoppedText = "[Killed via subagent_kill — process terminated, work in this subagent is lost]\n" + stoppedText;
+			// Kill marker keyed on the kill source (subagent_kill tool vs
+			// decision 015 stage-2 progress-timeout auto-kill).
+			const marker = killedMarker(rs);
+			if (marker) {
+				stoppedText = marker + "\n" + stoppedText;
 			}
 			rs.resolveOnStop(stoppedText);
 			rs.resolveOnStop = null;
@@ -1562,6 +1615,10 @@ async function spawnSubagent(
 	// Arm the stalled-turn watchdog — the subagent is now running and
 	// will reset the timer on every assistant turn.
 	bumpStaleWatchdog(pi, rs);
+
+	// Arm the stage-2 silence-kill timer (decision 015) — kills a child
+	// silent for `silenceTimeoutMs` (no-op when disabled).
+	armSilenceTimer(rs);
 
 	return rs;
 }
@@ -1785,16 +1842,131 @@ function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 	}, SUBAGENT_STALE_TURN_MS);
 }
 
+// ── Decision 015: silence-based stage-2 auto-kill ─────────────────────────
+//
+// Stage 1 (above) wakes the caller after a stale turn; stage 2 kills a
+// child that has been SILENT — no tool calls AND no assistant messages, per
+// `lastActivityMs` — for `silenceTimeoutMs` (default 30 min, strictly longer
+// than SUBAGENT_STALE_TURN_MS). The kill reuses the `subagent_kill`
+// dispatch (dispatchKillSignals) so there is exactly one SIGTERM→SIGKILL
+// path; the delivered marker is greppable as `[Killed via progress-timeout]`
+// and the session file is preserved, so `subagent_resume` can continue the
+// killed session.
+
+/** Record a progress signal from the child (tool execution, assistant
+ *  message, or any log output). The stage-2 silence-kill timer reads this
+ *  timestamp to tell a hung child from a slow-but-healthy one. */
+function bumpActivity(rs: RunningSubagent): void {
+	rs.lastActivityMs = Date.now();
+}
+
+/** Arm the stage-2 silence-kill timer for `rs`. Mirrors the stage-1
+ *  watchdog's setTimeout chain: fires when the child has been silent for
+ *  `silenceTimeoutMs` and re-arms from its own callback when activity has
+ *  slid the deadline (activity merely bumps `lastActivityMs`; the callback
+ *  re-checks staleness at fire time). `silenceTimeoutMs <= 0` disables
+ *  stage 2 entirely. */
+function armSilenceTimer(rs: RunningSubagent): void {
+	if (rs.silenceTimer) clearTimeout(rs.silenceTimer);
+	if (rs.silenceTimeoutMs <= 0) { rs.silenceTimer = null; return; }
+	const silentFor = Date.now() - rs.lastActivityMs;
+	const remaining = rs.silenceTimeoutMs - silentFor;
+	if (remaining <= 0) {
+		// Already silent past the budget — fire immediately (guards inside).
+		rs.silenceTimer = null;
+		fireSilenceKill(rs);
+		return;
+	}
+	rs.silenceTimer = setTimeout(() => {
+		rs.silenceTimer = null;
+		// Re-check staleness: activity may have landed while the timer was
+		// pending (e.g. a log line between arm and fire). If so, slide the
+		// deadline rather than killing an active child.
+		if (Date.now() - rs.lastActivityMs < rs.silenceTimeoutMs) {
+			armSilenceTimer(rs);
+			return;
+		}
+		fireSilenceKill(rs);
+	}, remaining);
+}
+
+/** Stage-2 auto-kill: the child has been silent for `silenceTimeoutMs`.
+ *  Guards mirror the kill path's idempotency — an already stopped/killed/
+ *  completed child (or one that left the running set) is a no-op, so the
+ *  auto-kill never double-fires and never races an explicit stop/kill. */
+function fireSilenceKill(rs: RunningSubagent): void {
+	if (rs.isDone || rs.killedExplicitly || rs.stoppedExplicitly || !running.has(rs.sessionId)) return;
+	dispatchKillSignals(rs, "progress-timeout");
+}
+
+/** Shared kill dispatch — SIGTERM immediately, SIGKILL after
+ *  HARD_KILL_DELAY_MS, idempotent, cancels the stale-turn watchdog and the
+ *  stage-2 silence timer. Single implementation used by both the
+ *  `subagent_kill` tool and the stage-2 progress-timeout auto-kill
+ *  (decision 015) — never fork a second kill path. The close handler is
+ *  the single owner of delivery; it reads `killedExplicitly`/`killedVia`
+ *  and prepends the marker. Returns `alreadyDead` so callers can report
+ *  dispatch status. */
+function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "progress-timeout"): { alreadyDead: boolean } {
+	// Order matters: set the flags BEFORE `proc.kill(...)` so the close
+	// handler observes them on entry.
+	rs.killedExplicitly = true;
+	rs.killedVia = via;
+
+	// Cancel the stalled-turn watchdog so a killed subagent doesn't get a
+	// spurious [Subagent stalled] wake-up racing the close handler's
+	// cleanup, and cancel the stage-2 silence timer so it cannot re-arm or
+	// double-fire. The close handler also clears both timers in its own
+	// cleanup section, but doing it here closes the race where a timer
+	// fires between SIGTERM dispatch and the close handler reaching that
+	// section — `bumpStaleWatchdog`'s guard `running.has(rs.sessionId)` is
+	// not enough because the close handler runs `running.delete` AFTER the
+	// cleanup phase.
+	if (rs.staleTimer) { clearTimeout(rs.staleTimer); rs.staleTimer = null; }
+	if (rs.silenceTimer) { clearTimeout(rs.silenceTimer); rs.silenceTimer = null; }
+
+	const viaLabel = via === "progress-timeout" ? "progress-timeout" : "subagent_kill";
+	// Log a visible kill marker to /watch and the persisted log so the
+	// orchestrator / user see the kill even if the close handler is
+	// delayed. Mirrors the closure-scoped `logEntry` helper inside
+	// `spawnSubagent`, since tool bodies do not share that closure.
+	appendRunningLogLine(rs, `── Killed via ${viaLabel} (SIGTERM sent, SIGKILL in ${HARD_KILL_DELAY_MS / 1000}s if needed) ──`);
+
+	const alreadyDead = rs.proc.killed || rs.proc.exitCode !== null;
+	if (!alreadyDead) {
+		try {
+			rs.proc.kill("SIGTERM");
+		} catch {
+			// proc.kill can throw on an already-dead proc; the close
+			// handler will still fire (or has already fired) and
+			// deliver the result. Swallow.
+		}
+		setTimeout(() => {
+			if (!rs.proc.killed && rs.proc.exitCode === null) {
+				try { rs.proc.kill("SIGKILL"); } catch { /* */ }
+			}
+		}, HARD_KILL_DELAY_MS);
+	}
+	return { alreadyDead };
+}
+
+/** Marker prefix for a delivered kill result. Mirrors the `subagent_kill`
+ *  marker; the stage-2 variant is greppable as `[Killed via progress-timeout]`. */
+function killedMarker(rs: RunningSubagent): string | null {
+	if (!rs.killedExplicitly) return null;
+	return rs.killedVia === "progress-timeout"
+		? "[Killed via progress-timeout — process terminated, work in this subagent is lost]"
+		: "[Killed via subagent_kill — process terminated, work in this subagent is lost]";
+}
+
 function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
 	const output = getFinalOutput(rs.messages) || "(no output)";
 
 	const wasAborted = exitCode !== 0 && rs.progress.turns < MAX_TURNS_HARD;
-	// Killed via `subagent_kill` supersedes the standard prefix — the
-	// orchestrator dispatched an out-of-band hard kill, so make that the
-	// first line of the delivered message.
-	const killedNote = rs.killedExplicitly
-		? "[Killed via subagent_kill — process terminated, work in this subagent is lost]"
-		: null;
+	// A kill (subagent_kill tool or decision 015 stage-2 progress-timeout)
+	// supersedes the standard prefix — make the marker the first line of
+	// the delivered message so the orchestrator sees what happened.
+	const killedNote = killedMarker(rs);
 	const prefix = killedNote
 		? killedNote
 		: `[Subagent ${rs.agentName} ${wasAborted ? "aborted" : "finished"}]`;
@@ -2157,6 +2329,12 @@ export default function (pi: ExtensionAPI) {
 				description: "Repo-relative path to the work order this task executes (e.g. `work-orders/WO-2026-037.md`). When set, the harness reads the work order from the parent checkout at spawn time and derives the review-gate decision from its declared `review_policy` — the WO is the single source of truth. The spawn hard-fails with a loud error if the file is missing or unreadable.",
 			}),
 		),
+		silenceTimeoutMs: Type.Optional(
+			Type.Number({
+				description: "Kill the subagent if it makes no progress (no tool calls and no assistant messages) for this many milliseconds. Default 1800000 (30 min). 0 or negative disables the auto-kill. Stage-1 wake-up warnings are unaffected.",
+				default: 1800000,
+			}),
+		),
 	});
 
 	const StatusParams = Type.Object({
@@ -2338,6 +2516,7 @@ export default function (pi: ExtensionAPI) {
 				maybeInjectReviewPolicySkip(taskForAgent, effectiveReviewPolicy),
 				carriedSnapshot, // completion-filter snapshot (WO-2026-035)
 				workOrderPolicy, // decision 014: parsed WO review_policy (undefined when no WO)
+				params.silenceTimeoutMs, // decision 015: stage-2 silence-kill timeout (undefined → 30-min default)
 			);
 
 			running.set(sessionId, rs);
@@ -2905,9 +3084,11 @@ export default function (pi: ExtensionAPI) {
 	// Hard-kill tool: dispatch SIGTERM immediately, schedule SIGKILL after
 	// HARD_KILL_DELAY_MS, and return without waiting for the close handler.
 	// The close handler is the single owner of delivery; it reads the
-	// `killedExplicitly` flag set here and prepends a marker to the delivered
-	// message so the orchestrator sees what happened. Idempotent on the
-	// second call (no-op when the flag is already true).
+	// `killedExplicitly`/`killedVia` flags set here and prepends a marker to
+	// the delivered message so the orchestrator sees what happened.
+	// Idempotent on the second call (no-op when the flag is already true).
+	// Shares the dispatch with decision 015's stage-2 progress-timeout
+	// auto-kill (dispatchKillSignals) — exactly one SIGTERM→SIGKILL path.
 
 	pi.registerTool({
 		name: "subagent_kill",
@@ -2930,7 +3111,8 @@ export default function (pi: ExtensionAPI) {
 
 			// Idempotency: a second `subagent_kill` on the same session is a
 			// no-op. Returning a short message keeps the orchestrator's log
-			// legible without re-firing signals.
+			// legible without re-firing signals. (The stage-2 auto-kill sets
+			// the same flag, so a kill-after-timeout is also a no-op here.)
 			if (rs.killedExplicitly) {
 				return {
 					content: [
@@ -2941,41 +3123,12 @@ export default function (pi: ExtensionAPI) {
 					],
 				};
 			}
-			// Order matters: set the flag BEFORE `proc.kill(...)` so the close
-			// handler observes it on entry.
-			rs.killedExplicitly = true;
 
-			// Cancel the stalled-turn watchdog so a hard-killed subagent
-			// doesn't get a spurious [Subagent stalled] wake-up racing the
-			// close handler's cleanup. The close handler also clears this
-			// (line ~996), but doing it here closes the race where the
-			// timer fires between SIGTERM dispatch and the close handler
-			// reaching the cleanup section — `bumpStaleWatchdog`'s guard
-			// `running.has(rs.sessionId)` is not enough because the close
-			// handler runs `running.delete` AFTER the cleanup phase.
-			if (rs.staleTimer) { clearTimeout(rs.staleTimer); rs.staleTimer = null; }
-
-			// Log a visible kill marker to /watch and the persisted log so
-			// the orchestrator / user see the kill even if the close handler
-			// is delayed. Mirrors the closure-scoped `logEntry` helper inside
-			// `spawnSubagent`, since tool bodies do not share that closure.
-			appendRunningLogLine(rs, `── Killed via subagent_kill (SIGTERM sent, SIGKILL in ${HARD_KILL_DELAY_MS / 1000}s if needed) ──`);
-
-			const alreadyDead = rs.proc.killed || rs.proc.exitCode !== null;
-			if (!alreadyDead) {
-				try {
-					rs.proc.kill("SIGTERM");
-				} catch {
-					// proc.kill can throw on an already-dead proc; the close
-					// handler will still fire (or has already fired) and
-					// deliver the result. Swallow.
-				}
-				setTimeout(() => {
-					if (!rs.proc.killed && rs.proc.exitCode === null) {
-						try { rs.proc.kill("SIGKILL"); } catch { /* */ }
-					}
-				}, HARD_KILL_DELAY_MS);
-			}
+			// Shared kill dispatch (decision 015): sets killedExplicitly +
+			// killedVia BEFORE `proc.kill(...)` so the close handler observes
+			// them on entry, cancels the stale-turn watchdog AND the stage-2
+			// silence timer, logs the kill marker, and SIGTERM→SIGKILLs.
+			const { alreadyDead } = dispatchKillSignals(rs, "kill-tool");
 
 			return {
 				content: [
