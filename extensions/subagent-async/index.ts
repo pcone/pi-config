@@ -1572,22 +1572,10 @@ async function spawnSubagent(
 		if (tmpDir) try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
 
 		// DELIVER: the result reaches the parent now.
-		// No double delivery: resolveOnStop and deliverResult are mutually exclusive.
-		if (rs.resolveOnStop) {
-			let stoppedText = getFinalOutput(rs.messages) + commitNote;
-			// Kill marker keyed on the kill source (subagent_kill tool vs
-			// decision 015 stage-2 progress-timeout auto-kill).
-			const marker = killedMarker(rs);
-			if (marker) {
-				stoppedText = marker + "\n" + stoppedText;
-			}
-			rs.resolveOnStop(stoppedText);
-			rs.resolveOnStop = null;
-			if (PI_ASYNC_DEBUG) debugLog(`deliverResult (stop): ${Date.now() - tDeliver}ms`);
-		} else {
-			deliverResult(pi, rs, code ?? 0, commitNote);
-			if (PI_ASYNC_DEBUG) debugLog(`deliverResult: ${Date.now() - tDeliver}ms`);
-		}
+		// No double delivery: resolveOnStop and deliverResult are mutually
+		// exclusive — see deliverCloseResult (the single delivery owner).
+		const deliveryPath = deliverCloseResult(pi, rs, code ?? 0, commitNote);
+		if (PI_ASYNC_DEBUG) debugLog(`deliverResult (${deliveryPath}): ${Date.now() - tDeliver}ms`);
 
 		// POST-DELIVERY: worktree removal and branch cleanup. Fire-and-forget —
 		// must not block the close handler, and failures are surfaced as steer
@@ -1906,10 +1894,14 @@ function fireSilenceKill(rs: RunningSubagent): void {
  *  (decision 015) — never fork a second kill path. The close handler is
  *  the single owner of delivery; it reads `killedExplicitly`/`killedVia`
  *  and prepends the marker. Returns `alreadyDead` so callers can report
- *  dispatch status. */
-function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "progress-timeout"): { alreadyDead: boolean } {
-	// Order matters: set the flags BEFORE `proc.kill(...)` so the close
-	// handler observes them on entry.
+ *  dispatch status, and `noProcess` when the entry had no live process
+ *  (recovered/pre-reload session) — callers must distinguish that from a
+ *  raced exit. Exported as an @internal test hook so the kill paths can be
+ *  exercised with stubbed procs. */
+export function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "progress-timeout"): { alreadyDead: boolean; noProcess?: boolean } {
+	// Order matters: set the flags BEFORE any proc access or signal so the
+	// close handler observes them on entry — including the null-proc
+	// (recovered/pre-reload) path below.
 	rs.killedExplicitly = true;
 	rs.killedVia = via;
 
@@ -1926,6 +1918,19 @@ function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "progress-t
 	if (rs.silenceTimer) { clearTimeout(rs.silenceTimer); rs.silenceTimer = null; }
 
 	const viaLabel = via === "progress-timeout" ? "progress-timeout" : "subagent_kill";
+
+	// Recovered/pre-reload sessions are reconstructed from disk with a null
+	// proc (session_start re-attach — `proc: null` in that path); there is
+	// no live process to signal. The flags are already set above (the close
+	// handler and `killedMarker` depend on them), so log a distinct marker
+	// and report `{ alreadyDead: true, noProcess: true }` — nothing to
+	// signal. Never dereference `rs.proc` on this path, including the
+	// SIGKILL fallback below.
+	if (!rs.proc) {
+		appendRunningLogLine(rs, `── Killed via ${viaLabel} — process handle unavailable (recovered/pre-reload session), marked killed, no signal sent ──`);
+		return { alreadyDead: true, noProcess: true };
+	}
+
 	// Log a visible kill marker to /watch and the persisted log so the
 	// orchestrator / user see the kill even if the close handler is
 	// delayed. Mirrors the closure-scoped `logEntry` helper inside
@@ -1942,7 +1947,11 @@ function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "progress-t
 			// deliver the result. Swallow.
 		}
 		setTimeout(() => {
-			if (!rs.proc.killed && rs.proc.exitCode === null) {
+			// Re-check `rs.proc` here rather than trusting the dispatch-time
+			// check: the handle could be gone by the time the fallback fires.
+			// Guarding the callback itself keeps every `rs.proc` dereference
+			// behind a non-null check (WO-2026-043 verification requirement).
+			if (rs.proc && !rs.proc.killed && rs.proc.exitCode === null) {
 				try { rs.proc.kill("SIGKILL"); } catch { /* */ }
 			}
 		}, HARD_KILL_DELAY_MS);
@@ -1959,7 +1968,39 @@ function killedMarker(rs: RunningSubagent): string | null {
 		: "[Killed via subagent_kill — process terminated, work in this subagent is lost]";
 }
 
-function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
+/** Close-handler delivery decision — the single owner of result delivery
+ *  (decision 015 / WO-2026-043 contract). Exactly one path runs: a pending
+ *  stop waiter (`resolveOnStop`) is resolved — with the kill marker
+ *  prepended when the session was killed — and the waiter is nulled;
+ *  otherwise the result is delivered as a user message via `deliverResult`.
+ *  The two are mutually exclusive, which is what guarantees no double
+ *  delivery. Returns which path ran so callers can log it. Exported as an
+ *  @internal test hook so the mutual-exclusion contract can be exercised
+ *  without spawning a real child process. */
+export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: number, commitNote?: string): "stop" | "deliver" {
+	if (rs.resolveOnStop) {
+		let stoppedText = getFinalOutput(rs.messages) + commitNote;
+		// Kill marker keyed on the kill source (subagent_kill tool vs
+		// decision 015 stage-2 progress-timeout auto-kill).
+		const marker = killedMarker(rs);
+		if (marker) {
+			stoppedText = marker + "\n" + stoppedText;
+		}
+		rs.resolveOnStop(stoppedText);
+		rs.resolveOnStop = null;
+		return "stop";
+	}
+	deliverResult(pi, rs, code, commitNote);
+	return "deliver";
+}
+
+/** Deliver the final result message to the parent — used by the
+ *  close-handler `deliver` path (via `deliverCloseResult`) and by the
+ *  recovered-session socket-close handler, which always delivers. Prepends
+ *  the kill marker when `killedExplicitly` is set. Exported as an
+ *  @internal test hook so the delivered-marker contract (WO-2026-043
+ *  integration contract) can be exercised with a stub `ExtensionAPI`. */
+export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
 	const output = getFinalOutput(rs.messages) || "(no output)";
 
 	const wasAborted = exitCode !== 0 && rs.progress.turns < MAX_TURNS_HARD;
@@ -3044,12 +3085,19 @@ export default function (pi: ExtensionAPI) {
 				};
 
 				// Fallback: force-kill the process if it doesn't finish naturally.
+				// Guarded for recovered/pre-reload sessions (proc === null):
+				// nothing to signal — skip the signals; the waiter still
+				// resolves via finish() so the stop tool returns.
 				const fallbackTimeout = setTimeout(() => {
-					rs.proc.kill("SIGTERM");
-					setTimeout(() => {
-						if (!rs.proc.killed) rs.proc.kill("SIGKILL");
+					if (rs.proc) {
+						rs.proc.kill("SIGTERM");
+						setTimeout(() => {
+							if (rs.proc && !rs.proc.killed) rs.proc.kill("SIGKILL");
+							finish("[Force-stopped after timeout]");
+						}, HARD_KILL_DELAY_MS);
+					} else {
 						finish("[Force-stopped after timeout]");
-					}, HARD_KILL_DELAY_MS);
+					}
 				}, STOP_TIMEOUT_MS);
 
 				rs.resolveOnStop = (finalOutput?: string) => {
@@ -3125,18 +3173,25 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Shared kill dispatch (decision 015): sets killedExplicitly +
-			// killedVia BEFORE `proc.kill(...)` so the close handler observes
+			// killedVia BEFORE any proc access so the close handler observes
 			// them on entry, cancels the stale-turn watchdog AND the stage-2
-			// silence timer, logs the kill marker, and SIGTERM→SIGKILLs.
-			const { alreadyDead } = dispatchKillSignals(rs, "kill-tool");
+			// silence timer, logs the kill marker, and SIGTERM→SIGKILLs. For a
+			// recovered/pre-reload session there is no live process to signal
+			// (`noProcess`) — the flags are still set so the close handler
+			// prepends the marker, and no signal is attempted.
+			const { alreadyDead, noProcess } = dispatchKillSignals(rs, "kill-tool");
+
+			const statusText = noProcess
+				? `${rs.agentName} (${params.session_id}) marked killed — no live process existed to signal (recovered/pre-reload session). Result will be delivered via the close handler.`
+				: alreadyDead
+					? `${rs.agentName} (${params.session_id}) already dead — kill signals skipped. Result will be delivered via the close handler.`
+					: `${rs.agentName} (${params.session_id}) sent SIGTERM (SIGKILL will follow in ${HARD_KILL_DELAY_MS / 1000}s if still alive). Result will be delivered via the close handler.`;
 
 			return {
 				content: [
 					{
 						type: "text",
-						text: alreadyDead
-							? `${rs.agentName} (${params.session_id}) already dead — kill signals skipped. Result will be delivered via the close handler.`
-							: `${rs.agentName} (${params.session_id}) sent SIGTERM (SIGKILL will follow in ${HARD_KILL_DELAY_MS / 1000}s if still alive). Result will be delivered via the close handler.`,
+						text: statusText,
 					},
 				],
 			};
