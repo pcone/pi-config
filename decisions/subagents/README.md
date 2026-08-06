@@ -23,3 +23,4 @@ date: 2026-07-14
 | 014 | Review-skip single source of truth — work order as first-class spawn parameter (`workOrderPath`) | done |
 | 015 | Silence-based progress-kill timeout (activates 001) | done |
 | 016 | Fleet speed experiment — standard reviewers to GPT-5.6 Luna, implementer stays Flash | done |
+| 017 | Single review tier — Luna standard, deep tier dormant (kept as insurance) | done |
