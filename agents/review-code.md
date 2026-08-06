@@ -235,6 +235,14 @@ For each item in `Structural Risks`:
 ### Verdict rationale
 <2-4 sentences.>
 
+### Re-review required
+<yes | no — based on fix complexity, not severity. Answer: "After
+the implementer fixes this, do I need to verify the fix again?"
+- **yes**: fix involves logic changes, multiple interacting parts,
+  or room for subtle mistakes
+- **no**: fix is mechanical, localized, or straightforward (rename,
+  add missing field, update constant)>
+
 ### Rework instructions (REJECT_AND_REWORK only)
 <What's broken, where, expected fix. Reference `file:line`.>
 
@@ -254,6 +262,16 @@ calibration for future work orders.>
 Any CRITICAL or HIGH → REJECT_AND_REWORK. MEDIUM with no mitigation
 → REJECT_AND_REWORK. Only LOW (or MEDIUM with mitigation) →
 APPROVED_WITH_NOTES. Zero issues → APPROVED.
+
+## Re-review decision
+
+Set `re_review_required` based on fix complexity, not severity:
+- **yes** when: fix involves logic changes across multiple lines,
+  interacting invariants, or the kind of change where a subtle
+  mistake would slip through
+- **no** when: fix is mechanical (rename, add field, update constant),
+  localized to one spot, or the kind of change that's obviously
+  correct once described
 
 ## Behavior rules
 

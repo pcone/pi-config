@@ -272,6 +272,15 @@ test discipline, routing calibration.>
 
 ---
 
+## Re-review decision
+
+Set `re_review_required` based on fix complexity, not severity:
+- **yes** when: fix involves new test logic, multiple interacting
+  test cases, or room for subtle mistakes in assertions
+- **no** when: fix is mechanical (add missing test, update constant),
+  localized, or the kind of change that's obviously correct once
+  described
+
 ## Behavior rules
 
 1. Read tests, not reports. Verify implementer claims by reading

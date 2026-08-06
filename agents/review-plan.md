@@ -150,6 +150,11 @@ orchestrator. Use this format:
 
 **VERDICT:** APPROVE | APPROVE WITH FIXES | REJECT — RE-PLAN
 
+**Re-review required:** <yes | no — based on fix complexity, not
+severity. "After the orchestrator revises the plan, do I need to
+verify it again?" yes = structural changes to scope or invariants;
+no = mechanical corrections (wrong file path, missing test case)>
+
 **BLOCKING ISSUES:**
 
 [issue with specific file/line evidence and suggested fix]

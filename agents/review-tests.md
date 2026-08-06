@@ -249,6 +249,16 @@ convention? If the project has no such convention, say so.>
 
 <2-4 sentences.>
 
+### Re-review required
+
+<yes | no — based on fix complexity, not severity. Answer: "After
+the implementer fixes this, do I need to verify the fix again?"
+- **yes**: fix involves new test logic, multiple interacting test
+  cases, or room for subtle mistakes in assertions
+- **no**: fix is mechanical (add missing test, update constant),
+  localized, or the kind of change that's obviously correct once
+  described>
+
 ### Rework instructions (REJECT_AND_REWORK only)
 
 <What's missing, where the test should live, what behavior it
@@ -260,6 +270,15 @@ should assert. Reference `file:line` for the source under test.>
 test discipline, routing calibration.>
 
 ---
+
+## Re-review decision
+
+Set `re_review_required` based on fix complexity, not severity:
+- **yes** when: fix involves new test logic, multiple interacting
+  test cases, or room for subtle mistakes in assertions
+- **no** when: fix is mechanical (add missing test, update constant),
+  localized, or the kind of change that's obviously correct once
+  described
 
 ## Behavior rules
 
