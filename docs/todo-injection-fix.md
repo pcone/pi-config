@@ -76,3 +76,21 @@ in the system prompt).
 - The widget, `/todos` command, or `renderCall`/`renderResult` — unchanged.
 - `~/.pi/agent/todos.json` — unrelated stale data (old footer-session-id dev tasks); leave it.
 - Hard-blocking long tasks.
+
+## Follow-up (WO-2026-047): smoke test + tsc nit
+
+Two loose ends after WO-046 landed:
+
+1. **Smoke-test the wiring.** WO-046 proved `renderTodoBlock`'s *output* but not that the
+   `before_agent_start` handler actually fires after compaction/resume (a runtime path
+   unverifiable headlessly at the time). Add an integration test that loads the extension
+   through a minimal fake `ExtensionAPI` (capture `on` handlers by event, capture the tool
+   def — extend the `createPiStub` pattern in `tests/subagent-async-kill.test.ts`), then drives
+   `session_start` / `session_compact` / `before_agent_start` and asserts the message is
+   emitted, one-shot-cleared, and suppressed on empty/all-done.
+2. **Pre-existing `tsc` nit, now in scope.** `TodoListComponent` is missing the `invalidate`
+   method the custom-component interface requires (`render` + `invalidate` + optional
+   `dispose`, per `extensions/footer-session-id.ts:1403`; `footer-session-id.ts:1161` is the
+   no-op convention to copy). pi loads extensions at runtime with no typecheck, so there is no
+   automated gate and no `tsconfig`/`tsc` in the repo — the fix is by-convention; verification
+   is that the smoke test still passes.
