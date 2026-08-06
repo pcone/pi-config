@@ -148,6 +148,9 @@ orchestrator. Use this format:
 
 ---
 
+Quote the cited evidence in every finding — `file:line` plus the relevant
+snippet. Findings without quotable evidence are UNVERIFIED, not asserted.
+
 **VERDICT:** APPROVE | APPROVE WITH FIXES | REJECT — RE-PLAN
 
 **Re-review required:** <yes | no — based on fix complexity, not

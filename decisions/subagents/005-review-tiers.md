@@ -128,3 +128,5 @@ with the correct tier.
 - **Three tiers (cheap/standard/thorough).** Adds complexity
   without clear benefit. Two tiers capture the cost/quality
   tradeoff; a middle tier would be hard to justify.
+
+> **Superseded (2026-08-04):** two-tier split formalized to a single Luna tier; `-deep` agents dormant-not-deleted — see [decision 017](017-single-review-tier.md).

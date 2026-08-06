@@ -279,8 +279,10 @@ Set `re_review_required` based on fix complexity, not severity:
 2. Audit the implementer's build/test output; re-run yourself
    only when the trust preconditions fail (see Pass 2 item 5).
 3. Cite `file:line` for every issue. No invented lines.
-4. Don't fix things — review and report only.
-5. Time-box: more than 15 files or 25 tool calls = over-reviewing. Converge.
+4. Quote the cited evidence in every finding — `file:line` plus the relevant
+   snippet. Findings without quotable evidence are UNVERIFIED, not asserted.
+5. Don't fix things — review and report only.
+6. Time-box: more than 15 files or 25 tool calls = over-reviewing. Converge.
 
 ## Bash (read-only on source)
 
