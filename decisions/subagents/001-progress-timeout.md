@@ -26,3 +26,5 @@ date: 2026-07-14
 - Reset the timer on every stdout line received (covers both thinking and tool output in JSON mode).
 - On timeout: SIGTERM, then SIGKILL after 5s (same as the existing abort handler).
 - Surface the timeout in the result (`stopReason: "timeout"`) so the caller knows it didn't finish.
+
+> **Superseded (2026-08-04):** implemented in adapted form by [decision 015](015-progress-kill-timeout.md) — silence-based trigger (no tool calls AND no messages for `silenceTimeoutMs`, default 30 min) instead of the stdout-line check, staged (5-min wake first, then auto-kill) instead of a single timeout, with `subagent_resume` recovery via the preserved session file.

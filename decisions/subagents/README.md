@@ -20,3 +20,5 @@ date: 2026-07-14
 | 011 | 0731 granular benchmarks unpublished — hold implement-pro/oracle, ship flash slots | done |
 | 012 | Implementer tier collapse — single implement-pro on 0731 flash | done |
 | 013 | Implementer rename — implement-pro → implement (drop the "pro" suffix) | done |
+| 014 | Review-skip single source of truth — work order as first-class spawn parameter (`workOrderPath`) | done |
+| 015 | Silence-based progress-kill timeout (activates 001) | done |
