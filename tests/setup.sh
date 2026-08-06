@@ -64,3 +64,31 @@ for pkg in pi-coding-agent pi-agent-core pi-ai pi-tui; do
     echo "Already linked: $pkg"
   fi
 done
+
+# typebox is a transitive dep of pi-coding-agent that some extensions
+# (e.g. todo.ts) value-import bare — `import { Type } from "typebox"`. Unlike
+# the @earendil-works/* packages it lives at top-level node_modules (not under
+# a scope), so it needs a separate link target dir. Without it, tests that
+# import such extensions fail to resolve 'typebox'.
+TYPEBOX_TARGET="$GLOBAL_MODULES/pi-coding-agent/node_modules/typebox"
+if [ ! -e "$TYPEBOX_TARGET" ]; then
+  echo "ERROR: cannot find typebox at $TYPEBOX_TARGET" >&2
+  exit 1
+fi
+ROOT_MODULES="$(cd "$(dirname "$0")/.." && pwd)/node_modules"
+mkdir -p "$ROOT_MODULES"
+# Repair stale link first (same never-leave-dangling rule as above).
+if [ -L "$ROOT_MODULES/typebox" ] && [ ! -e "$ROOT_MODULES/typebox" ]; then
+  rm -f "$ROOT_MODULES/typebox"
+fi
+if [ ! -e "$ROOT_MODULES/typebox" ]; then
+  ln -s "$TYPEBOX_TARGET" "$ROOT_MODULES/typebox"
+  if [ ! -e "$ROOT_MODULES/typebox" ]; then
+    rm -f "$ROOT_MODULES/typebox"
+    echo "ERROR: $ROOT_MODULES/typebox does not resolve to $TYPEBOX_TARGET" >&2
+    exit 1
+  fi
+  echo "Linked typebox -> $TYPEBOX_TARGET"
+else
+  echo "Already linked: typebox"
+fi
