@@ -48,7 +48,7 @@ fetch-url and kagi-search save large pages / search responses under `~/.pi/tmp/<
 
 ## Tools added
 
-- **`subagent(agent, task, cwd?, inheritParentModel?, isolate?, carryUncommitted?, baseRef?, review_policy?, workOrderPath?, silenceTimeoutMs?)`** — Spawn an async subagent that runs in the background. Subagents fork from HEAD — commit any uncommitted work the subagent needs before delegating. `workOrderPath` makes the referenced work order's `review_policy` the single source of truth for the review gate (decision 014). Use `/subagents` to check progress, `/watch <id>` for live output. Subagents auto-checkpoint the parent before starting. (`silenceTimeoutMs` lands with WO-2026-038.)
+- **`subagent(agent, task, cwd?, inheritParentModel?, isolate?, carryUncommitted?, baseRef?, review_policy?, workOrderPath?, silenceTimeoutMs?)`** — Spawn an async subagent that runs in the background. Subagents fork from HEAD — commit any uncommitted work the subagent needs before delegating. `workOrderPath` makes the referenced work order's `review_policy` the single source of truth for the review gate (decision 014). `silenceTimeoutMs` auto-kills a child that makes no progress (no tool calls and no assistant messages) for that many milliseconds — default 30 min, `0`/negative disables the auto-kill (decision 015; the session stays resumable via `subagent_resume`). Use `/subagents` to check progress, `/watch <id>` for live output. Subagents auto-checkpoint the parent before starting.
 - **`subagent_status(session_id)`** — Check progress of a running async subagent
 - **`subagent_steer(session_id, message)`** — Inject a steering message into a running subagent
 - **`subagent_stop(session_id, final_message?)`** — Tell a running subagent to wrap up and return
