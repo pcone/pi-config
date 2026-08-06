@@ -35,6 +35,36 @@ const TodoParams = Type.Object({
 
 const MAX_VISIBLE = 4;
 
+/** Brevity threshold (chars): add/edit texts longer than this get a nudge. */
+const LONG_TASK_NUDGE = 200;
+/** Non-blocking nudge appended to add/edit success text for over-long tasks. */
+const LONG_TASK_NUDGE_MSG =
+	" Nudge: long task — keep tasks to 1–2 short sentences; move detail to the plan doc.";
+
+/**
+ * Render the current non-done task list as a compact context block: a
+ * heading (with plan-doc path when set), one line per non-done task in array
+ * order, an optional done-count footer line, and a directive line. Pure +
+ * exported so it is unit-testable; mirrors the `list` action's default view.
+ * Returns "" when there are no non-done tasks (empty list or all done).
+ */
+export function renderTodoBlock(todos: Todo[], doc: string | undefined): string {
+	const open = todos.filter((t) => t.status !== "done");
+	if (open.length === 0) return "";
+	const lines: string[] = [doc ? `## Current tasks (plan: ${doc})` : "## Current tasks"];
+	for (const t of open) {
+		const mark =
+			t.status === "in_progress" ? "[>]" : t.status === "deferred" ? "[-]" : "[ ]";
+		lines.push(`${mark} #${t.id}: ${t.text}`);
+	}
+	const done = todos.filter((t) => t.status === "done").length;
+	if (done > 0) lines.push(`${done} done (hidden — /todos to view all)`);
+	lines.push(
+		"Work from this list: one in_progress at a time; mark done when complete; keep each task to 1–2 short sentences with detail in the plan doc.",
+	);
+	return lines.join("\n");
+}
+
 function icon(t: Todo): string {
 	switch (t.status) {
 		case "done":
@@ -108,6 +138,10 @@ export default function (pi: ExtensionAPI) {
 	let todos: Todo[] = [];
 	let nextId = 1;
 	let doc: string | undefined;
+	// One-shot injection: set on session_start / session_tree / session_compact
+	// (the moments the model would otherwise lose the list), consumed and
+	// cleared by before_agent_start. Re-prime, not every-turn.
+	let pendingTodoInjection = false;
 
 	const reconstructState = (ctx: ExtensionContext) => {
 		todos = [];
@@ -128,11 +162,43 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		reconstructState(ctx);
+		pendingTodoInjection = todos.length > 0;
 		refreshWidget(ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => {
 		reconstructState(ctx);
+		pendingTodoInjection = todos.length > 0;
 		refreshWidget(ctx);
+	});
+
+	// Re-prime after compaction: the injected list message has been summarized
+	// away, so the model loses the list unless we re-inject. Do NOT call
+	// reconstructState here — the compacted branch may have summarized away the
+	// tool results, which would reset todos[] to empty. The in-memory array
+	// survives compaction unchanged.
+	pi.on("session_compact", () => {
+		pendingTodoInjection = todos.length > 0;
+	});
+
+	// Inject the current list as a one-shot display:false message so it lands
+	// in context (end-of-input, highest attention) and persists in the branch
+	// until the next compaction. Cleared after one emission; never appends to
+	// the system prompt and never re-injects on every turn. No PI_IS_SUBAGENT
+	// guard: todos are session-scoped, and a subagent's own (usually empty)
+	// list injects nothing.
+	pi.on("before_agent_start", async () => {
+		if (!pendingTodoInjection) return;
+		pendingTodoInjection = false;
+		const block = renderTodoBlock(todos, doc);
+		if (!block) return;
+		return {
+			message: {
+				customType: "todo-injection",
+				content: block,
+				display: false,
+				details: { count: todos.length },
+			},
+		};
 	});
 
 	// ── Tool ──
@@ -142,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Todo",
 		description: `Track tasks for this session. Actions: list (returns non-completed tasks by default; set includeComplete to true to include completed tasks), add (text), start (id), complete (id), defer (id), remove (id), edit (id, text), clear, setDoc (text).
 
-Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with text "docs/TODO.md"). Then add one-sentence summaries referencing step numbers from that doc (e.g. "Step 3: wire up the new auth middleware"). The doc path is shown in the widget so you always know where the details live.`,
+Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with text "docs/TODO.md"), then add short task summaries referencing step numbers from that doc (e.g. "Step 3: wire up the new auth middleware"). Each task is a title, not a spec: 1–2 short sentences maximum. Full reasoning, sub-steps, and context belong in the plan doc — never in the task text. If a description is growing past two lines, move the detail to the doc and shorten the task.`,
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -233,8 +299,9 @@ Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with
 					}
 					const todo: Todo = { id: nextId++, text: params.text, status: "pending" };
 					todos.push(todo);
+					const nudge = params.text.length > LONG_TASK_NUDGE ? LONG_TASK_NUDGE_MSG : "";
 					return {
-						content: [{ type: "text", text: `Added #${todo.id}: ${todo.text}` }],
+						content: [{ type: "text", text: `Added #${todo.id}: ${todo.text}${nudge}` }],
 						details: snapshot(),
 					};
 				}
@@ -330,8 +397,9 @@ Use setDoc first to register the path to the detailed plan doc (e.g. setDoc with
 					}
 					const oldText = editTodo.text;
 					editTodo.text = params.text;
+					const nudge = params.text.length > LONG_TASK_NUDGE ? LONG_TASK_NUDGE_MSG : "";
 					return {
-						content: [{ type: "text", text: `Edited #${editTodo.id}: "${oldText}" → "${editTodo.text}"` }],
+						content: [{ type: "text", text: `Edited #${editTodo.id}: "${oldText}" → "${editTodo.text}"${nudge}` }],
 						details: snapshot(),
 					};
 				}
