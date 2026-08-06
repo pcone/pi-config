@@ -4,50 +4,63 @@
 #
 # Run once before the first test:
 #   bash tests/setup.sh
+#
+# IMPORTANT: a dangling symlink here makes `bun test` hang forever — bun's
+# module resolver spins at 100% CPU when a second test file imports the same
+# broken specifier (the first ENOENT poisons the shared resolution). We
+# therefore resolve the real global location, repair stale links, and fail
+# loudly instead of ever leaving a link that points at nothing.
 set -euo pipefail
 
-GLOBAL_MODULES="/opt/homebrew/lib/node_modules/@earendil-works"
-# pi-agent-core / pi-ai / pi-tui are NOT installed at the top level of
-# /opt/homebrew/lib/node_modules/@earendil-works — they live nested inside
-# pi-coding-agent's own node_modules. Linking the top-level path creates a
-# DANGLING symlink, which wedges bun's module resolver when two test files
-# import the same missing package (bun test then prints partial results and
-# never exits). Resolve each package's real location and fail loudly if it
-# cannot be found anywhere.
-NESTED_MODULES="$GLOBAL_MODULES/pi-coding-agent/node_modules/@earendil-works"
+# GLOBAL_MODULES may be overridden via the environment (useful for tests and
+# for pointing at a different global install); defaults to Homebrew's location.
+GLOBAL_MODULES="${GLOBAL_MODULES:-/opt/homebrew/lib/node_modules/@earendil-works}"
 LOCAL_MODULES="$(cd "$(dirname "$0")/.." && pwd)/node_modules/@earendil-works"
 
 mkdir -p "$LOCAL_MODULES"
 
+# Resolve the real global location for a package. pi-agent-core / pi-ai /
+# pi-tui are dependencies of pi-coding-agent, so on a typical global install
+# they live nested inside `pi-coding-agent/node_modules/@earendil-works/`
+# rather than directly under the global @earendil-works scope. Check the flat
+# location first, then the nested dependency tree.
+resolve_global_pkg() {
+  local pkg="$1"
+  if [ -e "$GLOBAL_MODULES/$pkg" ]; then
+    printf "%s" "$GLOBAL_MODULES/$pkg"
+  elif [ -e "$GLOBAL_MODULES/pi-coding-agent/node_modules/@earendil-works/$pkg" ]; then
+    printf "%s" "$GLOBAL_MODULES/pi-coding-agent/node_modules/@earendil-works/$pkg"
+  fi
+}
+
+# Pass 1: remove any stale dangling links FIRST — never leave broken state
+# behind, even if global resolution fails partway through pass 2.
 for pkg in pi-coding-agent pi-agent-core pi-ai pi-tui; do
-  target=""
-  if [ -d "$GLOBAL_MODULES/$pkg" ]; then
-    target="$GLOBAL_MODULES/$pkg"
-  elif [ -d "$NESTED_MODULES/$pkg" ]; then
-    target="$NESTED_MODULES/$pkg"
-  else
-    echo "ERROR: cannot locate @earendil-works/$pkg (checked $GLOBAL_MODULES and $NESTED_MODULES)" >&2
+  if [ -L "$LOCAL_MODULES/$pkg" ] && [ ! -e "$LOCAL_MODULES/$pkg" ]; then
+    rm -f "$LOCAL_MODULES/$pkg"
+  fi
+done
+
+# Pass 2: resolve the real global location and link.
+for pkg in pi-coding-agent pi-agent-core pi-ai pi-tui; do
+  target="$(resolve_global_pkg "$pkg")"
+  if [ -z "$target" ]; then
+    echo "ERROR: cannot find a global install of $pkg (looked at $GLOBAL_MODULES/$pkg" \
+         "and $GLOBAL_MODULES/pi-coding-agent/node_modules/@earendil-works/$pkg)" >&2
     exit 1
   fi
 
-  local_link="$LOCAL_MODULES/$pkg"
-  if [ -L "$local_link" ]; then
-    # -L is true for symlinks incl. dangling ones; readlink gives the raw target.
-    current="$(readlink "$local_link")"
-    if [ "$current" = "$target" ]; then
-      echo "Already linked: $pkg"
-    else
-      # ln -s will NOT replace an existing (even dangling) symlink — it fails
-      # with "File exists". -f unlinks the old entry first; -n prevents the
-      # "symlink-to-directory destination" trap.
-      ln -sfn "$target" "$local_link"
-      echo "Re-linked $pkg -> $target (was -> $current)"
+  if [ ! -e "$LOCAL_MODULES/$pkg" ]; then
+    ln -s "$target" "$LOCAL_MODULES/$pkg"
+    # Belt-and-braces: verify the link actually resolves; if it doesn't,
+    # remove it again so the error never leaves a dangling link behind.
+    if [ ! -e "$LOCAL_MODULES/$pkg" ]; then
+      rm -f "$LOCAL_MODULES/$pkg"
+      echo "ERROR: $LOCAL_MODULES/$pkg does not resolve to $target" >&2
+      exit 1
     fi
-  elif [ -e "$local_link" ]; then
-    echo "ERROR: $local_link exists as a non-symlink; remove it and re-run setup.sh" >&2
-    exit 1
-  else
-    ln -s "$target" "$local_link"
     echo "Linked $pkg -> $target"
+  else
+    echo "Already linked: $pkg"
   fi
 done
