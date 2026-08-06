@@ -97,6 +97,8 @@ class TodoListComponent {
 		}
 	}
 
+	invalidate(): void {}
+
 	render(width: number): string[] {
 		const lines: string[] = [];
 		const th = this.theme;
