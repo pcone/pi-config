@@ -948,6 +948,18 @@ export function buildSubagentArgs(config: {
 	return args;
 }
 
+// Decision 014: parse the work order's canonical `review_policy` bullet.
+// First-word-after-colon semantics: `- **review_policy**: skip ...` → skip;
+// anything else — `required`, the template literal `required | skip`, or an
+// absent bullet — → required. First-word semantics mirrors the task-text
+// regex used by the gate (`/^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m`),
+// which also fails on `required | skip` because `skip` is not the first
+// token. Deliberately NOT a substring match for `skip`.
+function parseWorkOrderPolicy(woText: string): "required" | "skip" {
+	const m = woText.match(/^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m);
+	return m?.[1] === "skip" ? "skip" : "required";
+}
+
 // ── Spawn & manage ──────────────────────────────────────────────────────────
 
 async function spawnSubagent(
@@ -981,6 +993,11 @@ async function spawnSubagent(
 	// optional: undefined/null when no carry happened (carryUncommitted:false,
 	// baseRef, or no worktree). In-memory only — no persistence.
 	carriedSnapshot?: CarriedSnapshot,
+	// Parsed `review_policy` from the referenced work order (decision 014),
+	// set only when the spawn passed `workOrderPath`. When set, it is the
+	// single source of truth for the review gate — it wins over
+	// `reviewPolicy` and the task-text bullet on disagreement.
+	workOrderPolicy?: "required" | "skip",
 ): Promise<RunningSubagent> {
 	// Message actually delivered to the child process. `task` stays the clean
 	// identity (commit subject / "Task:" display); the preamble and
@@ -1007,6 +1024,17 @@ async function spawnSubagent(
 
 	const logPath = `/tmp/pi-subagent-${sessionId}.log`;
 	const sockPath = `/tmp/pi-subagent-${sessionId}.sock`;
+
+	// Decision 014: the review gate keys on the WORK ORDER when one is
+	// referenced (workOrderPolicy), else on the tool param / task-text
+	// canonical bullet (prior behavior). With a WO present, its parsed
+	// policy wins on disagreement — the task-text fallback applies only to
+	// WO-less dispatches. Computed before the RS record so the soft-prompt
+	// guard and `subagent_review_status` see the same value.
+	const effectiveReviewPolicy = workOrderPolicy ?? reviewPolicy;
+	const gateSkipped =
+		effectiveReviewPolicy === "skip" ||
+		(workOrderPolicy === undefined && /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task));
 
 	const rs: RunningSubagent = {
 		proc: null as any,
@@ -1035,9 +1063,7 @@ async function spawnSubagent(
 		parentHeadCommit,
 		parentCwd: parentCwdForCleanup,
 		parentTrackerKey: getParentTrackerKey(ctx),
-		reviewParentRequirements: (reviewPolicy === "skip" || /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task))
-			? undefined
-			: agent.reviewParentRequirements,
+		reviewParentRequirements: gateSkipped ? undefined : agent.reviewParentRequirements,
 		usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
 		carried: carriedSnapshot ?? null,
 	};
@@ -2126,6 +2152,11 @@ export default function (pi: ExtensionAPI) {
 				description: "Mirrors the work-order `review_policy` field. Pass `skip` to suppress the harness's post-implementation review guard for this spawn (use for trivial changes where the orchestrator will review the diff directly, or for ad-hoc dispatches without a formal work order). Default: `required`.",
 			}),
 		),
+		workOrderPath: Type.Optional(
+			Type.String({
+				description: "Repo-relative path to the work order this task executes (e.g. `work-orders/WO-2026-037.md`). When set, the harness reads the work order from the parent checkout at spawn time and derives the review-gate decision from its declared `review_policy` — the WO is the single source of truth. The spawn hard-fails with a loud error if the file is missing or unreadable.",
+			}),
+		),
 	});
 
 	const StatusParams = Type.Object({
@@ -2148,11 +2179,14 @@ export default function (pi: ExtensionAPI) {
 		session_id: Type.String({ description: "Session ID of the running subagent to hard-kill" }),
 	});
 
-	// If the orchestrator passed review_policy: "skip" as a tool param but did
-	// not include the canonical bullet in the work order text, append it so
-	// the implementer's own agent-level reasoning (Gate B) matches the
-	// harness's gate suppression (Gate A). Single source of truth: the tool
-	// arg. Work-order text is the fallback for non-subagent dispatch paths.
+	// If the EFFECTIVE review policy is "skip" — from the referenced work
+	// order when `workOrderPath` is set (decision 014), else from the
+	// `review_policy` tool param — but the canonical bullet is not already
+	// in the task, append it so the implementer's own agent-level reasoning
+	// (Gate B) matches the harness's gate suppression (Gate A). Single
+	// source of truth: the work order, when `workOrderPath` is set; else
+	// the tool arg. When the WO declares `required`, nothing is injected
+	// even if the param says `skip` — the WO wins.
 	function maybeInjectReviewPolicySkip(task: string, reviewPolicy: "required" | "skip" | undefined): string {
 		if (reviewPolicy !== "skip") return task;
 		if (/^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task)) return task;
@@ -2211,6 +2245,35 @@ export default function (pi: ExtensionAPI) {
 					content: [{ type: "text", text: `Subagent ${sessionId} is already running.` }],
 				};
 			}
+
+			// Decision 014 (workOrderPath): read + parse the referenced work
+			// order from the parent checkout at spawn, BEFORE any worktree is
+			// created, so a missing/unreadable WO hard-fails the spawn with a
+			// loud error (no spawn, no worktree) instead of silently falling
+			// back. The parsed `review_policy` is the single source of truth
+			// for the review gate — it wins over the tool param on disagreement.
+			let workOrderPolicy: "required" | "skip" | undefined;
+			if (params.workOrderPath) {
+				const woPath = path.join(cwd, params.workOrderPath);
+				let woText: string;
+				try {
+					woText = fs.readFileSync(woPath, "utf8");
+				} catch {
+					return {
+						content: [{
+							type: "text",
+							text:
+								`workOrderPath file not found: ${params.workOrderPath} (resolved to ${woPath}). ` +
+								`Spawn aborted — pass a valid repo-relative path or omit workOrderPath.`,
+						}],
+					};
+				}
+				workOrderPolicy = parseWorkOrderPolicy(woText);
+			}
+			// Effective review policy — computed once here, shared by the gate
+			// decision inside spawnSubagent (RS record) and the skip injection
+			// below: the WO wins when present, else the tool param.
+			const effectiveReviewPolicy = workOrderPolicy ?? params.review_policy;
 
 			const parentModel = (() => {
 				try { const m = ctx.getModel?.(); if (m?.provider && m?.id) return `${m.provider}/${m.id}`; } catch { /* */ }
@@ -2271,8 +2334,10 @@ export default function (pi: ExtensionAPI) {
 				params.review_policy,
 				// Full delivery payload: worktree-isolation preamble + (possibly
 				// review-policy-annotated) task. Reaches the child only.
-				maybeInjectReviewPolicySkip(taskForAgent, params.review_policy),
+				// Injection keys on the EFFECTIVE policy (WO wins over the param).
+				maybeInjectReviewPolicySkip(taskForAgent, effectiveReviewPolicy),
 				carriedSnapshot, // completion-filter snapshot (WO-2026-035)
+				workOrderPolicy, // decision 014: parsed WO review_policy (undefined when no WO)
 			);
 
 			running.set(sessionId, rs);

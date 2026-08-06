@@ -260,3 +260,18 @@ build on guesses.
 - Do not persist scratch or work-order files inside the worktree —
   write them to `/tmp`. The isolation auto-commit sweeps every
   uncommitted worktree file into the branch on completion.
+
+## Review-gate routing (decision 014)
+
+The work order's declared `review_policy` is the single source of truth
+for the review gate. **Always pass `workOrderPath` on implement
+dispatches — the gate reads the WO, not the task text.** The harness
+parses the WO's `- **review_policy**:` bullet at spawn and keys the gate
+on the parsed value; the `review_policy` tool param is only a fallback
+for WO-less dispatches (ad-hoc tasks, scouts). Do not rely on mentioning
+skip in dispatch prose — the harness never parses task text for routing
+(the WO-2026-036 incident: skip declared in the WO and dispatch prose,
+param unset, gate stayed live).
+
+- Skip (`review_policy: skip` + `workOrderPath`) when: `estimated_complexity: trivial` AND `invariant_exhaustiveness: explicit` AND mechanical (no new API surface, no control-flow logic) AND no test-surface change AND no error-handling/recovery paths AND no prior rejections on the code area. Complexity is the measure — file/line counts are explicitly NOT criteria (a 5-file rename can be more trivial than a 1-file harness change).
+- Require the full gate when ANY of: new API surface/entry points; error handling/recovery; implicit invariants; test-surface changes; prior rejections; user asks; **or the WO touches the harness/own config** (`extensions/subagent-async/`, `modes.ts`, agent config) — the hard clause: that bug class (silent wiring failures, e.g. the WO-2026-034 `topLevel` bug and the WO-2026-004 `review_status` id-keying bug) is exactly what the gate exists to catch, so own-config work is never auto-skipped regardless of declared complexity.
