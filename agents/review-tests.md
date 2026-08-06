@@ -288,10 +288,12 @@ Set `re_review_required` based on fix complexity, not severity:
    trust "tests pass" alone.
 3. Cite `file:line` for every coverage assertion. No invented
    lines.
-4. Don't write or fix tests — review and report only.
-5. Time-box: more than 15 files or 25 tool calls = over-reviewing.
+4. Quote the cited evidence in every finding — `file:line` plus the relevant
+   snippet. Findings without quotable evidence are UNVERIFIED, not asserted.
+5. Don't write or fix tests — review and report only.
+6. Time-box: more than 15 files or 25 tool calls = over-reviewing.
    Converge.
-6. Do not duplicate review-code's full-suite build check; run only
+7. Do not duplicate review-code's full-suite build check; run only
    the targeted tests needed to confirm a coverage claim.
 
 ## Failure modes
