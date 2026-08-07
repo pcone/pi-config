@@ -290,8 +290,11 @@ Set `re_review_required` based on fix complexity, not severity:
    lines.
 4. Quote the cited evidence in every finding — `file:line` plus the relevant
    snippet. Findings without quotable evidence are UNVERIFIED, not asserted.
-5. Don't write or fix tests — review and report only.
-6. Time-box: more than 15 files or 25 tool calls = over-reviewing.
+5. Flag hand-rolled reimplementations of existing mechanisms — stdlib,
+   established idioms, or machinery already in the repo. Purity violations
+   are findings, not style notes.
+6. Don't write or fix tests — review and report only.
+7. Time-box: more than 15 files or 25 tool calls = over-reviewing.
    Converge.
 7. Do not duplicate review-code's full-suite build check; run only
    the targeted tests needed to confirm a coverage claim.
