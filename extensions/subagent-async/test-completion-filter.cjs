@@ -236,6 +236,36 @@ function preCommitStepsMirror(worktreePath, carried, subject) {
 	return commitIfChanges(worktreePath, subject);
 }
 
+// ── postDeliveryCleanup mirror — KEEP IN SYNC with index.ts ───────────────
+// The branch-deletion decision (WO-2026-049). preCommitSteps reports
+// hadChanges = "did the HARNESS auto-commit staged changes"; that flag alone
+// is NOT a safe signal for deleting the branch, because a subagent that
+// committed its OWN work leaves nothing staged (hadChanges=false) even though
+// the branch HEAD moved past the parent. The real invariant is whether the
+// branch carries any commit beyond the parent: delete iff finalCommit ===
+// parentHeadCommit. (Observed 2026-08-08 in the Threefry branch-loss incident.)
+function branchExists(parentDir, branchName) {
+	try {
+		execFileSync("git", ["rev-parse", "--verify", `refs/heads/${branchName}`], {
+			cwd: parentDir, stdio: "ignore",
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function postDeliveryCleanupMirror(parentDir, result, finalCommit) {
+	execFileSync("git", ["worktree", "remove", "--force", result.worktreePath], {
+		cwd: parentDir, stdio: "ignore",
+	});
+	if (finalCommit === result.parentHeadCommit) {
+		execFileSync("git", ["branch", "-D", result.branchName], {
+			cwd: parentDir, stdio: "ignore",
+		});
+	}
+}
+
 // ── Test harness ───────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
@@ -496,6 +526,57 @@ test("12. filter failure (carried file unreadable) — preCommitSteps continues;
 		eq(hadChanges, true, "commit proceeds with whatever remains staged");
 		eq(git(wt, ["show", "HEAD:plan.md"]), "v2\n", "unreadable-but-staged file committed");
 		fs.chmodSync(carriedFile, 0o644);
+	});
+});
+
+// ── Branch-preservation matrix (WO-2026-049) ───────────────────────────
+// postDeliveryCleanup deletes the isolation branch iff finalCommit ===
+// parentHeadCommit (nothing new committed). hadChanges alone is unsafe: a
+// subagent that committed its own work leaves nothing staged (hadChanges=
+// false) yet the branch HEAD moved past the parent — deleting it orphans the
+// work (the Threefry branch-loss incident, 2026-08-08).
+
+test("13. subagent self-commits (nothing left staged) — branch PRESERVED (hadChanges=false, HEAD moved)", () => {
+	withCarryFlow({}, defaultBaseline, () => {}, (result, dir) => {
+		const wt = result.worktreePath;
+		// The subagent commits its own work before completing (tfd WOs and model
+		// behavior both do this; observed 2026-08-08 in the Threefry branch-loss
+		// incident). preCommitSteps then finds nothing left staged.
+		fs.writeFileSync(path.join(wt, "self.txt"), "subagent work\n");
+		git(wt, ["add", "-A"]);
+		git(wt, ["commit", "-q", "-m", "subagent's own commit"]);
+		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		eq(hadChanges, false, "nothing left staged for the harness to auto-commit");
+		const finalCommit = git(wt, ["rev-parse", "HEAD"]).trim();
+		assert.notStrictEqual(finalCommit, result.parentHeadCommit, "branch HEAD moved past the parent");
+		postDeliveryCleanupMirror(dir, result, finalCommit);
+		eq(branchExists(dir, result.branchName), true, "self-commit preserved on branch (not deleted)");
+	});
+});
+
+test("14. no commits at all (read-only scout) — branch deleted (finalCommit === parentHeadCommit)", () => {
+	withCarryFlow({}, defaultBaseline, () => {}, (result, dir) => {
+		const wt = result.worktreePath;
+		fs.readFileSync(path.join(wt, "target.txt"), "utf8"); // read-only, never edits
+		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		eq(hadChanges, false, "no commit produced");
+		const finalCommit = git(wt, ["rev-parse", "HEAD"]).trim();
+		eq(finalCommit, result.parentHeadCommit, "branch still at parent commit");
+		postDeliveryCleanupMirror(dir, result, finalCommit);
+		eq(branchExists(dir, result.branchName), false, "useless branch deleted");
+	});
+});
+
+test("15. harness auto-commit (hadChanges=true) — branch PRESERVED", () => {
+	withCarryFlow({}, defaultBaseline, () => {}, (result, dir) => {
+		const wt = result.worktreePath;
+		fs.writeFileSync(path.join(wt, "work.txt"), "uncommitted subagent work\n");
+		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		eq(hadChanges, true, "harness auto-committed the staged change");
+		const finalCommit = git(wt, ["rev-parse", "HEAD"]).trim();
+		assert.notStrictEqual(finalCommit, result.parentHeadCommit, "branch HEAD moved past the parent");
+		postDeliveryCleanupMirror(dir, result, finalCommit);
+		eq(branchExists(dir, result.branchName), true, "auto-commit preserved on branch (not deleted)");
 	});
 });
 

@@ -369,9 +369,16 @@ interface RunningSubagent {
 	// Used by subagent_resume to locate the session file for later continuation.
 	sessionFile?: string;
 	piSessionId?: string;
-	// Stalled-turn watchdog timer. Resets on every assistant message_end;
-	// fires a wake-up steer message after SUBAGENT_STALE_TURN_MS.
+	// Stalled-turn watchdog timer. Resets on every assistant message_end
+	// and on tool_execution_end; fires a wake-up steer message after
+	// SUBAGENT_STALE_TURN_MS.
 	staleTimer: NodeJS.Timeout | null;
+	// Count of tool calls currently in flight (tool_execution_start increments,
+	// tool_execution_end decrements). Lets the stalled-turn watchdog tell a
+	// genuinely-idle child from one mid-way through a long tool call (build,
+	// grep, deep read) that hasn't produced an assistant message yet — the
+	// latter gets a softened "working" notice instead of a "stalled" alarm.
+	toolInFlight: number;
 	// Decision 015 stage-2: last-activity timestamp — updated on any log
 	// line written to the child's log, tool_execution_start/end, and
 	// assistant message_end. The silence-kill timer compares this to
@@ -751,7 +758,14 @@ async function preCommitSteps(rs: RunningSubagent): Promise<{
 		const finalCommit = finalHead.stdout.trim();
 		const hadChanges = diffResult.exitCode !== 0;
 
-		if (hadChanges) {
+		// The branch is worth merging iff it carries commits beyond the parent —
+		// either a harness auto-commit (hadChanges) OR the subagent's OWN commit
+		// (observed 2026-08-08: a Threefry-removal subagent ran `git commit` itself
+		// before completing, leaving nothing staged, so hadChanges was false even
+		// though the branch HEAD had moved past the parent — and postDeliveryCleanup
+		// then deleted the branch, orphaning the work). Keying the merge hint on the
+		// real invariant (finalCommit !== parentHeadCommit) covers both cases.
+		if (finalCommit !== parentHeadCommit) {
 			notes.push(`Changes preserved on branch \`${isolationBranch}\`.`);
 			notes.push(`Merge with: \`git merge ${isolationBranch}\``);
 		}
@@ -792,12 +806,19 @@ async function postDeliveryCleanup(
 		// Remove the worktree directory (branch ref stays in the repo)
 		await git(["worktree", "remove", "--force", worktreePath], parentCwd);
 
-		if (!hadChanges || finalCommit === parentHeadCommit) {
-			// No changes — delete the useless branch
+		if (finalCommit === parentHeadCommit) {
+			// Branch still at the parent commit — nothing new was committed (by the
+			// harness OR by the subagent itself), so delete it. hadChanges alone is
+			// NOT a safe signal: a subagent that committed its own work leaves
+			// nothing staged, so preCommitSteps reports hadChanges=false even though
+			// the branch HEAD moved past the parent — keying on finalCommit
+			// preserves those commits. (WO-2026-049; the Threefry branch-loss
+			// incident, 2026-08-08, where a self-commit's branch was deleted and
+			// the work survived only as a dangling commit, recovered by hash.)
 			await git(["branch", "-D", isolationBranch], parentCwd);
 		}
 
-		if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: ${Date.now() - t0}ms`);
+		if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: ${Date.now() - t0}ms (hadChanges=${hadChanges})`);
 	} catch (e: any) {
 		if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: FAILED after ${Date.now() - t0}ms: ${e.message || e}`);
 		// Best-effort: force-remove the worktree directory
@@ -1106,6 +1127,7 @@ async function spawnSubagent(
 		silenceTimer: null,
 		silenceTimeoutMs: effectiveSilenceTimeoutMs,
 		killedVia: null,
+		toolInFlight: 0,
 	};
 
 	// Unix socket server for external viewers
@@ -1265,6 +1287,8 @@ async function spawnSubagent(
 			// Decision 015: tool execution counts as activity (the logEntry
 			// below also bumps — explicit here for the spec's signal union).
 			bumpActivity(rs);
+			rs.toolInFlight++; // a tool is now running — suppress the stale-turn
+			                   // watchdog's "stalled" alarm while it executes
 			const tn: string = event.toolName || "";
 			const ta: Record<string, any> = event.args || {};
 			const summary = formatToolAction(tn, ta);
@@ -1275,6 +1299,12 @@ async function spawnSubagent(
 		// ── Live log: tool end ─────────────────────────────────────────
 		if (event.type === "tool_execution_end") {
 			bumpActivity(rs);
+			if (rs.toolInFlight > 0) rs.toolInFlight--;
+			// Re-arm the stalled-turn watchdog so a completed tool starts a fresh
+			// 5-minute window — otherwise a subagent that finishes a long tool and
+			// is mid-LLM-call when the (old-deadline) timer fires would get a false
+			// "stalled" notice. (The turn's own message_end also re-arms.)
+			bumpStaleWatchdog(pi, rs);
 			const summary = pendingToolCalls.get(event.toolCallId) || event.toolName || "tool";
 			pendingToolCalls.delete(event.toolCallId);
 			if (event.isError) {
@@ -1823,6 +1853,19 @@ function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 			);
 			return;
 		}
+		// A tool call is mid-execution (no RPC progress event arrives mid-tool,
+		// so the turn legitimately hasn't produced an assistant message yet).
+		// Soften the message so the caller doesn't mistake a healthy long
+		// build/grep/read for a hang — observed false "stalled" warnings tripped
+		// mid-bash-command (2026-08-08). The stage-2 silence timer (30 min) is
+		// still the backstop if the tool genuinely deadlocks.
+		if (rs.toolInFlight > 0) {
+			pi.sendUserMessage(
+				`[Subagent working] ${rs.agentName} (${rs.sessionId.slice(-8)}) has not advanced a turn in ${SUBAGENT_STALE_TURN_MS / 60000} minutes, but a tool call is still in flight. This is usually expected — use subagent_status to inspect; use subagent_stop only if it seems genuinely stuck.`,
+				{ deliverAs: "steer" },
+			);
+			return;
+		}
 		pi.sendUserMessage(
 			`[Subagent stalled] ${rs.agentName} (${rs.sessionId.slice(-8)}) has not advanced a turn in ${SUBAGENT_STALE_TURN_MS / 60000} minutes. The subagent is still running — use subagent_status to inspect progress or subagent_stop to terminate.`,
 			{ deliverAs: "steer" },
@@ -1884,6 +1927,17 @@ function armSilenceTimer(rs: RunningSubagent): void {
  *  auto-kill never double-fires and never races an explicit stop/kill. */
 function fireSilenceKill(rs: RunningSubagent): void {
 	if (rs.isDone || rs.killedExplicitly || rs.stoppedExplicitly || !running.has(rs.sessionId)) return;
+	// A child parked in a nested wait is expected-silent: the `wait` tool only
+	// parks it when it has live children to block on, and those children's own
+	// silence timers handle genuine hangs. Killing the parent here would
+	// cascade to those children for no benefit, and wall-clock silence can't
+	// distinguish "hung" from "frozen by system sleep" — observed 2026-08-08:
+	// an implementer parked in wait was progress-timeout-killed on laptop
+	// wake (its timers had frozen during sleep and fired overdue on resume),
+	// taking its reviewers with it. The stage-1 watchdog already told the
+	// caller this child is waiting ("[Subagent waiting]"), so skip stage 2 and
+	// let the caller, or the children's timers, resolve it.
+	if (rs.progress.currentActivity === "wait") return;
 	dispatchKillSignals(rs, "progress-timeout");
 }
 
@@ -2112,6 +2166,7 @@ export default function (pi: ExtensionAPI) {
 					killedExplicitly: false,
 					stoppedExplicitly: false,
 					turnNudged: false,
+					toolInFlight: 0,
 					logPath,
 					logLines: [],
 					watchHandle: null,

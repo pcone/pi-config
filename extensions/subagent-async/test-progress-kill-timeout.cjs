@@ -79,8 +79,16 @@ function armSilenceTimer(rs) {
 // Stage-2 guards mirror the kill path's idempotency — an already
 // stopped/killed/completed child (or one that left the running set) is a
 // no-op, so the auto-kill never double-fires and never races a stop/kill.
+// A child parked in a nested wait (currentActivity === "wait") is also
+// skipped — its silence is expected (it has live children to block on, and
+// their own timers handle genuine hangs); killing it would cascade to those
+// children, and wall-clock silence can't tell "hung" from "frozen by system
+// sleep" (observed 2026-08-08: an implementer parked in wait was killed on
+// laptop wake). The stage-1 watchdog still nudges the caller ("[Subagent
+// waiting]"), so the caller can intervene if the children never resolve.
 function fireSilenceKill(rs) {
 	if (rs.isDone || rs.killedExplicitly || rs.stoppedExplicitly || !running.has(rs.sessionId)) return;
+	if (rs.progress?.currentActivity === "wait") return;
 	dispatchKillSignals(rs, "progress-timeout");
 }
 
@@ -154,6 +162,7 @@ function makeChild({ silenceTimeoutMs } = {}) {
 		silenceTimeoutMs: resolveSilenceTimeout(silenceTimeoutMs),
 		lastActivityMs: Date.now(),
 		killedVia: null,
+		progress: { currentActivity: "starting..." },
 	};
 	running.set(sessionId, rs);
 	return rs;
@@ -319,6 +328,33 @@ function eq(actual, expected, msg) {
 		armSilenceTimer(rs);
 		await sleep(300);
 		eq(rs.killedExplicitly, false, "finished child not killed");
+	});
+
+	// ── (f) nested-wait child is not progress-timeout-killed ───────────
+	// Observed 2026-08-08: an implementer parked in wait (blocked on a
+	// reviewer) was killed by the stage-2 silence timer on laptop wake — its
+	// timers had frozen during sleep and fired overdue on resume, and the kill
+	// cascaded to its reviewers. A wait-parked child's silence is expected;
+	// stage 2 must skip it and leave resolution to the children's timers / the
+	// caller (stage 1 already says "[Subagent waiting]").
+	await test("(f) child parked in nested wait (currentActivity === \"wait\") survives stage-2 silence", async () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 80 });
+		rs.progress.currentActivity = "wait"; // parked on its own children
+		armSilenceTimer(rs);
+		await sleep(300); // well past the 80ms budget
+		eq(rs.killedExplicitly, false, "wait-parked child not auto-killed");
+		assert.deepStrictEqual(procKills, [], "no signals dispatched");
+	});
+	await test("(f2) child NOT in wait (mid-tool / mid-LLM) is still killed — guard doesn't over-broaden", async () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 80 });
+		rs.progress.currentActivity = "read codegen/src/types.rs"; // working, not parked
+		armSilenceTimer(rs);
+		await sleep(300);
+		eq(rs.killedExplicitly, true, "non-wait silent child still auto-killed");
+		eq(rs.killedVia, "progress-timeout", "kill source recorded");
+		assert.deepStrictEqual(procKills, ["SIGTERM"], "SIGTERM dispatched");
 	});
 
 	// ── interaction: kill dispatch cancels both timers (no leak) ───────
