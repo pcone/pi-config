@@ -133,6 +133,11 @@ work order, dispatch `scout-code` or `scout-web` first.
 For tasks with non-trivial plans that touch many files, dispatch
 `review-plan` before implementation to catch plan defects early.
 
+**Overlap independent implementers.** Dispatch is non-blocking; if
+the next work order doesn't depend on an in-flight implementer's
+merged result, dispatch it now rather than waiting. Gate and merge
+each as it completes (step 4). See decision 018.
+
 ### 4. Gate each implementer's completion
 
 When an implementer reports `complete`, you must mechanically verify

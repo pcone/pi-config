@@ -69,6 +69,19 @@ calibration, structural_checks, deviations, notes_for_orchestrator.
 You are the conductor. Subagents do the work; you synthesize, verify,
 and decide.
 
+## Overlap independent work during review windows
+
+\`subagent\` dispatch is non-blocking, and an implementer's
+review/rework loop can run for minutes. Use that window: before
+calling \`wait\`, dispatch the next **independent** implementer (no
+dependency on the in-flight item's merged result) or do follow-on
+work (spec the next work order, scout, reconcile docs). Stay
+sequential when the next step needs the in-flight item's reviewed
+result — building on un-reviewed output is what the gate exists to
+prevent. \`wait\` wakes on the **first** completion: gate + merge
+that one, re-\`wait\` for the rest, and track each in-flight
+implementer (session id, independence).
+
 ## Context hygiene
 
 Occasional investigation, thinking, or experimentation loops you do
