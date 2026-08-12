@@ -8,7 +8,7 @@ feature: footer-activity-timeline
 
 # Footer Activity Timeline
 
-A full-width footer row in the interactive TUI showing the current session's activity over the last 3 days on a logarithmic time scale. Rendered by the existing custom footer (`extensions/footer-session-id.ts`, which replaces pi's built-in footer via `ctx.ui.setFooter`).
+A full-width footer row in the interactive TUI showing the current session's activity over the last 7 days on a logarithmic time scale. Rendered by the existing custom footer (`extensions/footer-session-id.ts`, which replaces pi's built-in footer via `ctx.ui.setFooter`).
 
 ## Goals
 
@@ -36,29 +36,29 @@ Session start (for the marker): `sessionManager.getHeader()?.timestamp`, falling
 
 Fixed window, log-uniform in age:
 
-- `WINDOW_MS` = 3 days = 259 200 000 ms
+- `WINDOW_MS` = 7 days = 604 800 000 ms
 - `MIN_AGE_MS` = 1 minute = 60 000 ms (log floor; never log 0)
-- `R = WINDOW_MS / MIN_AGE_MS = 4320`
+- `R = WINDOW_MS / MIN_AGE_MS = 10080`
 
-For a message at time `t`, `age = now − t`. Map age to a column `k` ∈ [0, W−1] (left = 3 days ago, right = now):
+For a message at time `t`, `age = now − t`. Map age to a column `k` ∈ [0, W−1] (left = 7 days ago, right = now):
 
 ```
 f(age) = ln(max(age, MIN_AGE_MS) / MIN_AGE_MS) / ln(R)      // 0 → 1, clamped for age < MIN
 k      = W − 1 − floor(f · W), clamped to [0, W−1]
 ```
 
-Column `k` spans ages `[MIN_AGE_MS · R^((W−k−1)/W),  MIN_AGE_MS · R^((W−k)/W))`. Age `≥ WINDOW_MS` is excluded (outside the fixed window) — a strict 3-day window keeps sessions comparable.
+Column `k` spans ages `[MIN_AGE_MS · R^((W−k−1)/W),  MIN_AGE_MS · R^((W−k)/W))`. Age `≥ WINDOW_MS` is excluded (outside the fixed window) — a strict 7-day window keeps sessions comparable.
 
 Granularity scales with pane width exactly as requested (range fixed, buckets shrink):
 
 | W (cols) | youngest bucket (right edge) | leftmost bucket |
 |---|---|---|
-| 20 | 31 s | 24.6 h |
-| 40 | 14 s | 13.6 h |
-| 80 | 6.6 s | 7.2 h |
-| 120 | 4.3 s | 4.9 h |
+| 20 | 35 s | 62 h |
+| 40 | 16 s | 34.6 h |
+| 80 | 7.3 s | 18.3 h |
+| 120 | 4.8 s | 12.4 h |
 
-Youngest bucket ≈ `ln(4320)/W` minutes ≈ `8.37/W` min — sub-minute at any readable width, ~1 min only at very narrow panes (W≈8). This is the honest "granularity depends on width" reading: the log curve is fixed, so no column is ever thinner than the window allows.
+Youngest bucket ≈ `ln(10080)/W` minutes ≈ `9.22/W` min — sub-minute at any readable width, ~1 min only at very narrow panes (W≈9). This is the honest "granularity depends on width" reading: the log curve is fixed, so no column is ever thinner than the window allows.
 
 ### Half-cell resolution
 
@@ -66,10 +66,10 @@ Each column is rendered from **two half-cells** — `▌` (earlier half of the b
 
 | W (cols) | youngest half-bucket | leftmost half-bucket |
 |---|---|---|
-| 20 | 14 s | 13.6 h |
-| 40 | 6.6 s | 7.2 h |
-| 80 | 3.2 s | 3.7 h |
-| 120 | 2.1 s | 2.5 h |
+| 20 | 16 s | 34.6 h |
+| 40 | 7.3 s | 18.3 h |
+| 80 | 3.6 s | 9.4 h |
+| 120 | 2.3 s | 6.3 h |
 
 ## Presentation
 
@@ -88,7 +88,7 @@ Per half-cell, the original three-state mapping moves to **color** (the user-vs-
 | state | color |
 |---|---|
 | user message(s) in this half | bright — `theme.fg("accent", …)` |
-| only LLM messages in this half | dark — accent darkened: same hue/saturation, lightness × ~0.5 (via `getFgAnsi("accent")` → RGB → HSL → re-emit; fallback `theme.fg("dim", …)` when accent is the default color or the terminal is 256-color) |
+| only LLM messages in this half | dark — accent alpha-composited at ~50% over the terminal's actual background (OSC 11 query via `tui.queryTerminalBackgroundColor`, one query per footer install): `getFgAnsi("accent")` → RGB → `result = bg·(1−α) + accent·α` → opaque truecolor. Visually identical to translucency without needing terminal alpha support. Unknown background (query unanswered, e.g. no OSC 11 response) → fallback: same hue at halved saturation and lightness (the v2 oversaturation fix). Non-truecolor accent (default/256-color) → `theme.fg("dim", …)`. |
 | no activity in this half | transparent (the half stays empty) |
 
 When both halves are active but differ in state, the merged `█` takes the bright state (user beats LLM — same precedence as v1). The session-start marker stays column-level (`█` warning, overrides the whole cell) — unchanged from v1; the half-cell split does not refine it.
@@ -97,23 +97,24 @@ When both halves are active but differ in state, the merged `█` takes the brig
 
 ## Alternatives considered
 
-- **Linear time scale** — rejected: minute resolution across 3 days needs 4320 columns; at 80 cols each cell would be ~54 min. The log curve is the only way to get both 3 days of range and seconds-of-resolution at the edge.
+- **Linear time scale** — rejected: minute resolution across 7 days needs 10080 columns; at 80 cols each cell would be ~2 h. The log curve is the only way to get both 7 days of range and seconds-of-resolution at the edge.
 - **Clamp the rightmost column to exactly 1 min, log the rest** — rejected: granularity then stops scaling with width (contradicts the requirement) and the clean age→column mapping gets a seam at the 1-min boundary.
 - **`getBranch()` instead of `getEntries()`** — rejected: the comparability unit is the whole session; a branch is a view, not a different session.
 - **Count compaction/branch summaries as LLM activity** — rejected: they are harness-generated, not conversation messages; a summary landing in a quiet column would fabricate "the LLM was working here".
 - **`▒` dither for the llm-only state (v1)** — rejected as the resolution scheme: a dither glyph can't subdivide a cell in time, so it capped resolution at one state per column. Superseded by half-width blocks (v2) with the user-vs-LLM distinction moved to color.
 - **llm-only as gray `dim` token** — rejected: gray shifts hue, reading as "muted" rather than "same activity, dimmer". A darkened accent (same hue/saturation, lower lightness) keeps the row monochrome-hued.
+- **Pure desaturation at the same lightness** — rejected as the sole mechanism: it fixes oversaturation but keeps the color floating at mid-brightness instead of sitting *on* the background. Compositing against the real background (OSC 11) is strictly better and is the primary path; desaturation is only the no-background fallback.
 - **Vertical half-blocks `▀`/`▄` for the split** — rejected: the left/right split follows the timeline's reading direction (no top/bottom convention needed) and matches "half width" literally.
 - **Marker as separate glyph (`■`) next to the activity char** — rejected: it needs an extra column, breaking the uniform width, and the spec asked for the marker *on* the chunk.
 
 ## Edge cases (decided)
 
-- **Session older than 3 days**: timeline still renders the full window (comparability requirement); marker is off-scale → no marker, no edge glyph.
-- **Message older than 3 days**: excluded from the window entirely (see *The scale*).
+- **Session older than 7 days**: timeline still renders the full window (comparability requirement); marker is off-scale → no marker, no edge glyph.
+- **Message older than 7 days**: excluded from the window entirely (see *The scale*).
 - **Message with future/zero timestamp** (clock skew): `age < MIN` clamps to the rightmost column.
 - **Empty session**: all-space row; still rendered so footer height is stable and the marker appears in the rightmost column the moment the session has a start time.
 - **Width < 1**: render nothing for the row.
-- **Light themes**: a darkened accent can read as *stronger* against a light background (darker = higher contrast). Accepted for now — dark terminals are the primary target; the fallback is the `dim` token if it bites.
+- **Light themes**: a plain darkened accent reads *stronger* against a light background (darker = higher contrast). Alpha compositing against the real background fixes this — over a light bg the composite raises lightness and mutes the accent, the correct veil in both directions. Only the unknown-background fallback (halved sat/light) retains the light-theme caveat; it degrades to the `dim` token if that ever bites.
 
 ## Implementation notes
 

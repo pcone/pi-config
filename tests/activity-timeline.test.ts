@@ -1,5 +1,5 @@
 /**
- * Tests for the 3-day logarithmic activity timeline footer row (v2).
+ * Tests for the 7-day logarithmic activity timeline footer row (v2).
  *
  * v2 (WO-2026-017) doubles the time resolution: each physical column is two
  * half-cells (▌ earlier / ▐ later) on a virtual 2×width scale, and the
@@ -32,7 +32,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // Constants mirroring the implementation
 // ---------------------------------------------------------------------------
 
-const WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 259 200 000
+const WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 604 800 000
 const MIN_AGE_MS = 60 * 1000; // 60 000
 
 // ---------------------------------------------------------------------------
@@ -138,10 +138,10 @@ describe("timelineColumn", () => {
 		expect(timelineColumn(100_000, -100)).toBe(0);
 	});
 
-	// Row 8: monotonicity at W=80, boundary 79/78 at ~66.6s
-	it("monotonicity: 66.5s → col 79, 66.7s → col 78 (W=80)", () => {
-		expect(timelineColumn(66_500, 80)).toBe(79);
-		expect(timelineColumn(66_700, 80)).toBe(78);
+	// Row 8: monotonicity at W=80, boundary 79/78 at ~67.3s
+	it("monotonicity: 67.0s → col 79, 67.7s → col 78 (W=80)", () => {
+		expect(timelineColumn(67_000, 80)).toBe(79);
+		expect(timelineColumn(67_700, 80)).toBe(78);
 	});
 });
 
@@ -165,10 +165,10 @@ describe("half-cell mapping (v2 scale, v = timelineColumn(age, 2W))", () => {
 	});
 
 	// Row 5: half boundary at W=80 (between right and left half of col 79
-	// at age ≈ 63.22 s) → 63.0 s → col 79 right; 63.4 s → col 79 left
-	it("63.0 s → col 79 right half; 63.4 s → col 79 left half (W=80)", () => {
+	// at age ≈ 63.56 s) → 63.0 s → col 79 right; 63.7 s → col 79 left
+	it("63.0 s → col 79 right half; 63.7 s → col 79 left half (W=80)", () => {
 		expect(halfCell(63_000, 80)).toEqual({ col: 79, side: "right" });
-		expect(halfCell(63_400, 80)).toEqual({ col: 79, side: "left" });
+		expect(halfCell(63_700, 80)).toEqual({ col: 79, side: "left" });
 	});
 });
 
@@ -223,8 +223,8 @@ describe("computeTimelineCells", () => {
 
 	// Row 6: user only in earlier half
 	it("user in earlier half → left bright, right none", () => {
-		// 63.4 s → col 79 left half (row 5 anchor)
-		const cells = computeTimelineCells([msg(63_400, "user")], NOW, 80, undefined);
+		// 63.7 s → col 79 left half (row 5 anchor)
+		const cells = computeTimelineCells([msg(63_700, "user")], NOW, 80, undefined);
 		expect(cells[79]).toEqual({ left: "bright", right: "none", isSessionStart: false });
 	});
 
@@ -237,7 +237,7 @@ describe("computeTimelineCells", () => {
 	// Row 8: user earlier + llm later → both active, bright wins
 	it("user earlier + llm later → left bright, right dark", () => {
 		const cells = computeTimelineCells(
-			[msg(63_400, "user"), msg(MIN_AGE_MS, "assistant")],
+			[msg(63_700, "user"), msg(MIN_AGE_MS, "assistant")],
 			NOW,
 			80,
 			undefined,
@@ -248,7 +248,7 @@ describe("computeTimelineCells", () => {
 	// Row 9: llm both halves → both dark
 	it("llm in both halves → left dark, right dark", () => {
 		const cells = computeTimelineCells(
-			[msg(63_400, "assistant"), msg(MIN_AGE_MS, "assistant")],
+			[msg(63_700, "assistant"), msg(MIN_AGE_MS, "assistant")],
 			NOW,
 			80,
 			undefined,
@@ -259,7 +259,7 @@ describe("computeTimelineCells", () => {
 	// Row 10: user both halves → both bright
 	it("user in both halves → left bright, right bright", () => {
 		const cells = computeTimelineCells(
-			[msg(63_400, "user"), msg(MIN_AGE_MS, "user")],
+			[msg(63_700, "user"), msg(MIN_AGE_MS, "user")],
 			NOW,
 			80,
 			undefined,
@@ -427,18 +427,32 @@ describe("rgbToHsl", () => {
 // ---------------------------------------------------------------------------
 
 describe("darkenAccentFg", () => {
-	// Row 16: truecolor accent → same hue/sat, lightness ≈ half
-	it("truecolor accent → same hue/sat, lightness ≈ half (via RGB→HSL of output)", () => {
+	// Row 16a: known background → alpha composite (~50% veil over the real bg)
+	it("composites accent over a dark background at ~50% alpha", () => {
+		// accent (255,100,0) over bg (20,20,30): (138,60,15)
+		expect(darkenAccentFg(trueColorTheme, { r: 20, g: 20, b: 30 })).toBe(
+			"\x1b[38;2;138;60;15m",
+		);
+	});
+
+	it("composites accent over a light background (alpha handles both)", () => {
+		// accent (255,100,0) over white: (255,178,128)
+		expect(darkenAccentFg(trueColorTheme, { r: 255, g: 255, b: 255 })).toBe(
+			"\x1b[38;2;255;178;128m",
+		);
+	});
+
+	// Row 16b: unknown background → desaturate fallback (hue kept, sat/light halved)
+	it("no background → same hue, halved saturation and lightness", () => {
 		const out = darkenAccentFg(trueColorTheme);
 		expect(out).not.toBeNull();
 		expect(out).toMatch(/^\x1b\[38;2;\d+;\d+;\d+m$/);
 		const m = /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(out!);
 		const hsl = rgbToHsl(Number(m![1]), Number(m![2]), Number(m![3]));
-		// Source accent (255,100,0): h 23.5, s 100, l 50 → darkened l ≈ 25
+		// Source accent (255,100,0): h 23.5, s 100, l 50 → (23.5, 50, 25)
 		expect(hsl.h).toBeCloseTo(23.5, 0);
-		expect(hsl.s).toBeCloseTo(100, 0);
+		expect(hsl.s).toBeCloseTo(50, 0);
 		expect(hsl.l).toBeCloseTo(25, 0);
-		expect(hsl.l).toBeLessThan(30);
 	});
 
 	// Row 17: default accent (\x1b[39m) → null
@@ -483,7 +497,7 @@ describe("renderTimelineRow", () => {
 
 	// Row 6: single bright left half → accent ▌
 	it("bright left half → accent ▌", () => {
-		const cells = computeTimelineCells([msg(63_400, "user")], NOW, 80, undefined);
+		const cells = computeTimelineCells([msg(63_700, "user")], NOW, 80, undefined);
 		const row = renderTimelineRow(cells, testTheme, 80);
 		expect(row.slice(0, 79)).toBe(" ".repeat(79));
 		expect(row.slice(79)).toBe("[accent:▌]");
@@ -523,7 +537,7 @@ describe("renderTimelineRow", () => {
 	// Row 8: user earlier + llm later → both active, █ bright (user wins)
 	it("bright left + dark right → accent █ (bright wins)", () => {
 		const cells = computeTimelineCells(
-			[msg(63_400, "user"), msg(MIN_AGE_MS, "assistant")],
+			[msg(63_700, "user"), msg(MIN_AGE_MS, "assistant")],
 			NOW,
 			80,
 			undefined,
@@ -535,7 +549,7 @@ describe("renderTimelineRow", () => {
 	// Row 9: llm both halves → █ dark
 	it("dark both halves with explicit darkFg → darkFg + █ + reset", () => {
 		const cells = computeTimelineCells(
-			[msg(63_400, "assistant"), msg(MIN_AGE_MS, "assistant")],
+			[msg(63_700, "assistant"), msg(MIN_AGE_MS, "assistant")],
 			NOW,
 			80,
 			undefined,
@@ -547,7 +561,7 @@ describe("renderTimelineRow", () => {
 
 	it("dark both halves, no darkFg → dim █", () => {
 		const cells = computeTimelineCells(
-			[msg(63_400, "assistant"), msg(MIN_AGE_MS, "assistant")],
+			[msg(63_700, "assistant"), msg(MIN_AGE_MS, "assistant")],
 			NOW,
 			80,
 			undefined,
@@ -558,7 +572,7 @@ describe("renderTimelineRow", () => {
 	// Row 10: user both halves → █ bright
 	it("bright both halves → accent █", () => {
 		const cells = computeTimelineCells(
-			[msg(63_400, "user"), msg(MIN_AGE_MS, "user")],
+			[msg(63_700, "user"), msg(MIN_AGE_MS, "user")],
 			NOW,
 			80,
 			undefined,
@@ -624,7 +638,7 @@ describe("renderTimelineRow", () => {
 		// halves, dark halves (dim fallback), and a marker column.
 		for (const w of [20, 40, 80, 120]) {
 			const cells = computeTimelineCells(
-				[msg(63_400, "user"), msg(1_000_000, "assistant"), msg(100_000, "user")],
+				[msg(63_700, "user"), msg(1_000_000, "assistant"), msg(100_000, "user")],
 				NOW,
 				w,
 				NOW - 3_000_000,
