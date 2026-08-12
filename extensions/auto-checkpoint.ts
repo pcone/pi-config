@@ -14,7 +14,8 @@
  *
  * Schema:
  *   {
- *     "defaultThreshold": 0.75,          // fraction of contextWindow (0-1)
+ *     "defaultThreshold": 256000,        // fraction (<1) of contextWindow, or absolute tokens (>=1)
+ *     "smallWindowFraction": 0.8,        // absolute thresholds cap at this fraction of the window
  *     "cooldownTurns": 3,                // min turns between nudges
  *     "cooldownMs": 30000,               // min ms between nudges
  *     "prompt": "**Context note:** ...",  // optional, overrides degradation auto-pick
@@ -29,8 +30,12 @@
  *     }
  *   }
  *
- * Per-model thresholds: < 1 is a fraction of contextWindow, >= 1 is an absolute
- * token count. Model patterns support * and ? wildcards; first match wins.
+ * Thresholds (default and per-model): < 1 is a fraction of contextWindow,
+ * >= 1 is an absolute token count. An absolute threshold that would exceed
+ * smallWindowFraction × contextWindow (default 0.8) is capped to that value, so
+ * small-window models still get nudged rather than never firing. Fractional
+ * thresholds are uncapped. Model patterns support * and ? wildcards; first
+ * match wins.
  *
  * When contextDegradation is false, the nudge prompt is relaxed — suggesting
  * the model wait for a logical completion point rather than urging a quick
@@ -47,7 +52,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // Types
 // ---------------------------------------------------------------------------
 
-interface ModelThresholdConfig {
+export interface ModelThresholdConfig {
 	/** < 1 → fraction of contextWindow, >= 1 → absolute token count. */
 	threshold: number;
 	cooldownTurns?: number;
@@ -65,6 +70,8 @@ interface ModelThresholdConfig {
 
 interface RawAutoCheckpointConfig {
 	defaultThreshold?: number;
+	/** Absolute thresholds cap at this fraction of the window (default 0.8). */
+	smallWindowFraction?: number;
 	cooldownTurns?: number;
 	cooldownMs?: number;
 	models?: Record<string, ModelThresholdConfig>;
@@ -72,8 +79,9 @@ interface RawAutoCheckpointConfig {
 	defaultContextDegradation?: boolean;
 }
 
-interface AutoCheckpointConfig {
+export interface AutoCheckpointConfig {
 	defaultThreshold: number;
+	smallWindowFraction: number;
 	cooldownTurns: number;
 	cooldownMs: number;
 	models: Record<string, ModelThresholdConfig>;
@@ -107,6 +115,7 @@ const NO_DEGRADATION_PROMPT =
 
 const DEFAULT_CONFIG: AutoCheckpointConfig = {
 	defaultThreshold: 0.75,
+	smallWindowFraction: 0.8,
 	cooldownTurns: 3,
 	cooldownMs: 30_000,
 	models: {},
@@ -120,7 +129,7 @@ const GLOBAL_CONFIG_PATH = join(homedir(), ".pi", "agent", "auto-checkpoint.json
 // Glob matching (only * and ?)
 // ---------------------------------------------------------------------------
 
-function matchPattern(pattern: string, s: string): boolean {
+export function matchPattern(pattern: string, s: string): boolean {
 	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
 	return new RegExp("^" + escaped + "$", "i").test(s);
 }
@@ -160,16 +169,18 @@ async function loadConfig(cwd: string): Promise<AutoCheckpointConfig> {
 	return config;
 }
 
-/** Resolve threshold to an absolute token count for the given model. */
-function resolveThreshold(modelId: string, contextWindow: number, config: AutoCheckpointConfig): number {
+/** Resolve threshold to an absolute token count for the given model.
+ *
+ *  < 1 → fraction of contextWindow. >= 1 → absolute, capped at
+ *  smallWindowFraction × contextWindow so small-window models still nudge. */
+export function resolveThreshold(modelId: string, contextWindow: number, config: AutoCheckpointConfig): number {
+	const cap = Math.round(config.smallWindowFraction * contextWindow);
+	const resolve = (threshold: number): number =>
+		threshold < 1 ? Math.round(threshold * contextWindow) : Math.min(threshold, cap);
 	for (const [pattern, mcfg] of Object.entries(config.models)) {
-		if (matchPattern(pattern, modelId)) {
-			return mcfg.threshold < 1
-				? Math.round(mcfg.threshold * contextWindow)
-				: mcfg.threshold;
-		}
+		if (matchPattern(pattern, modelId)) return resolve(mcfg.threshold);
 	}
-	return Math.round(config.defaultThreshold * contextWindow);
+	return resolve(config.defaultThreshold);
 }
 
 /** Get resolved model-level config for cooldown/prompt overrides. */
@@ -328,6 +339,22 @@ export default function (pi: ExtensionAPI) {
 	// --- turn_end: check context usage against threshold ---
 	pi.on("turn_end", async (event, ctx) => {
 		if (!state.config) return;
+
+		// Lazily (re-)derive model + threshold. session_start and model_select arm
+		// these, but neither fires for a resumed session whose model was never
+		// explicitly selected (only set/cycle emit model_select), and session_compact
+		// resets state without re-deriving. ctx.model is reliably current here, so
+		// self-heal on the first turn_end that sees the model.
+		const currentModel = ctx.model;
+		if (currentModel?.id && (state.modelId !== currentModel.id || state.threshold <= 0)) {
+			state.modelId = currentModel.id;
+			state.threshold = resolveThreshold(
+				currentModel.id,
+				currentModel.contextWindow ?? 200_000,
+				state.config,
+			);
+		}
+
 		if (!state.modelId) return;
 		if (state.threshold <= 0) return;
 
