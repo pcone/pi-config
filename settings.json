@@ -1,18 +1,22 @@
 {
   "lastChangelogVersion": "0.83.0",
-  "defaultProvider": "openrouter",
-  "defaultModel": "deepseek/deepseek-v4-flash-0731",
+  "defaultProvider": "zai",
+  "defaultModel": "glm-5.2",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
     "extensions/go.ts",
     "extensions/footer-session-id.ts",
+    "extensions/session-name.ts",
     "extensions/auto-checkpoint.ts",
     "extensions/subagent-async/index.ts",
     "extensions/kagi-search.ts",
     "extensions/model-tiers/index.ts",
     "extensions/compaction-model.ts",
-    "extensions/append-system-local.ts"
+    "extensions/peer-link/index.ts",
+    "extensions/append-system-local.ts",
+    "extensions/pinned-sessions.ts",
+    "~/.pi/local-extensions/session-icon.ts"
   ],
   "defaultThinkingLevel": "high",
   "hideThinkingBlock": true,
