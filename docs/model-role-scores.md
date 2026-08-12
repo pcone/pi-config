@@ -70,8 +70,7 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 - **GLM-5.2** ($0.39, 1M ctx, open weights) — the best **generalist**: top-3 on
   Orchestrator, Implementer, and Reviewer with solid coverage.
 - **DeepSeek V4 Flash 0731** ($0.019) — the **single implementation tier** and a cheap
-  self-contained coder; weak as an orchestrator and same-lab as itself (so unusable as
-  its own reviewer). **Flash 0731** ($0.019) clears Pro on all three AA indices at ~⅓
+  self-contained coder; weak as an orchestrator and same-lab as itself (formerly hard-filtered from review; the standard tier now accepts same-lab for cost per [019](../decisions/subagents/019-standard-reviewers-flash-0731.md)). **Flash 0731** ($0.019) clears Pro on all three AA indices at ~⅓
   the price — the flash/pro worker gap collapsed 2026-08-01 per
   [012-implementer-collapse](../decisions/subagents/012-implementer-collapse.md).
 
@@ -83,7 +82,7 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 | Orchestrator-subagent | `agents/orchestrator.md` | glm-5.2 | ✓ keep (0731 projects high Orch but unmeasured; GLM-5.2 solid) |
 | Implementer | `agents/implement.md` | deepseek-v4-flash-0731 | ✓ collapsed to single tier 2026-08-01 (was pro/flash; 0731 AA indices clear Pro on all three axes at ~⅓ the price) |
 | Oracle | `agents/math-algo-oracle.md` | deepseek-v4-pro | ✓ keep (0731 math/algo unpublished) |
-| Review standard ×3 | `agents/review-{code,plan,tests}.md` | mimo-v2.5-pro | ✓ confirmed |
+| Review standard ×3 | `agents/review-{code,plan,tests}.md` | deepseek-v4-flash-0731 | ✓ swapped 2026-08-11 — same-lab accepted for cost (Luna was ~50% of OR spend at <1/5 of tokens); analysis still names MiMo as cheapest *decorrelated* pick — see [019](../decisions/subagents/019-standard-reviewers-flash-0731.md) |
 | Review deep ×3 | `agents/review-*-deep.md` | glm-5.2 | ✓ confirmed |
 | Scouts ×2 | `agents/scout-{code,web}.md` | deepseek-v4-flash-0731 | ✓ shipped 2026-08-01 (was old flash) |
 | Compaction | `extensions/compaction-model.ts` | deepseek-v4-flash-0731 | ✓ shipped 2026-08-01 (was old flash) |

@@ -27,3 +27,5 @@ date: 2026-08-04
 **Files changed:** this decision, README index, `agents/review-code.md`/`review-tests.md`/`review-plan.md` (prove-each-finding instruction), `skills/work-order-template/SKILL.md` (review_depth note). Deep agent files untouched (dormant).
 
 **Test coverage:** gate runs standard reviewers — which are the Luna reviewers post-WO-2026-041; this WO runs the gate per the keep-hard clause.
+
+> **Partial supersession (2026-08-11):** the "Luna standard" model choice is superseded — standard reviewers now run `deepseek/deepseek-v4-flash-0731` (same-lab accepted for cost; Luna was ~50% of spend at <1/5 of tokens). The single-tier / deep-dormant structure stands, but the deep tier is now the config's *only* decorrelated reviewer — see [decision 019](019-standard-reviewers-flash-0731.md).

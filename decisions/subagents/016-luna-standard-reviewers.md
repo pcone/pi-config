@@ -1,7 +1,7 @@
 ---
 title: "Fleet speed experiment — standard reviewers to GPT-5.6 Luna, implementer stays Flash (model-diverse review loop)"
 type: decision
-status: done
+status: superseded
 date: 2026-08-04
 ---
 
@@ -32,3 +32,5 @@ date: 2026-08-04
 **Files changed:** `agents/review-code.md`, `agents/review-tests.md`, `agents/review-plan.md` (model lines), this decision, README index.
 
 **Test coverage:** gate runs standard reviewers — which ARE the swapped models post-merge; the WO itself runs the full review gate per the keep-hard harness clause (agent-config changes never auto-skip).
+
+> **Superseded (2026-08-11):** standard reviewers moved off Luna to `deepseek/deepseek-v4-flash-0731`, and the model-diversity principle stated here is consciously reversed — Luna was ~50% of OpenRouter spend at <1/5 of token volume; same-lab correlation accepted for the cost win. Deep tier (GLM-5.2) retained as the decorrelated path. See [decision 019](019-standard-reviewers-flash-0731.md).
