@@ -112,6 +112,22 @@ function branchWith(todos: any[], nextId: number, doc?: string) {
 	];
 }
 
+/** A compaction entry as getBranch() returns it: getBranch() walks the full
+ *  leaf→root ancestry and does NOT truncate at compaction (that truncation is
+ *  buildContextEntries()'s job, for the LLM view only), so a real post-compaction
+ *  branch still contains compaction entries inline — the shape these tests scan. */
+function compactionEntry() {
+	return {
+		type: "compaction",
+		id: "entry-compact-1",
+		parentId: "entry-0",
+		timestamp: "2026-08-06T00:00:00.000Z",
+		summary: "Compacted session context",
+		firstKeptEntryId: "entry-10",
+		tokensBefore: 12000,
+	};
+}
+
 /** Fresh stub + extension load. Module state is closure-scoped per load, so
  *  every test must call this to start clean. */
 function loadExtension() {
@@ -231,5 +247,64 @@ describe("todo context injection wiring (WO-2026-047)", () => {
 		expect(msg.message.display).toBe(false);
 		expect(msg.message.details.count).toBe(1);
 		expect(msg.message.content).toContain("[ ] #1: Y");
+	});
+
+	// Cases 7–8 pin the load-bearing invariant for reconstruction correctness
+	// across a reboot: getBranch() returns the FULL ancestry (no compaction
+	// truncation), and reconstructState takes the LAST todo snapshot. Together
+	// they prove a reboot-after-compaction cannot lose or stale the list — the
+	// scenario the session_compact handler comment used to (wrongly) doubt.
+	it("7: reconstruction takes the latest snapshot — a stale pre-compaction snapshot is overwritten", async () => {
+		const { handlers } = loadExtension();
+		// Full ancestry, root→leaf: an early (now-stale) snapshot, then a
+		// compaction entry, then a later snapshot. reconstructState must land on
+		// the latest, not the stale one.
+		const ctx = ctxStub([
+			...branchWith([{ id: 1, text: "Stale", status: "pending" }], 2),
+			compactionEntry(),
+			...branchWith(
+				[
+					{ id: 1, text: "Real one", status: "in_progress" },
+					{ id: 2, text: "Real two", status: "pending" },
+				],
+				3,
+			),
+		]);
+
+		await handlers.get("session_start")(SESSION_START_EVENT, ctx);
+
+		const msg = await handlers.get("before_agent_start")(BEFORE_AGENT_START_EVENT, ctxStub());
+		expect(msg).toBeDefined();
+		expect(msg.message.details.count).toBe(2);
+		expect(msg.message.content).toContain("[>] #1: Real one");
+		expect(msg.message.content).toContain("[ ] #2: Real two");
+		expect(msg.message.content).not.toContain("Stale");
+	});
+
+	it("8: reconstruction survives compaction when no todo call follows it (reboot-after-compaction)", async () => {
+		const { handlers } = loadExtension();
+		// The exact case the old session_compact comment doubted: the ONLY todo
+		// snapshot sits before the compaction entry, and only a non-todo message
+		// follows. On a real resume, getBranch() returns this full ancestry, the
+		// snapshot is reachable, and reconstruction is NOT reset to empty.
+		const ctx = ctxStub([
+			...branchWith(
+				[
+					{ id: 1, text: "Survives", status: "pending" },
+					{ id: 2, text: "reboot", status: "pending" },
+				],
+				3,
+			),
+			compactionEntry(),
+			{ type: "message", message: { role: "user", content: "post-compaction prompt" } },
+		]);
+
+		await handlers.get("session_start")(SESSION_START_EVENT, ctx);
+
+		const msg = await handlers.get("before_agent_start")(BEFORE_AGENT_START_EVENT, ctxStub());
+		expect(msg).toBeDefined();
+		expect(msg.message.details.count).toBe(2);
+		expect(msg.message.content).toContain("[ ] #1: Survives");
+		expect(msg.message.content).toContain("[ ] #2: reboot");
 	});
 });

@@ -173,11 +173,15 @@ export default function (pi: ExtensionAPI) {
 		refreshWidget(ctx);
 	});
 
-	// Re-prime after compaction: the injected list message has been summarized
-	// away, so the model loses the list unless we re-inject. Do NOT call
-	// reconstructState here — the compacted branch may have summarized away the
-	// tool results, which would reset todos[] to empty. The in-memory array
-	// survives compaction unchanged.
+	// Re-prime after compaction: the injected list message was summarized
+	// away, so re-inject. No reconstructState() here — every mutation persists a
+	// full snapshot, so in-memory `todos[]` already equals the last persisted
+	// snapshot. Reconstruction would also be safe at any time: getBranch()
+	// walks the full leaf→root ancestry and does NOT truncate at compaction
+	// entries (that truncation is buildContextEntries()'s job, for the LLM view
+	// only), so the latest todo snapshot is always reachable — even after a
+	// reboot that kills the in-memory array. Pinned by tests 7–8 in
+	// tests/todo-injection.test.ts.
 	pi.on("session_compact", () => {
 		pendingTodoInjection = todos.length > 0;
 	});
