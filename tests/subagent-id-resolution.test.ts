@@ -21,7 +21,11 @@ import {
 	resolveRunningSession,
 	_testRunning,
 	getParentTrackerKey,
+	buildSubagentArgs,
+	buildSubagentEnv,
+	rpcSend,
 } from "../extensions/subagent-async/index.ts";
+import subagentFactory from "../extensions/subagent-async/index.ts";
 
 /**
  * On-disk path for a parent's reviewer-spawn log — mirrors reviewStatusPath
@@ -290,5 +294,193 @@ describe("resolveTrackerKey (cross-reference)", () => {
 	it('returns "pid:12345" fallback unchanged', () => {
 		const result = resolveTrackerKey("pid:12345");
 		expect(result).toBe("pid:12345");
+	});
+});
+
+// ── Spawn-args composition: unified session id ─────────────────────────────
+// The subagent handle is passed to the child as `--session-id`, so the child's
+// pi session id IS the handle (searchable in /resume, joinable via
+// `pi --session-id <id>`). Resumes reopen the session file instead.
+
+describe("buildSubagentArgs (session id unification)", () => {
+	it("passes the handle as --session-id on a fresh spawn", () => {
+		const handle = uniqueHandle();
+		const args = buildSubagentArgs({
+			model: "openrouter/deepseek/deepseek-v4-flash",
+			tools: ["read", "bash"],
+			excludeTools: [],
+			sessionId: handle,
+		});
+		expect(args).toContain("--session-id");
+		expect(args[args.indexOf("--session-id") + 1]).toBe(handle);
+		expect(args).not.toContain("--session");
+	});
+
+	it("reopens the session file on resume instead of --session-id", () => {
+		const args = buildSubagentArgs({
+			model: "openrouter/deepseek/deepseek-v4-flash",
+			tools: [],
+			excludeTools: [],
+			sessionFile: "/tmp/pi-subagent-x.jsonl",
+		});
+		expect(args).toContain("--session");
+		expect(args).not.toContain("--session-id");
+	});
+
+	it("rejects --session-id and --session together", () => {
+		const handle = uniqueHandle();
+		expect(() =>
+			buildSubagentArgs({
+				model: "m",
+				tools: [],
+				excludeTools: [],
+				sessionFile: "/tmp/pi-subagent-x.jsonl",
+				sessionId: handle,
+			}),
+		).toThrow(/mutually exclusive/);
+	});
+});
+
+// ── Spawn env: peer-link identity ──────────────────────────────────────────
+// The subagent's peer name is its session id (PI_PEER_NAME), so the same id
+// steers it, resumes it, and addresses peer messages to it. Always set — an
+// inherited PI_PEER_NAME would make sibling subagents collide on one mailbox.
+
+describe("buildSubagentEnv (peer identity)", () => {
+	it("names the subagent after its session id", () => {
+		const handle = uniqueHandle();
+		const env = buildSubagentEnv({
+			sessionId: handle,
+			allowlist: undefined,
+			worktreePath: null,
+			parentCwdForCleanup: "",
+		});
+		expect(env.PI_PEER_NAME).toBe(handle);
+	});
+
+	it("sets the subagent marker always, allowlist only when present", () => {
+		const env = buildSubagentEnv({
+			sessionId: "subagent-x",
+			allowlist: ["implement", "scout"],
+			worktreePath: null,
+			parentCwdForCleanup: "",
+		});
+		expect(env.PI_IS_SUBAGENT).toBe("1");
+		expect(env.PI_SUBAGENT_ALLOWLIST).toBe("implement,scout");
+
+		const noAllow = buildSubagentEnv({
+			sessionId: "subagent-x",
+			allowlist: undefined,
+			worktreePath: null,
+			parentCwdForCleanup: "",
+		});
+		expect(noAllow.PI_SUBAGENT_ALLOWLIST).toBeUndefined();
+	});
+
+	it("sets parent-cwd guard only when isolated in a worktree", () => {
+		const isolated = buildSubagentEnv({
+			sessionId: "subagent-x",
+			allowlist: undefined,
+			worktreePath: "/tmp/pi-subagent-wt-abc",
+			parentCwdForCleanup: "/Users/scott/repo",
+		});
+		expect(isolated.PI_SUBAGENT_WORKTREE).toBe("/tmp/pi-subagent-wt-abc");
+		expect(isolated.PI_SUBAGENT_PARENT_CWD).toBe("/Users/scott/repo");
+
+		const bare = buildSubagentEnv({
+			sessionId: "subagent-x",
+			allowlist: undefined,
+			worktreePath: null,
+			parentCwdForCleanup: "/Users/scott/repo",
+		});
+		expect(bare.PI_SUBAGENT_WORKTREE).toBe("");
+		expect(bare.PI_SUBAGENT_PARENT_CWD).toBe("");
+	});
+});
+
+// ── Steer into a stopped session ──────────────────────────────────────────
+// Regression tests for "steers silently queued into a dead child's pipe".
+// The steer tool must refuse to write when the subagent has completed or
+// exited, and report truthfully when a write cannot land.
+
+describe("rpcSend (honest delivery)", () => {
+	it("returns false for null or destroyed stdin", () => {
+		expect(rpcSend(null, { type: "prompt" })).toBe(false);
+		expect(rpcSend({ destroyed: true } as any, { type: "prompt" })).toBe(false);
+	});
+
+	it("writes the payload and returns true on a writable stream", () => {
+		const written: string[] = [];
+		const ok = rpcSend({ destroyed: false, write: (s: string) => { written.push(s); return true; } } as any, {
+			type: "prompt",
+			message: "hi",
+			streamingBehavior: "steer",
+		});
+		expect(ok).toBe(true);
+		expect(written[0]).toBe('{"type":"prompt","message":"hi","streamingBehavior":"steer"}\n');
+	});
+
+	it("returns false when the write throws", () => {
+		expect(
+			rpcSend(
+				{ destroyed: false, write: () => { throw new Error("EPIPE"); } } as any,
+				{ type: "prompt" },
+			),
+		).toBe(false);
+	});
+});
+
+describe("subagent_steer refuses stopped sessions", () => {
+	const tools: Record<string, any> = {};
+	const pi = {
+		on: () => {},
+		registerTool: (t: any) => { tools[t.name] = t; },
+		registerCommand: () => {},
+	} as any;
+	const factory = subagentFactory;
+	factory(pi);
+	const steer = tools.subagent_steer;
+
+	async function run(sid: string, overrides: Record<string, any> = {}) {
+		_testRunning.set(sid, { sessionId: sid, agentName: "test-agent", isDone: false, procExited: false, stdin: null, ...overrides } as any);
+		return steer.execute("c1", { session_id: sid, message: "wrap up" }, undefined, undefined, {} as any);
+	}
+
+	it("reports not-delivered when the process has exited", async () => {
+		const sid = randomUUID();
+		const res = await run(sid, { procExited: true });
+		expect(res.content[0].text).toMatch(/not delivered/);
+		expect(res.content[0].text).toMatch(/process exited/);
+	});
+
+	it("reports not-delivered when the subagent has completed", async () => {
+		const sid = randomUUID();
+		const res = await run(sid, { isDone: true });
+		expect(res.content[0].text).toMatch(/not delivered/);
+		expect(res.content[0].text).toMatch(/completed/);
+	});
+
+	it("reports not-delivered when stdin is destroyed", async () => {
+		const sid = randomUUID();
+		const res = await run(sid, { stdin: { destroyed: true } });
+		expect(res.content[0].text).toMatch(/not delivered/);
+	});
+
+	it("actually writes the payload to a healthy session", async () => {
+		const sid = randomUUID();
+		const written: string[] = [];
+		const res = await run(sid, {
+			stdin: { destroyed: false, write: (s: string) => { written.push(s); return true; } },
+		});
+		expect(res.content[0].text).toMatch(/sent/);
+		expect(written[0]).toContain('"message":"wrap up"');
+	});
+
+	it("reports not-delivered when the write cannot land despite a healthy-looking stdin", async () => {
+		const sid = randomUUID();
+		const res = await run(sid, {
+			stdin: { destroyed: false, write: () => { throw new Error("EPIPE"); } },
+		});
+		expect(res.content[0].text).toMatch(/NOT delivered/);
 	});
 });

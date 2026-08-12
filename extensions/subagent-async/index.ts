@@ -40,6 +40,12 @@ const SUBAGENT_STALE_TURN_MS = 5 * 60 * 1000; // 5 minutes
 // gives the caller four chances to intervene before stage 2 fires.
 // 0/negative per-spawn (silenceTimeoutMs param) disables stage 2 entirely.
 const SILENCE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes
+// Sleep guard (decision 015 fix): heartbeat cadence and jitter slack for
+// detecting system sleep. A heartbeat tick landing >slack late means the
+// process was suspended — discount the slept interval from each child's
+// silence budget so sleep isn't billed as child silence.
+const SLEEP_GUARD_HEARTBEAT_MS = 10 * 1000;
+const SLEEP_GUARD_SLACK_MS = 3 * 1000;
 const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
 const REVIEW_ROUND_CAP = 3;
 
@@ -254,9 +260,11 @@ export function resolveSubagentMeta(sessionId: string): { sid: string; meta: Rec
 /**
  * Resolve an orchestrator-supplied parent_session_id to the actual tracker
  * key. The orchestrator passes the RPC handle returned by the subagent
- * dispatch (e.g. `subagent-81f2a34c-...`), but the tracker file is keyed by
- * the child's piSessionId (UUIDv7 from sessionManager.getSessionId()), which
- * updateMetaJson persists into the meta JSON on get_state.
+ * dispatch (e.g. `subagent-81f2a34c-...`). Since the handle is passed to
+ * the child as `--session-id`, it IS the child's pi session id (meta
+ * persists the same value from get_state) — so this is effectively the
+ * identity, kept as a safety net for legacy meta files written before the
+ * ids were unified.
  *
  * If the arg looks like an RPC handle, look up the meta file and return
  * meta.piSessionId if it's a non-empty string. Otherwise (no meta, malformed
@@ -312,6 +320,12 @@ interface RunningSubagent {
 	stdin: NodeJS.WritableStream | null;
 	resolveOnStop: ((finalMessage?: string) => void) | null; // set by stop tool
 	isDone: boolean;
+	// Set in proc.on("exit") — the earliest reliable signal that the child
+	// process has died. The running-map entry only disappears in the later
+	// close handler, so guards on the map alone leave a window where a
+	// steer can be "sent" into a dead pipe. Check this (and stdin state)
+	// before any stdin write.
+	procExited: boolean;
 	// Set by the `subagent_kill` tool before it dispatches SIGTERM/SIGKILL
 	// so the close handler can label the footer "Killed" and prepend a
 	// `[Killed via subagent_kill ...]` marker to the delivered result.
@@ -407,6 +421,12 @@ export const _testRunning = running;
 // after N seconds if no subagent has completed; we cancel it from the
 // subagent close handler so a completing subagent doesn't get followed
 // by a redundant "still running" wakeup.
+// Sleep guard state (decision 015 fix). One heartbeat for all running
+// children; one caffeinate assertion for the running set's lifetime.
+let heartbeatTimer: NodeJS.Timeout | null = null;
+let lastHeartbeatMs = 0;
+let caffeinateProc: ChildProcess | null = null;
+
 let activeWaitTimer: NodeJS.Timeout | null = null;
 
 function clearActiveWait(): void {
@@ -886,9 +906,15 @@ function formatProgress(rs: RunningSubagent): string {
 	const elapsed = Math.round((Date.now() - rs.startedAt) / 1000);
 	const mins = Math.floor(elapsed / 60);
 	const secs = elapsed % 60;
+	const state = rs.isDone
+		? "[completed — result delivered]"
+		: rs.procExited
+			? "[process exited — result pending delivery]"
+			: null;
 	return [
 		`Agent: ${rs.agentName}`,
 		`Session: ${rs.sessionId}`,
+		state,
 		`Turns: ${p.turns}`,
 		`Elapsed: ${mins}m ${secs}s`,
 		`Activity: ${p.currentActivity}`,
@@ -937,9 +963,18 @@ function buildPromptPayload(text: string): { type: "prompt"; message: string; st
 
 // ── RPC communication ──────────────────────────────────────────────────────
 
-function rpcSend(stdin: NodeJS.WritableStream | null, command: Record<string, any>): void {
-	if (!stdin || stdin.destroyed) return;
-	stdin.write(JSON.stringify(command) + "\n");
+export function rpcSend(stdin: NodeJS.WritableStream | null, command: Record<string, any>): boolean {
+	// Returns false when the write cannot land (null, destroyed, or the
+	// write throws) so callers can report the truth instead of "sent".
+	// Note: destroyed may still be false briefly after the child exits —
+	// callers must ALSO guard on rs.procExited before calling.
+	if (!stdin || stdin.destroyed) return false;
+	try {
+		stdin.write(JSON.stringify(command) + "\n");
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -976,12 +1011,18 @@ interface RpcEvent {
  * Extracted so tests can assert flag composition without spawning.
  * Does NOT include --append-system-prompt (the temp file path is
  * generated dynamically by the caller — writeTempFile).
+ *
+ * `sessionId` and `sessionFile` are mutually exclusive: a fresh spawn
+ * passes its tracking id as `--session-id` so the child's pi session id
+ * IS the handle (searchable in /resume, joinable via `pi --session
+ * <id>`); a resume passes `--session <file>` to reopen the same session.
  */
 export function buildSubagentArgs(config: {
 	model: string;
 	tools: string[];
 	excludeTools: string[];
 	sessionFile?: string;
+	sessionId?: string;
 }): string[] {
 	const args: string[] = ["--mode", "rpc"];
 	if (config.model) args.push("--model", config.model);
@@ -989,10 +1030,62 @@ export function buildSubagentArgs(config: {
 	if (config.excludeTools && config.excludeTools.length > 0) {
 		args.push("--exclude-tools", config.excludeTools.join(","));
 	}
+	if (config.sessionFile && config.sessionId) {
+		throw new Error("buildSubagentArgs: sessionFile and sessionId are mutually exclusive");
+	}
 	if (config.sessionFile) {
 		args.push("--session", config.sessionFile);
 	}
+	if (config.sessionId) {
+		args.push("--session-id", config.sessionId);
+	}
 	return args;
+}
+
+/**
+ * Build the env additions for a subagent pi process (spread over the
+ * parent's process.env at spawn). Extracted so tests can assert the role
+ * markers without spawning.
+ */
+export function buildSubagentEnv(config: {
+	sessionId: string;
+	allowlist: string[] | undefined;
+	worktreePath: string | null;
+	parentCwdForCleanup: string;
+}): Record<string, string> {
+	return {
+		// Marker that this process is a subagent. The modes extension
+		// (and any other extension that branches on orchestrator vs
+		// worker role) reads this to skip orchestrator-specific prompts
+		// like "you are the conductor." Set unconditionally so the
+		// signal is present even when allowedSubagents is empty.
+		PI_IS_SUBAGENT: "1",
+		...(config.allowlist && config.allowlist.length > 0
+			? { PI_SUBAGENT_ALLOWLIST: config.allowlist.join(",") }
+			: {}),
+		// Path to the subagent's isolated git worktree. The worktree-guard
+		// extension reads this and uses it to:
+		//   1. Allow writes inside this worktree (the "own worktree" anchor)
+		//   2. Block writes inside OTHER concurrent subagents' worktrees
+		//      (paths matching `/tmp/pi-subagent-wt-*` that are not this one)
+		// Empty string when no worktree isolation applies (`isolate: false`
+		// reviewers, or subagents dispatched without worktree support);
+		// the worktree-guard treats empty as a no-op for that guard.
+		PI_SUBAGENT_WORKTREE: config.worktreePath ?? "",
+		// Path to the parent repo's checkout. The worktree-guard blocks
+		// writes inside this path so the child cannot contaminate the
+		// orchestrator's working tree. Only meaningful when the child is
+		// actually isolated (i.e. has its own worktree) — for unisolated
+		// reviewers the child runs IN the parent cwd, so the parent-cwd
+		// block would block them from their own working directory. Empty
+		// in that case.
+		PI_SUBAGENT_PARENT_CWD: config.worktreePath ? (config.parentCwdForCleanup ?? "") : "",
+		// peer-link identity: the subagent's peer name is its session id, so
+		// the same id steers it, resumes it, and addresses peer messages to
+		// it. Always set — an inherited PI_PEER_NAME would make sibling
+		// subagents collide on one mailbox identity.
+		PI_PEER_NAME: config.sessionId,
+	};
 }
 
 // Decision 014: parse the work order's canonical `review_policy` bullet.
@@ -1057,11 +1150,15 @@ async function spawnSubagent(
 	const effectiveModel = inheritParentModel ? parentModel : (agent.model ?? "deepseek/deepseek-v4-flash-0731");
 
 	// Build spawn args via shared helper (also used by tests).
+	// Fresh spawn: pass the tracking id as --session-id so the child's pi
+	// session id IS the handle. Resume: reopen the existing session file
+	// (its header id is the handle), which keeps the same id.
 	const args = buildSubagentArgs({
 		model: effectiveModel ?? "",
 		tools: agent.tools ?? [],
 		excludeTools: agent.excludeTools ?? [],
 		sessionFile: resumeSessionFile,
+		sessionId: resumeSessionFile === undefined ? sessionId : undefined,
 	});
 
 	let tmpDir: string | null = null;
@@ -1105,6 +1202,7 @@ async function spawnSubagent(
 		stdin: null,
 		resolveOnStop: null,
 		isDone: false,
+		procExited: false,
 		killedExplicitly: false,
 		stoppedExplicitly: false,
 		turnNudged: false,
@@ -1197,37 +1295,31 @@ async function spawnSubagent(
 		stdio: ["pipe", "pipe", "pipe"],
 		env: {
 			...process.env,
-			// Marker that this process is a subagent. The modes extension
-			// (and any other extension that branches on orchestrator vs
-			// worker role) reads this to skip orchestrator-specific prompts
-			// like "you are the conductor." Set unconditionally so the
-			// signal is present even when allowedSubagents is empty.
-			PI_IS_SUBAGENT: "1",
-			...(agent.allowedSubagents && agent.allowedSubagents.length > 0
-				? { PI_SUBAGENT_ALLOWLIST: agent.allowedSubagents.join(",") }
-				: {}),
-			// Path to the subagent's isolated git worktree. The worktree-guard
-			// extension reads this and uses it to:
-			//   1. Allow writes inside this worktree (the "own worktree" anchor)
-			//   2. Block writes inside OTHER concurrent subagents' worktrees
-			//      (paths matching `/tmp/pi-subagent-wt-*` that are not this one)
-			// Empty string when no worktree isolation applies (`isolate: false`
-			// reviewers, or subagents dispatched without worktree support);
-			// the worktree-guard treats empty as a no-op for that guard.
-			PI_SUBAGENT_WORKTREE: worktreePath ?? "",
-			// Path to the parent repo's checkout. The worktree-guard blocks
-			// writes inside this path so the child cannot contaminate the
-			// orchestrator's working tree. Only meaningful when the child is
-			// actually isolated (i.e. has its own worktree) — for unisolated
-			// reviewers the child runs IN the parent cwd, so the parent-cwd
-			// block would block them from their own working directory. Empty
-			// in that case.
-			PI_SUBAGENT_PARENT_CWD: worktreePath ? (parentCwdForCleanup ?? "") : "",
+			...buildSubagentEnv({
+				sessionId,
+				allowlist: agent.allowedSubagents,
+				worktreePath,
+				parentCwdForCleanup,
+			}),
 		},
 	});
 
 	rs.proc = proc;
 	rs.stdin = proc.stdin;
+
+	// Swallow EPIPE/stream errors from writing to a dying child's stdin.
+	// Without a listener, an 'error' event on the write stream is an
+	// unhandled exception and would crash the parent session.
+	rs.stdin?.on("error", (err: Error) => {
+		debugLog(`subagent stdin error: ${err.message}`);
+	});
+
+	// Earliest liveness signal: the process has exited, even though the
+	// close handler (running-map removal) may lag behind. Steer/stop must
+	// not write into the dead pipe.
+	proc.on("exit", () => {
+		rs.procExited = true;
+	});
 
 	let stdoutBuffer = "";
 
@@ -1327,6 +1419,18 @@ async function spawnSubagent(
 					logEntry(`  ${S.toolSuccess}─ ${trimmed.replace(/\n/g, "\n    ")}${S.reset}`);
 				}
 			}
+		}
+
+		// ── Activity signal: tool mid-execution update (streaming output) ─
+		// bash (and any tool that streams partial results) emits
+		// tool_execution_update while running. Count it as activity so a
+		// long-but-healthy command — a multi-minute test suite printing
+		// progress — is NOT billed as silence. Only a truly silent /
+		// deadlocked tool stays quiet and hits the budget (decision 015's
+		// deadlock backstop). bash only fires this on real new output
+		// (updateDirty), so an empty throttle never keeps a hung child alive.
+		if (event.type === "tool_execution_update") {
+			bumpActivity(rs);
 		}
 
 		// ── Live log: assistant message content ────────────────────────
@@ -1884,11 +1988,82 @@ function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 // and the session file is preserved, so `subagent_resume` can continue the
 // killed session.
 
-/** Record a progress signal from the child (tool execution, assistant
- *  message, or any log output). The stage-2 silence-kill timer reads this
- *  timestamp to tell a hung child from a slow-but-healthy one. */
+/** Record a progress signal from the child (tool execution start/end,
+ *  tool_execution_update streaming output, assistant message, or any log
+ *  output). The stage-2 silence-kill timer reads this timestamp to tell a
+ *  hung child from a slow-but-healthy one. */
 function bumpActivity(rs: RunningSubagent): void {
 	rs.lastActivityMs = Date.now();
+}
+
+// ── Sleep guard: caffeinate + sleep-aware silence accounting ──────────────
+//
+// macOS system sleep suspends pi and every subagent with it, but Date.now()
+// advances across the suspension — so decision 015's silence budget billed
+// sleep as child silence and killed healthy subagents on wake (observed
+// 2026-08-08, recurrent through 2026-08-11/12: auto-kills firing 10–35 min
+// overdue; pmset showed ~15-min Sleep-Service cycles on battery). Two guards:
+//
+//  (1) caffeinate -s -i holds a PreventSystemSleep assertion while any child
+//      runs, so the machine doesn't sleep mid-task (AC; macOS won't honor it
+//      indefinitely on battery). Lifecycle tracks the running set via
+//      reconcileSleepGuards(), which updateFooter calls on every transition.
+//  (2) a 10s heartbeat (heartbeatTick) detects suspension — a tick landing
+//      >slack late means the process was asleep — and discounts the slept
+//      interval from every child's lastActivityMs, then re-arms. The
+//      just-woke guard in armSilenceTimer (above) keeps an overdue silence
+//      timer from firing on an inflated gap before the heartbeat corrects it.
+//
+// Neither guard disables stage 2: a child silent while AWAKE (no tool calls,
+// no log output, no tool_execution_update) is still killed at
+// silenceTimeoutMs — the deadlock backstop decision 015 preserves.
+
+/** Start the heartbeat + caffeinate when the first child dispatches; stop
+ *  when the running set empties so the machine may sleep when idle.
+ *  Idempotent — called from updateFooter on every running-map transition. */
+function reconcileSleepGuards(): void {
+	if (running.size > 0 && !heartbeatTimer) startSleepGuards();
+	else if (running.size === 0 && heartbeatTimer) stopSleepGuards();
+}
+
+function startSleepGuards(): void {
+	lastHeartbeatMs = Date.now();
+	heartbeatTimer = setInterval(heartbeatTick, SLEEP_GUARD_HEARTBEAT_MS);
+	heartbeatTimer.unref();
+	// Hold PreventSystemSleep (-s) + prevent idle sleep (-i) for the running
+	// set's lifetime. -w <pi pid> frees cleanup: caffeinate exits when pi
+	// exits. macOS only — the heartbeat covers platforms where this is a
+	// no-op (and battery, where the assertion isn't honored long-term).
+	if (process.platform === "darwin" && !caffeinateProc) {
+		try {
+			caffeinateProc = spawn("caffeinate", ["-s", "-i", "-w", String(process.pid)], { stdio: "ignore" });
+			caffeinateProc.unref();
+			caffeinateProc.on("error", () => { caffeinateProc = null; });
+		} catch { caffeinateProc = null; }
+	}
+}
+
+function stopSleepGuards(): void {
+	if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+	if (caffeinateProc) { try { caffeinateProc.kill(); } catch { /* */ } caffeinateProc = null; }
+}
+
+/** Heartbeat: if this tick landed >slack late, the process was suspended
+ *  (system sleep). Date.now() advanced across it but the children could not
+ *  emit activity, so each silence budget is inflated by the suspension —
+ *  discount it (bump lastActivityMs forward) and re-arm. Errs slightly toward
+ *  over-discounting (forgives ~one heartbeat of legitimate silence per
+ *  sleep), the safe direction: never kill healthy work for sleep. */
+function heartbeatTick(): void {
+	const now = Date.now();
+	const elapsed = now - lastHeartbeatMs;
+	lastHeartbeatMs = now;
+	if (elapsed <= SLEEP_GUARD_HEARTBEAT_MS + SLEEP_GUARD_SLACK_MS) return;
+	const oversleep = elapsed - SLEEP_GUARD_HEARTBEAT_MS;
+	for (const rs of running.values()) {
+		rs.lastActivityMs += oversleep;
+		if (rs.silenceTimeoutMs > 0) armSilenceTimer(rs);
+	}
 }
 
 /** Arm the stage-2 silence-kill timer for `rs`. Mirrors the stage-1
@@ -1900,6 +2075,16 @@ function bumpActivity(rs: RunningSubagent): void {
 function armSilenceTimer(rs: RunningSubagent): void {
 	if (rs.silenceTimer) clearTimeout(rs.silenceTimer);
 	if (rs.silenceTimeoutMs <= 0) { rs.silenceTimer = null; return; }
+	// Just-woke window (sleep guard): if the heartbeat hasn't reconciled
+	// since the process resumed, the wall-clock silence may still include
+	// suspension we haven't discounted yet. Defer — re-arm after one
+	// heartbeat interval instead of evaluating (and firing on) an inflated
+	// gap. The heartbeat tick will discount the slept interval and call
+	// armSilenceTimer again with a corrected budget.
+	if (Date.now() - lastHeartbeatMs > SLEEP_GUARD_HEARTBEAT_MS + SLEEP_GUARD_SLACK_MS) {
+		rs.silenceTimer = setTimeout(() => { rs.silenceTimer = null; armSilenceTimer(rs); }, SLEEP_GUARD_HEARTBEAT_MS);
+		return;
+	}
 	const silentFor = Date.now() - rs.lastActivityMs;
 	const remaining = rs.silenceTimeoutMs - silentFor;
 	if (remaining <= 0) {
@@ -2095,6 +2280,7 @@ export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: n
 // ── Footer ─────────────────────────────────────────────────────────────────
 
 function updateFooter(ctx: any): void {
+	reconcileSleepGuards();
 	if (running.size === 0) {
 		ctx.ui.setStatus("subagent-async", undefined);
 		return;
@@ -2158,6 +2344,7 @@ export default function (pi: ExtensionAPI) {
 					stdin: null,
 					resolveOnStop: null,
 					isDone: false,
+					procExited: false,
 					// Recovered subagents are re-attached to a fresh pi
 					// session; the kill flag never applies (the previous
 					// session died, not killed). Initialize to false to
@@ -2480,6 +2667,9 @@ export default function (pi: ExtensionAPI) {
 			"After a subagent finishes, use `subagent_resume` with the same session_id to continue the same conversation instead of starting fresh.",
 		parameters: SubagentParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// One id everywhere: the handle is passed to the child as
+			// --session-id, so it is also the subagent's pi session id —
+			// searchable in /resume and joinable via `pi --session-id <id>`.
 			const sessionId = `subagent-${randomUUID()}`;
 			const cwd = params.cwd ?? ctx.cwd;
 
@@ -2673,6 +2863,10 @@ export default function (pi: ExtensionAPI) {
 						text: [
 							`Subagent started: ${agent.name} (session: ${sessionId})${isolationStatus}`,
 							`Task: ${params.task.slice(0, 200)}${params.task.length > 200 ? "..." : ""}`,
+							"",
+							"The session id is the subagent's real pi session id — search it in /resume",
+							"or join it from a terminal with `pi --session <id>`.",
+							"It is also its peer-link name: message it anytime with peer_send (to: the session id).",
 							"",
 							"Watch live:",
 							"```bash",
@@ -3068,11 +3262,36 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			rpcSend(rs.stdin, {
+			// A stopped session must not be "steered" — a write into a dead
+			// child's pipe would buffer and be silently lost while the tool
+			// reported success. Reflect the true state instead.
+			if (rs.isDone || rs.procExited || !rs.stdin || rs.stdin.destroyed) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Subagent ${rs.agentName} (${params.session_id}) is no longer running (${rs.isDone ? "completed" : "process exited"}) — steering message not delivered: "${params.message}"`,
+						},
+					],
+				};
+			}
+
+			const sent = rpcSend(rs.stdin, {
 				type: "prompt",
 				message: params.message,
 				streamingBehavior: "steer",
 			});
+
+			if (!sent) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Steering message NOT delivered to ${rs.agentName} (${params.session_id}) — stdin closed (session may have just stopped): "${params.message}"`,
+						},
+					],
+				};
+			}
 
 			return {
 				content: [
@@ -3114,13 +3333,20 @@ export default function (pi: ExtensionAPI) {
 			// bypassed for this session.
 			rs.stoppedExplicitly = true;
 
-			// Send final steer if provided
+			// Send final steer if provided — but only while the child can
+			// still receive it. If it has already exited (or is mid-exit),
+			// skip the steer; the wait below resolves via the close handler
+			// regardless.
 			const finalMsg = params.final_message || "Wrap up your current work and return a summary. Do not start new tasks.";
-			rpcSend(rs.stdin, {
-				type: "prompt",
-				message: finalMsg,
-				streamingBehavior: "steer",
-			});
+			if (rs.isDone || rs.procExited || !rs.stdin || rs.stdin.destroyed) {
+				debugLog(`subagent_stop: wrap-up steer skipped for ${params.session_id} (session already stopped)`);
+			} else {
+				rpcSend(rs.stdin, {
+					type: "prompt",
+					message: finalMsg,
+					streamingBehavior: "steer",
+				});
+			}
 
 		// Wait for subagent to finish, with timeout
 			// The worker won't exit on its own (RPC mode keeps it alive).

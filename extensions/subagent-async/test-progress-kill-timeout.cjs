@@ -34,6 +34,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SUBAGENT_STALE_TURN_MS = 5 * 60 * 1000; // 5 minutes (stage-1 wake, unchanged)
 const SILENCE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes (stage-2 kill)
 const HARD_KILL_DELAY_MS = 5000;
+// Sleep guard (decision 015 fix) — KEEP IN SYNC with index.ts. Heartbeat
+// cadence + jitter slack for detecting system sleep, and the module-level
+// heartbeat bookkeeping the silence timer's just-woke guard reads.
+const SLEEP_GUARD_HEARTBEAT_MS = 10 * 1000;
+const SLEEP_GUARD_SLACK_MS = 3 * 1000;
+let lastHeartbeatMs = 0;
 
 // ── resolveSilenceTimeout — KEEP IN SYNC with index.ts ────────────────────
 // Per-spawn resolution: undefined → 30-min default; 0/negative (and
@@ -46,8 +52,9 @@ function resolveSilenceTimeout(param) {
 // ── bumpActivity — KEEP IN SYNC with index.ts ─────────────────────────────
 // Index.ts calls this from: the closure-scoped `logEntry` helper (every log
 // line written to the child's log), `appendRunningLogLine` (the tool-body
-// mirror of logEntry), the tool_execution_start/end event handlers, and the
-// assistant message_end handler. One timestamp, updated on that union.
+// mirror of logEntry), the tool_execution_start/end handlers, the
+// tool_execution_update handler (streaming bash output), and the assistant
+// message_end handler. One timestamp, updated on that union.
 function bumpActivity(rs) {
 	rs.lastActivityMs = Date.now();
 }
@@ -59,6 +66,14 @@ function bumpActivity(rs) {
 function armSilenceTimer(rs) {
 	if (rs.silenceTimer) clearTimeout(rs.silenceTimer);
 	if (rs.silenceTimeoutMs <= 0) { rs.silenceTimer = null; return; }
+	// Just-woke window (sleep guard): if the heartbeat hasn't reconciled since
+	// the process resumed, the silence measurement may still include suspension
+	// we haven't discounted — re-arm after one heartbeat instead of firing on
+	// an inflated gap. The heartbeat tick discounts and re-arms with a fix.
+	if (Date.now() - lastHeartbeatMs > SLEEP_GUARD_HEARTBEAT_MS + SLEEP_GUARD_SLACK_MS) {
+		rs.silenceTimer = setTimeout(() => { rs.silenceTimer = null; armSilenceTimer(rs); }, SLEEP_GUARD_HEARTBEAT_MS);
+		return;
+	}
 	const silentFor = Date.now() - rs.lastActivityMs;
 	const remaining = rs.silenceTimeoutMs - silentFor;
 	if (remaining <= 0) {
@@ -74,6 +89,23 @@ function armSilenceTimer(rs) {
 		}
 		fireSilenceKill(rs);
 	}, remaining);
+}
+
+// ── heartbeatTick — KEEP IN SYNC with index.ts ─────────────────────────
+// Detects process suspension: a tick landing >slack late means the process
+// was asleep (system sleep). Date.now() advanced across it but the children
+// could not emit activity, so each silence budget is inflated by the
+// suspension — discount it (bump lastActivityMs forward) and re-arm.
+function heartbeatTick() {
+	const now = Date.now();
+	const elapsed = now - lastHeartbeatMs;
+	lastHeartbeatMs = now;
+	if (elapsed <= SLEEP_GUARD_HEARTBEAT_MS + SLEEP_GUARD_SLACK_MS) return;
+	const oversleep = elapsed - SLEEP_GUARD_HEARTBEAT_MS;
+	for (const rs of running.values()) {
+		rs.lastActivityMs += oversleep;
+		if (rs.silenceTimeoutMs > 0) armSilenceTimer(rs);
+	}
 }
 
 // Stage-2 guards mirror the kill path's idempotency — an already
@@ -178,6 +210,7 @@ function reset() {
 	running.clear();
 	killLog = [];
 	procKills = [];
+	lastHeartbeatMs = Date.now(); // fresh heartbeat each row so the just-woke guard doesn't defer
 }
 
 let passed = 0;
@@ -358,6 +391,74 @@ function eq(actual, expected, msg) {
 	});
 
 	// ── interaction: kill dispatch cancels both timers (no leak) ───────
+	// ── (g) system-sleep recovery: heartbeatTick discounts oversleep ──
+	// Observed 2026-08-08..08-12: macOS Sleep-Service cycles (~15 min on
+	// battery) suspended pi mid-task; Date.now() advanced across the sleep
+	// but children couldn't emit activity, so the silence budget billed sleep
+	// as child silence and killed healthy subagents on wake (auto-kills fired
+	// 10–35 min overdue). The heartbeat detects suspension (a tick landing
+	// >slack late) and discounts the slept interval from lastActivityMs.
+	await test("(g) heartbeatTick discounts oversleep from lastActivityMs when a tick lands late", () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 60_000 });
+		rs.lastActivityMs = Date.now() - 30_000; // 30s silent
+		lastHeartbeatMs = Date.now() - 25_000;   // pretend ~25s suspension
+		const before = rs.lastActivityMs;
+		heartbeatTick(); // elapsed ~25s > 13s threshold → discount ≈ 15s
+		const discount = rs.lastActivityMs - before;
+		assert.ok(discount > 14_000 && discount < 16_000, `discount ≈ elapsed − heartbeat (≈15s), got ${discount}ms`);
+	});
+	await test("(g2) heartbeatTick is a no-op when the tick lands on time (no false discount)", () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 60_000 });
+		rs.lastActivityMs = Date.now() - 5_000;
+		lastHeartbeatMs = Date.now() - 10_500; // 10.5s < 13s threshold → on time
+		const before = rs.lastActivityMs;
+		heartbeatTick();
+		eq(rs.lastActivityMs, before, "no discount when tick is on time");
+	});
+
+	// ── (h) armSilenceTimer defers the kill in the just-woke window ────
+	// Race fix: on wake an overdue silence timer can fire before the heartbeat
+	// reconciles. The guard at the top of armSilenceTimer detects the stale
+	// heartbeat and re-arms after one interval instead of evaluating — and
+	// firing on — an inflated gap.
+	await test("(h) armSilenceTimer defers the kill while the heartbeat is stale (just-woke window)", async () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 80 });
+		rs.lastActivityMs = Date.now() - 60_000; // would immediate-fire
+		lastHeartbeatMs = Date.now() - 60_000;   // stale → just-woke
+		armSilenceTimer(rs);
+		eq(rs.killedExplicitly, false, "immediate-fire suppressed in just-woke window");
+		assert.ok(rs.silenceTimer, "re-arm scheduled instead of firing");
+	});
+
+	// ── (i) tool_execution_update (streaming output) counts as activity ─
+	// bash streams stdout/stderr via tool_execution_update (100ms throttle,
+	// only on real new output). Handling it as activity keeps a long-but-
+	// healthy command alive; a deadlocked (zero-output) tool stays quiet and
+	// is still killed — the deadlock backstop decision 015 preserves.
+	await test("(i) a child receiving periodic tool_execution_update bumps survives past the threshold", async () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 80 });
+		armSilenceTimer(rs);
+		for (let i = 0; i < 14; i++) { // ~420ms of streaming updates >> 5× 80ms
+			await sleep(30);
+			bumpActivity(rs); // mirrors handling tool_execution_update
+		}
+		eq(rs.killedExplicitly, false, "child receiving streaming updates survives");
+		assert.deepStrictEqual(procKills, [], "no signals dispatched");
+	});
+	await test("(i2) a tool that goes silent (no updates) is still killed — deadlock backstop preserved", async () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 80 });
+		lastHeartbeatMs = Date.now(); // awake, heartbeat fresh → guard passes
+		armSilenceTimer(rs);
+		await sleep(300); // no updates, no bumps
+		eq(rs.killedExplicitly, true, "deadlocked silent child still auto-killed");
+		eq(rs.killedVia, "progress-timeout", "kill source recorded");
+	});
+
 	await test("kill dispatch clears the armed silence timer AND stale watchdog", async () => {
 		reset();
 		const rs = makeChild({ silenceTimeoutMs: 10_000 });

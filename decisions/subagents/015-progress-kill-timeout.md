@@ -26,3 +26,31 @@ date: 2026-08-04
 **Files changed:** `extensions/subagent-async/index.ts` (silence tracking, stage-2 auto-kill, param), this decision, 001 footnote, index.
 
 **Test coverage:** real-dispatch E2E mandatory (WO-2026-034/035 lesson). Matrix: silent child killed at `silenceTimeoutMs` with marker delivered; active child untouched past the threshold; `silenceTimeoutMs: 0` disables; stage-1 wake still fires at 5 min; killed session resumable via `subagent_resume`.
+
+---
+
+> **Amended (2026-08-12): system-sleep hardening.** The silence budget used
+> wall-clock `Date.now()`, which advances while the machine sleeps but the
+> child cannot emit activity — so macOS sleep billed suspension as child
+> silence and stage 2 killed healthy subagents on wake. Observed recurrently:
+> the 2026-08-08 wait-parked kill already in the code comments, plus
+> 2026-08-11/12 auto-kills firing **10–35 min overdue** (a 30-min timer
+> landing at 40 / 65 min of apparent silence = time the laptop spent asleep);
+> `pmset -g log` showed continuous ~15-min Sleep-Service cycles on battery,
+> and nothing in the stack held a `PreventSystemSleep` assertion. The manual
+> `subagent_kill` count (≈209 vs ≈6 stage-2 fires) was downstream of the same
+> cause — the orchestrator woke to stale-looking children and killed them.
+>
+> Three guards added in `extensions/subagent-async/index.ts` (tests in
+> `test-progress-kill-timeout.cjs` rows g/h/i), none of which disable stage 2:
+> 1. `caffeinate -s -i -w <pi pid>` runs while any child runs — prevents sleep
+>   mid-task on AC (battery isn't honored long-term; guard 2 covers it).
+> 2. A 10s heartbeat discounts slept intervals from every child's
+>   `lastActivityMs`; `armSilenceTimer` also defers a kill while the heartbeat
+>   is unreconciled (just-woke window) so an overdue timer can't fire on an
+>   inflated gap before the heartbeat corrects it.
+> 3. `tool_execution_update` (bash's 100ms-throttled streaming output) now
+>   counts as activity — a long-but-healthy command printing progress stays
+>   alive; a truly silent/deadlocked tool still hits the budget. This refines
+>   the *Tradeoffs* clause: the deadlock backstop is preserved, but "silent"
+>   now excludes tools actively streaming output.
