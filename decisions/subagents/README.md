@@ -24,3 +24,5 @@ date: 2026-07-14
 | 015 | Silence-based progress-kill timeout (activates 001) | done |
 | 016 | Fleet speed experiment — standard reviewers to GPT-5.6 Luna, implementer stays Flash | done |
 | 017 | Single review tier — Luna standard, deep tier dormant (kept as insurance) | done |
+| 018 | Overlap independent work during an implementer's review window (prompt-only; interim-report and orchestrator-owned-rework deferred) | done |
+| 019 | Standard reviewers to Flash 0731 — accept same-lab correlation for cost (reverses 016) | done |

@@ -1,55 +1,98 @@
-# Post-WO-2026-018 verification battery — done
+# WO-2026-031 — Implementer-tier collapse experiment
 
-All checks pass; one finding fixed and committed (`e5ceaa6`).
+**Status**: in progress (implementer dispatched 2026-08-02)
 
-## Results
+## Goal
 
-**Unit/integration**
-- `bun test tests/pdf-convert.test.ts` — 29 pass (was 27; +2 new error-format tests)
-- Full `bun test` — 300 pass, 2 fail / 2 errors = the pre-existing typebox
-  resolution issue in subagent-async tests (verified identical on pre-WO tree)
+Collapse `implement-flash` + `implement-pro` into a single `implement-pro` on
+`deepseek/deepseek-v4-flash-0731`. Oracle stays on `deepseek/deepseek-v4-pro`.
 
-**Live e2e (fresh `pi -p`, local content-type server + incident URL)**
+## Why (experiment framing)
 
-| Case | Result |
-|---|---|
-| fetch real.pdf (application/pdf) | converted → saved path (563K chars) ✓ |
-| fetch mislabelled.html (text/html, PDF body) | body-sniff caught → converted ✓ |
-| fetch octet.pdf (application/octet-stream) | sniff caught → converted ✓ |
-| fetch corrupt.pdf (truncated) | single-line error, no binary ✓ |
-| fetch password.pdf (AES-256) | clear "password-protected" error ✓ |
-| fetch data.json | JSON passthrough unchanged ✓ |
-| fetch index.html | Readability unchanged ✓ |
-| fetch incident URL (microsoft genev-icfp21.pdf) | converted → saved (93K chars) ✓ |
-| read scanned.pdf (image-only) | OCR via tesseract → text ✓ |
-| read text-as-pdf.pdf (text misnamed .pdf) | guard pass-through, raw text ✓ |
-| read large.pdf | saved-path pointer ✓ |
+0731 beats V4 Pro on all three served-model AA indices (49.9/69.1/45.7 vs
+44.3/59.4/36.4) at ~⅓ the blended price ($0.019 vs $0.055). DeepSeek's agentic
+suite shows large gains (DeepSWE 7.3→54.4, Cybergym 38.7→76.7). SWE-Pro/LCB
+unpublished for 0731 → this is a deliberate, documented experiment.
 
-**Binary-leak check** — full session JSONL inspected: **0 `%PDF` occurrences**;
-fetch_url tool results are clean pointers (`--- body (pdf: pymupdf4llm ->
-markdown; N chars — saved to disk) ---` + path + grep hint).
+## Rollback path (one commit revert)
 
-**Discouragement** — fresh session confirms: "PDFs are binary" note present in
-system prompt verbatim; `pdf` skill discovered with correct description.
+1. `git revert` the merge of branch `pi-subagent-1d9ecd067225` → restores
+   `agents/implement-flash.md` + the two model lines
+2. `agents/implement-pro.md` model → `deepseek/deepseek-v4-pro`
+3. `agents/math-algo-oracle.md` unchanged (never touched)
 
-## Finding fixed this session
+## Steps
 
-Conversion failures dumped full Python tracebacks into the tool result (context
-noise) and password-protected PDFs errored with a cryptic
-`TypeError: 'NoneType' object is not subscriptable`. Fixed in
-`extensions/lib/pdf-convert.ts`:
-- pymupdf4llm snippet pre-checks `is_encrypted` → "PDF is password-protected —
-  no text extraction without the password"
-- error text = last non-empty stderr line (the exception message), never a
-  traceback → corrupt.pdf now reports `pymupdf4llm: RuntimeError: code=7:
-  Invalid number of pages`
-- results shrank from multi-hundred-byte tracebacks to 186-208 chars
-- +2 stub tests (traceback trimming, password case); decision 002 updated
-  with the error contract
+- [x] Scope blast radius (agents/, orchestrator, work-order skill, SYSTEM_PROMPT,
+      modes.ts, reviewers, docs, decisions) — WO-2026-031 written
+- [x] Dispatch implement-pro (session subagent-f4c6afbf-f9da-4ada-9e49-1d9ecd067225)
+- [ ] Review completion report (status, invariant calibration, structural checks)
+- [ ] Verify: grep implement-flash → zero in live config; bun test → no new failures
+- [ ] Verify survivor resolves; oracle untouched
+- [ ] Merge worktree branch
+- [ ] Post-experiment watch: SWE-Pro/LCB for 0731 (`fetch_benchlm.py --check-0731`)
+      → if granular beats Pro, keep collapse; if regression, rollback
 
-## Artifacts (gitignored, under tmp/pdf-test/)
+## Files that will change
 
-- `large.pdf` (158K, 200pp), `password.pdf`, `scanned.pdf` (6.5MB image-only),
-  `corrupt.pdf` (40K truncated), `text-as-pdf.pdf`
-- `server.py` — content-type test server (port 8741; now stopped)
-- session JSONLs used for leak checks
+`agents/implement-pro.md` (model+prose), `agents/implement-flash.md` (delete),
+`agents/orchestrator.md`, `agents/review-code.md`, `agents/review-tests.md`,
+`skills/work-order-template/SKILL.md`, `extensions/subagent-async/SYSTEM_PROMPT.md`,
+`extensions/modes.ts`, `apps/changelog-gen/ROADMAP.md`, `docs/thinking-levels.md`,
+`docs/model-role-scores.md`, `decisions/subagents/{012-new,011-footnote,README}`,
+`work-orders/WO-2026-031.md`.
+
+## WO-2026-034 — carry parent's uncommitted state into isolated worktrees
+
+**Problem:** `createWorktree` (extensions/subagent-async/index.ts:445) branches off
+parent HEAD only; an uncommitted plan/work-order doc in the parent is invisible to
+the isolated subagent (first `read` → ENOENT).
+
+**Fix:** overlay parent's uncommitted WIP (via `git status --porcelain=v1 -uall -z`,
+read-only on parent) into the worktree after `worktree add`. New `carryUncommitted`
+spawn param (default true); skip when `baseRef` is set. Do NOT touch preCommitSteps
+(line 522). Production change confined to index.ts; test = new standalone script
+`extensions/subagent-async/test-carry-uncommitted.cjs` (test-subject.cjs pattern —
+index.ts isn't importable: typebox/pi packages resolve only under jiti).
+
+**State:** dispatched to implement-pro via work-orders/WO-2026-034.md.
+**After merge:** orchestrator runs real-dispatch E2E (steps 1–6 in WO), then
+optional follow-ups (skip byte-identical carried files in auto-commit; warn on
+missing carried paths).
+
+**Update (user decision):** follow-up #1 (completion-time filter — skip committing carried files
+byte-identical to the carried-in snapshot) is bumped from optional to MUST-DO. Sequenced as
+WO-2026-035 on 034's branch (depends on 034's carried-snapshot data), merged with 034 as one
+change. `carryPaths` narrowing param remains optional/unplanned for now.
+
+**Live bug found (E2E, post-reload):** `createWorktree` destructures
+`const [topLevel, headResult]` where `topLevel` is the git RESULT OBJECT
+({stdout,stderr,exitCode}); the carry passes the object as the repo path →
+spawn cwd invalid → best-effort catch swallows → carry NEVER ran in production
+(silent). Every real isolated worktree clean despite dirty parent; replication
+with the path string works; mirror test has the same blind spot (execFileSync
+returns a string). Fix folded into WO-2026-035 (steered): extract
+`topLevelResult.stdout.trim()`, fail-fast typeof guard in carryUncommittedState,
+mirror wiring pin + new matrix row. Lesson: the mirror/unit boundary cannot catch
+object-vs-string wiring bugs — real-dispatch E2E is mandatory verification for
+createWorktree changes.
+
+**WO-2026-035 merged (4fbee59):** completion filter (skip committing carried
+files byte-identical to the snapshot) + topLevel wiring fix + mirror row 21.
+All suites green (carry 21, filter 12, subject 9, guard 51). Remaining: final
+E2E battery after ONE more /reload (session still runs pre-035 code):
+(1) default carry → handoff readable; (2) guards still ENOENT; (3) read-only
+scout → no branch commit + branch deleted; edit scout → commit has edit;
+(4) parallel isolation. Then cleanup handoff file + docs, and consider a
+doc/decision note on "E2E mandatory for createWorktree changes".
+
+**FINAL E2E BATTERY — ALL GREEN (fixed code, after 2nd reload):**
+1. Default carry → handoff file READABLE (E2E-CARRY-PASSED); worktree shows all 6
+   carried entries. 2. carryUncommitted:false → ENOENT. 3. baseRef → ENOENT,
+   branch pinned at ref. 4. Parallel isolation → both see carried file, neither
+   sees the other's marker; both branches' auto-commits contain ONLY their own
+   marker (filter excluded the 5 carried M files + carried untracked doc).
+5. 035 read-only scout → NO commit, branch deleted by postDeliveryCleanup.
+6. 035 edit scout → branch commit contains ONLY the edited handoff
+   (EDITED-BY-E2E-SUBAGENT); untouched carried files absent. Verification
+   steps 1-7 of the original spec: complete. E2E scratch artifacts cleaned.
