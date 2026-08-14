@@ -34,14 +34,17 @@ import {
 	listPeers,
 	mailboxRoot,
 	ownPeerName,
+	peerIdentityFrom,
 	readIncoming,
 	removeHeartbeat,
+	resolvePeerAddressAmong,
 	sanitizePeerName,
 	sendEnvelope,
 	sweepStalePeers,
 	writeHeartbeat,
 	type Envelope,
 } from "../extensions/peer-link/mailbox";
+import { deliveryDecision } from "../extensions/peer-link/index";
 
 const PEER_LINK_INDEX = join(import.meta.dir, "..", "extensions", "peer-link", "index.ts");
 
@@ -147,6 +150,64 @@ describe("peer-link mailbox", () => {
 		expect(names).not.toContain("old");
 		removeHeartbeat(dir, "alice");
 		expect(listPeers(dir).map((p) => p.name)).not.toContain("alice");
+	});
+
+	it("resolves a UUID-tail address to the full announced peer name", () => {
+		const full = "2026-08-12T00-34-37-476Z_019ff364-7f24-7f68-90e2-640b2c649fc3";
+		const tail = "019ff364-7f24-7f68-90e2-640b2c649fc3";
+		writeHeartbeat(dir, { name: full, ts: Date.now() });
+		const listed = listPeers(dir);
+		expect(resolvePeerAddressAmong(listed, full)).toBe(full); // exact full name passes through
+		expect(resolvePeerAddressAmong(listed, tail)).toBe(full); // UUID tail → full announced name
+		expect(resolvePeerAddressAmong(listed, "no-such-peer")).toBe("no-such-peer"); // unknown → unchanged
+		expect(resolvePeerAddressAmong(listed, "76")).toBe("76"); // short substring → not resolved (length guard)
+		removeHeartbeat(dir, full);
+	});
+});
+
+describe("peer_send requireOnline gate (deliveryDecision)", () => {
+	const online = (names: string[]) => names.map((name) => ({ name, online: true }));
+	it("ok when target online", () => {
+		const r = deliveryDecision("bob", online(["bob"]), false);
+		expect(r).toEqual({ ok: true, online: true });
+	});
+	it("ok when target offline and requireOnline false (default: queue)", () => {
+		const r = deliveryDecision("bob", [{ name: "bob", online: false }], false);
+		expect(r).toEqual({ ok: true, online: false });
+	});
+	it("fails when target offline and requireOnline true", () => {
+		const r = deliveryDecision("bob", [{ name: "bob", online: false }], true);
+		expect(r.ok).toBe(false);
+	});
+	it("fails when target absent and requireOnline true", () => {
+		const r = deliveryDecision("bob", [], true);
+		expect(r.ok).toBe(false);
+	});
+	it("ok when target online even with requireOnline true", () => {
+		const r = deliveryDecision("bob", online(["bob"]), true);
+		expect(r).toEqual({ ok: true, online: true });
+	});
+});
+
+describe("peer-link identity chain (peerIdentityFrom)", () => {
+	it("PI_PEER_NAME wins when set", () => {
+		expect(peerIdentityFrom({ PI_PEER_NAME: "alice" }, "bug-triage", "/s/x.jsonl")).toBe("alice");
+	});
+	it("falls back to the session display name when PI_PEER_NAME is unset", () => {
+		expect(peerIdentityFrom({}, "bug-triage", "/s/x.jsonl")).toBe("bug-triage");
+	});
+	it("rejects a non-name-shaped display name (spaces) → falls through to the file", () => {
+		// sanitizePeerName rejects "Refactor auth" (space) → file basename used instead.
+		expect(peerIdentityFrom({}, "Refactor auth", "/s/abc-123.jsonl")).toBe("abc-123");
+	});
+	it("falls back to the session file basename when no env and no name", () => {
+		expect(peerIdentityFrom({}, undefined, "/s/abc-123.jsonl")).toBe("abc-123");
+	});
+	it("falls back to hostname-pid when nothing else is available", () => {
+		expect(peerIdentityFrom({}, undefined, undefined)).toMatch(/.+-.+/);
+	});
+	it("trims the display name", () => {
+		expect(peerIdentityFrom({}, "  bug-triage  ", undefined)).toBe("bug-triage");
 	});
 });
 

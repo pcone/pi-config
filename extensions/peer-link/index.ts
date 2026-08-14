@@ -30,7 +30,6 @@
 
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -45,8 +44,10 @@ import {
 	mailboxRoot,
 	newEnvelope,
 	ownPeerName,
+	peerIdentityFrom,
 	readIncoming,
 	removeHeartbeat,
+	resolvePeerAddressAmong,
 	sanitizePeerName,
 	sendEnvelope,
 	sweepStalePeers,
@@ -54,6 +55,24 @@ import {
 } from "./mailbox.ts";
 
 const PENDING_TTL_MS = 10 * 60 * 1000; // drop queued-but-never-delivered auto-replies
+
+/**
+ * Pure gate for peer_send's `requireOnline` flag (direct send): ok + the
+ * target's online status, or a failure reason when the flag is set and the
+ * target is offline/absent. Exported for unit tests; broadcast uses its own
+ * zero-targets check (different shape).
+ */
+export function deliveryDecision(
+	to: string,
+	peers: readonly { name: string; online: boolean }[],
+	requireOnline: boolean,
+): { ok: true; online: boolean } | { ok: false; reason: string } {
+	const online = peers.some((p) => p.name === to && p.online);
+	if (requireOnline && !online) {
+		return { ok: false, reason: `peer "${to}" is offline (requireOnline set) — not queued` };
+	}
+	return { ok: true, online };
+}
 
 export default function (pi: ExtensionAPI) {
 	// Per-instance state: each pi process (or SDK session) gets its own
@@ -98,24 +117,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	function resolvePeerName(ctx: ExtensionContext): string {
-		const explicit = process.env.PI_PEER_NAME?.trim();
-		if (explicit) {
-			try {
-				return sanitizePeerName(explicit);
-			} catch {
-				// fall through to derived identity
-			}
-		}
-		const file = ctx.sessionManager.getSessionFile();
-		if (file) {
-			const base = path.basename(file).replace(/\.jsonl?$/, "");
-			try {
-				return sanitizePeerName(base);
-			} catch {
-				// fall through to pid-based identity
-			}
-		}
-		return ownPeerName();
+		return peerIdentityFrom(
+			process.env,
+			ctx.sessionManager.getSessionName() ?? undefined,
+			ctx.sessionManager.getSessionFile(),
+		);
 	}
 
 	/** Late initialization guard for tools/commands (session_start normally covers it). */
@@ -327,6 +333,12 @@ export default function (pi: ExtensionAPI) {
 						'Deliver as follow-up (wait until the peer is fully idle) instead of steering its current turn. Default false (steer, lands at the next turn boundary). Only affects one-way messages — reply-requested (expectReply) messages always pivot via follow-up so the agent answers cleanly. Use followUp only when the message must not interrupt in-flight work.',
 				}),
 			),
+			requireOnline: Type.Optional(
+				Type.Boolean({
+					description:
+						"Fail (throw) instead of queueing when the target peer is offline — for handoffs that must not be silently swallowed by a dead peer. Default false (queue and deliver when the peer returns).",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			ensureReady(ctx);
@@ -336,6 +348,9 @@ export default function (pi: ExtensionAPI) {
 				const targets = listPeers(state.mailbox).filter(
 					(p) => p.online && p.name !== state.peerName,
 				);
+				if (params.requireOnline && targets.length === 0) {
+					throw new Error("peer_send: no online peers to broadcast to (requireOnline set) — not queued");
+				}
 				for (const t of targets) {
 					sendEnvelope(state.mailbox, newEnvelope(state.peerName, t.name, params.message, expectReply, undefined, deliverAs));
 				}
@@ -352,16 +367,19 @@ export default function (pi: ExtensionAPI) {
 			} catch (err) {
 				throw new Error(`peer_send: ${(err as Error).message}`);
 			}
+			const listed = listPeers(state.mailbox);
+			to = resolvePeerAddressAmong(listed, to);
+			const decision = deliveryDecision(to, listed, params.requireOnline ?? false);
+			if (!decision.ok) throw new Error(`peer_send: ${decision.reason}`);
 			sendEnvelope(state.mailbox, newEnvelope(state.peerName, to, params.message, expectReply, undefined, deliverAs));
-			const online = listPeers(state.mailbox).some((p) => p.name === to && p.online);
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Message sent to peer "${to}" (${online ? "online" : "queued for when it is online"}).`,
+						text: `Message sent to peer "${to}" (${decision.online ? "online" : "queued for when it is online"}).`,
 					},
 				],
-				details: { to, online, expectReply },
+				details: { to, online: decision.online, expectReply },
 			};
 		},
 	});
@@ -422,8 +440,10 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const deliverAs = followUp ? "followUp" : "steer";
+			const listed = listPeers(state.mailbox);
+			to = resolvePeerAddressAmong(listed, to);
 			sendEnvelope(state.mailbox, newEnvelope(state.peerName, to, match[2].trim(), expectReply, undefined, deliverAs));
-			const online = listPeers(state.mailbox).some((p) => p.name === to && p.online);
+			const online = listed.some((p) => p.name === to && p.online);
 			ctx.ui.notify(`Sent to ${to}${online ? " (online)" : " (queued)"}${expectReply ? " (reply)" : ""}${followUp ? " (follow-up)" : ""}`, "info");
 		},
 	});

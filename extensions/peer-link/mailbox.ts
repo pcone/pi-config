@@ -68,6 +68,48 @@ export function ownPeerName(env: NodeJS.ProcessEnv = process.env): string {
 	return `${os.hostname()}-${process.pid}`;
 }
 
+/**
+ * Full peer-identity chain: PI_PEER_NAME → session display name (--name) →
+ * session file basename → hostname-pid. Pure; exported for unit tests.
+ *
+ * The display-name fallback lets `pi --name bug-triage` identify the session
+ * as "bug-triage" WITHOUT PI_PEER_NAME. sanitizePeerName rejects human-readable
+ * names (spaces, punctuation), so only name-shaped display names qualify —
+ * casual names like "Refactor auth" fall through to the filename, which keeps
+ * the display-label-vs-routing-key distinction intact.
+ */
+export function peerIdentityFrom(
+	env: NodeJS.ProcessEnv,
+	sessionName: string | undefined,
+	sessionFile: string | undefined,
+): string {
+	const explicit = env.PI_PEER_NAME?.trim();
+	if (explicit) {
+		try {
+			return sanitizePeerName(explicit);
+		} catch {
+			/* invalid explicit name — fall through */
+		}
+	}
+	const name = sessionName?.trim();
+	if (name) {
+		try {
+			return sanitizePeerName(name);
+		} catch {
+			/* not a valid peer name (e.g. has spaces) — fall through */
+		}
+	}
+	if (sessionFile) {
+		const base = path.basename(sessionFile).replace(/\.jsonl?$/, "");
+		try {
+			return sanitizePeerName(base);
+		} catch {
+			/* fall through to pid identity */
+		}
+	}
+	return `${os.hostname()}-${process.pid}`;
+}
+
 export function inboxDir(mailbox: string, name: string): string {
 	return path.join(mailbox, sanitizePeerName(name));
 }
@@ -167,6 +209,32 @@ export function listPeers(mailbox: string, now = Date.now()): PeerInfo[] {
 		}
 	}
 	return peers;
+}
+
+/**
+ * Resolve a `to` address to a listed peer's canonical announced name.
+ *
+ * Peer names are the full session-filename identity (e.g.
+ * `2026-08-12T00-34-37-476Z_019ff364-…`), but callers — especially agents
+ * using peer_send — often address by the UUID tail (`019ff364-…`). Without
+ * resolution a tail-addressed envelope lands in a phantom `<tail>` inbox the
+ * recipient never reads (its consumeInbox reads its full-name inbox) and the
+ * online check reports "queued for when it is online" even though peer_list
+ * shows the peer online. This resolves either form to the listed peer's
+ * actual announced name so the envelope + online check agree. Returns `to`
+ * unchanged when no listed peer matches (genuinely unknown/offline → queued).
+ *
+ * The full name ends with the UUID, so a tail matches via `endsWith`; the
+ * length guard avoids ambiguous short-substring matches.
+ */
+export function resolvePeerAddressAmong(listed: PeerInfo[], to: string): string {
+	const exact = listed.find((p) => p.name === to);
+	if (exact) return exact.name;
+	if (to.length >= 8) {
+		const byTail = listed.find((p) => p.name.endsWith(to));
+		if (byTail) return byTail.name;
+	}
+	return to;
 }
 
 /** Remove heartbeat files not refreshed for a while, so dead peers age out. */
