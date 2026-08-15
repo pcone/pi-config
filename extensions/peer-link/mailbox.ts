@@ -5,8 +5,9 @@
  * heartbeat to `_peers/<name>.json` so others can discover who is online;
  * messages are envelope files dropped into the recipient's subdirectory.
  * Envelopes are consumed on read (deleted), which makes delivery
- * at-most-once across restarts: a message sent while the peer is offline
- * just sits in its inbox until the next scan.
+ * at-most-once across restarts: a message sent to a listed peer while it is
+ * offline just sits in its inbox until the peer's next scan. (Senders gate
+ * on this: peer-link fails sends to names that match no listed peer.)
  */
 
 import { randomUUID } from "node:crypto";
@@ -222,17 +223,23 @@ export function listPeers(mailbox: string, now = Date.now()): PeerInfo[] {
  * online check reports "queued for when it is online" even though peer_list
  * shows the peer online. This resolves either form to the listed peer's
  * actual announced name so the envelope + online check agree. Returns `to`
- * unchanged when no listed peer matches (genuinely unknown/offline → queued).
+ * unchanged when no listed peer matches; the send-side delivery gate then
+ * rejects it rather than queueing into an unread inbox.
  *
  * The full name ends with the UUID, so a tail matches via `endsWith`; the
- * length guard avoids ambiguous short-substring matches.
+ * length guard avoids ambiguous short-substring matches. When several listed
+ * peers share a tail (same session id under two file names — resume/fork),
+ * prefer the online one, then the freshest heartbeat: that is the live
+ * reader of that identity's inbox.
  */
 export function resolvePeerAddressAmong(listed: PeerInfo[], to: string): string {
 	const exact = listed.find((p) => p.name === to);
 	if (exact) return exact.name;
 	if (to.length >= 8) {
-		const byTail = listed.find((p) => p.name.endsWith(to));
-		if (byTail) return byTail.name;
+		const matches = listed
+			.filter((p) => p.name.endsWith(to))
+			.sort((a, b) => Number(b.online) - Number(a.online) || b.ts - a.ts);
+		if (matches[0]) return matches[0].name;
 	}
 	return to;
 }

@@ -26,6 +26,12 @@
  * expectReply:false, and each envelope is replied to at most once per
  * process. Peers that message each other deliberately (LLM-driven multi-turn
  * coordination) are fine; nothing here re-forwards a received reply.
+ *
+ * Delivery gate: a send to a name that matches no listed peer FAILS loudly
+ * instead of queueing — an unlisted name (typo, chimera of two session
+ * names, a friendly guess like "tfd-b") would otherwise sit forever in an
+ * inbox nobody reads while the tool reports "queued". Only listed peers
+ * (heartbeat present, online or stale) accept queued offline delivery.
  */
 
 import { randomUUID } from "node:crypto";
@@ -57,9 +63,12 @@ import {
 const PENDING_TTL_MS = 10 * 60 * 1000; // drop queued-but-never-delivered auto-replies
 
 /**
- * Pure gate for peer_send's `requireOnline` flag (direct send): ok + the
- * target's online status, or a failure reason when the flag is set and the
- * target is offline/absent. Exported for unit tests; broadcast uses its own
+ * Delivery gate for peer_send / peer-send: resolves the policy for one
+ * direct send. Fails when the target is not a listed peer (regardless of
+ * requireOnline — queueing to an unlisted name creates a phantom inbox),
+ * and when the target is listed but offline with requireOnline set.
+ * Otherwise ok, with the target's online status (offline = will queue until
+ * the peer's next scan). Exported for unit tests; broadcast uses its own
  * zero-targets check (different shape).
  */
 export function deliveryDecision(
@@ -67,11 +76,23 @@ export function deliveryDecision(
 	peers: readonly { name: string; online: boolean }[],
 	requireOnline: boolean,
 ): { ok: true; online: boolean } | { ok: false; reason: string } {
-	const online = peers.some((p) => p.name === to && p.online);
-	if (requireOnline && !online) {
+	const known = peers.find((p) => p.name === to);
+	if (!known) {
+		const names = peers.map((p) => `${p.name} (${p.online ? "online" : "offline"})`);
+		const shown =
+			names.slice(0, 6).join(", ") + (names.length > 6 ? `, … +${names.length - 6} more` : "");
+		return {
+			ok: false,
+			reason:
+				`peer "${to}" is not listed — not queued (no heartbeat matches that name; ` +
+				`queueing it would land in an inbox nobody reads). Known peers: ${shown || "none"}. ` +
+				`Call peer_list — offline peers age out of the registry ~2min after their last heartbeat.`,
+		};
+	}
+	if (requireOnline && !known.online) {
 		return { ok: false, reason: `peer "${to}" is offline (requireOnline set) — not queued` };
 	}
-	return { ok: true, online };
+	return { ok: true, online: known.online };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -241,7 +262,19 @@ export default function (pi: ExtensionAPI) {
 			const replyText = assistantText(branch.slice(idx + 1, end));
 			if (!replyText) continue;
 			replied.add(env.id);
-			sendEnvelope(state.mailbox, newEnvelope(state.peerName, env.from, replyText, false, env.id));
+			// Resolve the sender the way peer_send does; if their heartbeat is gone
+			// (died within the sweep window), say so instead of silently dropping a
+			// reply into an inbox nobody reads.
+			const listed = listPeers(state.mailbox);
+			const to = resolvePeerAddressAmong(listed, env.from);
+			if (!listed.some((p) => p.name === to)) {
+				ctx.ui.notify(
+					`peer-link: auto-reply to "${env.from}" not sent — peer no longer listed`,
+					"warning",
+				);
+				continue;
+			}
+			sendEnvelope(state.mailbox, newEnvelope(state.peerName, to, replyText, false, env.id));
 		}
 	});
 
@@ -319,7 +352,10 @@ export default function (pi: ExtensionAPI) {
 			"Write messages information-dense: lead with the ask and include whatever context or constraints the peer needs, skipping salutations, sign-offs, pleasantries, and recap. Concise is good, but completeness still wins.",
 		],
 		parameters: Type.Object({
-			to: Type.String({ description: 'Peer name to send to, or "*" to broadcast to all online peers' }),
+			to: Type.String({
+				description:
+					'Peer name (or UUID tail) to send to, or "*" to broadcast to all online peers. Names not matching a listed peer fail loudly — call peer_list first.',
+			}),
 			message: Type.String({
 				description:
 					"Message text. Information-dense and direct: state the request (and any needed context/constraints) up front; no salutations, sign-offs, or filler prose.",
@@ -442,9 +478,13 @@ export default function (pi: ExtensionAPI) {
 			const deliverAs = followUp ? "followUp" : "steer";
 			const listed = listPeers(state.mailbox);
 			to = resolvePeerAddressAmong(listed, to);
+			const decision = deliveryDecision(to, listed, false);
+			if (!decision.ok) {
+				ctx.ui.notify(decision.reason, "error");
+				return;
+			}
 			sendEnvelope(state.mailbox, newEnvelope(state.peerName, to, match[2].trim(), expectReply, undefined, deliverAs));
-			const online = listed.some((p) => p.name === to && p.online);
-			ctx.ui.notify(`Sent to ${to}${online ? " (online)" : " (queued)"}${expectReply ? " (reply)" : ""}${followUp ? " (follow-up)" : ""}`, "info");
+			ctx.ui.notify(`Sent to ${to}${decision.online ? " (online)" : " (queued)"}${expectReply ? " (reply)" : ""}${followUp ? " (follow-up)" : ""}`, "info");
 		},
 	});
 

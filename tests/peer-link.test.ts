@@ -152,6 +152,17 @@ describe("peer-link mailbox", () => {
 		expect(listPeers(dir).map((p) => p.name)).not.toContain("alice");
 	});
 
+	it("long peer names (61 chars, real session-file size) round-trip through exact inbox dirs", () => {
+		// Regression: an early dev build mangled the inbox dir for names this
+		// long while the envelope kept the full address — mail vanished into a
+		// phantom truncated-name inbox. Pin the exact-dir behavior.
+		const full = "2026-08-09T04-04-38-441Z_019fe4b1-b1a8-79b4-9321-0179b19b1976";
+		expect(full.length).toBe(61);
+		ensureMailbox(dir, full);
+		sendEnvelope(dir, { id: "env-long", from: "x", to: full, text: "t", expectReply: false, sentAt: Date.now() });
+		expect(readIncoming(dir, full)).toHaveLength(1);
+	});
+
 	it("resolves a UUID-tail address to the full announced peer name", () => {
 		const full = "2026-08-12T00-34-37-476Z_019ff364-7f24-7f68-90e2-640b2c649fc3";
 		const tail = "019ff364-7f24-7f68-90e2-640b2c649fc3";
@@ -162,6 +173,24 @@ describe("peer-link mailbox", () => {
 		expect(resolvePeerAddressAmong(listed, "no-such-peer")).toBe("no-such-peer"); // unknown → unchanged
 		expect(resolvePeerAddressAmong(listed, "76")).toBe("76"); // short substring → not resolved (length guard)
 		removeHeartbeat(dir, full);
+	});
+
+	it("resolves tail collisions to the live reader: online wins, then freshest heartbeat", () => {
+		// Same session id under two file names (resume/fork) — the tail matches
+		// both; delivery must go to the inbox someone is actually reading.
+		const tail = "019ffaaa-0000-0000-0000-000000000000";
+		const stale = `2026-08-11T00-00-00-000Z_${tail}`;
+		const live = `2026-08-12T00-00-00-000Z_${tail}`;
+		const fresh = `2026-08-13T00-00-00-000Z_${tail}`;
+		const now = Date.now();
+		writeHeartbeat(dir, { name: stale, ts: now - 120_000 });
+		writeHeartbeat(dir, { name: fresh, ts: now - 45_000 }); // offline but newer than live's ts…
+		writeHeartbeat(dir, { name: live, ts: now - 5_000 }); // …online wins regardless
+		expect(resolvePeerAddressAmong(listPeers(dir), tail)).toBe(live);
+		removeHeartbeat(dir, live);
+		expect(resolvePeerAddressAmong(listPeers(dir), tail)).toBe(fresh); // newest offline
+		removeHeartbeat(dir, stale);
+		removeHeartbeat(dir, fresh);
 	});
 });
 
@@ -178,6 +207,15 @@ describe("peer_send requireOnline gate (deliveryDecision)", () => {
 	it("fails when target offline and requireOnline true", () => {
 		const r = deliveryDecision("bob", [{ name: "bob", online: false }], true);
 		expect(r.ok).toBe(false);
+	});
+	it("fails when target absent, even without requireOnline (no phantom-inbox queueing)", () => {
+		const listed = online(["2026-08-12T00-17-14-841Z_019ff354-9659-7ed4-8a32-4df6e6ecfa81"]);
+		const r = deliveryDecision("tfd-b", listed, false);
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.reason).toContain("not listed");
+			expect(r.reason).toContain("019ff354-9659-7ed4-8a32-4df6e6ecfa81"); // known peers listed in the error
+		}
 	});
 	it("fails when target absent and requireOnline true", () => {
 		const r = deliveryDecision("bob", [], true);
@@ -357,7 +395,10 @@ describe("peer-link integration", () => {
 		const env = await setupSession({ peerName: "bob", mailbox, tools: ["peer_list"] });
 
 		try {
-			// The test plays "alice": drop a message into bob's inbox.
+			// The test plays "alice": drop a message into bob's inbox. Alice needs a
+			// heartbeat — the auto-reply path refuses unlisted senders — refreshed in
+			// the probe below so a slow agent turn can't outlive the sweep window.
+			writeHeartbeat(mailbox, { name: "alice", ts: Date.now() });
 			const incoming: Envelope = {
 				id: "bob-test-1",
 				from: "alice",
@@ -371,6 +412,7 @@ describe("peer-link integration", () => {
 			// Bob's extension consumes it and injects a user message.
 			await waitFor(
 				() => {
+					writeHeartbeat(mailbox, { name: "alice", ts: Date.now() });
 					const texts = env.sessionManager
 						.getEntries()
 						.filter(
@@ -406,6 +448,9 @@ describe("peer-link integration", () => {
 
 	it("agent sends a message to a peer via the peer_send tool", async () => {
 		const mailbox = await mkdtemp(join(tmpdir(), "peer-link-mail-"));
+		// Bob must be a listed peer — peer_send fails for unlisted names (they
+		// would queue into an inbox nobody reads).
+		writeHeartbeat(mailbox, { name: "bob", ts: Date.now() });
 		const env = await setupSession({
 			peerName: "alice",
 			mailbox,
