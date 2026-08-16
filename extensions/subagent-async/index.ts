@@ -32,7 +32,8 @@ const HARD_KILL_DELAY_MS = 5000;
 // only fires when the subagent is genuinely stuck.
 const SUBAGENT_STALE_TURN_MS = 5 * 60 * 1000; // 5 minutes
 // Decision 015 stage-2: a child SILENT for SILENCE_TIMEOUT_DEFAULT_MS (no
-// tool calls AND no assistant messages, per `lastActivityMs` tracking) is
+// activity in the decision-015 signal union — tools, LLM streaming, retries,
+// logs; per `lastActivityMs` tracking) is
 // auto-killed via the shared subagent_kill machinery (SIGTERM → SIGKILL),
 // with a `[Killed via progress-timeout]` marker delivered so the parent's
 // wait resolves and the session stays resumable. The default (30 min) is
@@ -46,6 +47,31 @@ const SILENCE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes
 // silence budget so sleep isn't billed as child silence.
 const SLEEP_GUARD_HEARTBEAT_MS = 10 * 1000;
 const SLEEP_GUARD_SLACK_MS = 3 * 1000;
+// Decision 015 guards 3+4: the raw RPC event types that count as child
+// activity. Tool lifecycle + streaming tool output (guard 3); LLM-call
+// streaming + provider retry lifecycle (guard 4 — a child mid-LLM-call emits
+// none of guard 3's signals, so without message_update one slow provider call
+// spanning the silence window was killed at a live turn boundary, issue #1).
+// The assistant message_end bump is role-gated at its call site and stays
+// there; log lines bump via logEntry.
+const ACTIVITY_EVENT_TYPES: ReadonlySet<string> = new Set([
+	"tool_execution_start",
+	"tool_execution_end",
+	"tool_execution_update",
+	"message_start",
+	"message_update",
+	"auto_retry_start",
+	"auto_retry_end",
+]);
+function eventCountsAsActivity(type: string): boolean {
+	return ACTIVITY_EVENT_TYPES.has(type);
+}
+// Stage-1 softening: activity within this window means the child is emitting
+// (LLM deltas / retries arrive sub-second) — soften the stall notice instead
+// of crying "stalled" mid-stream. False stalls invited manual kills of
+// healthy children (decision 015 amendment 2026-08-12: ≈209 manual vs ≈6
+// stage-2 kills).
+const STALL_SOFTEN_ACTIVITY_MS = 60 * 1000;
 const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
 const REVIEW_ROUND_CAP = 3;
 
@@ -1004,6 +1030,13 @@ interface RpcEvent {
 	id?: string;
 	message?: any;
 	message_end?: any;
+	// auto_retry_* payload (see pi docs/json.md RPC protocol)
+	attempt?: number;
+	maxAttempts?: number;
+	delayMs?: number;
+	errorMessage?: string;
+	success?: boolean;
+	finalError?: string;
 }
 
 /**
@@ -1376,9 +1409,7 @@ async function spawnSubagent(
 
 		// ── Live log: tool start ───────────────────────────────────────
 		if (event.type === "tool_execution_start") {
-			// Decision 015: tool execution counts as activity (the logEntry
-			// below also bumps — explicit here for the spec's signal union).
-			bumpActivity(rs);
+			// (activity bump via the union classifier below)
 			rs.toolInFlight++; // a tool is now running — suppress the stale-turn
 			                   // watchdog's "stalled" alarm while it executes
 			const tn: string = event.toolName || "";
@@ -1390,7 +1421,7 @@ async function spawnSubagent(
 
 		// ── Live log: tool end ─────────────────────────────────────────
 		if (event.type === "tool_execution_end") {
-			bumpActivity(rs);
+			// (activity bump via the union classifier below)
 			if (rs.toolInFlight > 0) rs.toolInFlight--;
 			// Re-arm the stalled-turn watchdog so a completed tool starts a fresh
 			// 5-minute window — otherwise a subagent that finishes a long tool and
@@ -1421,16 +1452,22 @@ async function spawnSubagent(
 			}
 		}
 
-		// ── Activity signal: tool mid-execution update (streaming output) ─
-		// bash (and any tool that streams partial results) emits
-		// tool_execution_update while running. Count it as activity so a
-		// long-but-healthy command — a multi-minute test suite printing
-		// progress — is NOT billed as silence. Only a truly silent /
-		// deadlocked tool stays quiet and hits the budget (decision 015's
-		// deadlock backstop). bash only fires this on real new output
-		// (updateDirty), so an empty throttle never keeps a hung child alive.
-		if (event.type === "tool_execution_update") {
+		// ── Activity signal: the decision-015 union (guards 3+4) ────────
+		// One classifier for every raw event type that proves the child is
+		// alive — tool lifecycle, streaming tool output, LLM-call streaming,
+		// provider retries. Cheap enough to run on every event.
+		if (eventCountsAsActivity(event.type)) {
 			bumpActivity(rs);
+		}
+
+		// Provider retry lifecycle: log it (also activity via the classifier
+		// above). The issue #1 incident log showed nothing between the last
+		// tool result and the kill — a retry line makes degraded-provider
+		// kills legible after the fact.
+		if (event.type === "auto_retry_start") {
+			logEntry(`  ${S.fgYellow}↻ retry ${event.attempt ?? "?"}/${event.maxAttempts ?? "?"} in ${event.delayMs ?? "?"}ms${event.errorMessage ? `: ${String(event.errorMessage).slice(0, 120)}` : ""}${S.reset}`);
+		} else if (event.type === "auto_retry_end") {
+			logEntry(`  ${S.dim}↻ retry ${event.attempt ?? "?"} ${event.success ? "recovered" : `failed${event.finalError ? `: ${String(event.finalError).slice(0, 120)}` : ""}`}${S.reset}`);
 		}
 
 		// ── Live log: assistant message content ────────────────────────
@@ -1466,7 +1503,9 @@ async function spawnSubagent(
 				rs.progress.turns++;
 				// Reset stalled-turn watchdog — fresh progress means no wake-up needed.
 				bumpStaleWatchdog(pi, rs);
-				// Decision 015: an assistant message is activity too.
+				// Decision 015: an assistant message is activity too. (Role-gated
+				// here rather than in the raw-type classifier — a user-message
+				// message_end must not count.)
 				bumpActivity(rs);
 				// Accumulate usage stats
 				rs.usageStats.input += msg.usage.input;
@@ -1970,6 +2009,18 @@ function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 			);
 			return;
 		}
+		// Activity within the softening window means the child is emitting —
+		// LLM deltas and retry events arrive sub-second when a provider call
+		// is grinding. The turn hasn't completed, but the child is
+		// demonstrably alive; crying "stalled" here invited manual kills of
+		// healthy children (issue #1 family).
+		if (Date.now() - rs.lastActivityMs < STALL_SOFTEN_ACTIVITY_MS) {
+			pi.sendUserMessage(
+				`[Subagent streaming] ${rs.agentName} (${rs.sessionId.slice(-8)}) has not completed a turn in ${SUBAGENT_STALE_TURN_MS / 60000} minutes, but is still emitting activity (LLM response streaming or provider retries). This is usually expected under degraded provider latency — use subagent_status to inspect; use subagent_stop only if it seems genuinely stuck.`,
+				{ deliverAs: "steer" },
+			);
+			return;
+		}
 		pi.sendUserMessage(
 			`[Subagent stalled] ${rs.agentName} (${rs.sessionId.slice(-8)}) has not advanced a turn in ${SUBAGENT_STALE_TURN_MS / 60000} minutes. The subagent is still running — use subagent_status to inspect progress or subagent_stop to terminate.`,
 			{ deliverAs: "steer" },
@@ -1988,10 +2039,11 @@ function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 // and the session file is preserved, so `subagent_resume` can continue the
 // killed session.
 
-/** Record a progress signal from the child (tool execution start/end,
- *  tool_execution_update streaming output, assistant message, or any log
- *  output). The stage-2 silence-kill timer reads this timestamp to tell a
- *  hung child from a slow-but-healthy one. */
+/** Record a progress signal from the child — tool lifecycle, streaming tool
+ *  output, LLM-call streaming + provider retries (the ACTIVITY_EVENT_TYPES
+ *  union), assistant message_end, or any log output. The stage-2
+ *  silence-kill timer reads this timestamp to tell a hung child from a
+ *  slow-but-healthy one. */
 function bumpActivity(rs: RunningSubagent): void {
 	rs.lastActivityMs = Date.now();
 }

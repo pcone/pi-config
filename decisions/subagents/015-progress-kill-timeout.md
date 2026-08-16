@@ -54,3 +54,35 @@ date: 2026-08-04
 >   alive; a truly silent/deadlocked tool still hits the budget. This refines
 >   the *Tradeoffs* clause: the deadlock backstop is preserved, but "silent"
 >   now excludes tools actively streaming output.
+
+> **Amended (2026-08-16): LLM-call streaming + provider retries count as
+> activity (guard 4).** Observed 2026-08-16 (issue #1): a healthy implementer
+> (49 turns, normal cadence) was killed by stage 2 at a live turn boundary —
+> the entire 30-min silence window sat inside one provider call. The activity
+> union counted tool lifecycle, streaming tool output, logs, and *completed*
+> assistant messages, but not `message_update` deltas (streaming tokens) nor
+> `auto_retry_*` events (provider retry/backoff); between a tool result and
+> the next `message_end` a mid-LLM child emits none of the counted signals.
+> The Tradeoffs clause above observed in the wild — on a machine that never
+> slept (pmset: awake continuously since 08-12 17:11), so no earlier guard
+> applied. Fix: raw event types are classified by a single
+> `ACTIVITY_EVENT_TYPES` union (guard 3's tool events folded in) —
+> `message_start`, `message_update`, `auto_retry_start`, `auto_retry_end`
+> added. `auto_retry_*` also logs a line so degraded-provider kills are
+> legible after the fact (the incident log showed nothing between the last
+> tool result and the kill). Retry credit is bounded by pi's own
+> `attempt`/`maxAttempts`: exhausted retries surface an error and end the
+> turn, so counting them can't stretch silence forever. Stage-1 softening: a
+> stall notice whose child showed activity in the last 60s now reads
+> `[Subagent streaming]` instead of `[Subagent stalled]` — false stalls
+> invited manual kills (the ≈209-manual-vs-≈6 asymmetry above). Residual
+> exposure, accepted: a provider call stalled pre-first-token with no retry
+> events still hits the budget — that is the deadlock backstop as designed;
+> dispatchers under known degradation raise `silenceTimeoutMs` per spawn, and
+> `subagent_resume` recovers a killed session. Stage 1's *wake* remains
+> undeliverable to an idle parent (a `deliverAs: "steer"` message waits for a
+> turn boundary an idle session never produces — issue #1 comment): pi-core
+> delivery semantics, out of scope here. Tests:
+> `test-progress-kill-timeout.cjs` rows (j)/(j2)/(j3) pin the classification
+> union, streaming survival, and the preserved backstop; the post-merge E2E
+> battery remains the real gate.

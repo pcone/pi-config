@@ -50,11 +50,32 @@ function resolveSilenceTimeout(param) {
 }
 
 // ── bumpActivity — KEEP IN SYNC with index.ts ─────────────────────────────
-// Index.ts calls this from: the closure-scoped `logEntry` helper (every log
-// line written to the child's log), `appendRunningLogLine` (the tool-body
-// mirror of logEntry), the tool_execution_start/end handlers, the
-// tool_execution_update handler (streaming bash output), and the assistant
-// message_end handler. One timestamp, updated on that union.
+// ── ACTIVITY_EVENT_TYPES / eventCountsAsActivity — KEEP IN SYNC ────────
+// Decision 015 guards 3+4: the raw RPC event types that count as child
+// activity. Guard 3: tool lifecycle + streaming tool output. Guard 4 (issue
+// #1): LLM-call streaming + provider retry lifecycle — a child mid-LLM-call
+// emits none of guard 3's signals, so one slow provider call spanning the
+// silence window was killed at a live turn boundary. The assistant
+// message_end bump is role-gated at its index.ts call site; log lines bump
+// via logEntry.
+const ACTIVITY_EVENT_TYPES = new Set([
+	"tool_execution_start",
+	"tool_execution_end",
+	"tool_execution_update",
+	"message_start",
+	"message_update",
+	"auto_retry_start",
+	"auto_retry_end",
+]);
+function eventCountsAsActivity(type) {
+	return ACTIVITY_EVENT_TYPES.has(type);
+}
+
+// Index.ts routes every ACTIVITY_EVENT_TYPES event through bumpActivity via
+// the union classifier, and additionally calls it from the closure-scoped
+// `logEntry` helper (every log line), `appendRunningLogLine` (its tool-body
+// mirror), and the role-gated assistant message_end handler. One timestamp,
+// updated on that union.
 function bumpActivity(rs) {
 	rs.lastActivityMs = Date.now();
 }
@@ -456,6 +477,47 @@ function eq(actual, expected, msg) {
 		armSilenceTimer(rs);
 		await sleep(300); // no updates, no bumps
 		eq(rs.killedExplicitly, true, "deadlocked silent child still auto-killed");
+		eq(rs.killedVia, "progress-timeout", "kill source recorded");
+	});
+
+	// ── (j) guard 4: LLM streaming + provider retries are activity ────
+	// Observed 2026-08-16 (issue #1): a healthy 49-turn implementer was killed
+	// at a live turn boundary — the whole 30-min silence window sat inside one
+	// provider call, because the union counted tool lifecycle, streaming tool
+	// output, logs, and COMPLETED assistant messages, but not message_update
+	// deltas nor auto_retry_* events. Between a tool result and the next
+	// message_end those are the only proof of life.
+	await test("(j) guard 4 union contract: LLM streaming + retry events classify as activity, others don't", () => {
+		for (const t of [
+			"tool_execution_start", "tool_execution_end", "tool_execution_update",
+			"message_start", "message_update", "auto_retry_start", "auto_retry_end",
+		]) {
+			assert.ok(eventCountsAsActivity(t), `${t} must count as activity`);
+		}
+		for (const t of ["turn_start", "turn_end", "queue_update", "compaction_start", "agent_start", "response"]) {
+			assert.ok(!eventCountsAsActivity(t), `${t} must NOT count as activity`);
+		}
+	});
+	await test("(j2) a child whose only activity is message_update deltas survives past the threshold", async () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 80 });
+		armSilenceTimer(rs);
+		for (let i = 0; i < 14; i++) { // ~420ms of streaming deltas >> 5× 80ms
+			await sleep(30);
+			if (eventCountsAsActivity("message_update")) bumpActivity(rs); // the index.ts route
+		}
+		eq(rs.killedExplicitly, false, "mid-LLM-call streaming child survives");
+		assert.deepStrictEqual(procKills, [], "no signals dispatched");
+	});
+	await test("(j3) retry credit ends and silence resumes — kill still fires (backstop preserved)", async () => {
+		reset();
+		const rs = makeChild({ silenceTimeoutMs: 80 });
+		lastHeartbeatMs = Date.now();
+		armSilenceTimer(rs);
+		await sleep(30);
+		if (eventCountsAsActivity("auto_retry_start")) bumpActivity(rs); // one retry, then the provider goes fully silent
+		await sleep(300);
+		eq(rs.killedExplicitly, true, "silent-after-retries child still auto-killed");
 		eq(rs.killedVia, "progress-timeout", "kill source recorded");
 	});
 
