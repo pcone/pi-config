@@ -1,6 +1,6 @@
 # WO-2026-048 — Fleet → zai/glm-5.3-flash, single review tier, /fleet-model toggle
 
-**Status**: MERGED 2026-08-28 (branch pi-subagent-88be00a6153e → merge 5588a0a; both reviewers APPROVED_WITH_NOTES round 1, notes resolved). E2E: model+suffix verified live (scout spawn ran zai/glm-5.3-flash, effective thinking high — zai has no real medium, see thinking-levels addendum); stray default-equivalent state file removed; `/fleet-model` command available from next session start (this session pre-dates the merge). Watch item: GLM-5.3 math rows (MathArena/HF card) — recheck ~2026-09-01.
+**Status**: MERGED + VERIFIED CLOSED 2026-08-28 (branch pi-subagent-88be00a6153e → merge 5588a0a; both reviewers APPROVED_WITH_NOTES round 1, notes resolved). E2E on reloaded code: live spawn ran zai/glm-5.3-flash; lib toggle roundtrip (default → deepseek, suffix preserved → cleared); null effort level (zai medium) falls back to the PROVIDER default high — not the session default (spawn recorded high under defaultThinkingLevel:max) — so scouts are pinned to GLM-high regardless of default flips (see thinking-levels addendum). `/fleet-model` live. **Remaining watch item: GLM-5.3 math rows (MathArena/HF card) — recheck ~2026-09-01**; oracle re-decides only if independent math data beats 0813 (AIME 96.67 / HMMT 95.2 / CF 3206) at its price band.
 
 **Decisions (all user-confirmed):**
 - Flash seat (implement, 3 reviewers, 2 scouts, compaction) → `zai/glm-5.3-flash`, toggleable
