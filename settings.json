@@ -16,6 +16,7 @@
     "extensions/peer-link/index.ts",
     "extensions/append-system-local.ts",
     "extensions/pinned-sessions.ts",
+    "extensions/bug-triage.ts",
     "~/.pi/local-extensions/session-icon.ts"
   ],
   "defaultThinkingLevel": "high",
