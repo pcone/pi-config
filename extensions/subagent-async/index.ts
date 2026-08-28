@@ -1121,15 +1121,30 @@ export function buildSubagentEnv(config: {
 	};
 }
 
-// Decision 014: parse the work order's canonical `review_policy` bullet.
-// First-word-after-colon semantics: `- **review_policy**: skip ...` → skip;
-// anything else — `required`, the template literal `required | skip`, or an
-// absent bullet — → required. First-word semantics mirrors the task-text
-// regex used by the gate (`/^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m`),
-// which also fails on `required | skip` because `skip` is not the first
-// token. Deliberately NOT a substring match for `skip`.
-function parseWorkOrderPolicy(woText: string): "required" | "skip" {
-	const m = woText.match(/^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m);
+// Decision 014: parse the work order's declared `review_policy`.
+//
+// Two encodings are accepted, in priority order:
+//   1. the canonical bullet — `- **review_policy**: skip`
+//   2. YAML frontmatter     — `review_policy: skip`
+// The bullet is what the work-order template prescribes and wins when both are
+// present. Frontmatter is accepted because a large share of real work orders
+// use it: before 2026-08-26 this function matched the bullet only, so those
+// declarations were silently read as `required` (fail-safe — extra reviews,
+// never skipped ones — but inert, which defeats the point of decision 014
+// making the WO the single source of truth).
+//
+// First-word-after-colon semantics in BOTH forms: `skip` → skip; anything else
+// — `required`, the template literal `required | skip`, or no declaration at
+// all — → required. Trailing rationale after the first token is ignored, so
+// `skip — because ...` still reads as skip. First-word semantics mirrors the
+// task-text regex used by the gate
+// (`/^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m`), which also fails on
+// `required | skip` because `skip` is not the first token. Deliberately NOT a
+// substring match for `skip`.
+export function parseWorkOrderPolicy(woText: string): "required" | "skip" {
+	const m =
+		woText.match(/^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m) ??
+		woText.match(/^review_policy:\s*(\S+)/m);
 	return m?.[1] === "skip" ? "skip" : "required";
 }
 

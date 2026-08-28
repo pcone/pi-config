@@ -188,6 +188,77 @@ See the agent's system prompt for exact schema. A `complete` status requires bot
 
 ---
 
+## Persistence and lifecycle
+
+The template above defines a work order's *content*. This section defines where it
+lives and what happens to it afterwards.
+
+### Where it goes
+
+Write the work order to **`work-orders/` at the target repo's root**, as
+`work-orders/<work_order_id>-<short-slug>.md`. Pass that repo-relative path as
+`workOrderPath` on the `subagent` call.
+
+Do **not** put work orders under `docs/`. They are dispatch artifacts, not
+documentation: they are unindexed, they are never updated after landing, and in
+bulk they drown the curated doc set. (Precedent: 173 work orders had accumulated
+in `tfd/docs/plans/` — 46% of that repo's `docs/` by volume and 81% of its
+doc-validation findings — and were relocated on 2026-08-26.)
+
+`work_order_id` is unique **per repo**, not globally. `WO-2026-013` names
+different work in `tfd` and in `pi-config`. Never assume an ID identifies a work
+order without knowing which repo it belongs to.
+
+### Encoding — use the bolded `### Metadata` block
+
+Write metadata as the bolded bullet list shown in the template above; that is
+the canonical form the parser prefers. This is a **code contract, not a style
+preference**: the gate parses `review_policy` with
+
+```
+/^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m   ??   /^review_policy:\s*(\S+)/m
+```
+
+— canonical bullet first, YAML frontmatter as fallback (added 2026-08-26; until
+then frontmatter declarations were silently read as `required` — fail-safe,
+extra reviews never skipped ones, but inert, which defeats the point of
+decision 014 making the WO the source of truth). When both are present the
+bullet wins. Anything else — `required`, the template literal
+`required | skip`, or no declaration at all — reads as `required`.
+
+### Persistence — commit it, then freeze it
+
+Commit the work order. It is the written record of what was asked for and why, at
+the moment of dispatch, and is frequently the only trace of a decision's context.
+
+**Do not edit a work order after its work has landed.** A landed WO is a snapshot
+of intent; its stale line numbers and paths are accurate history, not rot. Append
+a landing stamp if you must, but do not rewrite the spec to match what was
+actually built — that destroys the record of the gap between the two, which is
+exactly what a reviewer needs.
+
+### Graduation — durable knowledge moves out
+
+A work order is not a home for knowledge that outlives it. When the work produces
+something durable, put it where it will be maintained and leave the WO frozen with
+a forward link:
+
+| What came out of the work | Where it goes |
+|---|---|
+| A ruling, its alternatives, its tradeoffs | `decisions/<area>/NNN-*.md` |
+| How the system now works, and why | `docs/design/` |
+| What is in flight or next | `docs/current-plan.md` |
+| A new term used across docs | `docs/glossary.md` |
+
+**Watch for a work order that keeps growing.** If a WO accretes progress banners,
+phase ledgers and review rounds, that is the signal it has outgrown its genre and
+should have graduated into a design plan. A 650-line work order is a failure of
+this rule, not a thorough one. (Precedent: `WO-comptime-escaping-slugs-cife.md`
+grew to 650 lines carrying seven unrecorded rulings, and was unpacked into
+`docs/design/unified-type-param-application.md` plus seven decision records.)
+
+---
+
 ## Notes for the Orchestrator
 
 - **Always set `invariant_exhaustiveness`**. Default to `implicit` if uncertain.
@@ -195,3 +266,11 @@ See the agent's system prompt for exact schema. A `complete` status requires bot
 - **Use repo-relative paths everywhere.** Subagents run in isolated worktrees; absolute parent-repo paths bypass isolation.
 - **Cross-reference AGENTS.md** for project-specific conventions.
 - **Consider pre-dispatch simplification.** If the change looks larger than the goal warrants, route through `review-plan` first.
+## Review routing criterion (adopted 2026-08-26, both boards)
+
+`review_policy: skip` is for changes where **no invariant can fail** — not changes where
+the invariant is cheap. Size is not the criterion. Calibration case: a "trivial" directory
+sweep (WO-2026-067) shipped a fail-open liveness gate that a 4-round review cycle caught;
+the skip call was wrong despite the change being genuinely small. When an invariant is live
+(liveness, completeness, ordering, security), route review — the cycle is cheaper than the
+production failure it prevents.
