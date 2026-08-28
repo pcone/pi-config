@@ -45,10 +45,15 @@ build, and edit freely. Coordinate only via peer-link (messages) and
 the GitHub remote (issues/PRs/branches).
 
 Keep the clone synced with the mainline: fetch each remote (by name)
-at the top of every turn, and park the checkout on the mainline tip
-between bugs — repro and pin-verification must never start from a
-stale tree. When a pin branch falls behind, rebase it and re-verify
-the pin still fails before offering it up.
+at the top of every turn, and park the checkout **detached** at the
+fetched mainline tip between bugs (`git checkout --detach
+<remote>/<mainline>` — here `shared/hamster`). Repro and
+pin-verification must never start from a stale tree. No local
+tracking branch: a second pointer can drift and fail soft; detached
+is always exactly the fetched tip and fails loud. Commit from
+`bug-triage/*` branches cut off the tip, never from the parked
+state. When a pin branch falls behind, rebase it and re-verify the
+pin still fails before offering it up.
 
 ## Report-back
 
