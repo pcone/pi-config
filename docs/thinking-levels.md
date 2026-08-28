@@ -25,7 +25,7 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
   `:medium`, reviewers/oracle `:max`, orchestrator `zai/glm-5.3:high`); the
   `/fleet-model` toggle preserves the suffix (`zai/glm-5.3-flash:high` →
   `deepseek/deepseek-v4-flash-0731:high`).
-- Provider mappings: **GLM-5.3(-flash) via zai** (pi catalog `thinkingLevelMap`, verified in `models-store.json` + live smoke spawn 2026-08-28): `low`→low (real, cheaper), `medium`→**null** (unsupported — falls back to session default), `high`→high, `xhigh`→**null**, `max`→max. So `:medium` frontmatter is inert on zai today (effective = default); `low` is the only real sub-high tier. **DeepSeek V4** (official docs): low→low, medium/high/xhigh→high, max→max — `medium` is likewise effectively high there.
+- Provider mappings: **GLM-5.3(-flash) via zai** (pi catalog `thinkingLevelMap`, verified in `models-store.json` + live smoke spawn 2026-08-28): `low`→low (real, cheaper), `medium`→**null** (unsupported — falls back to the *provider's* default, `high`, not the session default), `high`→high, `xhigh`→**null**, `max`→max. So `:medium` frontmatter is inert on zai today (effective = provider default `high`); `low` is the only real sub-high tier. **DeepSeek V4** (official docs): low→low, medium/high/xhigh→high, max→max — `medium` is likewise effectively high there.
 
 ## Findings per model
 
@@ -71,13 +71,15 @@ slice at both efforts through our OpenRouter route, logging reasoning tokens.
 **2. The zai level map is narrower than assumed above.** pi's catalog
 (`models-store.json`) maps GLM: `low`→low (real, cheaper), `medium`→**null**,
 `xhigh`→**null**, `high`→high, `max`→max — there is no real `medium`; a
-`:medium` request falls back to the session default. **Post-merge E2E
-confirmed it live:** a `scout-code` spawn (`zai/glm-5.3-flash:medium`) ran on
-the real endpoint at effective `high`. Scouts therefore run at GLM-high
-today; `:medium` stays in frontmatter as intent + future-proofing (if z.ai
-ships a real medium, pi's catalog map picks it up). The cheaper real option is
-`:low` — untested quality for research tasks, data gap; revisit only if scout
-token spend matters.
+`:medium` request falls back to the provider's default. **Post-merge E2E
+confirmed it live — twice:** `scout-code` and `scout-web` spawns
+(`zai/glm-5.3-flash:medium`) ran on the real endpoint at effective `high`,
+including one under `defaultThinkingLevel: max` — the fallback is the
+provider default, not the session default. Scouts are therefore pinned to
+GLM-high regardless of session-default flips; `:medium` stays in frontmatter
+as intent + future-proofing (if z.ai ships a real medium, pi's catalog map
+picks it up). The cheaper real option is `:low` — untested quality for
+research tasks, data gap; revisit only if scout token spend matters.
 
 ## What this means for current assignments
 
