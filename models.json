@@ -28,6 +28,15 @@
             }
           }
         },
+        "deepseek/deepseek-v4-pro-0813": {
+          "maxTokens": 384000,
+          "compat": {
+            "openRouterRouting": {
+              "only": ["deepseek"],
+              "allow_fallbacks": false
+            }
+          }
+        },
         "deepseek/deepseek-v4-flash": {
           "maxTokens": 131072,
           "compat": {

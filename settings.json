@@ -1,7 +1,7 @@
 {
   "lastChangelogVersion": "0.83.0",
   "defaultProvider": "zai",
-  "defaultModel": "glm-5.2",
+  "defaultModel": "glm-5.3",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
