@@ -25,11 +25,7 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
   `:medium`, reviewers/oracle `:max`, orchestrator `zai/glm-5.3:high`); the
   `/fleet-model` toggle preserves the suffix (`zai/glm-5.3-flash:high` →
   `deepseek/deepseek-v4-flash-0731:high`).
-- Provider mappings (from vendor docs): **GLM-5.3(-flash)** exposes `none`/`high`/`max`
-  (low/medium map to high, xhigh maps to max — same family structure as GLM-5.2).
-  **DeepSeek V4** exposes at least high/max (AA tracks both as
-  separate variants). **MiMo V2.5 Pro** exposes **no effort control** —
-  single fixed reasoning mode.
+- Provider mappings: **GLM-5.3(-flash) via zai** (pi catalog `thinkingLevelMap`, verified in `models-store.json` + live smoke spawn 2026-08-28): `low`→low (real, cheaper), `medium`→**null** (unsupported — falls back to session default), `high`→high, `xhigh`→**null**, `max`→max. So `:medium` frontmatter is inert on zai today (effective = default); `low` is the only real sub-high tier. **DeepSeek V4** (official docs): low→low, medium/high/xhigh→high, max→max — `medium` is likewise effectively high there.
 
 ## Findings per model
 
@@ -40,7 +36,7 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
 | **GPT-5.6 Luna** | *(not in fleet — orchestrator ceiling)* | low, med, high, xhigh, max | ✅ **`high`** — 90.2% of max quality (46 vs 51 AA Index) at **42% of the tokens** (8k vs 19k/task), $0.09 vs $0.21/task. xhigh: 96.1% at 63%. Graceful degradation, no cliff | [AA GPT-5.6 analysis](https://artificialanalysis.ai/articles/gpt-5-6-has-landed), [dataset gist](https://gist.github.com/IgorWarzocha/60bfd11731f15cf8802f0b6e80d47ac7) |
 | **GLM-5.3 / GLM-5.3-flash** | orchestrator (5.3), flash seat (5.3-flash) | none, high, max | ✅ **effort per seat (decision 020):** orchestrator `:high`, implement `:high`, scouts `:medium`, reviewers/oracle `:max` — set via `provider/model:level`, not the session default | [Z.ai thinking docs](https://docs.z.ai/guides/capabilities/thinking) |
 | **Kimi K3** | main session | low, high, max (default max) | ⚠️ **Unknown — data gap.** All benchmarks at max (AA Index 57, ~132M output tokens across the suite); low/high added post-launch with no published comparisons | [Moonshot reasoning-effort guide](https://platform.kimi.ai/docs/guide/use-reasoning-effort), [K3 blog](https://www.kimi.com/blog/kimi-k3), [AA article](https://artificialanalysis.ai/articles/kimi-k3-achieves-3-in-the-artificial-analysis-intelligence-index-comparable-to-opus-4-8-and-gpt-5-5) |
-| **MiMo V2.5 Pro** | review-code/plan/tests (standard) | — | 🚫 **No effort control** exposed by vendor or OpenRouter; nothing to tune | [product page](https://mimo.xiaomi.com/mimo-v2-5-pro/), [OpenRouter](https://openrouter.ai/xiaomi/mimo-v2.5-pro) |
+| **MiMo V2.5 Pro** | *(not in fleet)* | — | 🚫 **No effort control** exposed by vendor or OpenRouter; nothing to tune | [product page](https://mimo.xiaomi.com/mimo-v2-5-pro/), [OpenRouter](https://openrouter.ai/xiaomi/mimo-v2.5-pro) |
 
 No model with data shows a cliff between high and max. The only real cliff is
 GLM-5.x at `none`/`minimal`, which disables chain-of-thought entirely.
@@ -50,6 +46,38 @@ GLM-5.x at `none`/`minimal`, which disables chain-of-thought entirely.
 > `provider/model:level` shorthand instead of the session default or the
 > `thinkingLevelMap` provider clamp (that clamp and the old z-ai models.json entry
 > were removed with the prune).
+
+## Addendum — DeepSeek 0813 high-vs-max, and the real zai level map (2026-08-28)
+
+Two research findings that post-date the table above:
+
+**1. Oracle effort `max` is correct — the composite AA delta hides the math
+profile.** The earlier "`high` is the V4 Pro sweet spot" guidance rested on the
+AA *composite* (44 high vs 45 max on the April preview, index v4.1.1; the
+43/44 in our notes was v4.0 drift). The vendor's Table 7 ablation (arxiv
+2606.19348, *preview-era*, self-reported) on exactly the oracle seat's evals:
+high→max = Apex **+10.9**, Codeforces **+287 rating**, Apex-Shortlist +4.7,
+LiveCodeBench +3.7, HMMT +1.2 — and **all 0813-published numbers are
+max-effort** (AA 53, HLE 42.7, HMMT 95.2, MathArena AIME 96.67). The param
+is honored (official mapping low→low, medium/high/xhigh→high, max→max; the
+0813 card introduces 3-level control as new). Caveats: max evals ran 384K ctx
+vs 128K for high (part of the delta is context); one −0.6 regression
+(MCPAtlas); no 0813-specific high-vs-max dataset exists yet. Cost at oracle
+call volume is a non-issue (~$0.004/K thinking tokens; max even decodes
+faster, 66 vs 63 t/s). Decisive follow-up if ever needed: 10-problem AIME/HMMT
+slice at both efforts through our OpenRouter route, logging reasoning tokens.
+(Research: scout-web session subagent-520b5fa4.)
+
+**2. The zai level map is narrower than assumed above.** pi's catalog
+(`models-store.json`) maps GLM: `low`→low (real, cheaper), `medium`→**null**,
+`xhigh`→**null**, `high`→high, `max`→max — there is no real `medium`; a
+`:medium` request falls back to the session default. **Post-merge E2E
+confirmed it live:** a `scout-code` spawn (`zai/glm-5.3-flash:medium`) ran on
+the real endpoint at effective `high`. Scouts therefore run at GLM-high
+today; `:medium` stays in frontmatter as intent + future-proofing (if z.ai
+ships a real medium, pi's catalog map picks it up). The cheaper real option is
+`:low` — untested quality for research tasks, data gap; revisit only if scout
+token spend matters.
 
 ## What this means for current assignments
 

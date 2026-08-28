@@ -1,6 +1,6 @@
 # WO-2026-048 — Fleet → zai/glm-5.3-flash, single review tier, /fleet-model toggle
 
-**Status**: dispatched 2026-08-28 (see work-orders/WO-2026-048-fleet-flash-glm-53-flash.md).
+**Status**: MERGED 2026-08-28 (branch pi-subagent-88be00a6153e → merge 5588a0a; both reviewers APPROVED_WITH_NOTES round 1, notes resolved). E2E: model+suffix verified live (scout spawn ran zai/glm-5.3-flash, effective thinking high — zai has no real medium, see thinking-levels addendum); stray default-equivalent state file removed; `/fleet-model` command available from next session start (this session pre-dates the merge). Watch item: GLM-5.3 math rows (MathArena/HF card) — recheck ~2026-09-01.
 
 **Decisions (all user-confirmed):**
 - Flash seat (implement, 3 reviewers, 2 scouts, compaction) → `zai/glm-5.3-flash`, toggleable
