@@ -59,10 +59,12 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 > compaction) with a `/fleet-model` toggle back to 0731; the orchestrator moved to
 > `zai/glm-5.3:high`; the deep reviewer tier was deleted; per-agent effort levels are
 > set via the `provider/model:level` shorthand (implement `:high`, scouts `:medium`,
-> reviewers `:max`, oracle `:max`). The scores below are the 2026-08-01 snapshot and
-> predate the move; the **Current assignments** table is authoritative. GLM-5.2 rows in
-> the score tables below are retained as the 2026-08-01 snapshot data (out of fleet; the
-> next data refresh drops them).
+> reviewers `:max`, oracle `:max`). Same day, [decision 021](../decisions/subagents/021-effort-rebalance.md)
+> rebalanced the effort levels (user benchmark review): orchestrator `:max`, reviewers
+> `:high`, `low` banned fleet-wide; scouts keep `:medium`. The scores below are the
+> 2026-08-01 snapshot and predate the move; the **Current assignments** table is
+> authoritative. GLM-5.2 rows in the score tables below are retained as the 2026-08-01
+> snapshot data (out of fleet; the next data refresh drops them).
 
 ---
 
@@ -70,7 +72,7 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 
 | Role | Top pick | Best value | Notes |
 |---|---|---|---|
-| **Orchestrator** | **GPT-5.6 Luna** (93.6, $0.04, 1M) | **GLM-5.3** (z.ai plan; `:high` — decision 020) | Luna's live price collapsed ($0.41 → **$0.04**/M blended). GLM-5.3 is the open-weights value and the orchestrator seat (decision 020). DeepSeek V4 Flash 0731 projects 85.2 Orch — **proxy, unmeasured** (see refresh note 3). |
+| **Orchestrator** | **GPT-5.6 Luna** (93.6, $0.04, 1M) | **GLM-5.3** (z.ai plan; `:max` — decision 021) | Luna's live price collapsed ($0.41 → **$0.04**/M blended). GLM-5.3 is the open-weights value and the orchestrator seat (decision 020). DeepSeek V4 Flash 0731 projects 85.2 Orch — **proxy, unmeasured** (see refresh note 3). |
 | **Implementer** | **Grok 4.5** (98.8, $0.62) | **zai/glm-5.3-flash** (flash seat, `:high` — decision 020) · **DeepSeek V4 Flash 0731** (83.7 ⚠, **$0.019**) | 0731 projects above V4 Pro (59.6 Max / 48.8 High) at **half the price** — but that's AA-index-only. Pro at `high` scores 48.8. |
 | **Oracle (math/algo)** | **DeepSeek V4 Pro** (91.9, verified) | **DeepSeek V4 Flash** (90.2, **$0.029**) | LCB/IMO/HMMT unpublished for 0731 — oracle stays Pro until measured. |
 | **Reviewer (standard)** | **MiMo V2.5 Pro** (54.9 / 58.2, **$0.055**, 1M) | — | Cheapest decorrelated-from-DeepSeek reviewer; the field widened above it but MiMo holds the price point. |
@@ -88,11 +90,11 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 
 | Slot | Agent file | Model | Effort | Verdict |
 |---|---|---|---|---|
-| Main session | `settings.json` | zai/glm-5.3 | `defaultThinkingLevel` | ✓ fixed 2026-08-28 (stale row said 0731; actually glm-5.3 since commit 80e16db) |
-| Orchestrator-subagent | `agents/orchestrator.md` | zai/glm-5.3 | high | ✓ moved 2026-08-28 (decision 020; 016 follow-up: cap reasoning spend) |
+| Main session | `settings.json` | zai/glm-5.3 | `defaultThinkingLevel` — `max` (021) | ✓ fixed 2026-08-28 (stale row said 0731; actually glm-5.3 since commit 80e16db); defaultThinkingLevel raised to max 2026-08-28 (decision 021 — user settings flip, committed by WO-2026-049) |
+| Orchestrator-subagent | `agents/orchestrator.md` | zai/glm-5.3 | max | ✓ raised to max 2026-08-28 (decision 021 — user benchmark review) |
 | Implementer | `agents/implement.md` | zai/glm-5.3-flash | high | ✓ moved 2026-08-28 (decision 020; `/fleet-model deepseek` toggles back to 0731) |
 | Oracle | `agents/math-algo-oracle.md` | deepseek/deepseek-v4-pro-0813 | max | ✓ `:max` added 2026-08-28 (decision 020, user directive; 0813 math/algo measured) |
-| Review standard ×3 | `agents/review-{code,plan,tests}.md` | zai/glm-5.3-flash | max | ✓ moved 2026-08-28 (decision 020; single review tier) |
+| Review standard ×3 | `agents/review-{code,plan,tests}.md` | zai/glm-5.3-flash | high | ✓ dropped to high 2026-08-28 (decision 021) |
 | Scouts ×2 | `agents/scout-{code,web}.md` | zai/glm-5.3-flash | medium | ✓ moved 2026-08-28 (decision 020) |
 | Compaction | `extensions/compaction-model.ts` | fleet flash seat (zai/glm-5.3-flash default) | — | ✓ moved 2026-08-28 (decision 020; rides the seat, toggle flips it too) |
 
@@ -178,7 +180,8 @@ implementers — a same-lab reviewer is an independence risk regardless of score
 | MiMo-V2.5 | 17.5 | 13.2 | **0.019** | 1048K | Xiaomi ✓ |
 
 The reviewer seat is now **single-tier** — the standard reviewers run `zai/glm-5.3-flash`
-at `:max` (decision 020); the two-tier split (MiMo standard / GLM-5.2 deep) is deleted.
+at `:high` (decision 021; 020 set `:max`, dropped same day on the flash high-vs-max
+token evidence); the two-tier split (MiMo standard / GLM-5.2 deep) is deleted.
 Note **0731's 80.4 R-code is a same-lab AA-index projection** — the seat accepts same-lab
 for cost, with 017's mechanical checks carrying anti-fabrication.
 
@@ -247,13 +250,13 @@ pricing.
 
 Current assignments audited against the refreshed data (assignments moved 2026-08-28 per [decision 020](../decisions/subagents/020-fleet-glm-53-flash-single-tier.md); the audit text below is the 2026-08-01 reasoning that led there):
 
-1. **Main session — `zai/glm-5.3` (settings.json default).** Fixed 2026-08-28 — the assignment table previously said 0731, but the session has run `zai/glm-5.3` since commit 80e16db. `defaultThinkingLevel` stays `high` (deliberate per docs/thinking-levels.md; effort suffixes on agent frontmatter are unaffected).
-2. **Orchestrator-subagent — `zai/glm-5.3:high`.** Moved 2026-08-28 (decision 020; implements 016's own follow-up note to cap orchestrator reasoning spend). 0731 projects 85.2 Orch (AA indices only) — but orchestrator duty is planning/IF/agentic, and 0731's granular evidence for that is zero; the GLM-5.2→5.3 move stays in the same family the fleet already trusted.
+1. **Main session — `zai/glm-5.3` (settings.json default).** Fixed 2026-08-28 — the assignment table previously said 0731, but the session has run `zai/glm-5.3` since commit 80e16db. `defaultThinkingLevel` is now **`max`** (raised from `high` 2026-08-28 per decision 021 — a same-day user settings flip, committed by WO-2026-049; the earlier deliberate-`high` note is superseded). Effort suffixes on agent frontmatter are unaffected by the session default.
+2. **Orchestrator-subagent — `zai/glm-5.3:max`.** Moved 2026-08-28 (decision 020); effort raised `high`→`max` same day by [decision 021](../decisions/subagents/021-effort-rebalance.md) (user benchmark review — the glm-5.3 high-vs-max token delta is notably less stark than flash's), superseding 020's/016's cap-reasoning-spend note. 0731 projects 85.2 Orch (AA indices only) — but orchestrator duty is planning/IF/agentic, and 0731's granular evidence for that is zero; the GLM-5.2→5.3 move stays in the same family the fleet already trusted.
 3. **Implementer — `zai/glm-5.3-flash:high` (flash seat).** Moved 2026-08-28 (decision 020). Flash seat AA indices (57.5/71.5/58.2) dominate the 0731 incumbent (51.8/69.1/48.4) at ⅓ the z.ai plan's points per call; `/fleet-model deepseek` toggles the whole seat back during a credit-low period. Pro's old slot existed for implicit-invariant resilience; the invariant-enumeration step in the agent prompt covers that. See [decision 012](../decisions/subagents/012-implementer-collapse.md) for the pre-history.
 4. **Oracle — `deepseek/deepseek-v4-pro-0813:max`.** `:max` added 2026-08-28 (decision 020, user directive). Only verified hard-math/algo leader (LCB 93.5, IMO 89.8, CF 3206); 0731's math/algo numbers are unpublished and GLM-5.x has zero math rows anywhere — oracle stays on 0813 until independent math data appears.
-5. **Review standard ×3 — `zai/glm-5.3-flash:max`.** Moved 2026-08-28 (decision 020; single review tier — the deep tier is deleted). Same-lab with the implementer accepted for cost since 019; 017's mechanical checks carry anti-fabrication.
+5. **Review standard ×3 — `zai/glm-5.3-flash:high`.** Moved 2026-08-28 (decision 020; single review tier — the deep tier is deleted); effort dropped `max`→`high` same day by decision 021 (flash high-vs-max: negligible quality delta, large token delta). Same-lab with the implementer accepted for cost since 019; 017's mechanical checks carry anti-fabrication.
 6. **Review deep ×3 — DELETED 2026-08-28.** The tier fired exactly once in fleet history; its quality rationale (GLM-5.2 > standard) lapsed once the standard tier outscored it; decorrelation value gone after the z.ai flip. See [decision 020](../decisions/subagents/020-fleet-glm-53-flash-single-tier.md).
-7. **Scouts ×2 — `zai/glm-5.3-flash:medium`.** Moved 2026-08-28 (decision 020) — read-only research; effort set to `medium` (speed + cost; no code written).
+7. **Scouts ×2 — `zai/glm-5.3-flash:medium`.** Moved 2026-08-28 (decision 020) — read-only research; effort set to `medium` (speed + cost; no code written). Decision 021 keeps `:medium`: inert on zai (falls back to provider-default high) and valid under the deepseek toggle.
 8. **Compaction — fleet flash seat (`zai/glm-5.3-flash` default).** Moved 2026-08-28 (decision 020) — compaction rides the seat and the `/fleet-model` toggle flips it too. `models.json` was pruned to a single correctness-guard override (0813-pro first-party routing pin); the `-0731` maxTokens pin and routing order were removed as stale-to-restrictive (catalog 943,718 vs pin 131,072).
 
 ---

@@ -20,7 +20,7 @@
     "extensions/bug-triage.ts",
     "~/.pi/local-extensions/session-icon.ts"
   ],
-  "defaultThinkingLevel": "high",
+  "defaultThinkingLevel": "max",
   "hideThinkingBlock": true,
   "httpIdleTimeoutMs": 0,
   "shellCommandPrefix": "shopt -s expand_aliases"

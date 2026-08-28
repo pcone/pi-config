@@ -16,13 +16,13 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
 ## How levels reach the fleet
 
 - Pi thinking levels: `off, minimal, low, medium, high, xhigh, max`
-  (`settings.json` → `defaultThinkingLevel: "high"`).
+  (`settings.json` → `defaultThinkingLevel: "max"` since decision 021, 2026-08-28; was `"high"`).
 - Subagents are spawned with `--model` but **no `--thinking` flag**
   (`extensions/subagent-async/index.ts` → `buildSubagentArgs`), so every
-  subagent inherits the session default (`high`) unless the agent frontmatter's
+  subagent inherits the session default (`max`) unless the agent frontmatter's
   `model:` uses the `provider/id:<level>` shorthand (e.g. `zai/glm-5.3-flash:high`).
-  The fleet sets effort per agent this way (decision 020: implement `:high`, scouts
-  `:medium`, reviewers/oracle `:max`, orchestrator `zai/glm-5.3:high`); the
+  The fleet sets effort per agent this way (decision 021: implement `:high`, scouts
+  `:medium`, reviewers `:high`, oracle `:max`, orchestrator `zai/glm-5.3:max`); the
   `/fleet-model` toggle preserves the suffix (`zai/glm-5.3-flash:high` →
   `deepseek/deepseek-v4-flash-0731:high`).
 - Provider mappings: **GLM-5.3(-flash) via zai** (pi catalog `thinkingLevelMap`, verified in `models-store.json` + live smoke spawn 2026-08-28): `low`→low (real, cheaper), `medium`→**null** (unsupported — falls back to the *provider's* default, `high`, not the session default), `high`→high, `xhigh`→**null**, `max`→max. So `:medium` frontmatter is inert on zai today (effective = provider default `high`); `low` is the only real sub-high tier. **DeepSeek V4** (official docs): low→low, medium/high/xhigh→high, max→max — `medium` is likewise effectively high there.
@@ -34,7 +34,7 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
 | **DeepSeek V4 Pro** | oracle | high, max | ✅ **`high`** — AA Index 43 vs 44 at max (**~98%** of max quality); high variant is also faster | [AA comparison](https://artificialanalysis.ai/models/comparisons/deepseek-v4-pro-high-vs-deepseek-v4-pro) |
 | **DeepSeek V4 Flash / 0731** | toggle-back target for the flash seat (`/fleet-model deepseek`) | high, max | ✅ **`high`** (presumed — same AA variant structure as V4 Pro; exact scores behind JS-rendered pages, single-source) | [AA flash-high](https://artificialanalysis.ai/models/deepseek-v4-flash-high) |
 | **GPT-5.6 Luna** | *(not in fleet — orchestrator ceiling)* | low, med, high, xhigh, max | ✅ **`high`** — 90.2% of max quality (46 vs 51 AA Index) at **42% of the tokens** (8k vs 19k/task), $0.09 vs $0.21/task. xhigh: 96.1% at 63%. Graceful degradation, no cliff | [AA GPT-5.6 analysis](https://artificialanalysis.ai/articles/gpt-5-6-has-landed), [dataset gist](https://gist.github.com/IgorWarzocha/60bfd11731f15cf8802f0b6e80d47ac7) |
-| **GLM-5.3 / GLM-5.3-flash** | orchestrator (5.3), flash seat (5.3-flash) | none, high, max | ✅ **effort per seat (decision 020):** orchestrator `:high`, implement `:high`, scouts `:medium`, reviewers/oracle `:max` — set via `provider/model:level`, not the session default | [Z.ai thinking docs](https://docs.z.ai/guides/capabilities/thinking) |
+| **GLM-5.3 / GLM-5.3-flash** | orchestrator (5.3), flash seat (5.3-flash) | none, high, max | ✅ **effort per seat (decision 021):** orchestrator/main `:max`, implement `:high`, reviewers `:high`, scouts `:medium` (inert on zai → provider-default high), oracle `:max` — set via `provider/model:level`, not the session default | [Z.ai thinking docs](https://docs.z.ai/guides/capabilities/thinking) |
 | **Kimi K3** | main session | low, high, max (default max) | ⚠️ **Unknown — data gap.** All benchmarks at max (AA Index 57, ~132M output tokens across the suite); low/high added post-launch with no published comparisons | [Moonshot reasoning-effort guide](https://platform.kimi.ai/docs/guide/use-reasoning-effort), [K3 blog](https://www.kimi.com/blog/kimi-k3), [AA article](https://artificialanalysis.ai/articles/kimi-k3-achieves-3-in-the-artificial-analysis-intelligence-index-comparable-to-opus-4-8-and-gpt-5-5) |
 | **MiMo V2.5 Pro** | *(not in fleet)* | — | 🚫 **No effort control** exposed by vendor or OpenRouter; nothing to tune | [product page](https://mimo.xiaomi.com/mimo-v2-5-pro/), [OpenRouter](https://openrouter.ai/xiaomi/mimo-v2.5-pro) |
 
@@ -78,23 +78,44 @@ including one under `defaultThinkingLevel: max` — the fallback is the
 provider default, not the session default. Scouts are therefore pinned to
 GLM-high regardless of session-default flips; `:medium` stays in frontmatter
 as intent + future-proofing (if z.ai ships a real medium, pi's catalog map
-picks it up). The cheaper real option is `:low` — untested quality for
-research tasks, data gap; revisit only if scout token spend matters.
+picks it up). `:low` is **banned fleet-wide** (decision 021, 2026-08-28): the user's
+benchmark review shows a large low-vs-high quality delta on both GLM variants —
+the earlier cost-saving suggestion is rejected, not deferred.
+
+## Addendum — effort rebalance, `low` banned (decision 021, 2026-08-28)
+
+Same-day follow-up to the 020 effort policy, from the user's benchmark review of
+GLM per-effort comparisons (see [decision 021](../decisions/subagents/021-effort-rebalance.md)):
+
+- **glm-5.3-flash high vs max:** very small quality delta, very large token delta →
+  reviewers drop to `:high` (implement was already `:high`).
+- **glm-5.3 high vs max:** token delta notably less stark than flash's → orchestrator
+  and main session (`defaultThinkingLevel`) rise to `:max`; less-complex work routes to
+  the flash seat at `:high` instead — the complexity dial is model choice, not per-task
+  effort.
+- **low vs high:** large quality delta on BOTH glm-5.3 and glm-5.3-flash → `low` is
+  **banned fleet-wide** (covers DeepSeek V4, whose `low` is real and equally rejected).
+  This reverses the "cheaper real option is `:low`" suggestion in the addendum above.
+- **Scouts keep `:medium`:** inert on zai (medium→null falls back to provider-default
+  `high`, E2E-verified twice), survives the `/fleet-model deepseek` toggle (0731 maps
+  medium→high), and future-proofs for a real z.ai medium.
 
 ## What this means for current assignments
 
 1. **Flash seat (implement, scouts ×2, reviewers ×3, compaction) — effort per
-   seat via the `provider/model:level` shorthand (decision 020).** The seat runs
-   `zai/glm-5.3-flash` with implement `:high`, scouts `:medium`, reviewers `:max`;
+   seat via the `provider/model:level` shorthand (decision 021).** The seat runs
+   `zai/glm-5.3-flash` with implement `:high`, scouts `:medium`, reviewers `:high`
+   (dropped from `:max` by 021 — flash high-vs-max: negligible quality delta, large
+   token delta, and 017's mechanical checks carry anti-fabrication);
    compaction rides the seat's default thinking. The `/fleet-model deepseek` toggle
    preserves the level suffix, and 0731 supports the same level set. Do not raise
    implement/scouts toward max — `high`/`medium` are the deliberate levels.
-2. **Orchestrator — `zai/glm-5.3:high` (decision 020).** 016's follow-up intent:
-   cap orchestrator reasoning spend. Every published GLM-5.x number is at `max`, so
-   the quality delta at `high` is unmeasured — but `max` is known to use
-   substantially more tokens and think much longer, and that cost/latency is
-   certain while the quality gain is hypothetical. Stay on `high`; revisit only if
-   Z.ai publishes high-effort benchmarks showing a real gap.
+2. **Orchestrator — `zai/glm-5.3:max` (decision 021).** 020's stay-on-`high`
+   reasoning (016's cap-orchestrator-spend note; "the quality delta at `high` is
+   unmeasured while the token cost is certain") is **superseded by 021**: the
+   2026-08-28 benchmark review found the glm-5.3 high-vs-max token delta notably
+   less stark than flash's, so the seat that owns the complex tail runs at `max`.
+   Complexity is routed by model choice (5.3 vs 5.3-flash), not by per-task effort.
 3. **Oracle — `deepseek/deepseek-v4-pro-0813:max` (decision 020, user directive).**
    The seat's whole job is the hardest reasoning tail; no math-specific GLM-5.x
    data exists to challenge the DeepSeek record (watch item in 020).
