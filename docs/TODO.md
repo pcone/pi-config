@@ -1,3 +1,35 @@
+# WO-2026-048 — Fleet → zai/glm-5.3-flash, single review tier, /fleet-model toggle
+
+**Status**: dispatched 2026-08-28 (see work-orders/WO-2026-048-fleet-flash-glm-53-flash.md).
+
+**Decisions (all user-confirmed):**
+- Flash seat (implement, 3 reviewers, 2 scouts, compaction) → `zai/glm-5.3-flash`, toggleable
+  back to `deepseek/deepseek-v4-flash-0731` via `/fleet-model` (state `~/.pi/fleet-model.json`).
+- Deep tier DELETED (3 agent files): exactly one deep spawn ever (2026-07-23), 017 routing
+  never existed, quality rationale lapsed, decorrelation inverted by the z.ai flip.
+  `review_depth` removed from WO template.
+- Orchestrator → `zai/glm-5.3:high` (016 follow-up: cap reasoning spend).
+- Effort policy via native `provider/model:level` shorthand: implement high, scouts medium,
+  reviewers max, oracle max. resolveFlashModel is suffix-aware (toggle preserves level).
+- Oracle STAYS `deepseek/deepseek-v4-pro-0813` — recon (scout subagent-520b5fa4, 2 passes):
+  zero math/algo benchmarks for any GLM-5.x model anywhere (vendor surface + MathArena +
+  BenchLM + llm-stats all checked); omission is editorial (GLM-5.2 had a self-reported AIME
+  0.992 row). 0813: AIME 96.67 / HMMT 95.2 / CF 3206.
+- models.json pruned to one override (0813 first-party routing pin — correctness guard);
+  maxTokens pins were stale-to-restrictive (0731 catalog 943,718 vs pin 131,072).
+
+**Design:** standing default versioned in agent frontmatter; runtime override file only ever
+overrides. Shared table in `extensions/lib/fleet-model.ts` (lib/ skips auto-discovery).
+Interception: subagent-async 2 effectiveModel sites + compaction-model.ts + new
+`/fleet-model` command extension. Watch item: GLM-5.3 math rows on MathArena/HF card
+(weights dropped 2026-08-28) — recheck in 3–5 days; oracle seat re-decides only if
+independent math data appears.
+
+**Reviewer-split audit (done 2026-08-28):** deep tier fired once ever; post-019 reviewers
+100% standard in pairs (session files + /tmp meta.json).
+
+---
+
 # WO-2026-031 — Implementer-tier collapse experiment
 
 **Status**: in progress (implementer dispatched 2026-08-02)
