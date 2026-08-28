@@ -3,9 +3,9 @@ bin/
 sessions/
 checkpoints/
 .pi/mode.json
-node_modules/
+node_modules
 tmp/
-extensions/node_modules/
+extensions/node_modules
 extensions/package-lock.json
 extensions/model-tiers/cache.json
 .baba/

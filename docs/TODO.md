@@ -1,3 +1,9 @@
+# WO-2026-049 — GLM effort rebalance (flash :high, glm-5.3 :max, low banned)
+
+**Status**: MERGED 2026-08-28 (fast-forward f0d0130; both reviewers APPROVED_WITH_NOTES round 1). Grep matrix + full suite re-verified by orchestrator post-merge (500/0, no `:low` anywhere, all living docs agree). User benchmark review drove it: flash high≈max at large token savings; glm-5.3 high→max token penalty modest; low banned fleet-wide; scouts keep `:medium` (inert on zai → provider-default high; valid under deepseek toggle). See `decisions/subagents/021-effort-rebalance.md`. Complexity dial = model choice (5.3-max vs flash-high), never effort-down on 5.3. One artifact skipped at merge: the worktree auto-commit had swept in a `node_modules` *symlink* (`node_modules/` ignore pattern doesn't match symlinks — second occurrence; .gitignore hardened).
+
+---
+
 # WO-2026-048 — Fleet → zai/glm-5.3-flash, single review tier, /fleet-model toggle
 
 **Status**: MERGED + VERIFIED CLOSED 2026-08-28 (branch pi-subagent-88be00a6153e → merge 5588a0a; both reviewers APPROVED_WITH_NOTES round 1, notes resolved). E2E on reloaded code: live spawn ran zai/glm-5.3-flash; lib toggle roundtrip (default → deepseek, suffix preserved → cleared); null effort level (zai medium) falls back to the PROVIDER default high — not the session default (spawn recorded high under defaultThinkingLevel:max) — so scouts are pinned to GLM-high regardless of default flips (see thinking-levels addendum). `/fleet-model` live. **Remaining watch item: GLM-5.3 math rows (MathArena/HF card) — recheck ~2026-09-01**; oracle re-decides only if independent math data beats 0813 (AIME 96.67 / HMMT 95.2 / CF 3206) at its price band.
@@ -8,9 +14,11 @@
 - Deep tier DELETED (3 agent files): exactly one deep spawn ever (2026-07-23), 017 routing
   never existed, quality rationale lapsed, decorrelation inverted by the z.ai flip.
   `review_depth` removed from WO template.
-- Orchestrator → `zai/glm-5.3:high` (016 follow-up: cap reasoning spend).
+- Orchestrator → `zai/glm-5.3:high` (016 follow-up: cap reasoning spend) — raised to `:max`
+  same day by decision 021 (benchmark review: token penalty modest on the full model).
 - Effort policy via native `provider/model:level` shorthand: implement high, scouts medium,
-  reviewers max, oracle max. resolveFlashModel is suffix-aware (toggle preserves level).
+  reviewers max, oracle max — reviewers dropped to `high` same day by decision 021.
+  resolveFlashModel is suffix-aware (toggle preserves level).
 - Oracle STAYS `deepseek/deepseek-v4-pro-0813` — recon (scout subagent-520b5fa4, 2 passes):
   zero math/algo benchmarks for any GLM-5.x model anywhere (vendor surface + MathArena +
   BenchLM + llm-stats all checked); omission is editorial (GLM-5.2 had a self-reported AIME
