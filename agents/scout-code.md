@@ -1,7 +1,7 @@
 ---
 name: scout-code
 description: Codebase research agent. Finds definitions, traces references, maps module structure, identifies cross-cutting patterns, detects code duplication. Returns findings with file:line citations. NOT for implementation (route to `implement`), NOT for mathematical reasoning (route to `math-algo-oracle`), NOT for external research (route to `scout-web`).
-model: deepseek/deepseek-v4-flash-0731
+model: zai/glm-5.3-flash:medium
 tools: read, grep, find, ls, bash, semantic_search
 ---
 

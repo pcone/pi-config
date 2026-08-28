@@ -130,3 +130,5 @@ with the correct tier.
   tradeoff; a middle tier would be hard to justify.
 
 > **Superseded (2026-08-04):** two-tier split formalized to a single Luna tier; `-deep` agents dormant-not-deleted — see [decision 017](017-single-review-tier.md).
+
+> **Superseded (2026-08-28):** the two-tier review structure is deleted outright — deep tier removed, standard reviewers now `zai/glm-5.3-flash` — see [decision 020](020-fleet-glm-53-flash-single-tier.md).

@@ -13,6 +13,7 @@
     "extensions/kagi-search.ts",
     "extensions/model-tiers/index.ts",
     "extensions/compaction-model.ts",
+    "extensions/fleet-model.ts",
     "extensions/peer-link/index.ts",
     "extensions/append-system-local.ts",
     "extensions/pinned-sessions.ts",

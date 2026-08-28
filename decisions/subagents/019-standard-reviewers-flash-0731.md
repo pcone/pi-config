@@ -28,3 +28,5 @@ What is lost is the *reasoning-blind-spot* decorrelation — a subtle wrong assu
 **Files changed:** `agents/review-code.md`, `agents/review-plan.md`, `agents/review-tests.md` (model lines), this decision, README index, supersession footnotes on 016 and 017, assignment row in `docs/model-role-scores.md`.
 
 **Test coverage:** none changed — these are agent-config files with no executable tests. The review gate runs the swapped reviewers on the next code-changing WO; watch for verdict regressions per the tradeoffs above.
+
+> **Superseded (2026-08-28):** standard reviewers moved again — now `zai/glm-5.3-flash` — see [decision 020](020-fleet-glm-53-flash-single-tier.md).
