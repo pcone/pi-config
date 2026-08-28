@@ -34,3 +34,5 @@ date: 2026-08-04
 **Test coverage:** gate runs standard reviewers — which ARE the swapped models post-merge; the WO itself runs the full review gate per the keep-hard harness clause (agent-config changes never auto-skip).
 
 > **Superseded (2026-08-11):** standard reviewers moved off Luna to `deepseek/deepseek-v4-flash-0731`, and the model-diversity principle stated here is consciously reversed — Luna was ~50% of OpenRouter spend at <1/5 of token volume; same-lab correlation accepted for the cost win. Deep tier (GLM-5.2) retained as the decorrelated path. See [decision 019](019-standard-reviewers-flash-0731.md).
+
+> **Superseded (2026-08-28):** orchestrator moved `zai/glm-5.2` → `zai/glm-5.3` with reasoning effort capped at `high` (this decision's own follow-up note, now implemented); reviewer model choices superseded again — see [decision 020](020-fleet-glm-53-flash-single-tier.md).

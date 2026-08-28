@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: "Orchestrator-subagent scoped to ONE roadmap item, spawned by a super-orchestrator (plan mode). Takes a handoff (item spec + roadmap pointer + resolved policy), does detailed design, dispatches implement subagents, runs the review gate, merges, and returns a completion report. Two hard guardrails: no nesting (never spawn another orchestrator), no cross-item planning (see only your item — cross-item coherence is the SO's job)."
-model: zai/glm-5.2
+model: zai/glm-5.3:high
 allowedSubagents: implement, scout-code, scout-web, review-plan, math-algo-oracle
 excludeTools: checkpoint_fork, checkpoint_search
 ---

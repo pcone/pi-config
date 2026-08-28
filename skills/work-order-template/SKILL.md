@@ -25,7 +25,6 @@ Your work order quality directly determines whether the implementer succeeds on 
 - **priority**: critical | normal | low
 - **estimated_complexity**: trivial | moderate | complex
 - **review_policy**: required | skip — default `required`. Set `skip` only for documentation-only changes or explicit justified exceptions (state the reason).
-- **review_depth**: `standard` | `thorough` — single effective tier per decision 017: all reviews run standard (Luna); the `-deep` tier is dormant (kept as escalation insurance). The field is informational for historical WOs; routing always standard.
 
 ### Task Summary
 

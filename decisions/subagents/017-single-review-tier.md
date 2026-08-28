@@ -29,3 +29,5 @@ date: 2026-08-04
 **Test coverage:** gate runs standard reviewers — which are the Luna reviewers post-WO-2026-041; this WO runs the gate per the keep-hard clause.
 
 > **Partial supersession (2026-08-11):** the "Luna standard" model choice is superseded — standard reviewers now run `deepseek/deepseek-v4-flash-0731` (same-lab accepted for cost; Luna was ~50% of spend at <1/5 of tokens). The single-tier / deep-dormant structure stands, but the deep tier is now the config's *only* decorrelated reviewer — see [decision 019](019-standard-reviewers-flash-0731.md).
+
+> **Superseded (2026-08-28):** deep tier DELETED outright — the "dormant insurance" framing is retired; single review tier only, standard reviewers now `zai/glm-5.3-flash` — see [decision 020](020-fleet-glm-53-flash-single-tier.md).

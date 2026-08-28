@@ -26,3 +26,4 @@ date: 2026-07-14
 | 017 | Single review tier — Luna standard, deep tier dormant (kept as insurance) | done |
 | 018 | Overlap independent work during an implementer's review window (prompt-only; interim-report and orchestrator-owned-rework deferred) | done |
 | 019 | Standard reviewers to Flash 0731 — accept same-lab correlation for cost (reverses 016) | done |
+| 020 | Fleet flash seat to zai/glm-5.3-flash — /fleet-model toggle, deep tier deleted, effort policy, models.json prune | done |
