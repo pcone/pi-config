@@ -64,6 +64,13 @@ guess.>
 satisfy, organized as a non-overlapping matrix that the test reviewer
 can audit row by row. Cover at minimum:
 
+- For behavior-split surfaces (eager/lazy, two spellings, two registration
+  shapes), name which case is the NOVEL exposure — "pre-change this was
+  trivially right; now it isn't" — and pin BOTH shapes. Testing only the
+  historically-fragile half pins the half that didn't change. (Origin:
+  tfd-b WO-078 F2 — eager impls were the novel exposure under lazification
+  precisely because eager registration had made them trivially right.)
+
 - Success paths the work order requests
 - Validation, malformed, empty, boundary, and failure paths
 - Retry, timeout, recovery, and partial-failure behavior (when relevant)
@@ -229,6 +236,8 @@ bullet wins. Anything else — `required`, the template literal
 
 Commit the work order. It is the written record of what was asked for and why, at
 the moment of dispatch, and is frequently the only trace of a decision's context.
+Reserve the id by pushing before dispatch; a non-fast-forward rejection is a
+collision alarm — see `rules/work-order-numbering.md`.
 
 **Do not edit a work order after its work has landed.** A landed WO is a snapshot
 of intent; its stale line numbers and paths are accurate history, not rot. Append
