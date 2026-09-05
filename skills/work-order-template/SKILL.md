@@ -239,6 +239,11 @@ the moment of dispatch, and is frequently the only trace of a decision's context
 Reserve the id by pushing before dispatch; a non-fast-forward rejection is a
 collision alarm — see `rules/work-order-numbering.md`.
 
+A work order quoting suite counts (baseline, expected anchors) must attach fresh
+`--list` numbers measured at the creation commit — stale anchors cost diagnosis
+cycles downstream (WO-2026-089: dispatched against a count three rows behind
+its own base).
+
 **Do not edit a work order after its work has landed.** A landed WO is a snapshot
 of intent; its stale line numbers and paths are accurate history, not rot. Append
 a landing stamp if you must, but do not rewrite the spec to match what was
