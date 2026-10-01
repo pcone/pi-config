@@ -1,3 +1,16 @@
+# OpenRouter-only fleet — deepseek/deepseek-v4.1-flash (decision 022)
+
+**Status**: done 2026-10-01 (in-session, no WO; decision `decisions/subagents/022-openrouter-fleet-v41-flash.md`).
+z.ai subscription ended → all seats (orchestrator/implement/reviewers/scouts/oracle/compaction)
+on `deepseek/deepseek-v4.1-flash`; `/fleet-model` toggle + override deleted; oracle moved off
+0813-pro (v4.1-flash beats it: CF 3471 vs 3348, Apex 65.6 vs 65.3, DeepSWE 74.2 vs 62.7);
+`models.json` pin transferred to v4.1-flash first-party. Effort audited: implement/reviewers/scouts
+`:high`, orchestrator/oracle `:max`; scouts' original `:medium` was a silent no-op (pi clamps unsupported
+levels up to high) and is now pinned `:high`; vendor data (tech report §5.3) says 60–80 is the everyday
+band and the step to 100 costs 1.6–1.8× trajectory for marginal gain — see decision 022.
+
+---
+
 # WO-2026-049 — GLM effort rebalance (flash :high, glm-5.3 :max, low banned)
 
 **Status**: MERGED 2026-08-28 (fast-forward f0d0130; both reviewers APPROVED_WITH_NOTES round 1). Grep matrix + full suite re-verified by orchestrator post-merge (500/0, no `:low` anywhere, all living docs agree). User benchmark review drove it: flash high≈max at large token savings; glm-5.3 high→max token penalty modest; low banned fleet-wide; scouts keep `:medium` (inert on zai → provider-default high; valid under deepseek toggle). See `decisions/subagents/021-effort-rebalance.md`. Complexity dial = model choice (5.3-max vs flash-high), never effort-down on 5.3. One artifact skipped at merge: the worktree auto-commit had swept in a `node_modules` *symlink* (`node_modules/` ignore pattern doesn't match symlinks — second occurrence; .gitignore hardened).

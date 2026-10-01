@@ -51,3 +51,5 @@ No config uses `:low` today (verified: zero `:low` matches in `agents/`, `extens
 `git revert` of this change restores the frontmatter levels, `settings.json`, and the doc statements in one commit; the README index row records the supersession so the history stays legible.
 
 **Files changed:** `agents/{review-code,review-plan,review-tests,orchestrator}.md` (model lines), `settings.json` (`defaultThinkingLevel: "max"`), `docs/thinking-levels.md`, `docs/model-role-scores.md`, `README.md`, decisions index, this decision. No code changes — `extensions/lib/fleet-model.ts` is level-agnostic (suffix-preserving) and `tests/fleet-model.test.ts` uses level strings generically.
+
+> **Superseded in part (2026-10-01):** the GLM per-effort evidence behind this rebalance no longer applies — all seats moved to `deepseek/deepseek-v4.1-flash` (decision 022). The level assignments survive as seat policy (`:max` orchestrator/oracle, `:high` implement/reviewers, `:medium` scouts, `low` banned), not as a re-derived result.

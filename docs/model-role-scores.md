@@ -65,6 +65,17 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 > 2026-08-01 snapshot and predate the move; the **Current assignments** table is
 > authoritative. GLM-5.2 rows in the score tables below are retained as the 2026-08-01
 > snapshot data (out of fleet; the next data refresh drops them).
+>
+> **2026-10-01 fleet move (decision [022](../decisions/subagents/022-openrouter-fleet-v41-flash.md)):**
+> z.ai is gone — every seat runs `deepseek/deepseek-v4.1-flash` (orchestrator/oracle
+> `:max`, implement/reviewers/scouts `:high`), the `/fleet-model` toggle +
+> `~/.pi/fleet-model.json` override are deleted, and the oracle moved off
+> `deepseek/deepseek-v4-pro-0813`. Evidence: the 2026-09-10 vendor card has v4.1-flash
+> (all rows max effort) beating 0813-pro on Codeforces **3471 vs 3348**, MathArena Apex
+> **65.6 vs 65.3**, DeepSWE **74.2 vs 62.7**, Terminal-Bench 2.1 **90.6 vs 87.9**,
+> losing only text-only HLE (39.1 vs 42.7; HLE-with-tools 63.9 vs 60.0). `models.json`
+> re-points the correctness pin at v4.1-flash's first-party endpoint. The tables below
+> are unchanged 2026-08-01 snapshot data and contain no v4.1 row.
 
 ---
 
@@ -72,31 +83,31 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 
 | Role | Top pick | Best value | Notes |
 |---|---|---|---|
-| **Orchestrator** | **GPT-5.6 Luna** (93.6, $0.04, 1M) | **GLM-5.3** (z.ai plan; `:max` — decision 021) | Luna's live price collapsed ($0.41 → **$0.04**/M blended). GLM-5.3 is the open-weights value and the orchestrator seat (decision 020). DeepSeek V4 Flash 0731 projects 85.2 Orch — **proxy, unmeasured** (see refresh note 3). |
-| **Implementer** | **Grok 4.5** (98.8, $0.62) | **zai/glm-5.3-flash** (flash seat, `:high` — decision 020) · **DeepSeek V4 Flash 0731** (83.7 ⚠, **$0.019**) | 0731 projects above V4 Pro (59.6 Max / 48.8 High) at **half the price** — but that's AA-index-only. Pro at `high` scores 48.8. |
-| **Oracle (math/algo)** | **DeepSeek V4 Pro** (91.9, verified) | **DeepSeek V4 Flash** (90.2, **$0.029**) | LCB/IMO/HMMT unpublished for 0731 — oracle stays Pro until measured. |
-| **Reviewer (standard)** | **MiMo V2.5 Pro** (54.9 / 58.2, **$0.055**, 1M) | — | Cheapest decorrelated-from-DeepSeek reviewer; the field widened above it but MiMo holds the price point. |
+| **Orchestrator** | **GPT-5.6 Luna** (93.6, $0.04, 1M) | **DeepSeek V4.1 Flash** (`:max` — decision 022, current fleet) | Luna's live price collapsed ($0.41 → **$0.04**/M blended). The 2026-08-01 snapshot had no v4.1 row; the fleet reverts to DeepSeek after the z.ai plan ended. DeepSeek V4 Flash 0731 projects 85.2 Orch — **proxy, unmeasured** (see refresh note 3). |
+| **Implementer** | **Grok 4.5** (98.8, $0.62) | **DeepSeek V4.1 Flash** (`:high` — decision 022, current fleet) · **DeepSeek V4 Flash 0731** (83.7 ⚠, **$0.019**) | All seats share one model since 2026-10-01; 0731 remains the snapshot's cheap coder — AA-index-only. Pro at `high` scores 48.8. |
+| **Oracle (math/algo)** | **DeepSeek V4 Pro** (91.9, snapshot) | **DeepSeek V4.1 Flash** (`:max` — decision 022; CF 3471 / Apex 65.6 beats Pro) | LCB/IMO/HMMT unpublished for 0731, so the snapshot held Pro; v4.1-flash's vendor-card Codeforces/Apex/DeepSWE rows supersede it (022). |
+| **Reviewer (standard)** | **MiMo V2.5 Pro** (54.9 / 58.2, **$0.055**, 1M) | — | Now same-lab with the implementer (`deepseek/deepseek-v4.1-flash` — decision 022); the decorrelated seat no longer exists, 017's mechanical checks carry anti-fabrication. |
 
 **Two value stars, different jobs:**
-- **GLM-5.3 / GLM-5.3-flash** (z.ai plan, 1.31M ctx, MIT weights, multimodal) — the open-
-  weights **generalist**; the flash variant runs the worker seats (implement, reviewers,
-  scouts, compaction) at ⅓ the points per call (decision 020).
-- **DeepSeek V4 Flash 0731** ($0.019) — the toggle-back target for the flash seat and a cheap
-  self-contained coder; weak as an orchestrator and same-lab as itself (formerly hard-filtered from review; the standard tier now accepts same-lab for cost per [019](../decisions/subagents/019-standard-reviewers-flash-0731.md)). **Flash 0731** ($0.019) clears Pro on all three AA indices at ~⅓
-  the price — the flash/pro worker gap collapsed 2026-08-01 per
-  [012-implementer-collapse](../decisions/subagents/012-implementer-collapse.md).
+- **DeepSeek V4.1 Flash** (OpenRouter, 1M ctx, multimodal) — the 2026-09-10 successor that
+  absorbed every seat on 2026-10-01 ([022](../decisions/subagents/022-openrouter-fleet-v41-flash.md)):
+  it beats `deepseek-v4-pro-0813` on Codeforces (3471 vs 3348), MathArena Apex (65.6 vs
+  65.3), DeepSWE (74.2 vs 62.7) and TB2.1 (90.6 vs 87.9) at a fraction of the list price,
+  and is the only v4.1-flash endpoint family with first-party implicit caching.
+- **GLM-5.3 / GLM-5.3-flash** — retained as history: they ran the fleet on the z.ai plan
+  until the subscription ended (decision 020; effort split 021).
 
-**Current assignments vs. the data** (see [Role-by-role review](#role-by-role-review-2026-08-01); fleet moved 2026-08-28 per [decision 020](../decisions/subagents/020-fleet-glm-53-flash-single-tier.md)):
+**Current assignments vs. the data** (see [Role-by-role review](#role-by-role-review-2026-08-01--historical-audit); fleet moved 2026-10-01 per [decision 022](../decisions/subagents/022-openrouter-fleet-v41-flash.md)):
 
 | Slot | Agent file | Model | Effort | Verdict |
 |---|---|---|---|---|
-| Main session | `settings.json` | zai/glm-5.3 | `defaultThinkingLevel` — `max` (021) | ✓ fixed 2026-08-28 (stale row said 0731; actually glm-5.3 since commit 80e16db); defaultThinkingLevel raised to max 2026-08-28 (decision 021 — user settings flip, committed by WO-2026-049) |
-| Orchestrator-subagent | `agents/orchestrator.md` | zai/glm-5.3 | max | ✓ raised to max 2026-08-28 (decision 021 — user benchmark review) |
-| Implementer | `agents/implement.md` | zai/glm-5.3-flash | high | ✓ moved 2026-08-28 (decision 020; `/fleet-model deepseek` toggles back to 0731) |
-| Oracle | `agents/math-algo-oracle.md` | deepseek/deepseek-v4-pro-0813 | max | ✓ `:max` added 2026-08-28 (decision 020, user directive; 0813 math/algo measured) |
-| Review standard ×3 | `agents/review-{code,plan,tests}.md` | zai/glm-5.3-flash | high | ✓ dropped to high 2026-08-28 (decision 021) |
-| Scouts ×2 | `agents/scout-{code,web}.md` | zai/glm-5.3-flash | medium | ✓ moved 2026-08-28 (decision 020) |
-| Compaction | `extensions/compaction-model.ts` | fleet flash seat (zai/glm-5.3-flash default) | — | ✓ moved 2026-08-28 (decision 020; rides the seat, toggle flips it too) |
+| Main session | `settings.json` | deepseek/deepseek-v4.1-flash | `defaultThinkingLevel` — `max` | ✓ moved 2026-10-01 (decision 022; user's settings flip to openrouter default) |
+| Orchestrator-subagent | `agents/orchestrator.md` | deepseek/deepseek-v4.1-flash | max | ✓ moved 2026-10-01 (decision 022) |
+| Implementer | `agents/implement.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022) |
+| Oracle | `agents/math-algo-oracle.md` | deepseek/deepseek-v4.1-flash | max | ✓ moved 2026-10-01 (decision 022; beats 0813 on CF/Apex/DeepSWE/TB2.1) |
+| Review standard ×3 | `agents/review-{code,plan,tests}.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022) |
+| Scouts ×2 | `agents/scout-{code,web}.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022); pinned `:high` after the effort audit — `:medium` clamps up to high on this model |
+| Compaction | `extensions/compaction-model.ts` | deepseek/deepseek-v4.1-flash | — | ✓ moved 2026-10-01 (decision 022; constant target, no toggle) |
 
 > History note: the **review deep ×3** rows (`agents/review-*-deep.md`) were
 > **deleted 2026-08-28** — the tier fired once ever; quality rationale lapsed; see
@@ -179,9 +190,9 @@ implementers — a same-lab reviewer is an independence risk regardless of score
 | DeepSeek V4 Flash (High) | 16.3 | 17.5 | 0.029 | 1048K | DeepSeek ✗ same-lab |
 | MiMo-V2.5 | 17.5 | 13.2 | **0.019** | 1048K | Xiaomi ✓ |
 
-The reviewer seat is now **single-tier** — the standard reviewers run `zai/glm-5.3-flash`
-at `:high` (decision 021; 020 set `:max`, dropped same day on the flash high-vs-max
-token evidence); the two-tier split (MiMo standard / GLM-5.2 deep) is deleted.
+The reviewer seat is now **single-tier** — the standard reviewers run `deepseek/deepseek-v4.1-flash`
+at `:high` (decision 022; the level survived 021, the GLM basis did not); the two-tier split
+(MiMo standard / GLM-5.2 deep) is deleted.
 Note **0731's 80.4 R-code is a same-lab AA-index projection** — the seat accepts same-lab
 for cost, with 017's mechanical checks carrying anti-fabrication.
 
@@ -244,11 +255,20 @@ delivers ~98% of that for $0.029/M.** The 0731 checkpoint's math/algo numbers ar
 single most valuable missing datum — if its LCB/IMO clear Pro's, the oracle moves to flash
 pricing.
 
+> **Resolved 2026-10-01 (decision [022](../decisions/subagents/022-openrouter-fleet-v41-flash.md)):**
+> the oracle moved to `deepseek/deepseek-v4.1-flash:max` — the 2026-09-10 successor beats
+> 0813-pro on Codeforces (3471 vs 3348), MathArena Apex (65.6 vs 65.3), DeepSWE (74.2 vs
+> 62.7) and TB2.1 (90.6 vs 87.9). The table above is the 2026-08-01 snapshot and predates it.
+
 ---
 
-## Role-by-role review (2026-08-01)
+## Role-by-role review (2026-08-01) — historical audit
 
-Current assignments audited against the refreshed data (assignments moved 2026-08-28 per [decision 020](../decisions/subagents/020-fleet-glm-53-flash-single-tier.md); the audit text below is the 2026-08-01 reasoning that led there):
+Historical reasoning from the 2026-08-01 snapshot and the 020/021 z.ai move; the current
+state is the **Current assignments** table above (2026-10-01, decision 022). GLM references
+below are history, not fleet config.
+
+Assignments audited against the refreshed data (the 020/021 move happened 2026-08-28):
 
 1. **Main session — `zai/glm-5.3` (settings.json default).** Fixed 2026-08-28 — the assignment table previously said 0731, but the session has run `zai/glm-5.3` since commit 80e16db. `defaultThinkingLevel` is now **`max`** (raised from `high` 2026-08-28 per decision 021 — a same-day user settings flip, committed by WO-2026-049; the earlier deliberate-`high` note is superseded). Effort suffixes on agent frontmatter are unaffected by the session default.
 2. **Orchestrator-subagent — `zai/glm-5.3:max`.** Moved 2026-08-28 (decision 020); effort raised `high`→`max` same day by [decision 021](../decisions/subagents/021-effort-rebalance.md) (user benchmark review — the glm-5.3 high-vs-max token delta is notably less stark than flash's), superseding 020's/016's cap-reasoning-spend note. 0731 projects 85.2 Orch (AA indices only) — but orchestrator duty is planning/IF/agentic, and 0731's granular evidence for that is zero; the GLM-5.2→5.3 move stays in the same family the fleet already trusted.

@@ -1,7 +1,7 @@
 {
   "lastChangelogVersion": "0.83.0",
-  "defaultProvider": "zai",
-  "defaultModel": "glm-5.3",
+  "defaultProvider": "openrouter",
+  "defaultModel": "deepseek/deepseek-v4.1-flash",
   "theme": "catppuccin-macchiato",
   "extensions": [
     "extensions/checkpoint.ts",
@@ -13,14 +13,13 @@
     "extensions/kagi-search.ts",
     "extensions/model-tiers/index.ts",
     "extensions/compaction-model.ts",
-    "extensions/fleet-model.ts",
     "extensions/peer-link/index.ts",
     "extensions/append-system-local.ts",
     "extensions/pinned-sessions.ts",
     "extensions/bug-triage.ts",
     "~/.pi/local-extensions/session-icon.ts"
   ],
-  "defaultThinkingLevel": "high",
+  "defaultThinkingLevel": "max",
   "hideThinkingBlock": true,
   "httpIdleTimeoutMs": 0,
   "shellCommandPrefix": "shopt -s expand_aliases"

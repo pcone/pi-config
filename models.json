@@ -2,7 +2,7 @@
   "providers": {
     "openrouter": {
       "modelOverrides": {
-        "deepseek/deepseek-v4-pro-0813": {
+        "deepseek/deepseek-v4.1-flash": {
           "compat": {
             "openRouterRouting": {
               "only": ["deepseek"],

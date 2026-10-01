@@ -17,7 +17,7 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
-import { FLASH_SEAT, DEFAULT_FLASH, resolveFlashModel } from "../lib/fleet-model.ts";
+import { FLEET_MODEL } from "../lib/fleet-model.ts";
 import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -1196,12 +1196,12 @@ async function spawnSubagent(
 	// identity (commit subject / "Task:" display); the preamble and
 	// review-policy annotation live only in promptForChild.
 	const promptForChild = promptMessage ?? task;
-	// Decision 020: the fleet flash seat resolves at spawn time (toggle-aware).
-	// `inheritParentModel` passes the parent model through unsubstituted — an
-	// explicit spawn choice wins over the seat substitution.
+	// Decision 022: fallback model for agents with no `model:` frontmatter.
+	// `inheritParentModel` passes the parent model through — an explicit spawn
+	// choice wins.
 	const effectiveModel = inheritParentModel
 		? parentModel
-		: resolveFlashModel(agent.model ?? FLASH_SEAT[DEFAULT_FLASH].model);
+		: agent.model ?? FLEET_MODEL;
 
 	// Build spawn args via shared helper (also used by tests).
 	// Fresh spawn: pass the tracking id as --session-id so the child's pi
@@ -2886,12 +2886,11 @@ export default function (pi: ExtensionAPI) {
 		// prompt avoids drift if the user edits the agent definition between
 		// spawn and resume). Uses atomic write (tmp + rename) to avoid torn
 		// reads.
-		// Site 2 (decision 020): meta.json records the SUBSTITUTED model (suffix
-		// included) so resume reproduces exactly what ran; later toggle flips do
-		// not apply retroactively to resumed sessions.
+		// Site 2 (decision 022): meta.json records the resolved model (suffix
+		// included) so resume reproduces exactly what ran.
 		const effectiveModel = params.inheritParentModel
 			? parentModel
-			: resolveFlashModel(agent.model ?? FLASH_SEAT[DEFAULT_FLASH].model);
+			: agent.model ?? FLEET_MODEL;
 		writeMetaJson(sessionId, {
 			agentName: agent.name,
 			task: params.task,

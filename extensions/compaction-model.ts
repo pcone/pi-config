@@ -1,13 +1,13 @@
 /**
  * Compaction Model Extension
  *
- * Forces /compact and auto-compaction to use the fleet flash seat (per
- * decision 020) while keeping every other aspect of compaction identical to
- * the default. The seat defaults to `zai/glm-5.3-flash`; a credit-low period
- * flips the WHOLE seat — compaction included — via `/fleet-model deepseek`
- * (override file `~/.pi/fleet-model.json`, zero file edits). Resolution is
- * table-driven from extensions/lib/fleet-model.ts; detail lives in
- * decisions/subagents/020-fleet-glm-53-flash-single-tier.md.
+ * Forces /compact and auto-compaction to use the fleet model (decision 022)
+ * while keeping every other aspect of compaction identical to the default.
+ * Why force it: the active session model can be switched mid-session, and
+ * compaction should always run on the cheap fleet seat rather than whatever
+ * the user is currently driving. Resolution is table-driven from
+ * extensions/lib/fleet-model.ts; rationale in
+ * decisions/subagents/022-openrouter-fleet-v41-flash.md.
  *
  * If the model cannot be resolved or auth fails, falls through to pi's
  * default compaction behavior.
@@ -15,18 +15,16 @@
 
 import { compact } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveFlashSeat } from "./lib/fleet-model.ts";
+import { FLEET_MODEL, FLEET_PROVIDER } from "./lib/fleet-model.ts";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {
 		const { preparation, customInstructions, signal } = event;
 
-		// Resolve the dedicated compaction model (rides the fleet flash seat).
-		const seat = resolveFlashSeat();
-		const model = ctx.modelRegistry.find(seat.provider, seat.model);
+		const model = ctx.modelRegistry.find(FLEET_PROVIDER, FLEET_MODEL);
 		if (!model) {
 			ctx.ui.notify(
-				`Compaction model ${seat.provider}/${seat.model} not found — using default compaction`,
+				`Compaction model ${FLEET_PROVIDER}/${FLEET_MODEL} not found — using default compaction`,
 				"warning",
 			);
 			return;
@@ -56,7 +54,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`Compaction with ${seat.model} failed: ${message}`, "error");
+			ctx.ui.notify(`Compaction with ${FLEET_MODEL} failed: ${message}`, "error");
 			return;
 		}
 	});
