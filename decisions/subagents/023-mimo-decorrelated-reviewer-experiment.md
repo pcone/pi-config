@@ -19,7 +19,7 @@ date: 2026-10-01
 
 Window: the next 2–3 code-changing work orders plus any plan reviews that trigger. The review gate is unchanged, so data arrives automatically; all three seats consume it.
 
-**Instrumentation:** `APPEND_SYSTEM.md` carries a temporary note telling verdict consumers not to rubber-stamp reviewer output and to surface observations for this decision — deleted when the experiment resolves.
+**Instrumentation:** `APPEND_SYSTEM.md` carries a temporary note telling verdict consumers not to rubber-stamp reviewer output and to surface observations for this decision — deleted when the experiment resolves. The note cites this decision by **absolute path** because `APPEND_SYSTEM.md` is appended to sessions in every repo, where a relative `decisions/...` path resolves nowhere.
 
 Signals, judged by the orchestrator (and user where wanted):
 
