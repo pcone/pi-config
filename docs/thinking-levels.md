@@ -125,12 +125,14 @@ GLM per-effort comparisons (see [decision 021](../decisions/subagents/021-effort
   `low` remains banned for code/hard-tail seats). Vendor tech report: `low`=50,
   `high`=75, `max`=100; 60–80 is the everyday-agentic band; the final step to 100 costs
   1.6–1.8× trajectory length for marginal gain.
-- **MiMo V2.6 evaluated and deferred.** Flash ≈ this model on BenchLM composite
-  (66.4 vs 64.6) and Pro is stronger (75.5, AA 46 vs 40), but **no MiMo endpoint on
-  OpenRouter has implicit caching** — the fleet's traffic is ~98% cache reads, so a
-  MiMo seat pays full input every turn (~12× this session's DS cost). Revisit if
-  Xiaomi/hosts enable implicit caching; the one non-cost option is MiMo Pro as a
-  decorrelated reviewer.
+- **MiMo V2.6 evaluated (caching probe corrected).** Flash ≈ this model on BenchLM
+  composite (66.4 vs 64.6) and Pro is stronger (75.5, AA 46 vs 40). OpenRouter's
+  per-endpoint `supports_implicit_caching: false` flag first suggested no cache
+  benefit, but a two-request probe shows **~99.8% cached prompt tokens** on both the
+  DeepInfra and Xiaomi hosts (pi's `sendSessionAffinityHeaders` keeps the host sticky),
+  making Flash ~29% cheaper than DS first-party on this session's profile (~65% cheaper
+  at DS peak). Deferred for now on quality/simplicity grounds — weaker agentic rank —
+  with a decorrelated reviewer seat as the candidate experiment.
 - **Benchmark basis is max effort.** The 2026-09-10 vendor card reports the instruct
   model at max reasoning only (Codeforces 3471, MathArena Apex 65.6, DeepSWE 74.2);
   the `:high` seats' quality at their level is inferred from the generic high≈max
@@ -138,8 +140,9 @@ GLM per-effort comparisons (see [decision 021](../decisions/subagents/021-effort
   quality, implementer invariant coverage.
 - **Routing:** `models.json` pins the slug to DeepSeek's first-party endpoint
   (`only: ["deepseek"]`, no fallbacks) — the quantized fp4 resellers are not the
-  benchmarked model, and first-party is the only endpoint with implicit caching
-  (cache-read $0.003/M ≈ cheapest reseller's $0.00285/M).
+  benchmarked model. Caching is broad on OpenRouter (probe 2026-10-01: ~99% cached
+  tokens on DeepSeek and MiMo hosts alike), and first-party's cache-read price
+  ($0.003/M) is within rounding of the cheapest reseller's ($0.00285/M).
 
 ## What this means for current assignments
 

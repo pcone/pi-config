@@ -76,9 +76,10 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 > **65.6 vs 65.3**, DeepSWE **74.2 vs 62.7**, Terminal-Bench 2.1 **90.6 vs 87.9**,
 > losing only text-only HLE (39.1 vs 42.7; HLE-with-tools 63.9 vs 60.0). `models.json`
 > re-points the correctness pin at v4.1-flash's first-party endpoint. MiMo V2.6
-> Flash/Pro were evaluated as cheaper seats and deferred: no MiMo endpoint on
-> OpenRouter has implicit caching and the fleet's traffic is ~98% cache reads, so
-> they cost ~12× more, not less. The tables below
+> Flash/Pro were evaluated as cheaper seats: a direct probe shows ~99.8% cached prompt
+> tokens on both DeepInfra and Xiaomi hosts (the endpoint `supports_implicit_caching`
+> flag understates this), making Flash ~29% cheaper than DS first-party on this
+> session's profile. Deferred for now on quality/simplicity grounds. The tables below
 > are unchanged 2026-08-01 snapshot data and contain no v4.1 row.
 
 ---
@@ -97,7 +98,8 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
   absorbed every seat on 2026-10-01 ([022](../decisions/subagents/022-openrouter-fleet-v41-flash.md)):
   it beats `deepseek-v4-pro-0813` on Codeforces (3471 vs 3348), MathArena Apex (65.6 vs
   65.3), DeepSWE (74.2 vs 62.7) and TB2.1 (90.6 vs 87.9) at a fraction of the list price,
-  and is the only v4.1-flash endpoint family with first-party implicit caching.
+  and is pinned to the first-party endpoint for unquantized weights (caching itself
+  is broad across OpenRouter hosts — probe 2026-10-01).
 - **GLM-5.3 / GLM-5.3-flash** — retained as history: they ran the fleet on the z.ai plan
   until the subscription ended (decision 020; effort split 021).
 

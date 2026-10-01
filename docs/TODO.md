@@ -7,9 +7,11 @@ on `deepseek/deepseek-v4.1-flash`; `/fleet-model` toggle + override deleted; ora
 `models.json` pin transferred to v4.1-flash first-party. Effort audited: implement/reviewers `:high`,
 orchestrator/oracle `:max`, scouts/compaction `:low`. Scouts' original `:medium` was a silent no-op
 (pi clamps unsupported levels up to high); compaction had no level (provider-default high) — both
-now run the real discount tier, scoped to read-only/summarization. MiMo V2.6 Flash/Pro evaluated
-and deferred: no implicit caching on any OpenRouter endpoint and fleet traffic is ~98% cache reads,
-so a MiMo seat costs ~12× more, not less — see decision 022.
+now run the real discount tier, scoped to read-only/summarization. MiMo V2.6 Flash/Pro evaluated:
+a caching probe corrected the endpoint-flag read — both hosts cache ~99.8% of prompt tokens and
+Flash is ~29% cheaper than DS first-party on this session's profile; deferred for now on
+quality/simplicity grounds (weaker agentic), candidate experiment is a decorrelated reviewer —
+see decision 022.
 
 ---
 
