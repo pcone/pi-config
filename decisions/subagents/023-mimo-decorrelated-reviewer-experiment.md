@@ -19,6 +19,8 @@ date: 2026-10-01
 
 Window: the next 2–3 code-changing work orders plus any plan reviews that trigger. The review gate is unchanged, so data arrives automatically; all three seats consume it.
 
+**Instrumentation:** `APPEND_SYSTEM.md` carries a temporary note telling verdict consumers not to rubber-stamp reviewer output and to surface observations for this decision — deleted when the experiment resolves.
+
 Signals, judged by the orchestrator (and user where wanted):
 
 1. **Verdict quality** — defects found vs missed, false-positive pushback rate, and fabricated citations. 017's mechanical checks validate `file:line` citations model-independently; verdict *substance* is judged by the orchestrator. There is no cross-lab reviewer left to anchor against — that is the accepted cost of testing the tier, and why the revert path exists.
@@ -40,6 +42,6 @@ Decision rule: **keep** if verdicts are clean and cost/wall-clock improve; **try
 
 `agents/review-{code,plan,tests}.md` model lines → `deepseek/deepseek-v4.1-flash:high`; drop the `xiaomi/mimo-v2.6-flash` override from `models.json` if no seat uses it. `git revert` of this commit does the model lines plus the docs.
 
-**Files changed:** `agents/review-code.md`, `agents/review-plan.md`, `agents/review-tests.md`, `models.json` (MiMo first-party pin), `docs/model-role-scores.md`, `docs/thinking-levels.md`, `docs/TODO.md`, `README.md`, decisions index, this decision.
+**Files changed:** `agents/review-code.md`, `agents/review-plan.md`, `agents/review-tests.md`, `APPEND_SYSTEM.md` (temporary verdict-checking note), `models.json` (MiMo first-party pin), `docs/model-role-scores.md`, `docs/thinking-levels.md`, `docs/TODO.md`, `README.md`, decisions index, this decision.
 
 **Test coverage:** none — agent frontmatter + routing config. Verified by real dispatch: `review-tests` and `review-code` both smoke-spawned on the pinned MiMo route (meta.json model confirmed, correct tool use, 4 turns each, ~20–27% cheaper than the DS equivalent on the same tiny task); live signal comes from the next real work-order round.

@@ -46,6 +46,8 @@ PDFs are binary. `fetch_url` and the `read` tool convert PDFs to Markdown automa
 
 **Default to parallel dispatch.** When work splits into independent chunks — research questions, separable features, reviewers — spawn them in one response; several `subagent` calls in the same block run concurrently. Serialize only when a step depends on a prior result (an in-flight item's reviewed, merged output). `wait` wakes on the first completion: gate it, re-`wait` for the rest, tracking each session id.
 
+**Review seats are experimental (decision 023).** All three reviewers run MiMo V2.6 Flash while the implementer runs DeepSeek. Don't rubber-stamp their verdicts: check cited evidence against the diff, watch for missed defects and false-positive pushback, and surface findings that should feed the keep-Flash / Pro / revert-tier call (`decisions/subagents/023-mimo-decorrelated-reviewer-experiment.md`). Delete this note when 023 resolves.
+
 ## Sessions
 
 Sessions are unlimited. Never stop mid-task to suggest continuing in a new session or wrapping up.
