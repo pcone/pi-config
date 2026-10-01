@@ -41,18 +41,20 @@ interface ParsedFrontmatter {
   paths?: string[];
   description?: string;
   disableModelInvocation?: boolean;
+  /** Known fields from another harness's dialect (Cursor's `globs`/`alwaysApply`). */
+  foreignFields?: string[];
 }
 
 // ---------------------------------------------------------------------------
 // Frontmatter parser
 //
 // Parses a minimal YAML subset covering our schema. Unknown fields are
-// silently ignored.
+// silently ignored; known foreign dialects are recorded for a warning.
 // ---------------------------------------------------------------------------
 
 const FRONTMATTER_RE = /^---[\r\n]+([\s\S]*?)[\r\n]+---[\r\n]+([\s\S]*)$/;
 
-function parseFrontmatter(content: string): {
+export function parseFrontmatter(content: string): {
   frontmatter: ParsedFrontmatter | null;
   body: string;
 } {
@@ -93,16 +95,26 @@ function parseFrontmatter(content: string): {
       // Handle inline array: paths: ["**/*.tfd"]
       const arrMatch = val.match(/^\[(.*)\]$/);
       if (arrMatch) {
-        fm.paths = arrMatch[1]
-          .split(",")
-          .map((s) => s.trim().replace(/^['"]|['"]$/g, ""));
+        // `paths: []` is an explicit no-op, not a one-element [""] list
+        fm.paths = arrMatch[1].trim()
+          ? arrMatch[1]
+              .split(",")
+              .map((s) => s.trim().replace(/^['"]|['"]$/g, ""))
+          : [];
+      } else if (val) {
+        // Scalar form: paths: "**/*.tfd" — Claude Code accepts this shape too
+        fm.paths = [val.replace(/^['"]|['"]$/g, "")];
       }
-      // Otherwise paths will be populated from list items below
+      // Bare `paths:` — populated from list items below
     } else if (key === "description") {
       fm.description = val.replace(/^['"]|['"]$/g, "");
     } else if (key === "disable-model-invocation") {
       fm.disableModelInvocation = val === "true" || val === "yes";
     } else {
+      // Record known foreign dialects (Cursor) so loadRule can warn precisely
+      if (key === "globs" || key === "alwaysApply") {
+        (fm.foreignFields ??= []).push(key);
+      }
       // Unknown key — don't collect stray list items under it
       currentKey = null;
     }
@@ -141,7 +153,7 @@ function findMarkdownFiles(dir: string): string[] {
   return results;
 }
 
-function loadRule(filePath: string, warnings: string[]): Rule | null {
+export function loadRule(filePath: string, warnings: string[]): Rule | null {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
     const { frontmatter: fm, body } = parseFrontmatter(content);
@@ -181,8 +193,20 @@ function loadRule(filePath: string, warnings: string[]): Rule | null {
     const disableModelInvocation =
       fm?.disableModelInvocation ?? false;
 
-    // Warn about degenerate rules (no trigger)
-    if (!fm?.paths && !disableModelInvocation) {
+    // Warn about a foreign dialect (Cursor's globs/alwaysApply) before the
+    // generic no-trigger warning — the fix is a field rename, not a new trigger
+    const foreign = fm?.foreignFields ?? [];
+    if (foreign.length > 0) {
+      const fixes: string[] = [];
+      if (foreign.includes("globs")) fixes.push("rename `globs` to `paths`");
+      if (foreign.includes("alwaysApply"))
+        fixes.push(
+          "`alwaysApply` has no pi equivalent — always-on instructions belong in AGENTS.md/APPEND_SYSTEM.md; use `paths` or `disable-model-invocation: true`",
+        );
+      warnings.push(
+        `Rule "${name}" uses Cursor-style frontmatter (${foreign.join(", ")}); ${fixes.join("; ")}.`,
+      );
+    } else if (!fm?.paths?.length && !disableModelInvocation) {
       warnings.push(
         `Rule "${name}" has no paths field and is not manual-only — never triggers. Add paths or set disable-model-invocation: true.`,
       );

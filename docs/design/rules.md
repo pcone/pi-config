@@ -67,9 +67,14 @@ A rule file with only frontmatter and no body is empty — it is skipped with a 
 | `description` | no | `string` | One-line summary. Shown in `/rules` listing. Not used for matching. |
 | `disable-model-invocation` | no | `boolean` | When true, the rule never auto-triggers by path match. Only `/rule <name>` injects it. Marked as `[manual]` in `/rules`. |
 
+`paths` also accepts a scalar (`paths: "**/*.tfd"`) as a one-element list —
+Claude Code's parser tolerates that shape and a single-pattern rule is the
+common case. An empty list (`paths: []`) means no paths: the rule is degenerate
+and warned-and-skipped like one with no `paths` at all.
+
 If `description` is absent, the first line of the rule body (stripped of heading `#` markup) is used as the summary in `/rules`.
 
-Unknown fields are ignored. The `paths` field uses `picomatch` glob syntax with case sensitivity following the host filesystem. Brace expansion (`*.{ts,tsx}`) is supported because `picomatch` provides it for free. Negation (`!`) patterns are stripped with a warning in v1 — see *Triggering* for the rationale. Backslashes are normalized to forward slashes at parse time; rules that use `\` in patterns are warned about and rewritten.
+Unknown fields are ignored. Two known foreign fields are recognized only to emit a targeted warning (instead of the generic no-trigger one): Cursor's `globs` (fix: rename to `paths`) and `alwaysApply` (no pi equivalent — always-on instructions belong in AGENTS.md / APPEND_SYSTEM.md; use `paths` or `disable-model-invocation`). Claude Code itself reads only `paths` and ignores every other field, so `globs` is not aliased: honoring it would produce `.claude/rules/` files that work in pi but not in Claude, inverting the portability goal. The `paths` field uses `picomatch` glob syntax with case sensitivity following the host filesystem. Brace expansion (`*.{ts,tsx}`) is supported because `picomatch` provides it for free. Negation (`!`) patterns are stripped with a warning in v1 — see *Triggering* for the rationale. Backslashes are normalized to forward slashes at parse time; rules that use `\` in patterns are warned about and rewritten.
 
 ### `allow-large` escape hatch
 
@@ -223,6 +228,7 @@ loop. The in-scope `Set` is accessed synchronously — no race condition exists.
 - **Adopting the full Claude Code rules spec verbatim (`.claude/rules/` only)**: not portable to other harnesses. The pi-native path (`.pi/rules/`) is the primary, with `.claude/rules/` as a recognized alias.
 - **Reusing the skill system with a new frontmatter field**: the trigger model is different (path glob vs description), the prompt slot is different (tool-result append vs system-prompt description), and the file shape is different (single file vs directory + `SKILL.md`). Forcing them together would compromise both.
 - **Eviction of old rules to free context**: would invalidate the prompt cache for every subsequent turn. Compact is the correct mechanism for context reduction, and it re-injects only the rules that are still relevant on next touch.
+- **Adopting Cursor's `globs`/`alwaysApply` dialect as aliases**: `globs` is not part of Claude Code's spec (its parser reads `paths` and ignores the rest), so aliasing would make `.claude/rules/` files that work in pi but not in Claude — the opposite of the portability goal. `alwaysApply: true` maps to unconditional rules, deliberately removed (always-on instructions belong in AGENTS.md / SYSTEM.md). Both fields instead get a targeted migration warning.
 - **Matching tool output for path references (e.g. `bash` printing a file path)**: too noisy, too easy to false-positive. The trigger is the agent's deliberate intent to act on a file, which `read`/`edit`/`write` represent cleanly.
 
 ## Status
@@ -244,3 +250,4 @@ loop. The in-scope `Set` is accessed synchronously — no race condition exists.
 - [ ] `settings.json` `rules` array
 - [x] `--no-rules` / `--rule` flags (built into pi, consumed by extension)
 - [x] Seed rules: `tfd-syntax`, `cases-format`
+- [x] Scalar `paths` + foreign-dialect (Cursor `globs`/`alwaysApply`) diagnostics
