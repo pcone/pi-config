@@ -1,8 +1,7 @@
 ---
-name: work-order-numbering
+paths:
+  - "**/work-orders/**"
 description: Reserve-then-dispatch for sequential work-order ids in multi-session repos — the push is the collision detector
-globs: []
-alwaysApply: false
 ---
 
 # Work-order numbering: reserve-then-dispatch

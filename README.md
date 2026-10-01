@@ -39,7 +39,7 @@ ln -sf ~/Developer/pi-config/rules ~/.pi/agent/rules   # whole dir (first time: 
 - `rules/` — Global path-scoped rules, symlinked whole-dir into `~/.pi/agent/rules/` (mirrors the skills/extensions pattern). The whole dir is version-controlled here:
   - `writing-rules.md` — meta: how to write/format pi rules (fires on `.pi/rules/**/*.md`)
   - `re-litigation-proof.md` — write docs that settle their own "why" (fires on `decisions/**` + `docs/**`)
-  - `tfd-decisions.md`, `tfd-syntax.md` — tfd-format rules (global, path-scoped to `decisions/**` / tfd source)
+  - `work-order-numbering.md` — reserve-then-dispatch for sequential work-order ids across concurrent sessions, push as the collision detector (fires on `**/work-orders/**`)
 - `themes/catppuccin-macchiato.json` — Color theme
 
 ## Extension temp data
