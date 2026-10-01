@@ -22,18 +22,32 @@ on it:
 2. **Reserve-then-dispatch.** Before spawning the implementer: commit the WO
    file (renumbered to the next free id, read after a fresh
    `git fetch <shared>`) and `git push <shared> <branch>`.
-3. **Non-fast-forward rejection is the collision alarm.** On rejection:
+3. **Collisions with landed history: the claim with landed references
+   keeps the id.** Reserve-by-push can't see un-rebased parallel lineages
+   — a fifth board's WOs are invisible until their lineage lands (real case
+   2026-08-30: tfd-d's `WO-2026-081` landed on `loop-ergonomics` concurrent
+   with a mainline 081; the mainline claim renumbered to 089). Resolution:
+   claims that exist only in an un-rebased lineage don't count until they
+   land — a mainline push beats them. But a number that HAS landed anywhere
+   is historical record and keeps the id regardless of which side landed
+   first: renumbering it cascades through its decision refs and chained WOs
+   (082-088 in the same case), rewriting history. The losing claim renumbers
+   itself and fixes only its own live references (dispatch text, roadmap
+   rows) — before its implementer lands anything.
+4. **Non-fast-forward rejection is the collision alarm.** On rejection:
    pull-merge; if the merge brought a WO holding your id, renumber to the new
    next-free id, rewrite the id inside the file (and any references), re-push.
    Repeat until the push lands.
-4. **Dispatch only after the push lands.** The id exists on the shared remote
+5. **Dispatch only after the push lands.** The id exists on the shared remote
    before any work order reference escapes your session (dispatch task text,
    roadmap rows, decision links).
 
 Why not alternatives: a central counter file adds a second source of truth git
 already provides; per-session number bands break chronological reading;
 session-prefixed ids break every existing reference format. The push IS the
-atomic test-and-set — the protocol just refuses to proceed without it.
+atomic test-and-set against other mainline sessions — but five boards share
+one mainline and the namespace resolves only at push, so lineage-invisible
+claims are handled by clause 3 (landed history wins), not by the push.
 
 Same pattern for any shared sequential namespace across sessions: decision
 record numbers, feature-dir numbering. Reserve by push, renumber on rejection.
