@@ -4,10 +4,12 @@
 z.ai subscription ended → all seats (orchestrator/implement/reviewers/scouts/oracle/compaction)
 on `deepseek/deepseek-v4.1-flash`; `/fleet-model` toggle + override deleted; oracle moved off
 0813-pro (v4.1-flash beats it: CF 3471 vs 3348, Apex 65.6 vs 65.3, DeepSWE 74.2 vs 62.7);
-`models.json` pin transferred to v4.1-flash first-party. Effort audited: implement/reviewers/scouts
-`:high`, orchestrator/oracle `:max`; scouts' original `:medium` was a silent no-op (pi clamps unsupported
-levels up to high) and is now pinned `:high`; vendor data (tech report §5.3) says 60–80 is the everyday
-band and the step to 100 costs 1.6–1.8× trajectory for marginal gain — see decision 022.
+`models.json` pin transferred to v4.1-flash first-party. Effort audited: implement/reviewers `:high`,
+orchestrator/oracle `:max`, scouts/compaction `:low`. Scouts' original `:medium` was a silent no-op
+(pi clamps unsupported levels up to high); compaction had no level (provider-default high) — both
+now run the real discount tier, scoped to read-only/summarization. MiMo V2.6 Flash/Pro evaluated
+and deferred: no implicit caching on any OpenRouter endpoint and fleet traffic is ~98% cache reads,
+so a MiMo seat costs ~12× more, not less — see decision 022.
 
 ---
 

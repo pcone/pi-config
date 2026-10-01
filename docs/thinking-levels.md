@@ -22,16 +22,18 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
   subagent inherits the session default (`max`) unless the agent frontmatter's
   `model:` uses the `provider/id:<level>` shorthand (e.g.
   `deepseek/deepseek-v4.1-flash:high`). The fleet sets effort per agent this
-  way (decision 022, after the 2026-10-01 effort audit: implement/reviewers/scouts
-  `:high`, oracle/orchestrator `:max`). The `/fleet-model`
+  way (decision 022, after the 2026-10-01 effort audit: implement/reviewers
+  `:high`, scouts `:low`, oracle/orchestrator `:max`, compaction `:low`). The `/fleet-model`
   toggle and its suffix-preserving substitution were deleted 2026-10-01 — one
   model, no substitution (decision 022).
 - Provider mappings: **DeepSeek V4.1 Flash via OpenRouter** (pi catalog
   `thinkingLevelMap`, checked in `models-store.json` 2026-10-01): `low`→low
   (real), `medium`→**null** (unsupported), `high`→high, `xhigh`→**null**,
   `max`→max. `clampThinkingLevel` rounds a `null` level **up**, so `:medium`
-  resolved to `:high` — which is why scouts were pinned `:high` (decision 022).
-  `low` is the only real sub-high tier and is banned (021). The vendor tech
+  resolved to `:high` — which is how the audit found scouts were silently running
+  at the top-band effort (decision 022). `low` is the only real discount tier;
+  the audit allows it for read-only/summarization seats (scouts, compaction) and
+  keeps it banned for code-writing and hard-tail seats. The vendor tech
   report exposes exactly `low`=50 / `high`=75 / `max`=100, recommending the
   60–80 band for everyday agentic use. The zai GLM map (`medium`/`xhigh`→null)
   is history — see the 2026-08-28 addenda below.
@@ -40,7 +42,7 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
 
 | Model | Fleet roles | Real levels | Sweet spot | Evidence |
 |---|---|---|---|---|
-| **DeepSeek V4.1 Flash** | **all seats** (decision 022) | low, high, max | ✅ **per seat:** orchestrator/oracle `:max`, implement/reviewers/scouts `:high` (scouts pinned after `:medium` was found to clamp up to high). Vendor: 60–80 recovers most max accuracy at <half the tokens; final step to 100 costs 1.6–1.8× trajectory for marginal gain; curve is smooth (no GLM-style `low` cliff) | [HF card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), tech report §5.3 |
+| **DeepSeek V4.1 Flash** | **all seats** (decision 022) | low, high, max | ✅ **per seat:** orchestrator/oracle `:max`, implement/reviewers `:high`, scouts/compaction `:low`. `:medium` silently clamps up to high — scouts were mis-set to it, then moved to the real discount tier. Vendor: 60–80 recovers most max accuracy at <half the tokens; final step to 100 costs 1.6–1.8× trajectory for marginal gain; curve is smooth (no GLM-style `low` cliff) | [HF card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), tech report §5.3 |
 | **DeepSeek V4 Pro** | *(former oracle)* | high, max | ✅ **`high`** — AA Index 43 vs 44 at max (**~98%** of max quality); high variant is also faster | [AA comparison](https://artificialanalysis.ai/models/comparisons/deepseek-v4-pro-high-vs-deepseek-v4-pro) |
 | **DeepSeek V4 Flash / 0731** | *(former toggle target)* | high, max | ✅ **`high`** (presumed — same AA variant structure as V4 Pro; exact scores behind JS-rendered pages, single-source) | [AA flash-high](https://artificialanalysis.ai/models/deepseek-v4-flash-high) |
 | **GPT-5.6 Luna** | *(not in fleet — orchestrator ceiling)* | low, med, high, xhigh, max | ✅ **`high`** — 90.2% of max quality (46 vs 51 AA Index) at **42% of the tokens** (8k vs 19k/task), $0.09 vs $0.21/task. xhigh: 96.1% at 63%. Graceful degradation, no cliff | [AA GPT-5.6 analysis](https://artificialanalysis.ai/articles/gpt-5-6-has-landed), [dataset gist](https://gist.github.com/IgorWarzocha/60bfd11731f15cf8802f0b6e80d47ac7) |
@@ -116,11 +118,19 @@ GLM per-effort comparisons (see [decision 021](../decisions/subagents/021-effort
   reviewers, 2 scouts, oracle, compaction). The z.ai subscription is gone; the
   `/fleet-model` toggle and `~/.pi/fleet-model.json` override were deleted.
 - **Levels preserved as seat policy, then audited (2026-10-01):** orchestrator/oracle
-  `:max`, implement/reviewers/scouts `:high`, `low` banned. `medium` does not exist on
-  this model — the catalogue maps it to null and pi clamps it up to `high` — so the
-  scouts' `:medium` suffix was a silent no-op and is now pinned `:high` explicitly.
-  Vendor tech report: `low`=50, `high`=75, `max`=100; 60–80 is the everyday-agentic band;
-  the final step to 100 costs 1.6–1.8× trajectory length for marginal gain.
+  `:max`, implement/reviewers `:high`, scouts/compaction `:low`. `medium` does not exist
+  on this model — the catalogue maps it to null and pi clamps it up to `high` — so the
+  scouts' inherited `:medium` suffix was a silent no-op; the audit moved them to the real
+  `low` tier and pinned compaction there too (read-only/summarization seats only;
+  `low` remains banned for code/hard-tail seats). Vendor tech report: `low`=50,
+  `high`=75, `max`=100; 60–80 is the everyday-agentic band; the final step to 100 costs
+  1.6–1.8× trajectory length for marginal gain.
+- **MiMo V2.6 evaluated and deferred.** Flash ≈ this model on BenchLM composite
+  (66.4 vs 64.6) and Pro is stronger (75.5, AA 46 vs 40), but **no MiMo endpoint on
+  OpenRouter has implicit caching** — the fleet's traffic is ~98% cache reads, so a
+  MiMo seat pays full input every turn (~12× this session's DS cost). Revisit if
+  Xiaomi/hosts enable implicit caching; the one non-cost option is MiMo Pro as a
+  decorrelated reviewer.
 - **Benchmark basis is max effort.** The 2026-09-10 vendor card reports the instruct
   model at max reasoning only (Codeforces 3471, MathArena Apex 65.6, DeepSWE 74.2);
   the `:high` seats' quality at their level is inferred from the generic high≈max
@@ -134,10 +144,10 @@ GLM per-effort comparisons (see [decision 021](../decisions/subagents/021-effort
 ## What this means for current assignments
 
 1. **All seats — `deepseek/deepseek-v4.1-flash` (decision 022).** Effort per seat
-   via the `provider/model:level` shorthand: implement/reviewers/scouts `:high`,
-   orchestrator/oracle `:max`; compaction rides the seat's
-   default thinking. Do not raise implement/scouts toward max — the vendor data says
-   the 60–80 band recovers most of max at <half the tokens (`low`=50 stays banned).
+   via the `provider/model:level` shorthand: implement/reviewers `:high`,
+   scouts and compaction `:low`, orchestrator/oracle `:max`. Do not raise
+   implement/reviewers toward max — the vendor data says the 60–80 band recovers
+   most of max at <half the tokens; `low` is scoped to read-only/summarization seats.
 2. **Orchestrator — `deepseek/deepseek-v4.1-flash:max`.** 021's max-for-the-hard-tail
    call carries over: the seat owns planning/instructions and the vendor card is
    max-effort. 020's old "complexity is routed by model choice" line is dead —

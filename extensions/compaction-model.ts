@@ -1,13 +1,19 @@
 /**
  * Compaction Model Extension
  *
- * Forces /compact and auto-compaction to use the fleet model (decision 022)
- * while keeping every other aspect of compaction identical to the default.
- * Why force it: the active session model can be switched mid-session, and
- * compaction should always run on the cheap fleet seat rather than whatever
- * the user is currently driving. Resolution is table-driven from
- * extensions/lib/fleet-model.ts; rationale in
- * decisions/subagents/022-openrouter-fleet-v41-flash.md.
+ * Forces /compact and auto-compaction to use the fleet model at `:low`
+ * effort (decision 022) while keeping every other aspect of compaction
+ * identical to the default.
+ *
+ * Why force the model: the active session model can be switched mid-session,
+ * and compaction should always run on the cheap fleet seat rather than
+ * whatever the user is currently driving.
+ *
+ * Why `:low`: compaction is summarization, not reasoning. The vendor effort
+ * audit (decision 022) puts `low`=50 as the real discount tier — "modest
+ * accuracy degradation" on a smooth curve — and without an explicit level
+ * compaction silently rides the provider default (`high`). Resolution is
+ * table-driven from extensions/lib/fleet-model.ts.
  *
  * If the model cannot be resolved or auth fails, falls through to pi's
  * default compaction behavior.
@@ -45,6 +51,7 @@ export default function (pi: ExtensionAPI) {
 				auth.headers,
 				customInstructions,
 				signal,
+				"low", // decision 022 effort audit — summarization runs at the discount tier
 			);
 
 			return { compaction: result };

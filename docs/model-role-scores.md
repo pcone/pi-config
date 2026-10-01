@@ -68,13 +68,17 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 >
 > **2026-10-01 fleet move (decision [022](../decisions/subagents/022-openrouter-fleet-v41-flash.md)):**
 > z.ai is gone — every seat runs `deepseek/deepseek-v4.1-flash` (orchestrator/oracle
-> `:max`, implement/reviewers/scouts `:high`), the `/fleet-model` toggle +
+> `:max`, implement/reviewers `:high`, scouts/compaction `:low` after the effort audit), the
+> `/fleet-model` toggle +
 > `~/.pi/fleet-model.json` override are deleted, and the oracle moved off
 > `deepseek/deepseek-v4-pro-0813`. Evidence: the 2026-09-10 vendor card has v4.1-flash
 > (all rows max effort) beating 0813-pro on Codeforces **3471 vs 3348**, MathArena Apex
 > **65.6 vs 65.3**, DeepSWE **74.2 vs 62.7**, Terminal-Bench 2.1 **90.6 vs 87.9**,
 > losing only text-only HLE (39.1 vs 42.7; HLE-with-tools 63.9 vs 60.0). `models.json`
-> re-points the correctness pin at v4.1-flash's first-party endpoint. The tables below
+> re-points the correctness pin at v4.1-flash's first-party endpoint. MiMo V2.6
+> Flash/Pro were evaluated as cheaper seats and deferred: no MiMo endpoint on
+> OpenRouter has implicit caching and the fleet's traffic is ~98% cache reads, so
+> they cost ~12× more, not less. The tables below
 > are unchanged 2026-08-01 snapshot data and contain no v4.1 row.
 
 ---
@@ -106,8 +110,8 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 | Implementer | `agents/implement.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022) |
 | Oracle | `agents/math-algo-oracle.md` | deepseek/deepseek-v4.1-flash | max | ✓ moved 2026-10-01 (decision 022; beats 0813 on CF/Apex/DeepSWE/TB2.1) |
 | Review standard ×3 | `agents/review-{code,plan,tests}.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022) |
-| Scouts ×2 | `agents/scout-{code,web}.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022); pinned `:high` after the effort audit — `:medium` clamps up to high on this model |
-| Compaction | `extensions/compaction-model.ts` | deepseek/deepseek-v4.1-flash | — | ✓ moved 2026-10-01 (decision 022; constant target, no toggle) |
+| Scouts ×2 | `agents/scout-{code,web}.md` | deepseek/deepseek-v4.1-flash | low | ✓ moved 2026-10-01 (decision 022; `:medium` was a silent clamp to high, replaced with the real discount tier for read-only research) |
+| Compaction | `extensions/compaction-model.ts` | deepseek/deepseek-v4.1-flash | low | ✓ moved 2026-10-01 (decision 022; constant target, explicit `:low` — without a level it rode the provider default `high`) |
 
 > History note: the **review deep ×3** rows (`agents/review-*-deep.md`) were
 > **deleted 2026-08-28** — the tier fired once ever; quality rationale lapsed; see
