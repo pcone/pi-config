@@ -9,6 +9,14 @@
               "allow_fallbacks": false
             }
           }
+        },
+        "xiaomi/mimo-v2.6-flash": {
+          "compat": {
+            "openRouterRouting": {
+              "only": ["Xiaomi"],
+              "allow_fallbacks": false
+            }
+          }
         }
       }
     }

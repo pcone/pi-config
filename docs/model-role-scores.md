@@ -79,7 +79,8 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 > Flash/Pro were evaluated as cheaper seats: a direct probe shows ~99.8% cached prompt
 > tokens on both DeepInfra and Xiaomi hosts (the endpoint `supports_implicit_caching`
 > flag understates this), making Flash ~29% cheaper than DS first-party on this
-> session's profile. Deferred for now on quality/simplicity grounds. The tables below
+> session's profile. Deferred for the fleet, but `review-tests` now runs the MiMo Flash
+> decorrelation experiment (decision 023). The tables below
 > are unchanged 2026-08-01 snapshot data and contain no v4.1 row.
 
 ---
@@ -111,7 +112,7 @@ per-benchmark pages + OpenRouter `/models` + `/benchmarks`, all fetched 2026-07-
 | Orchestrator-subagent | `agents/orchestrator.md` | deepseek/deepseek-v4.1-flash | max | ✓ moved 2026-10-01 (decision 022) |
 | Implementer | `agents/implement.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022) |
 | Oracle | `agents/math-algo-oracle.md` | deepseek/deepseek-v4.1-flash | max | ✓ moved 2026-10-01 (decision 022; beats 0813 on CF/Apex/DeepSWE/TB2.1) |
-| Review standard ×3 | `agents/review-{code,plan,tests}.md` | deepseek/deepseek-v4.1-flash | high | ✓ moved 2026-10-01 (decision 022) |
+| Review standard ×3 | `agents/review-{code,plan,tests}.md` | deepseek/deepseek-v4.1-flash (review-tests: xiaomi/mimo-v2.6-flash) | high | ✓ moved 2026-10-01 (022); `review-tests` on the MiMo decorrelation experiment (023) |
 | Scouts ×2 | `agents/scout-{code,web}.md` | deepseek/deepseek-v4.1-flash | low | ✓ moved 2026-10-01 (decision 022; `:medium` was a silent clamp to high, replaced with the real discount tier for read-only research) |
 | Compaction | `extensions/compaction-model.ts` | deepseek/deepseek-v4.1-flash | low | ✓ moved 2026-10-01 (decision 022; constant target, explicit `:low` — without a level it rode the provider default `high`) |
 

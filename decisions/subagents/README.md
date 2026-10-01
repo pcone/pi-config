@@ -29,3 +29,4 @@ date: 2026-07-14
 | 020 | Fleet flash seat to zai/glm-5.3-flash — /fleet-model toggle, deep tier deleted, effort policy, models.json prune | done (model choice + toggle superseded by 022; effort table superseded by 021) |
 | 021 | Effort rebalance — flash :high, glm-5.3 :max, low banned | done (levels survive on v4.1-flash; GLM basis superseded by 022) |
 | 022 | OpenRouter-only fleet on deepseek/deepseek-v4.1-flash — /fleet-model toggle deleted, oracle off 0813 | done |
+| 023 | Experiment: MiMo V2.6 Flash as the decorrelated review-tests reviewer | experiment |
