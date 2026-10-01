@@ -1,13 +1,14 @@
-# Experiment — MiMo V2.6 Flash on review-tests (decision 023)
+# Experiment — MiMo V2.6 Flash on review-code + review-plan (decision 023)
 
-**Status**: running 2026-10-01. `agents/review-tests.md` → `xiaomi/mimo-v2.6-flash:high`,
-pinned to Xiaomi first-party in `models.json` (fp8, $0.14/$0.28/M, cache $0.0028). Judged over
-the next 2–3 code-changing WO rounds on verdict quality / false-positive rate / cost /
-wall-clock; Flash first, Pro only if Flash fails the bar and its price is justified. Rollback =
-revert the model line + pin. Context: decorrelated pair with DS `review-code`; benchlm Flash
-66.4 ≈ DS 64.6, but benchmark-vs-anecdote discrepancy is explicit — outcome-measured, not
-benchmark-trusted. See `decisions/subagents/023-mimo-decorrelated-reviewer-experiment.md`.
-
+**Status**: running 2026-10-01. `agents/review-code.md` + `agents/review-plan.md` →
+`xiaomi/mimo-v2.6-flash:high`; `review-tests` back on DS. Pinned to Xiaomi first-party in
+`models.json` (fp8, $0.14/$0.28/M, cache $0.0028). Judged over the next 2–3 code-changing WO
+rounds on verdict quality / false-positive rate / cost / wall-clock, anchored by the DS
+`review-tests` verdict on the same diff; Flash first, Pro only if Flash fails the bar and its
+price is justified. Rollback = revert the two model lines. Context: review-code is the
+highest-stakes seat and MiMo Flash is the series' weakest coding row — the benchmark-vs-anecdote
+discrepancy is explicit, so this is outcome-measured, not benchmark-trusted. See
+`decisions/subagents/023-mimo-decorrelated-reviewer-experiment.md`.
 ---
 
 # OpenRouter-only fleet — deepseek/deepseek-v4.1-flash (decision 022)
