@@ -35,6 +35,16 @@ brief did not show, and can state what they are being asked to decide.
    session or the reviewer asks — then use the project's existing findings/
    investigation genre and link the sources; never a new genre. With multiple
    documents, the index doc is the entry point.
+9. **The brief is the ledger for its points.** As each point is settled, write the
+   ruling into the brief — its date and the shape it settled, including any
+   narrowing the discussion produced. A bare yes often leaves the mechanism
+   open, and the mechanism is what the implementer needs. A resolution that
+   lives only in a session transcript is lost work; an answer in conversation is
+   not a resolution until it is written down here.
+10. **A brief is closed when every point in it is marked resolved.** No work
+    order executes a brief's item before then, and a recommended default is not
+    an answer for anything that changes what the language accepts or does —
+    defaults serve bookkeeping and scope only.
 
 ## Layout
 
