@@ -187,6 +187,18 @@ For each item in `Structural Risks`:
    strength), minimize scope (rule of degree), accept strong
    connascence if local to one module (rule of locality).
    MEDIUM at default; HIGH only when global and undocumented.
+7. **Growth** — if the diff materially grows an already-large file
+   (repo top decile by size) or adds a branch, flag, or parameter
+   to a long function (>~300 lines), **report it**. The
+   observation is mandatory; the refactor suggestion is not.
+   This is the accumulation channel: no single diff trips item
+   5's "clearly shrink the change" gate, yet a series of
+   reasonable diffs grows the ball of mud. Name the file or
+   function, its current size, and the delta. LOW at default;
+   MEDIUM when the function is already the repo's worst or the
+   diff is a large share of the file's growth. Growth is
+   delta-based — absolute size alone is not a finding in a
+   codebase that is already this large.
 
 ## Output
 
@@ -226,6 +238,7 @@ For each item in `Structural Risks`:
 - Code style: <PASS/MINOR_ISSUES/MAJOR_DEVIATION>
 - Architectural simplification: <PASS/OPPORTUNITY — refactor + expected shrinkage, or N/A>
 - Connascence: <PASS/CONCERNS — forms found + locations, or N/A>
+- Growth: <NONE/CONCERNS — files/functions grown, with size and delta, or N/A>
 
 ### Issues
 | # | Severity | Description | Location |

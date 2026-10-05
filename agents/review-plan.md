@@ -105,6 +105,13 @@ against; flag sugar opportunities the project policy names.
   - A special case to generalize.
   - A data shape that doesn't fit the processing it needs to
     support — change the data, not the code.
+  - **Growth** — does the plan add to an already-large file (repo
+    top decile by size) or a long function (>~300 lines)? Name
+    it, with its current size, and say whether the addition can
+    route somewhere better (a new module, an extraction). Report
+    this even when no small refactor would shrink the change:
+    accumulation across a series of work items is the hazard,
+    not this one item.
   Flag only when the refactor would clearly shrink the change
   (typically 2× fewer lines, or removes duplicated special
   cases). Often overlaps with a routing recommendation: do the
