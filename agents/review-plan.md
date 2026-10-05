@@ -66,6 +66,9 @@ function is cited at a specific line range, check that range.
   functions and any registration/update steps (e.g., if adding a pass,
   is updating `registry.rs` in the plan?).
 - Are test changes included?
+- **If this is a refactor (extract, merge, move):** does it name the tests that pin
+  the behaviour it preserves? Where coverage is thin, characterization tests are
+  step 0 — a refactor without pinned behaviour is unverifiable.
 - Are docs / decisions / glossary updates included when the plan
   introduces new public surface?
 

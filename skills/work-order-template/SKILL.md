@@ -60,6 +60,11 @@ correctness evidence. Unit tests may supplement but do not replace
 them. State the boundary explicitly; do not let the implementer
 guess.>
 
+For a refactor (extract, merge, move), the boundary's **existing** rows
+are the acceptance evidence: name them, and make characterization rows
+step 0 where the touched behaviour is not pinned. An existing row that
+must change means behaviour changed.
+
 **Behavior and failure matrix**: <the cases the implementation must
 satisfy, organized as a non-overlapping matrix that the test reviewer
 can audit row by row. Cover at minimum:
