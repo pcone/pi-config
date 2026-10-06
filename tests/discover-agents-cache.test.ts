@@ -14,12 +14,13 @@
  */
 
 import { describe, expect, it, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, utimesSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	_testDirCache,
 	_loadAgentsFromDir,
+	discoverAgents,
 } from "../extensions/subagent-async/agents.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -237,5 +238,85 @@ describe("_loadAgentsFromDir cache", () => {
 		const result = _loadAgentsFromDir(linkDir, "user");
 		expect(result.length).toBe(1);
 		expect(result[0].name).toBe("kappa");
+	});
+});
+
+// ── discoverAgents scope gate (WO-2026-051 B1) ─────────────────────────────
+// B1 skips the ancestor-directory walk when scope is "user". The only
+// observable effect is that projectAgentsDir is null for "user" (the agents
+// list was already project-free because the scope short-circuits); these tests
+// also pin that agent lists stay identical for all three scopes.
+describe("discoverAgents scope gate", () => {
+	let cleanupDirs: string[] = [];
+	let savedAgentDir: string | undefined;
+
+	afterEach(() => {
+		_testDirCache.clear();
+		if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+		savedAgentDir = undefined;
+		for (const d of cleanupDirs) cleanupDir(d);
+		cleanupDirs = [];
+	});
+
+	function track(dir: string): string {
+		cleanupDirs.push(dir);
+		return dir;
+	}
+
+	/** Project tree with `.pi/agents` above `cwd`, plus a controlled user-agents
+	 *  dir pointed at by PI_CODING_AGENT_DIR (read by getAgentDir at call time). */
+	function setupScopes(opts: { collision?: boolean } = {}): {
+		cwd: string;
+		projectAgentsDir: string;
+	} {
+		savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+		const projectRoot = track(createTempAgentsDir());
+		const cwd = join(projectRoot, "sub");
+		mkdirSync(cwd, { recursive: true });
+		const projectAgentsDir = join(projectRoot, ".pi", "agents");
+		mkdirSync(projectAgentsDir, { recursive: true });
+		writeFileSync(join(projectAgentsDir, "project-agent.md"), minimalAgentMd("project-agent", "Project agent"));
+
+		const userRoot = track(createTempAgentsDir());
+		const userAgentsDir = join(userRoot, "agents");
+		mkdirSync(userAgentsDir, { recursive: true });
+		writeFileSync(join(userAgentsDir, "user-agent.md"), minimalAgentMd("user-agent", "User agent"));
+
+		if (opts.collision) {
+			writeFileSync(join(projectAgentsDir, "shared.md"), minimalAgentMd("shared", "project shared"));
+			writeFileSync(join(userAgentsDir, "shared.md"), minimalAgentMd("shared", "user shared"));
+		}
+
+		process.env.PI_CODING_AGENT_DIR = userRoot;
+		return { cwd, projectAgentsDir };
+	}
+
+	it("scope 'user' excludes project agents and reports no project dir (B1 gate)", () => {
+		const { cwd } = setupScopes();
+		const result = discoverAgents(cwd, "user");
+		expect(result.agents.map((a) => a.name).sort()).toEqual(["user-agent"]);
+		expect(result.agents.every((a) => a.source === "user")).toBe(true);
+		// Pre-change this returned the discovered ancestor path even though the
+		// agents list was already project-free; the scope gate makes it null.
+		expect(result.projectAgentsDir).toBeNull();
+	});
+
+	it("scope 'project' returns only project agents and the project dir", () => {
+		const { cwd, projectAgentsDir } = setupScopes();
+		const result = discoverAgents(cwd, "project");
+		expect(result.agents.map((a) => a.name)).toEqual(["project-agent"]);
+		expect(result.agents.every((a) => a.source === "project")).toBe(true);
+		expect(result.projectAgentsDir).toBe(projectAgentsDir);
+	});
+
+	it("scope 'both' merges user + project, project winning a name collision", () => {
+		const { cwd, projectAgentsDir } = setupScopes({ collision: true });
+		const result = discoverAgents(cwd, "both");
+		expect(result.agents.map((a) => a.name).sort()).toEqual(["project-agent", "shared", "user-agent"]);
+		expect(result.agents.find((a) => a.name === "shared")?.source).toBe("project");
+		expect(result.agents.find((a) => a.name === "user-agent")?.source).toBe("user");
+		expect(result.projectAgentsDir).toBe(projectAgentsDir);
 	});
 });

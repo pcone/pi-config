@@ -596,13 +596,28 @@ async function createWorktree(
 		const worktreePath = path.join(os.tmpdir(), `pi-subagent-wt-${suffix}`);
 
 		// Remove stale leftovers from a previous run with the same session id.
-		// These are independent best-effort cleanups — run them concurrently.
+		// `sessionId` is a fresh randomUUID slice per spawn and createWorktree is
+		// only called on fresh spawns (subagent_resume passes nulls), so there is
+		// normally nothing on disk to clean — skip the two git subprocesses when
+		// the directory does not exist. When it does, both independent best-effort
+		// cleanups still run concurrently, unchanged.
 		const tCleanup = PI_ASYNC_DEBUG ? Date.now() : 0;
-		await Promise.allSettled([
-			git(["worktree", "remove", "--force", worktreePath], parentCwd),
-			git(["branch", "-D", branchName], parentCwd),
-		]);
+		if (fs.existsSync(worktreePath)) {
+			await Promise.allSettled([
+				git(["worktree", "remove", "--force", worktreePath], parentCwd),
+				git(["branch", "-D", branchName], parentCwd),
+			]);
+		}
 		if (PI_ASYNC_DEBUG) debugLog(`createWorktree: stale-cleanup (parallel): ${Date.now() - tCleanup}ms`);
+
+		// The carry status only reads the parent tree, so it can be fetched while
+		// the worktree materializes below. `git()` never rejects (it resolves with
+		// exitCode: 1 on spawn failure), so an unconsumed prefetch (worktree add
+		// failed, or the carry gate changed) cannot become an unhandled rejection.
+		const carryStatusPromise =
+			carryUncommitted && !baseRef
+				? git(["status", "--porcelain=v1", "-uall", "-z"], topLevel)
+				: undefined;
 
 		// worktree add must be last and fatal on failure.
 		const tAdd = PI_ASYNC_DEBUG ? Date.now() : 0;
@@ -622,7 +637,7 @@ async function createWorktree(
 		if (carryUncommitted && !baseRef) {
 			const tCarry = PI_ASYNC_DEBUG ? Date.now() : 0;
 			try {
-				carried = await carryUncommittedState(topLevel, worktreePath);
+				carried = await carryUncommittedState(topLevel, worktreePath, carryStatusPromise);
 			} catch (e: any) {
 				debugLog(`createWorktree: carry failed — degrading to HEAD-only: ${e.message || e}`);
 			}
@@ -650,14 +665,15 @@ type CarriedSnapshot = Map<string, CarriedEntry>;
  *  or null when the path is absent / not a regular file or symlink.
  *  Single source of truth for the carry snapshot hashes — used by both
  *  carryUncommittedState (capture) and the preCommitSteps completion filter
- *  (compare). Mirrored identically by test-completion-filter.cjs — keep in
- *  sync. */
-function hashCarriedFile(absPath: string): string | null {
+ *  (compare). Async (fs.promises) so the spawn path never blocks the event
+ *  loop on file I/O. Mirrored identically by test-completion-filter.cjs —
+ *  keep in sync. */
+async function hashCarriedFile(absPath: string): Promise<string | null> {
 	try {
-		const st = fs.lstatSync(absPath);
-		if (st.isSymbolicLink()) return "link:" + fs.readlinkSync(absPath);
+		const st = await fs.promises.lstat(absPath);
+		if (st.isSymbolicLink()) return "link:" + (await fs.promises.readlink(absPath));
 		if (!st.isFile()) return null;
-		return createHash("sha256").update(fs.readFileSync(absPath)).digest("hex");
+		return createHash("sha256").update(await fs.promises.readFile(absPath)).digest("hex");
 	} catch {
 		return null;
 	}
@@ -672,11 +688,20 @@ function hashCarriedFile(absPath: string): string | null {
  *  caller (createWorktree), which degrades to the plain HEAD-only worktree.
  *  Each carried path is recorded in the returned CarriedSnapshot: sha256 of
  *  the exact bytes written into the worktree (computed via hashCarriedFile,
- *  the shared helper — copyFileSync kept, hash read separately), `"link:"`
- *  + target for symlinks, `absent` for carried deletions; `.git`/unsafe
- *  paths are skipped and absent from the snapshot. Mirrored by
- *  test-carry-uncommitted.cjs and test-completion-filter.cjs — keep in sync. */
-async function carryUncommittedState(topLevel: string, worktreePath: string): Promise<CarriedSnapshot> {
+ *  the shared async helper — bytes copied via fs.promises.copyFile and hashed
+ *  separately), `"link:"` + target for symlinks, `absent` for carried
+ *  deletions; `.git`/unsafe paths are skipped and absent from the snapshot.
+ *  Mirrored by test-carry-uncommitted.cjs and test-completion-filter.cjs —
+ *  keep in sync.
+ *
+ *  `statusPromise` may be prefetched by the caller (createWorktree) to overlap
+ *  `git status` with `git worktree add`; when omitted, the status is fetched
+ *  here. Per-entry ordering (rename delete → copy, etc.) is preserved. */
+async function carryUncommittedState(
+	topLevel: string,
+	worktreePath: string,
+	statusPromise?: Promise<{ stdout: string; stderr: string; exitCode: number }>,
+): Promise<CarriedSnapshot> {
 	// Fail-fast: a non-string here means the caller passed the git() result
 	// object instead of the extracted path (see createWorktree). Throwing makes
 	// the caller's best-effort catch log it instead of silently no-oping.
@@ -684,15 +709,15 @@ async function carryUncommittedState(topLevel: string, worktreePath: string): Pr
 		throw new TypeError("carryUncommittedState: topLevel must be the repo path string");
 	}
 	const snapshot: CarriedSnapshot = new Map();
-	const res = await git(["status", "--porcelain=v1", "-uall", "-z"], topLevel);
+	const res = await (statusPromise ?? git(["status", "--porcelain=v1", "-uall", "-z"], topLevel));
 	if (res.exitCode !== 0) return snapshot;
 
 	// Record a present-entry for a path just copied into the worktree.
 	// If hashing fails (path gone / not a regular file), the path is left
 	// out of the snapshot — the filter then treats it as touched, which
 	// degrades to today's commit-everything behavior.
-	const recordPresent = (rel: string) => {
-		const hash = hashCarriedFile(path.join(worktreePath, rel));
+	const recordPresent = async (rel: string) => {
+		const hash = await hashCarriedFile(path.join(worktreePath, rel));
 		if (hash !== null) snapshot.set(rel, { state: "present", hash });
 	};
 
@@ -715,8 +740,8 @@ async function carryUncommittedState(topLevel: string, worktreePath: string): Pr
 				fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
 				snapshot.set(orig, { state: "absent" });
 			}
-			copyCarriedFile(topLevel, worktreePath, p);
-			recordPresent(p);
+			await copyCarriedFile(topLevel, worktreePath, p);
+			await recordPresent(p);
 			continue;
 		}
 		if (x === "D" || y === "D") {
@@ -725,14 +750,14 @@ async function carryUncommittedState(topLevel: string, worktreePath: string): Pr
 			continue;
 		}
 		if (x === "?" && y === "?") {
-			copyCarriedFile(topLevel, worktreePath, p);
-			recordPresent(p);
+			await copyCarriedFile(topLevel, worktreePath, p);
+			await recordPresent(p);
 			continue;
 		}
 		if (x === "M" || x === "A" || x === "T" || x === "U" || y === "M" || y === "A" || y === "T" || y === "U") {
 			if (fs.existsSync(path.join(topLevel, p))) {
-				copyCarriedFile(topLevel, worktreePath, p);
-				recordPresent(p);
+				await copyCarriedFile(topLevel, worktreePath, p);
+				await recordPresent(p);
 			}
 		}
 	}
@@ -747,18 +772,18 @@ function unsafeCarryPath(p: string): boolean {
 /** Copy one file (or symlink-as-link) from the parent tree into the worktree,
  *  preserving the exec bit. Submodule gitlink dirs are skipped — a known
  *  limitation, submodule contents are not carried. */
-function copyCarriedFile(topLevel: string, worktreePath: string, rel: string): void {
+async function copyCarriedFile(topLevel: string, worktreePath: string, rel: string): Promise<void> {
 	const src = path.join(topLevel, rel);
 	const dst = path.join(worktreePath, rel);
-	fs.mkdirSync(path.dirname(dst), { recursive: true });
-	const st = fs.lstatSync(src);
+	await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+	const st = await fs.promises.lstat(src);
 	if (st.isSymbolicLink()) {
-		fs.symlinkSync(fs.readlinkSync(src), dst);
+		await fs.promises.symlink(await fs.promises.readlink(src), dst);
 	} else if (st.isDirectory()) {
 		return;
 	} else {
-		fs.copyFileSync(src, dst);
-		fs.chmodSync(dst, st.mode & 0o7777);
+		await fs.promises.copyFile(src, dst);
+		await fs.promises.chmod(dst, st.mode & 0o7777);
 	}
 }
 
@@ -793,9 +818,10 @@ async function preCommitSteps(rs: RunningSubagent): Promise<{
 		// Stage and commit any uncommitted changes in the worktree.
 		await git(["add", "-A"], worktreePath);
 		// Unstage scratch/work-order docs so the auto-commit doesn't leak them
-		// into the branch. Orchestrators are told to write these to /tmp; this
-		// is defense-in-depth (007 validation finding F4 — a 290-line WO doc
-		// leaked into the repo this way).
+		// into the branch. Dispatch work orders are committed under work-orders/
+		// (see agents/orchestrator.md), so this is defense-in-depth against stray
+		// WO-*.md scratch copies rather than the primary mechanism (007 validation
+		// finding F4 — a 290-line WO doc leaked into the repo this way).
 		const stagedNames = (await git(["diff", "--cached", "--name-only"], worktreePath)).stdout;
 		const scratch = stagedNames.split("\n").filter((p) => p.length > 0 && /^WO-.*\.md$/i.test(p));
 		if (scratch.length > 0) {
@@ -818,7 +844,7 @@ async function preCommitSteps(rs: RunningSubagent): Promise<{
 					if (snap.state === "absent") {
 						if (!fs.existsSync(abs)) untouched.push(rel);
 					} else {
-						const cur = hashCarriedFile(abs);
+						const cur = await hashCarriedFile(abs);
 						if (cur === snap.hash) untouched.push(rel);
 					}
 				}
