@@ -6,7 +6,7 @@
  * at any time. Results are delivered as injected user messages.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -246,6 +246,176 @@ export function updateMetaJson(sessionId: string, updates: Record<string, any>):
 	}
 }
 
+// ── Recovery ownership ─────────────────────────────────────────────────────
+//
+// The session_start recovery scan re-attaches to subagent sockets left behind
+// by a previous session. Before decision 027 it adopted EVERY socket with a
+// matching meta file — including children owned by other, still-live pi
+// processes. The adopted client connections kept the event loop referenced, so
+// `pi -p` hung until a stranger's child finished, and that child's completion
+// was delivered into the wrong session as "[Isolation] Recovered". The scan now
+// gates adoption on the spawning process's identity, recorded at spawn:
+//
+//   ownerPid         the spawning process's pid
+//   ownerStartToken  an OS start-time token, so a recycled pid is not mistaken
+//                    for the original owner (pid reuse is real: see the peer
+//                    note in decision 027)
+//
+// Adopt only when the owner is THIS process (a previous session in the same
+// process — /reload, /new still hold the old socket server open) or the owner
+// process is gone. A live FOREIGN owner means the child belongs to another
+// session and must be left alone.
+//
+// Legacy metas (written before 027) carry no owner fields. Ownership cannot be
+// established, so they are SKIPPED: adopting a stranger is the bug being fixed,
+// while a false "owner alive" only skips a best-effort recovery — the safe
+// direction.
+
+export interface OwnerProbe {
+	/** True while a process with this pid exists. */
+	exists(pid: number): boolean;
+	/** OS start-time token for the pid, or null when unavailable. */
+	startToken(pid: number): string | null;
+}
+
+/** Default real-OS probe. `exists` uses signal 0; EPERM still means alive.
+ *  Exported for unit testing. */
+export const defaultOwnerProbe: OwnerProbe = {
+	exists(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch (e) {
+			return (e as NodeJS.ErrnoException)?.code === "EPERM";
+		}
+	},
+	startToken(pid: number): string | null {
+		return processStartToken(pid);
+	},
+};
+
+/**
+ * OS start-time token for a pid, used to make pid liveness pid-reuse-safe.
+ * Linux: field 22 (`starttime`, clock ticks since boot) from /proc/<pid>/stat.
+ * macOS/BSD: `ps -o lstart=` (1s resolution — good enough to separate a reused
+ * pid, and the pid must still exist for a match to happen at all). Returns null
+ * when the process is gone or the platform cannot report the token. Exported
+ * for unit testing.
+ */
+export function processStartToken(pid: number, platform: string = process.platform): string | null {
+	if (!Number.isInteger(pid) || pid <= 0) return null;
+	try {
+		if (platform === "linux") {
+			const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8");
+			const close = stat.lastIndexOf(")");
+			if (close < 0) return null;
+			// After "pid (comm) " comes field 3 (state). starttime is field 22,
+			// i.e. index 19 of the whitespace-split remainder.
+			const fields = stat.slice(close + 2).trim().split(/\s+/);
+			return fields[19] ?? null;
+		}
+		const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		const token = out.trim();
+		return token.length > 0 ? token : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Cached start token for THIS process, written into meta at spawn. Exported
+ *  for unit testing. */
+let selfStartTokenCache: string | null | undefined;
+export function selfStartToken(): string | null {
+	if (selfStartTokenCache === undefined) selfStartTokenCache = processStartToken(process.pid);
+	return selfStartTokenCache;
+}
+
+/**
+ * pid-reuse-safe "is the recorded owner still alive?" — pure over the injected
+ * probe. The recorded start token must match the current one; a mismatch means
+ * the pid was recycled and the original owner is gone. When the pid exists but
+ * its current token cannot be read, assume ALIVE: skipping recovery is the safe
+ * direction, adopting a stranger is not.
+ *
+ * A missing/invalid `ownerPid` also returns true — there is no recorded owner
+ * to prove gone, so callers that use this predicate alone still fail safe.
+ * (The legacy policy itself is `decideRecoveryAdoption`'s "skip-legacy".)
+ * Exported for unit testing.
+ */
+export function isOwnerAlive(
+	meta: Record<string, any> | null | undefined,
+	probe: OwnerProbe = defaultOwnerProbe,
+): boolean {
+	const pid = meta?.ownerPid;
+	if (!Number.isInteger(pid) || pid <= 0) return true; // no recorded owner → not provably gone
+	if (!probe.exists(pid)) return false;
+	const current = probe.startToken(pid);
+	if (current === null) return true; // exists, token unknown → assume alive
+	const recorded = meta?.ownerStartToken;
+	if (typeof recorded !== "string" || recorded.length === 0) return true; // cannot disprove
+	return current === recorded;
+}
+
+export type RecoveryAdoption = "adopt" | "skip-live-owner" | "skip-legacy";
+
+/**
+ * Decide whether the recovery scan may adopt the socket described by `meta`.
+ * Pure and injectable so the adopt/skip matrix is unit-testable without
+ * touching /tmp or the real OS.
+ *
+ * A same-process owner (pid === selfPid) is adopted even though it is alive:
+ * the previous session in THIS process left the socket server running
+ * (/reload, /new), and re-attaching to it is the recovery path the scan exists
+ * for. A live FOREIGN owner is skipped — that is the stranger-adoption bug.
+ * Exported for unit testing.
+ */
+export function decideRecoveryAdoption(
+	meta: Record<string, any> | null | undefined,
+	opts: { selfPid?: number; probe?: OwnerProbe } = {},
+): RecoveryAdoption {
+	const pid = meta?.ownerPid;
+	if (!Number.isInteger(pid) || pid <= 0) return "skip-legacy";
+	// pid === self: either our own previous session (adopt), or a recycled pid
+	// whose original owner process is gone (also adopt). Both are safe, so the
+	// start-token comparison is unnecessary for this branch.
+	if (pid === (opts.selfPid ?? process.pid)) return "adopt";
+	return isOwnerAlive(meta, opts.probe ?? defaultOwnerProbe) ? "skip-live-owner" : "adopt";
+}
+
+/** The non-owner fields persisted to the meta file at spawn. */
+export interface SpawnMetaFields {
+	agentName: string;
+	task: string;
+	cwd: string;
+	startedAt: number;
+	worktreePath: string | null;
+	isolationBranch: string | null;
+	parentHeadCommit: string | null;
+	parentCwd: string;
+	tools: string[];
+	model: string;
+	systemPrompt?: string;
+	allowedSubagents: string[];
+	excludeTools: string[];
+}
+
+/**
+ * Build the meta payload written at spawn, stamping the spawning process's
+ * identity (`ownerPid` + `ownerStartToken`) that `decideRecoveryAdoption`
+ * reads. Extracted so the owner stamp is unit-testable: if these fields are
+ * dropped, every new meta degrades to legacy and recovery silently stops.
+ * Exported for unit testing.
+ */
+export function buildSpawnMeta(
+	fields: SpawnMetaFields,
+	owner: { pid: number; startToken: string | null } = { pid: process.pid, startToken: selfStartToken() },
+): Record<string, any> {
+	return { ...fields, ownerPid: owner.pid, ownerStartToken: owner.startToken };
+}
+
 /**
  * Resolve a subagent session ID from a full or partial (last 8+ chars)
  * identifier. Scans /tmp/pi-subagent-*.meta.json and matches on the
@@ -465,6 +635,14 @@ export function _testLiveSessionCtx(): any {
  *  tests that exercise delivery against a live session. */
 export function _testSetLiveSessionCtx(ctx: any): void {
 	liveSessionCtx = ctx;
+}
+
+/** @internal test hook — override the directory the real `session_start`
+ *  recovery scan reads (defaults to /tmp). Lets a test fire the captured
+ *  handler and observe adoption without touching real /tmp. */
+let recoveryScanDirOverride: string | undefined;
+export function _testSetRecoveryScanDir(dir: string | undefined): void {
+	recoveryScanDirOverride = dir;
 }
 
 // Active wait timer — set when `wait` is called with the optional `seconds`
@@ -2500,6 +2678,174 @@ export function notifyChildDetached(rs: RunningSubagent): void {
 	liveSessionCtx.ui.notify(`Subagent ${rs.sessionId.slice(-8)} ended — detached.`, "info");
 }
 
+// ── Orphan recovery scan ─────────────────────────────────────────────────────
+
+export interface RecoveryScanDeps {
+	/** Directory holding the `pi-subagent-*.{sock,log,meta.json}` triplets. */
+	dir?: string;
+	/** Override for the current process pid (tests). */
+	selfPid?: number;
+	/** Override for the OS owner probe (tests). */
+	probe?: OwnerProbe;
+	/** Override for the socket client factory (tests). */
+	connect?: (sockPath: string) => net.Socket;
+}
+
+/**
+ * `session_start` recovery scan: re-attach to subagent sockets left behind by a
+ * previous session. Decision 027 gates adoption on the spawning process's
+ * identity (see `decideRecoveryAdoption`); a live foreign owner is skipped.
+ *
+ * Extracted with injectable directory / pid / probe / connection factory so the
+ * adopt-skip matrix and the `unref` contract are unit-testable without touching
+ * /tmp or opening real sockets. Best-effort: never throws (the caller also
+ * wraps it, but keeping the scan self-contained makes every branch safe).
+ */
+export function recoverOrphanedSubagents(
+	pi: ExtensionAPI,
+	ctx: any,
+	deps: RecoveryScanDeps = {},
+): void {
+	try {
+		const sockDir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
+		const connect = deps.connect ?? ((p: string) => net.createConnection(p));
+		let files: string[];
+		try {
+			files = fs.readdirSync(sockDir).filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".sock"));
+		} catch {
+			return;
+		}
+		for (const f of files) {
+			const sid = f.replace("pi-subagent-", "").replace(".sock", "");
+			if (running.has(sid)) continue; // already tracked
+
+			const sockPath = path.join(sockDir, f);
+			const logPath = sockPath.replace(".sock", ".log");
+			const metaPath = sockPath.replace(".sock", ".meta.json");
+
+			// Read metadata written at spawn time
+			let meta: any = null;
+			try { meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch { continue; }
+
+			// Decision 027: adopt only if the owner is this process (session
+			// reload / new in the same process) or the owner process is gone.
+			const adoption = decideRecoveryAdoption(meta, { selfPid: deps.selfPid, probe: deps.probe });
+			if (adoption !== "adopt") {
+				debugLog(`recovery: ${adoption} for ${sid} (ownerPid=${meta?.ownerPid ?? "none"})`);
+				continue;
+			}
+
+			// Parse current turns from log
+			let turns = 0;
+			try {
+				const log = fs.readFileSync(logPath, "utf-8");
+				turns = (log.match(/── Turn (\d+) ──/g) || []).length;
+			} catch {}
+
+			const rs: RunningSubagent = {
+				proc: null as any,
+				sessionId: sid,
+				agentName: meta.agentName || "?",
+				task: meta.task || "?",
+				cwd: meta.cwd || ctx.cwd,
+				startedAt: meta.startedAt || Date.now(),
+				progress: { turns, filesRead: new Set(), filesModified: new Set(), errors: [], currentActivity: "recovered" },
+				messages: [],
+				stdin: null,
+				resolveOnStop: null,
+				isDone: false,
+				procExited: false,
+				// Recovered subagents are re-attached to a fresh pi
+				// session; the kill flag never applies (the previous
+				// session died, not killed). Initialize to false to
+				// satisfy the RunningSubagent interface contract.
+				// `stoppedExplicitly` is likewise N/A on recovery.
+				killedExplicitly: false,
+				stoppedExplicitly: false,
+				turnNudged: false,
+				toolInFlight: 0,
+				logPath,
+				logLines: [],
+				stderrLines: [],
+				watchHandle: null,
+				sockPath,
+				sockServer: null as any,
+				sockClients: new Set(),
+				worktreePath: meta.worktreePath || null,
+				isolationBranch: meta.isolationBranch || null,
+				parentHeadCommit: meta.parentHeadCommit || null,
+				parentCwd: meta.parentCwd || ctx.cwd,
+				// Recovered (orphan-reattached) subagents don't carry the
+				// parent's tracker key from the metadata file. Use a stable
+				// pid fallback so re-attached sessions don't pollute the
+				// live tracker's view. If we had a `parentSessionId` field
+				// in the meta file, we'd use it here instead.
+				parentTrackerKey: getParentTrackerKey(ctx),
+				reviewParentRequirements: undefined,
+				usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
+				carried: null,
+				staleTimer: null,
+				lastActivityMs: Date.now(),
+				silenceTimer: null,
+				silenceTimeoutMs: 0,
+				killedVia: null,
+			};
+
+			// Monitor via socket — when it closes, subagent exited.
+			// The socket may already be dead (previous pi died without
+			// cleanup), in which case connect() fails with ECONNREFUSED.
+			// Without an `error` handler that event becomes an
+			// uncaughtException and crashes the new pi session.
+			const sock = connect(sockPath);
+			// Decision 027 liveness hygiene: a recovery connection must NEVER
+			// pin the event loop, or `pi -p` hangs until the recovered child
+			// exits. unref is unconditional — a recovered child is not this
+			// process's own work (the spawn-time handles stay ref'd on
+			// purpose; see decision 027).
+			sock.unref();
+			let connected = false;
+			sock.on("connect", () => {
+				connected = true;
+			});
+			sock.on("error", () => {
+				rs.sockClients.delete(sock);
+				if (connected) return; // socket lived, then died — close handler will run
+				// Orphan: previous session left a sock file behind with no listener.
+				// Clean up and skip live tracking.
+				try {
+					fs.unlinkSync(sockPath);
+				} catch {
+					/* already gone */
+				}
+				running.delete(sid);
+				updateFooter();
+			});
+			sock.on("close", () => {
+				rs.sockClients.delete(sock);
+				if (!connected) return; // orphan already handled in error handler
+				rs.isDone = true;
+				// Read final output from log
+				let finalOutput = "(no output)";
+				try {
+					const log = fs.readFileSync(logPath, "utf-8");
+					const match = log.match(/── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
+					if (match) {
+						rs.progress.turns = parseInt(match[2]);
+						finalOutput = log.split("── ").pop()?.trim() || finalOutput;
+					}
+				} catch {}
+				deliverResult(pi, rs, 0, `\n[Isolation] Recovered from previous session.`);
+				running.delete(sid);
+				updateFooter();
+			});
+
+			rs.sockClients.add(sock);
+			running.set(sid, rs);
+			updateFooter();
+		}
+	} catch { /* best-effort */ }
+}
+
 // ── Extension entry point ──────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -2521,118 +2867,11 @@ export default function (pi: ExtensionAPI) {
 			pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "subagents", order: 20, text });
 		}
 
-		// Re-attach to orphaned subagents from a previous session
-		try {
-			const sockDir = "/tmp";
-			const files = fs.readdirSync(sockDir).filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".sock"));
-			for (const f of files) {
-				const sid = f.replace("pi-subagent-", "").replace(".sock", "");
-				if (running.has(sid)) continue; // already tracked
-
-				const sockPath = path.join(sockDir, f);
-				const logPath = sockPath.replace(".sock", ".log");
-				const metaPath = sockPath.replace(".sock", ".meta.json");
-
-				// Read metadata written at spawn time
-				let meta: any = null;
-				try { meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch { continue; }
-
-				// Parse current turns from log
-				let turns = 0;
-				try {
-					const log = fs.readFileSync(logPath, "utf-8");
-					turns = (log.match(/── Turn (\d+) ──/g) || []).length;
-				} catch {}
-
-				const rs: RunningSubagent = {
-					proc: null as any,
-					sessionId: sid,
-					agentName: meta.agentName || "?",
-					task: meta.task || "?",
-					cwd: meta.cwd || ctx.cwd,
-					startedAt: meta.startedAt || Date.now(),
-					progress: { turns, filesRead: new Set(), filesModified: new Set(), errors: [], currentActivity: "recovered" },
-					messages: [],
-					stdin: null,
-					resolveOnStop: null,
-					isDone: false,
-					procExited: false,
-					// Recovered subagents are re-attached to a fresh pi
-					// session; the kill flag never applies (the previous
-					// session died, not killed). Initialize to false to
-					// satisfy the RunningSubagent interface contract.
-					// `stoppedExplicitly` is likewise N/A on recovery.
-					killedExplicitly: false,
-					stoppedExplicitly: false,
-					turnNudged: false,
-					toolInFlight: 0,
-					logPath,
-					logLines: [],
-					watchHandle: null,
-					sockPath,
-					sockServer: null as any,
-					sockClients: new Set(),
-					worktreePath: meta.worktreePath || null,
-					isolationBranch: meta.isolationBranch || null,
-					parentHeadCommit: meta.parentHeadCommit || null,
-					parentCwd: meta.parentCwd || ctx.cwd,
-					// Recovered (orphan-reattached) subagents don't carry the
-					// parent's tracker key from the metadata file. Use a stable
-					// pid fallback so re-attached sessions don't pollute the
-					// live tracker's view. If we had a `parentSessionId` field
-					// in the meta file, we'd use it here instead.
-					parentTrackerKey: getParentTrackerKey(ctx),
-					reviewParentRequirements: undefined,
-					usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, latestCacheHitRate: undefined },
-				};
-
-				// Monitor via socket — when it closes, subagent exited.
-				// The socket may already be dead (previous pi died without
-				// cleanup), in which case connect() fails with ECONNREFUSED.
-				// Without an `error` handler that event becomes an
-				// uncaughtException and crashes the new pi session.
-				const sock = net.createConnection(sockPath);
-				let connected = false;
-				sock.on("connect", () => {
-					connected = true;
-				});
-				sock.on("error", () => {
-					rs.sockClients.delete(sock);
-					if (connected) return; // socket lived, then died — close handler will run
-					// Orphan: previous session left a sock file behind with no listener.
-					// Clean up and skip live tracking.
-					try {
-						fs.unlinkSync(sockPath);
-					} catch {
-						/* already gone */
-					}
-					running.delete(sid);
-					updateFooter();
-				});
-				sock.on("close", () => {
-					rs.sockClients.delete(sock);
-					if (!connected) return; // orphan already handled in error handler
-					rs.isDone = true;
-					// Read final output from log
-					let finalOutput = "(no output)";
-					try {
-						const log = fs.readFileSync(logPath, "utf-8");
-						const match = log.match(/── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
-						if (match) {
-							rs.progress.turns = parseInt(match[2]);
-							finalOutput = log.split("── ").pop()?.trim() || finalOutput;
-						}
-					} catch {}
-					deliverResult(pi, rs, 0, `\n[Isolation] Recovered from previous session.`);
-					running.delete(sid);
-					updateFooter();
-				});
-
-				rs.sockClients.add(sock);
-				running.set(sid, rs);
-				updateFooter();
-			}
-		} catch { /* best-effort */ }
+		// Re-attach to orphaned subagents from a previous session.
+		// Decision 027: the scan gates adoption on the spawning process's
+		// recorded identity, so a live foreign session's children are left
+		// alone. See `recoverOrphanedSubagents`.
+		try { recoverOrphanedSubagents(pi, ctx); } catch { /* best-effort */ }
 	});
 
 	pi.on("session_shutdown", () => {
@@ -3031,10 +3270,14 @@ export default function (pi: ExtensionAPI) {
 		// reads.
 		// Site 2 (decision 022): meta.json records the resolved model (suffix
 		// included) so resume reproduces exactly what ran.
+		// Decision 027: record the spawning process's identity so the
+		// session_start recovery scan can tell a genuine orphan (owner gone)
+		// from another live session's child (owner alive) — and so a recycled
+		// pid is not mistaken for the original owner (ownerStartToken).
 		const effectiveModel = params.inheritParentModel
 			? parentModel
 			: agent.model ?? FLEET_MODEL;
-		writeMetaJson(sessionId, {
+		writeMetaJson(sessionId, buildSpawnMeta({
 			agentName: agent.name,
 			task: params.task,
 			cwd,
@@ -3048,7 +3291,7 @@ export default function (pi: ExtensionAPI) {
 			systemPrompt: agent.systemPrompt,
 			allowedSubagents: agent.allowedSubagents ?? [],
 			excludeTools: agent.excludeTools ?? [],
-		});
+		}));
 
 			// Reviewer-spawn tracker: if the spawned agent is a declared reviewer
 			// (reviewerKind set in frontmatter), record this spawn under the
