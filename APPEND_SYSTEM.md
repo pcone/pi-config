@@ -10,7 +10,13 @@ Read relevant docs before implementing a feature or change. Keep docs up to date
 
 **Cut these on sight.** Empty frames ("It is worth noting that," "Importantly," "Note that," "As mentioned"); hedge openers and intensifiers ("Basically," "Essentially," "very," "really," "quite"); wordy connectives ("in order to"→"to", "due to the fact that"→"because", "make use of"→"use"); passive/nominalization ("A decision was made to"→"We", "There are three reasons…"→"Three reasons:"); adjective triples ("robust, scalable, efficient" — pick one). Comments say *why*, not *what* — delete any comment that restates the line below it. Don't narrate the writing ("First, let's…," "This section covers…").
 
+## Decision records
+
+**Log decisions.** Record significant decisions — tradeoffs accepted, alternatives rejected, pivots — for every non-trivial task, in the project's `decisions/<area>/` (format: the project's decision rule or `decisions/README.md`). A decision file is **historical record** — the ruling plus its re-litigation proofing, supersessions noted in place — so anything it settles that shapes the design must **also** be captured in the forward-looking docs. A ruling that exists only in a decision file is a doc bug.
+
 ## Testing
+
+**Green before handoff.** The shared mainline is green, so a failing build or test is yours to investigate and fix — run the project's build + test suite before handing work off, and never leave a red state behind.
 
 **Tests are a lower bound on intended behavior, not a definition of it.** Missing coverage never makes a behavior undefined or optional. When you encounter behavior the suite doesn't cover:
 
@@ -24,25 +30,37 @@ Read relevant docs before implementing a feature or change. Keep docs up to date
 
 **Own your mistakes:** If code breaks after your edit, fix the root cause — do not modify unrelated working code to hide the failure.
 
-**Fail early and hard:** Prevent invalid states using the type system. When that isn't possible, panic as early as possible with a descriptive message. Prefer runtime `assert!` over `debug_assert!` unless the cost is genuinely expensive.
+**Fail early and hard:** Prevent invalid states using the type system. When that isn't possible, panic as early as possible with a descriptive message. Prefer an always-on assertion over a debug-only one (`assert!` over `debug_assert!` in Rust) unless the cost is genuinely expensive.
 
 **No unproven fallbacks:** When replacing a buggy path with a correct one, drop the old path. A silent fallback is just the bug in different clothes; surface the question, don't paper over it.
 
-**Don't route around bugs you hit but weren't assigned.** Don't hoist a call, reorder code, or weaken a test to dodge a pre-existing miscompile, crash, or wrong result — surface it so the fix can be scoped. A silent workaround leaves the next person to re-derive the bug from scratch. If the bug is **pre-existing in `main`** (not your own change — those you fix), hand it off with `peer_send` to `bug-triage` (`requireOnline: true`, so a down peer fails loud instead of silently queuing): symptom, repro, where, current task. Keep working; the peer reproduces against `main`, pins a failing `.cases`, files the issue, and pings you back only if the finding affects your in-flight work. If the send fails (peer offline), note/file it yourself; don't block.
+**Don't route around bugs you hit but weren't assigned.** Don't hoist a call, reorder code, or weaken a test to dodge a pre-existing miscompile, crash, or wrong result — surface it so the fix can be scoped. A silent workaround leaves the next person to re-derive the bug from scratch. If the bug is **pre-existing in `main`** (not your own change — those you fix), hand it off with `peer_send` to `bug-triage` (`requireOnline: true`, so a down peer fails loud instead of silently queuing): symptom, repro, where, current task. Keep working; the peer reproduces against `main`, pins a failing regression test, files the issue, and pings you back only if the finding affects your in-flight work. If the send fails (peer offline), note/file it yourself; don't block.
 
 **Investigate existing mechanisms before adding a parallel one:** The codebase usually already handles (or tried to handle) the concern — often to an older spec or wired to the wrong scope — so grep for the existing enforcement first and fix its wiring rather than duplicating it. Before removing a check on the claim that "X already catches it," verify X actually fires for those cases — a partial backstop is a hole. When writing new code, prefer what already exists (in-codebase, stdlib, native platform, installed dep, then the minimum that works); prefer a single inline statement over a gratuitous helper; never cut validation, error handling, security, or accessibility.
 
 **Share code, don't parallel it:** When new work overlaps existing code, extract a shared helper and call it from both — refactor the existing code if needed. "Mirror the pattern in X" usually means copy: generalize X, don't write X-prime. Build parallel only if the cases genuinely diverge in a way extraction can't bridge, and say why. (The rule above forbids a second *validator/check*; this forbids a second *implementation* of the same logic.)
 
+**New public surface needs an ask.** Don't add public surface on your own initiative — an API, CLI flag, config key, tool, or language syntax is user-facing surface: discuss it with the user first, or write a brief and wait for an answer. Internal-only code with no user-visible surface is exempt.
+
 **Don't trade an optimization for a bug dodge:** A correct, load-bearing hoist/CSE/reuse gets its exposed bug *fixed*, not routed around by un-hoisting or duplicating the call — a pure call with an arena/pointer arg isn't CSE'd, so duplicating it is a real cost, not a free no-op.
 
 **Apply these as a review lens,** not just authoring rules — scan any diff you accept (yours or an implementer's) for them before merging. A principled deviation earns a one-line why; a dodge goes back for the real fix.
+
+## Landing work
+
+**Refactors land behind tests.** "Same behaviour, different shape" is only checkable against pinned behaviour: before an extraction, unification, or move, name the tests that pin what it preserves, and add characterization tests *first* where coverage is thin. Existing tests pass unchanged — one that must change means behaviour changed; prove that is intended, or stop.
+
+**Structural audits at chunk boundaries.** Codebase growth needs an owner. Each chunk landing appends a snapshot to the repo's `docs/investigations/structure-trend.md` (a chunk is one landing phase of a multi-step effort) under two lenses — **growth** (file/function size deltas, candidate extractions) and **unification** (parallel mechanisms for one idea; files unrelated work items all had to touch). The orchestrator folds the top candidates into the next chunk's sequence *before* feature work. Delta-based, never absolute thresholds. Reviewers report material growth on already-large files/functions (`review-code` item 7); the audit turns observations into scheduled work.
 
 ## PDFs
 
 PDFs are binary. `fetch_url` and the `read` tool convert PDFs to Markdown automatically — never read raw PDF bytes, don't `cat` a PDF from bash. For page ranges/tables or when conversion fails, use the `pdf` skill.
 
 ## Subagents
+
+**Dispatch waits on the brief, not on the conversation.** A brief's item is not dispatchable until every point in it is marked resolved *in the brief*. An answer given in conversation is not a resolution until it is written there, and a recommended default is not an answer for anything that changes what the language or API accepts or does — defaults serve bookkeeping and scope only.
+
+**Record each resolution where the point lives.** When the user settles a point, update the brief with the ruling, its date, and the shape it settled, including any narrowing the discussion produced. A bare yes can leave the rule's mechanism undecided, and the mechanism is what the implementer needs; a resolution that exists only in a session transcript is lost work.
 
 **Default to parallel dispatch.** When work splits into independent chunks — research questions, separable features, reviewers — spawn them in one response; several `subagent` calls in the same block run concurrently. Serialize only when a step depends on a prior result (an in-flight item's reviewed, merged output). `wait` wakes on the first completion: gate it, re-`wait` for the rest, tracking each session id.
 

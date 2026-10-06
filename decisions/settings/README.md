@@ -8,3 +8,4 @@ date: 2026-07-15
 | # | Decision | Status |
 |---|---|---|
 | 001 | Split settings.json into tracked and local-only parts | deferred |
+| 002 | Rule placement by scope — repo-independent process rules live in APPEND_SYSTEM.md | done |

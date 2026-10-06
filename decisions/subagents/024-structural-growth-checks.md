@@ -48,3 +48,8 @@ size/decile bars. Audits get skipped for feature pressure → make the boundary 
 of the plan's sequence template. A file's growth attributable to one WO with no
 observation in its review → the review-seat bullet is not being applied; fix the prompt
 before adding more machinery.
+
+> **Relocated (2026-10-06):** the chunk-boundary audit convention moved from tfd's
+> `AGENTS.md` to the global `APPEND_SYSTEM.md` — *Structural audits at chunk
+> boundaries*. It is repo-independent process, so it belongs in the shared prompt;
+> `docs/investigations/structure-trend.md` stays the per-repo artifact.

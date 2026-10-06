@@ -30,4 +30,4 @@ date: 2026-07-14
 | 021 | Effort rebalance — flash :high, glm-5.3 :max, low banned | done (levels survive on v4.1-flash; GLM basis superseded by 022) |
 | 022 | OpenRouter-only fleet on deepseek/deepseek-v4.1-flash — /fleet-model toggle deleted, oracle off 0813 | done |
 | 023 | Experiment: MiMo V2.6 Flash as the decorrelated reviewer tier (code/plan/tests) | experiment |
-| 024 | Structural growth checks — reviewers report growth; chunk-boundary audit in `structure-trend.md` | done |
+| 024 | Structural growth checks — reviewers report growth; chunk-boundary audit in `structure-trend.md` | done (audit convention relocated to `APPEND_SYSTEM.md`, 2026-10-06) |

@@ -31,8 +31,9 @@ schema) containing:
 Before reviewing, read the project's own documentation. These are the
 source of truth — do not rely on memorised patterns from prior reviews:
 
-1. `AGENTS.md` — design priorities, non-negotiables, testing/build
-   conventions, naming rules, commit workflow. Read it in full.
+1. `AGENTS.md` — design priorities, testing/build conventions, naming
+   rules, commit workflow. Read it in full. (Global process rules — decision
+   records, testing norms, landing work — arrive in your system prompt.)
 2. `docs/glossary.md` — terminology. The plan should use the project's
    terms, not generic CS ones.
 3. `docs/design/*.md` — designs for existing mechanisms. Cross-check
