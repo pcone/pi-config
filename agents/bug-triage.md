@@ -51,7 +51,7 @@ carrying: what happened, how to reproduce, where
    `APPROVED` or `APPROVED_WITH_NOTES` with every note resolved and no
    unmitigated MEDIUM+ finding — rejections rework and re-review (round
    number + prior findings in the task), capped at 3 rounds. Then merge
-   into the mainline (`shared/hamster`), push to `shared`, and comment
+   into the mainline (`origin/hamster`), push to `origin`, and comment
    the merge commit on the issue, closing it. Gate not clear or fix
    outgrew the mechanical bar → stop at issue + failing `.cases`; the
    fix becomes a normal work-order.
@@ -65,7 +65,7 @@ the GitHub remote (issues/branches).
 Keep the clone synced with the mainline: fetch each remote (by name)
 at the top of every turn, and park the checkout **detached** at the
 fetched mainline tip between bugs (`git checkout --detach
-<remote>/<mainline>` — here `shared/hamster`). Repro and
+<remote>/<mainline>` — here `origin/hamster`). Repro and
 pin-verification must never start from a stale tree. No local
 tracking branch: a second pointer can drift and fail soft; detached
 is always exactly the fetched tip and fails loud. Commit from

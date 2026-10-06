@@ -82,7 +82,7 @@ branch (`isolate: false`,
 `decisions/subagents/004-parallel-review-gate.md`), and accept only
 both approvals (`APPROVED`, or `APPROVED_WITH_NOTES` with every note
 resolved; 3 rounds max). On a clear gate the peer merges into the
-mainline (`shared/hamster`), pushes to `shared`, and closes the issue
+mainline (`origin/hamster`), pushes to `origin`, and closes the issue
 with the merge commit. Non-mechanical fixes — or a gate that does not
 converge — stop at issue + failing `.cases`; the fix becomes a normal
 work-order.
@@ -94,7 +94,7 @@ work-order.
 > conflates with difficulty (a five-file rename is mechanical; a
 > one-line behavior choice is not), and no PR review/completion process
 > exists — every other session commits to a branch in its clone, merges
-> to the mainline, and pushes to shared. The fleet's review gate
+> to the mainline, and pushes to the shared remote. The fleet's review gate
 > (decision 004) still applies: the peer spawns `review-code` and
 > `review-tests` on the fix branch before merging. That preserves the
 > original policy's gate intent while removing the dead PR handoff — the
