@@ -2,6 +2,9 @@
 # Set up node_modules symlinks so the e2e tests can resolve @earendil-works/pi-coding-agent.
 # The package is globally installed; bun test doesn't respect NODE_PATH.
 #
+# Also installs the extensions/ workspace dependencies (see the "extensions/"
+# section below), so a fresh worktree is test-ready after a single run.
+#
 # Run once before the first test:
 #   bash tests/setup.sh
 #
@@ -32,6 +35,33 @@ resolve_global_pkg() {
     printf "%s" "$GLOBAL_MODULES/pi-coding-agent/node_modules/@earendil-works/$pkg"
   fi
 }
+
+# extensions/ has its own package.json + committed bun.lock (picomatch,
+# turndown, linkedom, @mozilla/readability, puppeteer-core, ...). A fresh
+# worktree starts without extensions/node_modules, so extensions/rules.ts et al.
+# fail with "Cannot find package 'picomatch'" until they are installed. Install
+# them here so setup.sh leaves the tree test-ready.
+#
+# Existence-only check: setup.sh runs once per worktree and must stay fast, so
+# we deliberately do NOT detect staleness (e.g. a bun.lock newer than the
+# installed tree). To force a fresh install, remove extensions/node_modules and
+# re-run.
+EXTENSIONS_DIR="$(cd "$(dirname "$0")/.." && pwd)/extensions"
+if [ -d "$EXTENSIONS_DIR/node_modules" ]; then
+  echo "Already installed: extensions/node_modules"
+else
+  echo "Installing extensions/ dependencies (bun install --frozen-lockfile)..."
+  if ! ( cd "$EXTENSIONS_DIR" && bun install --frozen-lockfile ); then
+    # Never leave a half-set-up tree behind: a partially populated
+    # node_modules would make the existence check above skip the install on the
+    # next run (and the suite would fail with a confusing missing-package
+    # error). Remove it so a re-run retries from scratch.
+    rm -rf "$EXTENSIONS_DIR/node_modules"
+    echo "ERROR: bun install --frozen-lockfile failed in $EXTENSIONS_DIR" >&2
+    exit 1
+  fi
+  echo "Installed extensions/ dependencies"
+fi
 
 # Pass 1: remove any stale dangling links FIRST — never leave broken state
 # behind, even if global resolution fails partway through pass 2.
