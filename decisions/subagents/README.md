@@ -33,3 +33,4 @@ date: 2026-07-14
 | 024 | Structural growth checks — reviewers report growth; chunk-boundary audit in `structure-trend.md` | done (audit convention relocated to `APPEND_SYSTEM.md`, 2026-10-06) |
 | 025 | Global append prompt for subagents — inject shared `APPEND_SYSTEM.md` explicitly | done |
 | 026 | Subagent events after session disposal — guard async callbacks with a live-session ctx | done |
+| 027 | Recovery scan ownership — adopt a subagent socket only when its spawning process is this process or is gone | done |
