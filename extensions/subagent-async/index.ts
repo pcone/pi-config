@@ -14,7 +14,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { FLEET_MODEL } from "../lib/fleet-model.ts";
@@ -1043,8 +1043,16 @@ interface RpcEvent {
 /**
  * Build the argv array for spawning a subagent pi process.
  * Extracted so tests can assert flag composition without spawning.
- * Does NOT include --append-system-prompt (the temp file path is
- * generated dynamically by the caller — writeTempFile).
+ *
+ * `appendSystemPrompts` is the ordered list of append-system-prompt source
+ * paths: the shared global APPEND_SYSTEM.md first (so the role prompt has the
+ * last word), then the agent-body temp file. Passing any
+ * --append-system-prompt flag suppresses pi's own append discovery
+ * (resource-loader.js: `discoverAppendSystemPromptFile` runs only when no
+ * explicit append source is given), so the caller injects the global file
+ * explicitly — see decisions/subagents/025-global-append-for-subagents.md.
+ * Entries that are empty/undefined are skipped; a nonexistent path must NOT
+ * be passed, because pi treats it as literal prompt text rather than a file.
  *
  * `sessionId` and `sessionFile` are mutually exclusive: a fresh spawn
  * passes its tracking id as `--session-id` so the child's pi session id
@@ -1057,6 +1065,7 @@ export function buildSubagentArgs(config: {
 	excludeTools: string[];
 	sessionFile?: string;
 	sessionId?: string;
+	appendSystemPrompts?: string[];
 }): string[] {
 	const args: string[] = ["--mode", "rpc"];
 	if (config.model) args.push("--model", config.model);
@@ -1073,7 +1082,27 @@ export function buildSubagentArgs(config: {
 	if (config.sessionId) {
 		args.push("--session-id", config.sessionId);
 	}
+	if (config.appendSystemPrompts) {
+		for (const source of config.appendSystemPrompts) {
+			if (source) args.push("--append-system-prompt", source);
+		}
+	}
 	return args;
+}
+
+/**
+ * Resolve the shared global APPEND_SYSTEM.md path for injection into a child.
+ * Returns the path only when the file exists — pi treats a nonexistent
+ * --append-system-prompt argument as literal prompt text, so a missing file
+ * must produce NO argument. Exported so tests can pin path derivation from
+ * getAgentDir() and the absence case.
+ * See decisions/subagents/025-global-append-for-subagents.md.
+ */
+export function resolveGlobalAppendPrompt(
+	exists: (path: string) => boolean = fs.existsSync,
+): string | undefined {
+	const candidate = path.join(getAgentDir(), "APPEND_SYSTEM.md");
+	return exists(candidate) ? candidate : undefined;
 }
 
 /**
@@ -1203,6 +1232,32 @@ async function spawnSubagent(
 		? parentModel
 		: agent.model ?? FLEET_MODEL;
 
+	// The shared global prompt (decisions/subagents/025-global-append-for-subagents.md).
+	// pi's resource loader discovers <agentDir>/APPEND_SYSTEM.md only when no
+	// explicit append source is given (`if (!appendSources) { …
+	// discoverAppendSystemPromptFile() … }`, dist/core/resource-loader.js).
+	// We always pass the agent body below when it is non-empty, which suppresses
+	// that discovery — so inject the global file explicitly or subagents never
+	// see it. Global first, agent body last, so the role prompt wins on conflict.
+	//
+	// We deliberately do NOT mirror <cwd>/.pi/APPEND_SYSTEM.md: pi gates that
+	// project file on a project-trust check (isProjectTrusted) the spawner
+	// cannot re-run, so injecting an untrusted repo's file would bypass it.
+	const globalAppendPath = resolveGlobalAppendPrompt();
+
+	// Write the agent body to a temp file (if any) before composing argv, so
+	// buildSubagentArgs stays the single composition point for every
+	// --append-system-prompt flag.
+	let tmpDir: string | null = null;
+	let tmpPath: string | null = null;
+	if (agent.systemPrompt.trim()) {
+		const tmp = await writeTempFile(agent.name, agent.systemPrompt);
+		tmpDir = tmp.dir;
+		tmpPath = tmp.filePath;
+	}
+	const appendSystemPrompts = [globalAppendPath, tmpPath ?? undefined]
+		.filter((p): p is string => typeof p === "string" && p.length > 0);
+
 	// Build spawn args via shared helper (also used by tests).
 	// Fresh spawn: pass the tracking id as --session-id so the child's pi
 	// session id IS the handle. Resume: reopen the existing session file
@@ -1213,16 +1268,8 @@ async function spawnSubagent(
 		excludeTools: agent.excludeTools ?? [],
 		sessionFile: resumeSessionFile,
 		sessionId: resumeSessionFile === undefined ? sessionId : undefined,
+		appendSystemPrompts,
 	});
-
-	let tmpDir: string | null = null;
-	let tmpPath: string | null = null;
-	if (agent.systemPrompt.trim()) {
-		const tmp = await writeTempFile(agent.name, agent.systemPrompt);
-		tmpDir = tmp.dir;
-		tmpPath = tmp.filePath;
-		args.push("--append-system-prompt", tmpPath);
-	}
 
 	const logPath = `/tmp/pi-subagent-${sessionId}.log`;
 	const sockPath = `/tmp/pi-subagent-${sessionId}.sock`;
