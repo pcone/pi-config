@@ -45,7 +45,7 @@ A name-triggered peer carries no mode state, so nothing to clobber.
   peer to one clone and blinds it to the others; one-clone-per-session
   is already convention, so a 4th clone is simpler.
 - **File-only — never fix.** Rejected as default: loses the speed the
-  user wanted for one-line fixes. Kept for non-trivial bugs.
+  user wanted for mechanically-evident fixes. Kept for non-trivial bugs.
 
 ## Trigger: session name, not env var
 
@@ -70,11 +70,36 @@ without the name.
 
 ## Trivial-fix policy
 
-Draft PR from the peer's own clone (branch off `main`, turn the
-`.cases` green). "Trivial" is a judgment agents misjudge — an
-unreviewed in-place fix that mis-root-caused the bug is a regression
-with no gate. Draft-PR keeps the speed without that risk; the review
-gate still owns the merge.
+Trivial means the fix is mechanically evident from the confirmed root
+cause — no design decision, no behavior choice between plausible
+options, no new API surface; file and line counts are explicitly not
+criteria (same boundary as the subagents review-skip policy,
+`decisions/subagents/014-review-skip-source-of-truth.md`). The peer
+lands trivial fixes itself, through the standard gate: branch off the
+mainline tip (`bug-triage/*`), turn the `.cases` pin red→green, commit
+referencing the issue, spawn `review-code` and `review-tests` on the
+branch (`isolate: false`,
+`decisions/subagents/004-parallel-review-gate.md`), and accept only
+both approvals (`APPROVED`, or `APPROVED_WITH_NOTES` with every note
+resolved; 3 rounds max). On a clear gate the peer merges into the
+mainline (`shared/hamster`), pushes to `shared`, and closes the issue
+with the merge commit. Non-mechanical fixes — or a gate that does not
+converge — stop at issue + failing `.cases`; the fix becomes a normal
+work-order.
+
+> **Amended (2026-10-06): draft PR replaced by peer-run gate + merge.**
+> The original policy restricted fixes to "genuinely one-line and
+> isolated" and routed them through a draft PR on the premise that the
+> review gate would complete the merge. Both premises failed: size
+> conflates with difficulty (a five-file rename is mechanical; a
+> one-line behavior choice is not), and no PR review/completion process
+> exists — every other session commits to a branch in its clone, merges
+> to the mainline, and pushes to shared. The fleet's review gate
+> (decision 004) still applies: the peer spawns `review-code` and
+> `review-tests` on the fix branch before merging. That preserves the
+> original policy's gate intent while removing the dead PR handoff — the
+> reviewers are separate sessions, so the peer still cannot self-approve
+> a fix.
 
 ## Tradeoffs
 
