@@ -266,7 +266,10 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");
-	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
+	// `scope: "user"` never loads project agents, so skip the walk up to `/`
+	// for a result that would be discarded. `projectAgentsDir` is null in that
+	// case, matching the "project agents not in play" meaning of the field.
+	const projectAgentsDir = scope === "user" ? null : findNearestProjectAgentsDir(cwd);
 
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");

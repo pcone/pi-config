@@ -116,12 +116,16 @@ when the user has signed off on the design.
 ### 3. Write work orders and dispatch implementers
 
 For each work order: load `work-order-template` for the schema, fill
-it out completely, and dispatch to `implement`. **Write the
-work-order file to `/tmp` (e.g. `/tmp/WO-<id>.md`) or pass it inline in
-the dispatch task — never persist it inside the worktree.** The
-isolation auto-commit sweeps every uncommitted worktree file into the
-branch on completion; a 290-line work-order doc leaked into the repo
-this way during validation. Route all
+it out completely, and dispatch to `implement`. **Write the work-order
+file to `work-orders/<id>-<slug>.md` at the target repo's root, commit
+it, and push to reserve the id before dispatch** (see
+`rules/work-order-numbering.md`); pass that repo-relative path as
+`workOrderPath`. **Never leave an uncommitted work-order or scratch
+copy inside a worktree** — the isolation auto-commit sweeps every
+uncommitted worktree file into the branch on completion; a 290-line
+work-order doc leaked into the repo this way during validation. (A
+committed work order under `work-orders/` is part of the base commit
+and is fine.) Route all
 implementation work to `implement` (the single implementation tier).
 Set `review_policy: required` unless the work order
 is documentation-only and you are deliberately skipping review (must
@@ -262,9 +266,11 @@ build on guesses.
   orchestrators editing the shared roadmap from stale worktree bases is
   the largest source of merge conflicts; leaving it entirely to the SO
   eliminates them.
-- Do not persist scratch or work-order files inside the worktree —
-  write them to `/tmp`. The isolation auto-commit sweeps every
-  uncommitted worktree file into the branch on completion.
+- Do not leave uncommitted scratch or work-order drafts inside the
+  worktree — write drafts and scratch notes to `/tmp`. (Committed work
+  orders under `work-orders/` are part of the base commit and are
+  fine.) The isolation auto-commit sweeps every uncommitted worktree
+  file into the branch on completion.
 
 ## Review-gate routing (decision 014)
 

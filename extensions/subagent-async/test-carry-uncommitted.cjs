@@ -45,34 +45,34 @@ function unsafeCarryPath(p) {
 // sha256 hex of a file's bytes, `"link:" + target` for a symlink, null when
 // absent / not a regular file or symlink. Single source of truth for the
 // snapshot hashes (capture here, compare in test-completion-filter.cjs).
-function hashCarriedFile(absPath) {
+async function hashCarriedFile(absPath) {
 	try {
-		const st = fs.lstatSync(absPath);
-		if (st.isSymbolicLink()) return "link:" + fs.readlinkSync(absPath);
+		const st = await fs.promises.lstat(absPath);
+		if (st.isSymbolicLink()) return "link:" + (await fs.promises.readlink(absPath));
 		if (!st.isFile()) return null;
-		return createHash("sha256").update(fs.readFileSync(absPath)).digest("hex");
+		return createHash("sha256").update(await fs.promises.readFile(absPath)).digest("hex");
 	} catch {
 		return null;
 	}
 }
 
-function recordPresent(snapshot, worktreePath, rel) {
-	const hash = hashCarriedFile(path.join(worktreePath, rel));
+async function recordPresent(snapshot, worktreePath, rel) {
+	const hash = await hashCarriedFile(path.join(worktreePath, rel));
 	if (hash !== null) snapshot.set(rel, { state: "present", hash });
 }
 
-function copyCarriedFile(topLevel, worktreePath, rel) {
+async function copyCarriedFile(topLevel, worktreePath, rel) {
 	const src = path.join(topLevel, rel);
 	const dst = path.join(worktreePath, rel);
-	fs.mkdirSync(path.dirname(dst), { recursive: true });
-	const st = fs.lstatSync(src);
+	await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+	const st = await fs.promises.lstat(src);
 	if (st.isSymbolicLink()) {
-		fs.symlinkSync(fs.readlinkSync(src), dst);
+		await fs.promises.symlink(await fs.promises.readlink(src), dst);
 	} else if (st.isDirectory()) {
 		return; // gitlink/submodule — known limitation, not carried
 	} else {
-		fs.copyFileSync(src, dst);
-		fs.chmodSync(dst, st.mode & 0o7777);
+		await fs.promises.copyFile(src, dst);
+		await fs.promises.chmod(dst, st.mode & 0o7777);
 	}
 }
 
@@ -107,19 +107,29 @@ function assertTopLevelString(topLevel) {
 	}
 }
 
-function carryUncommittedState(topLevel, worktreePath) {
-	assertTopLevelString(topLevel);
-	const snapshot = new Map();
-	let out;
+// ── gitStatusPorcelain — mirror of the git() status call ──────────────────
+// Mirror of index.ts's `git()` result shape for the carry status: never
+// rejects — resolves with exitCode 1 when `git status` fails. Used as the
+// default fetch inside carryUncommittedState and as the prefetched
+// statusPromise from createWorktreeMirror (A2).
+async function gitStatusPorcelain(topLevel) {
 	try {
-		out = execFileSync("git", ["status", "--porcelain=v1", "-uall", "-z"], {
+		const out = execFileSync("git", ["status", "--porcelain=v1", "-uall", "-z"], {
 			cwd: topLevel,
 			encoding: "utf8",
 		});
-	} catch {
-		return snapshot; // git status failed — empty snapshot, mirror of index.ts
+		return { stdout: out, stderr: "", exitCode: 0 };
+	} catch (e) {
+		return { stdout: "", stderr: String(e && e.stderr ? e.stderr : ""), exitCode: 1 };
 	}
-	const tokens = out.split("\0");
+}
+
+async function carryUncommittedState(topLevel, worktreePath, statusPromise) {
+	assertTopLevelString(topLevel);
+	const snapshot = new Map();
+	const res = await (statusPromise ?? gitStatusPorcelain(topLevel));
+	if (res.exitCode !== 0) return snapshot; // git status failed — empty snapshot, mirror of index.ts
+	const tokens = res.stdout.split("\0");
 	for (let i = 0; i < tokens.length; i++) {
 		const rec = tokens[i];
 		if (rec.length === 0) continue;
@@ -138,8 +148,8 @@ function carryUncommittedState(topLevel, worktreePath) {
 				fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
 				snapshot.set(orig, { state: "absent" });
 			}
-			copyCarriedFile(topLevel, worktreePath, p);
-			recordPresent(snapshot, worktreePath, p);
+			await copyCarriedFile(topLevel, worktreePath, p);
+			await recordPresent(snapshot, worktreePath, p);
 			continue;
 		}
 		if (x === "D" || y === "D") {
@@ -148,14 +158,14 @@ function carryUncommittedState(topLevel, worktreePath) {
 			continue;
 		}
 		if (x === "?" && y === "?") {
-			copyCarriedFile(topLevel, worktreePath, p);
-			recordPresent(snapshot, worktreePath, p);
+			await copyCarriedFile(topLevel, worktreePath, p);
+			await recordPresent(snapshot, worktreePath, p);
 			continue;
 		}
 		if (["M", "A", "T", "U"].includes(x) || ["M", "A", "T", "U"].includes(y)) {
 			if (fs.existsSync(path.join(topLevel, p))) {
-				copyCarriedFile(topLevel, worktreePath, p);
-				recordPresent(snapshot, worktreePath, p);
+				await copyCarriedFile(topLevel, worktreePath, p);
+				await recordPresent(snapshot, worktreePath, p);
 			}
 		}
 	}
@@ -163,6 +173,15 @@ function carryUncommittedState(topLevel, worktreePath) {
 }
 
 // ── createWorktree mirror — control flow only ──────────────────────────────
+// Instrumented git runner for createWorktreeMirror's control flow. Records the
+// argv of every git subprocess the mirror issues so tests can assert on A1's
+// guarded cleanup (matrix cases 1/2). Production uses index.ts's git().
+const gitCallLog = [];
+function gitSync(args, opts) {
+	gitCallLog.push(args.join(" "));
+	return execFileSync("git", args, opts);
+}
+
 // Mirrors createWorktree's git/fs flow: rev-parse toplevel + base ref, stale
 // cleanup, `git worktree add`, then the optional carry. The pieces under test
 // here are the overlay gate (`carryUncommitted && !baseRef`) and the
@@ -177,10 +196,10 @@ function carryUncommittedState(topLevel, worktreePath) {
 // then-pass-string shape is what row 1 exercises end-to-end; row 21 pins the
 // fail-fast guard that makes an object-wiring regression loud instead of
 // silent.
-function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = true) {
+async function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = true) {
 	let topLevel;
 	try {
-		topLevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+		topLevel = gitSync(["rev-parse", "--show-toplevel"], {
 			cwd: parentCwd,
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "ignore"],
@@ -191,7 +210,7 @@ function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = 
 	const baseCommitRef = baseRef || "HEAD";
 	let headCommit;
 	try {
-		headCommit = execFileSync("git", ["rev-parse", baseCommitRef], {
+		headCommit = gitSync(["rev-parse", baseCommitRef], {
 			cwd: parentCwd,
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "ignore"],
@@ -204,17 +223,25 @@ function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = 
 	const worktreePath = path.join(os.tmpdir(), `pi-subagent-wt-${suffix}`);
 
 	const quiet = { cwd: parentCwd, stdio: "ignore" };
-	try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], quiet); } catch { /* */ }
-	try { execFileSync("git", ["branch", "-D", branchName], quiet); } catch { /* */ }
+	// Mirror of A1: the session id is fresh per spawn, so the stale dir normally
+	// does not exist; skip both cleanup subprocesses when it does not.
+	if (fs.existsSync(worktreePath)) {
+		try { gitSync(["worktree", "remove", "--force", worktreePath], quiet); } catch { /* */ }
+		try { gitSync(["branch", "-D", branchName], quiet); } catch { /* */ }
+	}
+	// Mirror of A2: prefetch the carry status before `worktree add`. git()
+	// never rejects, so an unconsumed prefetch cannot become an unhandled
+	// rejection.
+	const carryStatusPromise = carryUncommitted && !baseRef ? gitStatusPorcelain(topLevel) : undefined;
 	try {
-		execFileSync("git", ["worktree", "add", worktreePath, "-b", branchName, headCommit], quiet);
+		gitSync(["worktree", "add", worktreePath, "-b", branchName, headCommit], quiet);
 	} catch {
 		return null; // worktree add failure is fatal, like the real code
 	}
 	let carried;
 	if (carryUncommitted && !baseRef) {
 		try {
-			carried = carryUncommittedState(topLevel, worktreePath);
+			carried = await carryUncommittedState(topLevel, worktreePath, carryStatusPromise);
 		} catch {
 			// best-effort: degrade to HEAD-only, never fail the dispatch
 		}
@@ -231,21 +258,30 @@ function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = 
 let passed = 0;
 let failed = 0;
 let skipped = 0;
+const registeredTests = [];
 
+// Tests register here and run sequentially in the async runner at the bottom
+// (top-level await is unavailable in CJS, and the carry I/O is now async).
 function test(name, fn) {
-	try {
-		fn();
-		console.log(`  ✅ ${name}`);
-		passed++;
-	} catch (e) {
-		if (e && e.__piSkip) {
-			console.log(`  ⏭  ${name} (skipped: ${e.message})`);
-			skipped++;
-			return;
+	registeredTests.push({ name, fn });
+}
+
+async function runTests() {
+	for (const { name, fn } of registeredTests) {
+		try {
+			await fn();
+			console.log(`  ✅ ${name}`);
+			passed++;
+		} catch (e) {
+			if (e && e.__piSkip) {
+				console.log(`  ⏭  ${name} (skipped: ${e.message})`);
+				skipped++;
+				continue;
+			}
+			console.log(`  ❌ ${name}`);
+			console.log(`     ${e.message}`);
+			failed++;
 		}
-		console.log(`  ❌ ${name}`);
-		console.log(`     ${e.message}`);
-		failed++;
 	}
 }
 
@@ -284,7 +320,7 @@ function cleanupWorktree(parentDir, result) {
 // Real temp repo + real `git worktree add`, then the mirror carry, then the
 // assertion. baselineFn writes the tracked file set (committed); setupFn
 // creates the uncommitted state (and may stage/commit further).
-function withCarryFlow(opts, baselineFn, setupFn, assertFn) {
+async function withCarryFlow(opts, baselineFn, setupFn, assertFn) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-repo-"));
 	let result = null;
 	try {
@@ -293,8 +329,8 @@ function withCarryFlow(opts, baselineFn, setupFn, assertFn) {
 		git(dir, ["add", "-A"]);
 		git(dir, ["commit", "-q", "-m", "baseline"]);
 		setupFn(dir, git);
-		result = createWorktreeMirror(dir, newSessionId(), opts.baseRef, opts.carryUncommitted ?? true);
-		assertFn(result, dir, git);
+		result = await createWorktreeMirror(dir, newSessionId(), opts.baseRef, opts.carryUncommitted ?? true);
+		await assertFn(result, dir, git);
 	} finally {
 		cleanupWorktree(dir, result);
 		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
@@ -307,8 +343,8 @@ const defaultBaseline = (dir) => {
 
 // ── Behavior / failure matrix ──────────────────────────────────────────────
 
-test("1. untracked file (`?? docs/plans/foo.md`) is carried", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("1. untracked file (`?? docs/plans/foo.md`) is carried", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.mkdirSync(path.join(dir, "docs", "plans"), { recursive: true });
 		fs.writeFileSync(path.join(dir, "docs", "plans", "foo.md"), "# plan\n");
 		// space-in-path pin: the porcelain `XY ` separator must not eat a
@@ -323,8 +359,8 @@ test("1. untracked file (`?? docs/plans/foo.md`) is carried", () => {
 	});
 });
 
-test("2. modified tracked file (` M`) is carried with parent bytes", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("2. modified tracked file (` M`) is carried with parent bytes", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "baseline.txt"), "modified\n");
 	}, (result) => {
 		const f = path.join(result.worktreePath, "baseline.txt");
@@ -333,8 +369,8 @@ test("2. modified tracked file (` M`) is carried with parent bytes", () => {
 	});
 });
 
-test("3. staged-added file (`A `) is carried", () => {
-	withCarryFlow({}, defaultBaseline, (dir, git) => {
+test("3. staged-added file (`A `) is carried", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir, git) => {
 		fs.writeFileSync(path.join(dir, "staged-new.txt"), "new\n");
 		git(dir, ["add", "staged-new.txt"]);
 	}, (result) => {
@@ -342,8 +378,8 @@ test("3. staged-added file (`A `) is carried", () => {
 	});
 });
 
-test("4. staged+worktree modified (`MM`) — parent worktree bytes win", () => {
-	withCarryFlow({}, (dir) => {
+test("4. staged+worktree modified (`MM`) — parent worktree bytes win", async () => {
+	await withCarryFlow({}, (dir) => {
 		fs.writeFileSync(path.join(dir, "mm.txt"), "v1\n");
 	}, (dir, git) => {
 		fs.writeFileSync(path.join(dir, "mm.txt"), "v2\n");
@@ -356,8 +392,8 @@ test("4. staged+worktree modified (`MM`) — parent worktree bytes win", () => {
 	});
 });
 
-test("5. deleted in worktree (` D`) — file absent from worktree", () => {
-	withCarryFlow({}, (dir) => {
+test("5. deleted in worktree (` D`) — file absent from worktree", async () => {
+	await withCarryFlow({}, (dir) => {
 		fs.writeFileSync(path.join(dir, "gone-wt.txt"), "x\n");
 	}, (dir) => {
 		fs.rmSync(path.join(dir, "gone-wt.txt"));
@@ -366,8 +402,8 @@ test("5. deleted in worktree (` D`) — file absent from worktree", () => {
 	});
 });
 
-test("6. staged deletion (`D `) — file absent from worktree", () => {
-	withCarryFlow({}, (dir) => {
+test("6. staged deletion (`D `) — file absent from worktree", async () => {
+	await withCarryFlow({}, (dir) => {
 		fs.writeFileSync(path.join(dir, "gone-staged.txt"), "x\n");
 	}, (dir, git) => {
 		git(dir, ["rm", "-q", "gone-staged.txt"]);
@@ -376,8 +412,8 @@ test("6. staged deletion (`D `) — file absent from worktree", () => {
 	});
 });
 
-test("7. rename (`R  new\0old\0`) — old removed, new present with parent bytes", () => {
-	withCarryFlow({}, (dir) => {
+test("7. rename (`R  new\0old\0`) — old removed, new present with parent bytes", async () => {
+	await withCarryFlow({}, (dir) => {
 		fs.writeFileSync(path.join(dir, "oldname.txt"), "old content\n");
 	}, (dir, git) => {
 		git(dir, ["mv", "oldname.txt", "newname.txt"]);
@@ -393,8 +429,8 @@ test("7. rename (`R  new\0old\0`) — old removed, new present with parent bytes
 	});
 });
 
-test("8. copy (`C  new\0old\0`, status.renames=copies) — new present", () => {
-	withCarryFlow({}, (dir) => {
+test("8. copy (`C  new\0old\0`, status.renames=copies) — new present", async () => {
+	await withCarryFlow({}, (dir) => {
 		fs.writeFileSync(path.join(dir, "orig.txt"), "hello\n");
 	}, (dir, git) => {
 		// Copy detection in `git status` only fires when the source is also
@@ -415,8 +451,8 @@ test("8. copy (`C  new\0old\0`, status.renames=copies) — new present", () => {
 	});
 });
 
-test("9. .gitignore-matched file — NOT carried", () => {
-	withCarryFlow({}, defaultBaseline, (dir, git) => {
+test("9. .gitignore-matched file — NOT carried", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir, git) => {
 		fs.writeFileSync(path.join(dir, ".gitignore"), "ignored.log\n");
 		fs.writeFileSync(path.join(dir, "ignored.log"), "ignored\n");
 		const out = git(dir, ["status", "--porcelain=v1", "-uall", "-z"]);
@@ -426,8 +462,8 @@ test("9. .gitignore-matched file — NOT carried", () => {
 	});
 });
 
-test("10. exec-bit file — mode preserved in worktree", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("10. exec-bit file — mode preserved in worktree", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "run.sh"), "#!/bin/sh\necho hi\n");
 		fs.chmodSync(path.join(dir, "run.sh"), 0o755);
 	}, (result, dir) => {
@@ -438,8 +474,8 @@ test("10. exec-bit file — mode preserved in worktree", () => {
 	});
 });
 
-test("11. symlink — carried as link, same target string, not dereferenced", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("11. symlink — carried as link, same target string, not dereferenced", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.symlinkSync("baseline.txt", path.join(dir, "newlink"));
 	}, (result, dir) => {
 		const wtLink = path.join(result.worktreePath, "newlink");
@@ -450,8 +486,8 @@ test("11. symlink — carried as link, same target string, not dereferenced", ()
 	});
 });
 
-test("12. path containing `..` — rejected, no escape", () => {
-	withCarryFlow({}, defaultBaseline, (dir, git) => {
+test("12. path containing `..` — rejected, no escape", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir, git) => {
 		fs.writeFileSync(path.join(dir, "a..b"), "dotdot\n");
 		const out = git(dir, ["status", "--porcelain=v1", "-uall", "-z"]);
 		assert.ok(out.includes("?? a..b"), "real status lists the ..-containing path");
@@ -460,8 +496,8 @@ test("12. path containing `..` — rejected, no escape", () => {
 	});
 });
 
-test("13. carryUncommitted: false — no overlay, worktree still created", () => {
-	withCarryFlow({ carryUncommitted: false }, defaultBaseline, (dir) => {
+test("13. carryUncommitted: false — no overlay, worktree still created", async () => {
+	await withCarryFlow({ carryUncommitted: false }, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "untracked.txt"), "x\n");
 	}, (result) => {
 		assert.ok(result, "worktree created");
@@ -470,7 +506,7 @@ test("13. carryUncommitted: false — no overlay, worktree still created", () =>
 	});
 });
 
-test("14. baseRef set — no overlay even with carry default true", () => {
+test("14. baseRef set — no overlay even with carry default true", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-repo-"));
 	let result = null;
 	try {
@@ -485,7 +521,7 @@ test("14. baseRef set — no overlay even with carry default true", () => {
 		fs.writeFileSync(path.join(dir, "third.txt"), "third\n");
 		fs.writeFileSync(path.join(dir, "baseline.txt"), "modified\n");
 
-		result = createWorktreeMirror(dir, newSessionId(), base1, true);
+		result = await createWorktreeMirror(dir, newSessionId(), base1, true);
 		assert.ok(result, "worktree created");
 		const wt = result.worktreePath;
 		eq(git(wt, ["rev-parse", "HEAD"]).trim(), base1, "branches from baseRef tree, not HEAD");
@@ -498,8 +534,8 @@ test("14. baseRef set — no overlay even with carry default true", () => {
 	}
 });
 
-test("15. clean tree — no-op; worktree add still succeeds", () => {
-	withCarryFlow({}, defaultBaseline, () => { /* no uncommitted state */ }, (result) => {
+test("15. clean tree — no-op; worktree add still succeeds", async () => {
+	await withCarryFlow({}, defaultBaseline, () => { /* no uncommitted state */ }, (result) => {
 		assert.ok(result, "worktree created");
 		const entries = fs.readdirSync(result.worktreePath).filter((e) => e !== ".git").sort();
 		assert.deepStrictEqual(entries, ["baseline.txt"], "only the tracked baseline file");
@@ -507,8 +543,8 @@ test("15. clean tree — no-op; worktree add still succeeds", () => {
 	});
 });
 
-test("16. nested new dirs (`-uall` untracked in subdir) — parent dirs created", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("16. nested new dirs (`-uall` untracked in subdir) — parent dirs created", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.mkdirSync(path.join(dir, "a", "b", "c"), { recursive: true });
 		fs.writeFileSync(path.join(dir, "a", "b", "c", "deep.txt"), "deep\n");
 	}, (result) => {
@@ -518,14 +554,14 @@ test("16. nested new dirs (`-uall` untracked in subdir) — parent dirs created"
 	});
 });
 
-test("17. carry failure (source unreadable) — dispatch continues, no throw", () => {
+test("17. carry failure (source unreadable) — dispatch continues, no throw", async () => {
 	const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 	if (isRoot) {
 		// chmod 000 does not make a file unreadable to root, so the failure
 		// cannot be simulated; count it as skipped rather than passed.
 		skip("running as root — chmod 000 does not make a file unreadable");
 	}
-	withCarryFlow({}, defaultBaseline, (dir) => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "locked.txt"), "secret\n");
 		fs.chmodSync(path.join(dir, "locked.txt"), 0o000);
 	}, (result) => {
@@ -535,18 +571,18 @@ test("17. carry failure (source unreadable) — dispatch continues, no throw", (
 	});
 });
 
-test("18. non-git cwd — createWorktree returns null", () => {
+test("18. non-git cwd — createWorktree returns null", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-nongit-"));
 	try {
-		const result = createWorktreeMirror(dir, newSessionId(), undefined, true);
+		const result = await createWorktreeMirror(dir, newSessionId(), undefined, true);
 		eq(result, null, "not a git repo → null");
 	} finally {
 		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
 	}
 });
 
-test("19. carried snapshot — present hashes, absent deletions, link-prefixed symlinks", () => {
-	withCarryFlow({}, (dir) => {
+test("19. carried snapshot — present hashes, absent deletions, link-prefixed symlinks", async () => {
+	await withCarryFlow({}, (dir) => {
 		fs.writeFileSync(path.join(dir, "baseline.txt"), "baseline\n");
 		fs.writeFileSync(path.join(dir, "gone-wt.txt"), "x\n");
 	}, (dir) => {
@@ -556,13 +592,13 @@ test("19. carried snapshot — present hashes, absent deletions, link-prefixed s
 		fs.rmSync(path.join(dir, "gone-wt.txt"));
 		fs.symlinkSync("baseline.txt", path.join(dir, "newlink"));
 		fs.writeFileSync(path.join(dir, "untracked.txt"), "u\n");
-	}, (result) => {
+	}, async (result) => {
 		const snap = result.carried;
 		assert.ok(snap instanceof Map, "snapshot is a Map");
 		const h1 = snap.get("baseline.txt");
 		assert.ok(h1 && h1.state === "present", "modified file recorded as present");
-		eq(h1.hash, hashCarriedFile(path.join(result.worktreePath, "baseline.txt")), "hash = sha256 of the carried bytes");
-		eq(h1.hash, hashCarriedFile(path.join(result.worktreePath, "baseline.txt")), "stable across reads");
+		eq(h1.hash, createHash("sha256").update("modified\n").digest("hex"), "hash = sha256 of the carried bytes (independent literal)");
+		eq(h1.hash, await hashCarriedFile(path.join(result.worktreePath, "baseline.txt")), "stable across reads");
 		const del = snap.get("gone-wt.txt");
 		assert.deepStrictEqual(del, { state: "absent" }, "deletion recorded as absent");
 		const link = snap.get("newlink");
@@ -574,31 +610,129 @@ test("19. carried snapshot — present hashes, absent deletions, link-prefixed s
 	});
 });
 
-test("20. clean tree — snapshot is a present empty map", () => {
-	withCarryFlow({}, defaultBaseline, () => { /* no uncommitted state */ }, (result) => {
+test("20. clean tree — snapshot is a present empty map", async () => {
+	await withCarryFlow({}, defaultBaseline, () => { /* no uncommitted state */ }, (result) => {
 		assert.ok(result.carried instanceof Map, "snapshot present even with no changes");
 		eq(result.carried.size, 0, "empty map for a clean tree");
 	});
 });
 
-test("21. wiring regression — carryUncommittedState rejects a non-string topLevel (git result object)", () => {
+test("21. wiring regression — carryUncommittedState rejects a non-string topLevel (git result object)", async () => {
 	// WO-2026-034 production bug: createWorktree passed the git() RESULT
 	// OBJECT as topLevel → spawn cwd invalid → best-effort catch → carry
 	// silently never ran. The fail-fast guard (index.ts + this mirror) makes
 	// that loud. Pinning both sides.
 	const obj = { stdout: "/some/repo\n", stderr: "", exitCode: 0 };
-	assert.throws(
+	await assert.rejects(
 		() => carryUncommittedState(obj, "/tmp/pi-subagent-wt-wiringpin"),
 		/\btopLevel must be the repo path string\b/,
-		"non-string topLevel must throw the fail-fast TypeError",
+		"non-string topLevel must reject with the fail-fast TypeError",
 	);
 	// The extracted path STRING must be accepted.
-	assert.doesNotThrow(
+	await assert.doesNotReject(
 		() => carryUncommittedState("/nonexistent-repo-path", "/tmp/pi-subagent-wt-wiringpin"),
 		"string topLevel must not trigger the guard",
 	);
 });
 
+test("22. fresh spawn, no stale dir — A1 cleanup subprocesses skipped", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-fresh-"));
+	let result = null;
+	try {
+		initRepo(dir);
+		fs.writeFileSync(path.join(dir, "baseline.txt"), "baseline\n");
+		git(dir, ["add", "-A"]);
+		git(dir, ["commit", "-q", "-m", "baseline"]);
+		gitCallLog.length = 0;
+		result = await createWorktreeMirror(dir, newSessionId(), undefined, false);
+		assert.ok(result, "fresh worktree created");
+		const cleanupCalls = gitCallLog.filter((c) => c.startsWith("worktree remove") || c.startsWith("branch -D"));
+		eq(cleanupCalls.length, 0, `no cleanup subprocesses on a fresh spawn (log: ${JSON.stringify(gitCallLog)})`);
+	} finally {
+		cleanupWorktree(dir, result);
+		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
+	}
+});
+
+test("23. stale dir exists — A1 runs both cleanups, then worktree add still succeeds", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-stale-"));
+	let result = null;
+	let stalePath = null;
+	try {
+		initRepo(dir);
+		fs.writeFileSync(path.join(dir, "baseline.txt"), "baseline\n");
+		git(dir, ["add", "-A"]);
+		git(dir, ["commit", "-q", "-m", "baseline"]);
+		const sessionId = newSessionId();
+		const suffix = String(sessionId).slice(-12);
+		stalePath = path.join(os.tmpdir(), `pi-subagent-wt-${suffix}`);
+		const branchName = `pi-subagent-${suffix}`;
+		// A real stale worktree + branch: the cleanups must actually succeed for
+		// `git worktree add` at the same path to proceed below.
+		execFileSync("git", ["worktree", "add", stalePath, "-b", branchName, "HEAD"], {
+			cwd: dir,
+			stdio: "ignore",
+		});
+		gitCallLog.length = 0;
+		result = await createWorktreeMirror(dir, sessionId, undefined, false);
+		assert.ok(result, "worktree add still succeeds after the stale cleanup");
+		const removeCalls = gitCallLog.filter((c) => c.startsWith("worktree remove --force"));
+		const branchCalls = gitCallLog.filter((c) => c.startsWith("branch -D"));
+		eq(removeCalls.length, 1, "stale worktree remove attempted");
+		eq(branchCalls.length, 1, "stale branch -D attempted");
+	} finally {
+		cleanupWorktree(dir, result);
+		if (stalePath) { try { fs.rmSync(stalePath, { recursive: true, force: true }); } catch { /* */ } }
+		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
+	}
+});
+
+test("24. carry status failure (exitCode 1) — empty snapshot, no overlay", async () => {
+	const top = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-statusfail-"));
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-statusfail-wt-"));
+	try {
+		initRepo(top);
+		fs.writeFileSync(path.join(top, "untracked.txt"), "x\n");
+		const snap = await carryUncommittedState(
+			top,
+			wt,
+			Promise.resolve({ stdout: "", stderr: "boom", exitCode: 1 }),
+		);
+		assert.ok(snap instanceof Map, "snapshot is a Map");
+		eq(snap.size, 0, "status failure yields an empty snapshot");
+		assert.ok(!fs.existsSync(path.join(wt, "untracked.txt")), "no overlay applied on status failure");
+	} finally {
+		try { fs.rmSync(top, { recursive: true, force: true }); } catch { /* */ }
+		try { fs.rmSync(wt, { recursive: true, force: true }); } catch { /* */ }
+	}
+});
+
+test("25. prefetched statusPromise is consumed — canned success drives the overlay", async () => {
+	// A2: createWorktree prefetches `git status` and hands the promise to
+	// carryUncommittedState. Were the third argument ignored, the real status
+	// (empty here — secret.txt is gitignored) would be used and the overlay
+	// would not run. A populated snapshot proves the prefetch is consumed.
+	const top = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-prefetch-"));
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "pi-carry-prefetch-wt-"));
+	try {
+		initRepo(top);
+		fs.writeFileSync(path.join(top, ".gitignore"), "secret.txt\n");
+		fs.writeFileSync(path.join(top, "secret.txt"), "canned\n");
+		const snap = await carryUncommittedState(
+			top,
+			wt,
+			Promise.resolve({ stdout: "?? secret.txt\0", stderr: "", exitCode: 0 }),
+		);
+		assert.ok(snap.has("secret.txt"), "canned prefetch status drove the overlay");
+		eq(fs.readFileSync(path.join(wt, "secret.txt"), "utf8"), "canned\n", "canned file copied into the worktree");
+	} finally {
+		try { fs.rmSync(top, { recursive: true, force: true }); } catch { /* */ }
+		try { fs.rmSync(wt, { recursive: true, force: true }); } catch { /* */ }
+	}
+});
+
 // ── Result ─────────────────────────────────────────────────────────────────
-console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}`);
-process.exit(failed === 0 ? 0 : 1);
+runTests().then(() => {
+	console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}`);
+	process.exit(failed === 0 ? 0 : 1);
+});

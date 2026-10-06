@@ -17,7 +17,7 @@
  * resolve only under jiti at runtime. Following test-carry-uncommitted.cjs,
  * it mirrors the hash helper + filter (KEEP IN SYNC) and exercises the full
  * preCommitSteps sequence against REAL temp repos, REAL `git worktree add`,
- * REAL `git add -A` / `git reset` / `git diff --cached`. The 12-row matrix
+ * REAL `git add -A` / `git reset` / `git diff --cached`. The matrix below
  * below pins every filter behavior from the WO.
  *
  * Run: node test-completion-filter.cjs
@@ -36,12 +36,12 @@ const { createHash } = require("node:crypto");
 // bytes, `"link:" + target` for a symlink, null when absent / not a regular
 // file or symlink. Used by both carryUncommittedState (capture) and
 // applyCarryFilter (compare) below, exactly as in index.ts.
-function hashCarriedFile(absPath) {
+async function hashCarriedFile(absPath) {
 	try {
-		const st = fs.lstatSync(absPath);
-		if (st.isSymbolicLink()) return "link:" + fs.readlinkSync(absPath);
+		const st = await fs.promises.lstat(absPath);
+		if (st.isSymbolicLink()) return "link:" + (await fs.promises.readlink(absPath));
 		if (!st.isFile()) return null;
-		return createHash("sha256").update(fs.readFileSync(absPath)).digest("hex");
+		return createHash("sha256").update(await fs.promises.readFile(absPath)).digest("hex");
 	} catch {
 		return null;
 	}
@@ -60,38 +60,47 @@ function unsafeCarryPath(p) {
 	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
 }
 
-function copyCarriedFile(topLevel, worktreePath, rel) {
-	const src = path.join(topLevel, rel);
-	const dst = path.join(worktreePath, rel);
-	fs.mkdirSync(path.dirname(dst), { recursive: true });
-	const st = fs.lstatSync(src);
-	if (st.isSymbolicLink()) {
-		fs.symlinkSync(fs.readlinkSync(src), dst);
-	} else if (st.isDirectory()) {
-		return; // gitlink/submodule — known limitation, not carried
-	} else {
-		fs.copyFileSync(src, dst);
-		fs.chmodSync(dst, st.mode & 0o7777);
-	}
-}
-
-function recordPresent(snapshot, worktreePath, rel) {
-	const hash = hashCarriedFile(path.join(worktreePath, rel));
-	if (hash !== null) snapshot.set(rel, { state: "present", hash });
-}
-
-function carryUncommittedState(topLevel, worktreePath) {
-	const snapshot = new Map();
-	let out;
+// Mirror of index.ts's `git()` result shape for the carry status: never
+// rejects — resolves with exitCode 1 when `git status` fails. Used as the
+// default fetch inside carryUncommittedState and as the prefetched
+// statusPromise from createWorktreeMirror (A2).
+async function gitStatusPorcelain(topLevel) {
 	try {
-		out = execFileSync("git", ["status", "--porcelain=v1", "-uall", "-z"], {
+		const out = execFileSync("git", ["status", "--porcelain=v1", "-uall", "-z"], {
 			cwd: topLevel,
 			encoding: "utf8",
 		});
-	} catch {
-		return snapshot; // git status failed — empty snapshot, mirror of index.ts
+		return { stdout: out, stderr: "", exitCode: 0 };
+	} catch (e) {
+		return { stdout: "", stderr: String(e && e.stderr ? e.stderr : ""), exitCode: 1 };
 	}
-	const tokens = out.split("\0");
+}
+
+async function copyCarriedFile(topLevel, worktreePath, rel) {
+	const src = path.join(topLevel, rel);
+	const dst = path.join(worktreePath, rel);
+	await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+	const st = await fs.promises.lstat(src);
+	if (st.isSymbolicLink()) {
+		await fs.promises.symlink(await fs.promises.readlink(src), dst);
+	} else if (st.isDirectory()) {
+		return; // gitlink/submodule — known limitation, not carried
+	} else {
+		await fs.promises.copyFile(src, dst);
+		await fs.promises.chmod(dst, st.mode & 0o7777);
+	}
+}
+
+async function recordPresent(snapshot, worktreePath, rel) {
+	const hash = await hashCarriedFile(path.join(worktreePath, rel));
+	if (hash !== null) snapshot.set(rel, { state: "present", hash });
+}
+
+async function carryUncommittedState(topLevel, worktreePath, statusPromise) {
+	const snapshot = new Map();
+	const res = await (statusPromise ?? gitStatusPorcelain(topLevel));
+	if (res.exitCode !== 0) return snapshot; // git status failed — empty snapshot, mirror of index.ts
+	const tokens = res.stdout.split("\0");
 	for (let i = 0; i < tokens.length; i++) {
 		const rec = tokens[i];
 		if (rec.length === 0) continue;
@@ -110,8 +119,8 @@ function carryUncommittedState(topLevel, worktreePath) {
 				fs.rmSync(path.join(worktreePath, orig), { recursive: true, force: true });
 				snapshot.set(orig, { state: "absent" });
 			}
-			copyCarriedFile(topLevel, worktreePath, p);
-			recordPresent(snapshot, worktreePath, p);
+			await copyCarriedFile(topLevel, worktreePath, p);
+			await recordPresent(snapshot, worktreePath, p);
 			continue;
 		}
 		if (x === "D" || y === "D") {
@@ -120,14 +129,14 @@ function carryUncommittedState(topLevel, worktreePath) {
 			continue;
 		}
 		if (x === "?" && y === "?") {
-			copyCarriedFile(topLevel, worktreePath, p);
-			recordPresent(snapshot, worktreePath, p);
+			await copyCarriedFile(topLevel, worktreePath, p);
+			await recordPresent(snapshot, worktreePath, p);
 			continue;
 		}
 		if (["M", "A", "T", "U"].includes(x) || ["M", "A", "T", "U"].includes(y)) {
 			if (fs.existsSync(path.join(topLevel, p))) {
-				copyCarriedFile(topLevel, worktreePath, p);
-				recordPresent(snapshot, worktreePath, p);
+				await copyCarriedFile(topLevel, worktreePath, p);
+				await recordPresent(snapshot, worktreePath, p);
 			}
 		}
 	}
@@ -139,7 +148,7 @@ function carryUncommittedState(topLevel, worktreePath) {
 // cleanup, `git worktree add`, then the optional carry. Returns the carried
 // snapshot (present — possibly empty — when the overlay ran, absent when
 // skipped or when the overlay threw), matching the real return shape.
-function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = true) {
+async function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = true) {
 	let topLevel;
 	try {
 		topLevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
@@ -166,8 +175,16 @@ function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = 
 	const worktreePath = path.join(os.tmpdir(), `pi-subagent-wt-${suffix}`);
 
 	const quiet = { cwd: parentCwd, stdio: "ignore" };
-	try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], quiet); } catch { /* */ }
-	try { execFileSync("git", ["branch", "-D", branchName], quiet); } catch { /* */ }
+	// Mirror of A1: the session id is fresh per spawn, so the stale dir normally
+	// does not exist; skip both cleanup subprocesses when it does not.
+	if (fs.existsSync(worktreePath)) {
+		try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], quiet); } catch { /* */ }
+		try { execFileSync("git", ["branch", "-D", branchName], quiet); } catch { /* */ }
+	}
+	// Mirror of A2: prefetch the carry status before `worktree add`. git()
+	// never rejects, so an unconsumed prefetch cannot become an unhandled
+	// rejection.
+	const carryStatusPromise = carryUncommitted && !baseRef ? gitStatusPorcelain(topLevel) : undefined;
 	try {
 		execFileSync("git", ["worktree", "add", worktreePath, "-b", branchName, headCommit], quiet);
 	} catch {
@@ -176,7 +193,7 @@ function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = 
 	let carried;
 	if (carryUncommitted && !baseRef) {
 		try {
-			carried = carryUncommittedState(topLevel, worktreePath);
+			carried = await carryUncommittedState(topLevel, worktreePath, carryStatusPromise);
 		} catch {
 			// best-effort: degrade to HEAD-only, never fail the dispatch
 		}
@@ -194,7 +211,7 @@ function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommitted = 
 // reset every carried path whose worktree bytes still match the snapshot
 // (or whose carried deletion is still absent). Failures degrade — the filter
 // must never abort preCommitSteps.
-function applyCarryFilter(worktreePath, carried) {
+async function applyCarryFilter(worktreePath, carried) {
 	const untouched = [];
 	try {
 		for (const [rel, snap] of carried) {
@@ -202,7 +219,7 @@ function applyCarryFilter(worktreePath, carried) {
 			if (snap.state === "absent") {
 				if (!fs.existsSync(abs)) untouched.push(rel);
 			} else {
-				const cur = hashCarriedFile(abs);
+				const cur = await hashCarriedFile(abs);
 				if (cur === snap.hash) untouched.push(rel);
 			}
 		}
@@ -227,12 +244,12 @@ function commitIfChanges(worktreePath, subject) {
 }
 
 // The full preCommitSteps sequence in mirror form. Returns hadChanges.
-function preCommitStepsMirror(worktreePath, carried, subject) {
+async function preCommitStepsMirror(worktreePath, carried, subject) {
 	git(worktreePath, ["add", "-A"]);
 	const stagedNames = git(worktreePath, ["diff", "--cached", "--name-only"]);
 	const scratch = stagedNames.split("\n").filter((p) => p.length > 0 && /^WO-.*\.md$/i.test(p));
 	if (scratch.length > 0) git(worktreePath, ["reset", "-q", "--", ...scratch]);
-	if (carried && carried.size > 0) applyCarryFilter(worktreePath, carried);
+	if (carried && carried.size > 0) await applyCarryFilter(worktreePath, carried);
 	return commitIfChanges(worktreePath, subject);
 }
 
@@ -270,21 +287,30 @@ function postDeliveryCleanupMirror(parentDir, result, finalCommit) {
 let passed = 0;
 let failed = 0;
 let skipped = 0;
+const registeredTests = [];
 
+// Tests register here and run sequentially in the async runner at the bottom
+// (top-level await is unavailable in CJS, and the carry/commit I/O is async).
 function test(name, fn) {
-	try {
-		fn();
-		console.log(`  ✅ ${name}`);
-		passed++;
-	} catch (e) {
-		if (e && e.__piSkip) {
-			console.log(`  ⏭  ${name} (skipped: ${e.message})`);
-			skipped++;
-			return;
+	registeredTests.push({ name, fn });
+}
+
+async function runTests() {
+	for (const { name, fn } of registeredTests) {
+		try {
+			await fn();
+			console.log(`  ✅ ${name}`);
+			passed++;
+		} catch (e) {
+			if (e && e.__piSkip) {
+				console.log(`  ⏭  ${name} (skipped: ${e.message})`);
+				skipped++;
+				continue;
+			}
+			console.log(`  ❌ ${name}`);
+			console.log(`     ${e.message}`);
+			failed++;
 		}
-		console.log(`  ❌ ${name}`);
-		console.log(`     ${e.message}`);
-		failed++;
 	}
 }
 
@@ -326,7 +352,7 @@ function cleanupWorktree(parentDir, result) {
 
 // Real temp repo + real `git worktree add` + real carry (with snapshot), then
 // the phaseFn runs the subagent phase + preCommitSteps mirror + assertions.
-function withCarryFlow(opts, baselineFn, setupFn, phaseFn) {
+async function withCarryFlow(opts, baselineFn, setupFn, phaseFn) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-filter-repo-"));
 	let result = null;
 	try {
@@ -335,8 +361,8 @@ function withCarryFlow(opts, baselineFn, setupFn, phaseFn) {
 		git(dir, ["add", "-A"]);
 		git(dir, ["commit", "-q", "-m", "baseline"]);
 		setupFn(dir, git);
-		result = createWorktreeMirror(dir, newSessionId(), opts.baseRef, opts.carryUncommitted ?? true);
-		phaseFn(result, dir, git);
+		result = await createWorktreeMirror(dir, newSessionId(), opts.baseRef, opts.carryUncommitted ?? true);
+		await phaseFn(result, dir, git);
 	} finally {
 		cleanupWorktree(dir, result);
 		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
@@ -351,54 +377,54 @@ const defaultBaseline = (dir) => {
 
 const SUBJECT = "subagent(implement): test";
 
-// ── The 12-row matrix ──────────────────────────────────────────────────────
+// ── The matrix below ───────────────────────────────────────────────────────
 
-test("1. carried file read-only (never edited) — not in diff; no commit", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("1. carried file read-only (never edited) — not in diff; no commit", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "plan.md"), "v2\n"); // parent uncommitted edit
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		eq(fs.readFileSync(path.join(wt, "plan.md"), "utf8"), "v2\n", "carried bytes present");
 		fs.readFileSync(path.join(wt, "plan.md"), "utf8"); // subagent reads, never edits
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "no commit produced");
 		eq(commitCount(dir), "1", "branch still at baseline");
 		eq(git(wt, ["diff", "--cached", "--name-only"]).trim(), "", "carried file not staged");
 	});
 });
 
-test("2. carried file edited by subagent — in diff; committed", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("2. carried file edited by subagent — in diff; committed", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "plan.md"), "v2\n");
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		fs.writeFileSync(path.join(wt, "plan.md"), "v3\n"); // subagent edit
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, true, "changes committed");
 		eq(git(wt, ["show", "HEAD:plan.md"]), "v3\n", "edit landed on the branch");
 	});
 });
 
-test("3. subagent-created new file — committed (carried file still filtered)", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("3. subagent-created new file — committed (carried file still filtered)", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "plan.md"), "v2\n");
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		fs.writeFileSync(path.join(wt, "new.txt"), "subagent work\n");
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, true, "new file committed");
 		eq(git(wt, ["show", "HEAD:new.txt"]), "subagent work\n");
 		eq(git(wt, ["show", "HEAD:plan.md"]), "v1\n", "untouched carried file NOT on branch");
 	});
 });
 
-test("4. carried deletion untouched (still absent) — deletion NOT staged; file present on branch", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("4. carried deletion untouched (still absent) — deletion NOT staged; file present on branch", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.rmSync(path.join(dir, "gone.txt")); // parent uncommitted deletion
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		assert.ok(!fs.existsSync(path.join(wt, "gone.txt")), "carried deletion absent in worktree");
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "no commit produced");
 		eq(commitCount(dir), "1", "branch still at baseline");
 		eq(git(wt, ["diff", "--cached", "--name-only"]).trim(), "", "deletion not staged");
@@ -406,51 +432,51 @@ test("4. carried deletion untouched (still absent) — deletion NOT staged; file
 	});
 });
 
-test("5. carried deletion undone (recreated with content) — committed", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("5. carried deletion undone (recreated with content) — committed", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.rmSync(path.join(dir, "gone.txt"));
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		fs.writeFileSync(path.join(wt, "gone.txt"), "recreated\n"); // subagent undoes the deletion
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, true, "recreated file committed");
 		eq(git(wt, ["show", "HEAD:gone.txt"]), "recreated\n");
 	});
 });
 
-test("6. carried symlink untouched — not committed", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("6. carried symlink untouched — not committed", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.symlinkSync("target.txt", path.join(dir, "mylink")); // parent untracked symlink
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		const snap = result.carried.get("mylink");
 		assert.ok(snap, "symlink in snapshot");
 		eq(snap.hash, "link:target.txt", "snapshot hash is the link prefix + target");
 		assert.ok(fs.lstatSync(path.join(wt, "mylink")).isSymbolicLink(), "carried as link");
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "no commit produced");
 		eq(commitCount(dir), "1");
 		eq(git(wt, ["diff", "--cached", "--name-only"]).trim(), "", "symlink not staged");
 	});
 });
 
-test("7. carried file + subagent WO-x.md scratch — both filtered; no commit", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("7. carried file + subagent WO-x.md scratch — both filtered; no commit", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "plan.md"), "v2\n");
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		fs.writeFileSync(path.join(wt, "WO-2026-999.md"), "# scratch the subagent wrote\n");
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "no commit produced");
 		eq(commitCount(dir), "1");
 		eq(git(wt, ["diff", "--cached", "--name-only"]).trim(), "", "neither the WO doc nor the carried file staged");
 	});
 });
 
-test("8. rs.carried null (carryUncommitted:false) — old behavior, unchanged", () => {
-	withCarryFlow({ carryUncommitted: false }, defaultBaseline, (dir) => {
+test("8. rs.carried null (carryUncommitted:false) — old behavior, unchanged", async () => {
+	await withCarryFlow({ carryUncommitted: false }, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "plan.md"), "v2\n");
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		// This asserts the createWorktree return SHAPE (no `carried` key when
 		// carry is skipped) — the pipeline-level null is asserted below by
@@ -458,68 +484,68 @@ test("8. rs.carried null (carryUncommitted:false) — old behavior, unchanged", 
 		// default in production (spawnSubagent: carriedSnapshot ?? null).
 		eq(result.carried, undefined, "no snapshot when carry skipped");
 		fs.writeFileSync(path.join(wt, "new.txt"), "work\n");
-		const hadChanges = preCommitStepsMirror(wt, null, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, null, SUBJECT);
 		eq(hadChanges, true, "commit proceeds as before");
 		eq(git(wt, ["show", "HEAD:new.txt"]), "work\n");
 	});
 });
 
-test("9. empty carried map — no-op", () => {
-	withCarryFlow({}, defaultBaseline, () => { /* clean parent tree → empty snapshot */ }, (result, dir) => {
+test("9. empty carried map — no-op", async () => {
+	await withCarryFlow({}, defaultBaseline, () => { /* clean parent tree → empty snapshot */ }, async (result, dir) => {
 		const wt = result.worktreePath;
 		assert.ok(result.carried, "snapshot present (empty map) even with no changes");
 		eq(result.carried.size, 0, "empty map");
 		fs.writeFileSync(path.join(wt, "new.txt"), "work\n");
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, true, "no-op filter, commit proceeds");
 		eq(git(wt, ["show", "HEAD:new.txt"]), "work\n");
 	});
 });
 
-test("10. path with a space, carried & untouched — not committed (args-array reset)", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("10. path with a space, carried & untouched — not committed (args-array reset)", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "my file.txt"), "spaced\n"); // parent untracked
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		assert.ok(result.carried.has("my file.txt"), "spaced path in snapshot");
 		eq(fs.readFileSync(path.join(wt, "my file.txt"), "utf8"), "spaced\n");
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "no commit produced");
 		eq(commitCount(dir), "1");
 		eq(git(wt, ["diff", "--cached", "--name-only"]).trim(), "", "spaced path not staged");
 	});
 });
 
-test("11. carried file edited then reverted to identical bytes — treated as untouched; no commit", () => {
-	withCarryFlow({}, defaultBaseline, (dir) => {
+test("11. carried file edited then reverted to identical bytes — treated as untouched; no commit", async () => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "plan.md"), "v2\n");
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		fs.writeFileSync(path.join(wt, "plan.md"), "v3\n"); // edit
 		fs.writeFileSync(path.join(wt, "plan.md"), "v2\n"); // revert to exact carried bytes
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "net-zero edit is untouched — no commit");
 		eq(commitCount(dir), "1");
 	});
 });
 
-test("12. filter failure (carried file unreadable) — preCommitSteps continues; commit proceeds", () => {
+test("12. filter failure (carried file unreadable) — preCommitSteps continues; commit proceeds", async () => {
 	const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 	if (isRoot) {
 		// chmod 000 does not make a file unreadable to root, so the filter
 		// cannot be made to fail; count it as skipped rather than passed.
 		skip("running as root — chmod 000 does not make a file unreadable");
 	}
-	withCarryFlow({}, defaultBaseline, (dir) => {
+	await withCarryFlow({}, defaultBaseline, (dir) => {
 		fs.writeFileSync(path.join(dir, "plan.md"), "v2\n");
-	}, (result, dir) => {
+	}, async (result, dir) => {
 		const wt = result.worktreePath;
 		const carriedFile = path.join(wt, "plan.md");
 		// Stage while readable (git add cannot read a chmod-000 file), then
 		// break readability so hashCarriedFile fails mid-filter.
 		git(wt, ["add", "-A"]);
 		fs.chmodSync(carriedFile, 0o000);
-		applyCarryFilter(wt, result.carried); // must not throw
+		await applyCarryFilter(wt, result.carried); // must not throw
 		const staged = git(wt, ["diff", "--cached", "--name-only"]).trim();
 		assert.ok(staged.includes("plan.md"), "unverifiable carried file stays staged");
 		const hadChanges = commitIfChanges(wt, SUBJECT);
@@ -536,8 +562,8 @@ test("12. filter failure (carried file unreadable) — preCommitSteps continues;
 // false) yet the branch HEAD moved past the parent — deleting it orphans the
 // work (the Threefry branch-loss incident, 2026-08-08).
 
-test("13. subagent self-commits (nothing left staged) — branch PRESERVED (hadChanges=false, HEAD moved)", () => {
-	withCarryFlow({}, defaultBaseline, () => {}, (result, dir) => {
+test("13. subagent self-commits (nothing left staged) — branch PRESERVED (hadChanges=false, HEAD moved)", async () => {
+	await withCarryFlow({}, defaultBaseline, () => {}, async (result, dir) => {
 		const wt = result.worktreePath;
 		// The subagent commits its own work before completing (tfd WOs and model
 		// behavior both do this; observed 2026-08-08 in the Threefry branch-loss
@@ -545,7 +571,7 @@ test("13. subagent self-commits (nothing left staged) — branch PRESERVED (hadC
 		fs.writeFileSync(path.join(wt, "self.txt"), "subagent work\n");
 		git(wt, ["add", "-A"]);
 		git(wt, ["commit", "-q", "-m", "subagent's own commit"]);
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "nothing left staged for the harness to auto-commit");
 		const finalCommit = git(wt, ["rev-parse", "HEAD"]).trim();
 		assert.notStrictEqual(finalCommit, result.parentHeadCommit, "branch HEAD moved past the parent");
@@ -554,11 +580,11 @@ test("13. subagent self-commits (nothing left staged) — branch PRESERVED (hadC
 	});
 });
 
-test("14. no commits at all (read-only scout) — branch deleted (finalCommit === parentHeadCommit)", () => {
-	withCarryFlow({}, defaultBaseline, () => {}, (result, dir) => {
+test("14. no commits at all (read-only scout) — branch deleted (finalCommit === parentHeadCommit)", async () => {
+	await withCarryFlow({}, defaultBaseline, () => {}, async (result, dir) => {
 		const wt = result.worktreePath;
 		fs.readFileSync(path.join(wt, "target.txt"), "utf8"); // read-only, never edits
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, false, "no commit produced");
 		const finalCommit = git(wt, ["rev-parse", "HEAD"]).trim();
 		eq(finalCommit, result.parentHeadCommit, "branch still at parent commit");
@@ -567,11 +593,11 @@ test("14. no commits at all (read-only scout) — branch deleted (finalCommit ==
 	});
 });
 
-test("15. harness auto-commit (hadChanges=true) — branch PRESERVED", () => {
-	withCarryFlow({}, defaultBaseline, () => {}, (result, dir) => {
+test("15. harness auto-commit (hadChanges=true) — branch PRESERVED", async () => {
+	await withCarryFlow({}, defaultBaseline, () => {}, async (result, dir) => {
 		const wt = result.worktreePath;
 		fs.writeFileSync(path.join(wt, "work.txt"), "uncommitted subagent work\n");
-		const hadChanges = preCommitStepsMirror(wt, result.carried, SUBJECT);
+		const hadChanges = await preCommitStepsMirror(wt, result.carried, SUBJECT);
 		eq(hadChanges, true, "harness auto-committed the staged change");
 		const finalCommit = git(wt, ["rev-parse", "HEAD"]).trim();
 		assert.notStrictEqual(finalCommit, result.parentHeadCommit, "branch HEAD moved past the parent");
@@ -581,5 +607,7 @@ test("15. harness auto-commit (hadChanges=true) — branch PRESERVED", () => {
 });
 
 // ── Result ─────────────────────────────────────────────────────────────────
-console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}`);
-process.exit(failed === 0 ? 0 : 1);
+runTests().then(() => {
+	console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}`);
+	process.exit(failed === 0 ? 0 : 1);
+});
