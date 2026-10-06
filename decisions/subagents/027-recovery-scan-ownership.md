@@ -92,6 +92,17 @@ is not a regression.
 - `unref` is about the *recovery* connection only. The spawn handles must stay
   referenced so a parent waits for its own child.
 
+**Ratified (orchestrator, 2026-10-06).** The work order's acceptance (c) — a
+new *process* recovering a dead owner's orphan — is not satisfiable and never
+was: the socket server lives in the owning process, so it dies with it and a
+new process's `connect` gets ECONNREFUSED. Recovery means same-process session
+replacement (`/reload`, `/new`) plus dead-owner socket cleanup, which is what
+the scan can serve; the process-death reading is dropped rather than
+implemented. Verified end-to-end after the merge: with a live foreign subagent
+socket present, a `pi -p` run that dispatches its own child exits on that
+child's completion (dispatch 7s → exit 27s), zero stale-ctx errors, zero
+"[Isolation] Recovered" deliveries.
+
 **Files changed:** `extensions/subagent-async/index.ts` (owner record via
 `buildSpawnMeta` at the spawn `writeMetaJson` call, `processStartToken` /
 `selfStartToken` / `isOwnerAlive` / `decideRecoveryAdoption`, extracted
