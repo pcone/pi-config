@@ -441,6 +441,32 @@ const running = new Map<string, RunningSubagent>();
 /** @internal test hook — allows tests to inject entries into the running map. */
 export const _testRunning = running;
 
+// ── Live-session ctx ───────────────────────────────────────────────────────
+//
+// The ctx of the currently-live pi session, or null when no session is live
+// (print-mode dispose, reload, quit). Async subagent callbacks — the child's
+// socket `data` handler, its process close handler, stale-turn timers —
+// outlive the turn that spawned them, so they must never use a captured
+// spawn-time ctx: pi invalidates it when the session ends and any `ctx.ui`
+// access then throws "This extension ctx is stale after session replacement
+// or reload", which crashes the process from inside a socket handler. Set in
+// `session_start`; cleared in `session_shutdown`, which pi emits BEFORE
+// `ExtensionRunner.invalidate` — see
+// decisions/subagents/026-subagent-events-after-session-disposal.md.
+let liveSessionCtx: any = null;
+
+/** @internal test hook — the live-session ctx (null when no session is live). */
+export function _testLiveSessionCtx(): any {
+	return liveSessionCtx;
+}
+
+/** @internal test hook — set/clear the live-session ctx without a real pi
+ *  session. Mirrors the `session_start`/`session_shutdown` lifecycle for
+ *  tests that exercise delivery against a live session. */
+export function _testSetLiveSessionCtx(ctx: any): void {
+	liveSessionCtx = ctx;
+}
+
 // Active wait timer — set when `wait` is called with the optional `seconds`
 // parameter. We hold a single module-level handle because at most one wait
 // can be active at a time (the tool terminates the turn, so the next call
@@ -484,6 +510,17 @@ export function resolveRunningSession(sessionId: string): RunningSubagent | null
 
 let attachedSessionId: string | null = null;
 let _attachCtx: any = null; // captured from /attach command for editor-internal notify
+
+/** @internal test hook — set/clear the attach state without driving /attach. */
+export function _testSetAttachState(sessionId: string | null, ctx: any = null): void {
+	attachedSessionId = sessionId;
+	_attachCtx = ctx;
+}
+
+/** @internal test hook — the currently attached session id (null when detached). */
+export function _testAttachSessionId(): string | null {
+	return attachedSessionId;
+}
 
 function newProgress(): SubagentProgress {
 	return {
@@ -1585,7 +1622,7 @@ async function spawnSubagent(
 				if (promptTokens > 0) {
 					rs.usageStats.latestCacheHitRate = (msg.usage.cacheRead / promptTokens) * 100;
 				}
-				updateFooter(ctx);
+				updateFooter();
 
 				// Soft turn nudge: warn once near the hard cap so the agent can wrap
 				// up with a partial result instead of being hard-killed mid-task.
@@ -1695,8 +1732,8 @@ async function spawnSubagent(
 					// restore the default editor and clear the attach widget
 					// so it isn't orphaned after the child completes.
 					if (attachedSessionId === sessionId) {
-						detach(ctx);
-						ctx.ui.notify(`Subagent ${sessionId.slice(-8)} ended — detached.`, "info");
+						detach();
+						notifyChildDetached(rs);
 					}
 
 					if (rs.stdin && !rs.stdin.destroyed) {
@@ -1791,8 +1828,8 @@ async function spawnSubagent(
 		// editor so it isn't orphaned. The isDone path above handles the
 		// normal-completion case; this catches abnormal termination.
 		if (attachedSessionId === sessionId) {
-			detach(ctx);
-			ctx.ui.notify(`Subagent ${sessionId.slice(-8)} ended — detached.`, "info");
+			detach();
+			notifyChildDetached(rs);
 		}
 
 		// Mark the session as no longer running BEFORE preCommitSteps (which
@@ -1800,7 +1837,7 @@ async function spawnSubagent(
 		// incorrectly reject with "already running" during the commit window
 		// for a session that has completed.
 		running.delete(sessionId);
-		updateFooter(ctx);
+		updateFooter();
 
 		// PRE-DELIVERY: commit-producing git steps (add, diff, commit, rev-parse).
 		// Split from post-delivery cleanup so the result reaches the parent
@@ -1828,7 +1865,7 @@ async function spawnSubagent(
 
 	proc.on("error", () => {
 		running.delete(sessionId);
-		updateFooter(ctx);
+		updateFooter();
 	});
 
 	// Send get_state BEFORE the initial prompt so we capture the child's
@@ -1918,7 +1955,7 @@ class AttachEditor extends CustomEditor {
 	handleInput(data: string): void {
 		// Escape → detach (restore default editor, clear widget, clear state)
 		if (matchesKey(data, Key.escape)) {
-			if (_attachCtx) detach(_attachCtx);
+			if (_attachCtx) detach();
 			return;
 		}
 
@@ -2004,15 +2041,27 @@ class AttachLogViewer {
  * Internal detach routine. Restores the default editor, clears the attach
  * widget, resets module state, and updates the footer. Idempotent — safe to
  * call when not attached (no-op).
+ *
+ * Post-turn callers (auto-detach in the child's message_end / close handlers)
+ * may run after the spawning session ended, so this NEVER touches a captured
+ * spawn-time ctx — it routes UI restore/clear through the live-session ctx and
+ * skips the UI work when there is none. Module attach state is always reset so
+ * a later session doesn't inherit a stale attach target.
+ *
+ * Exported as an @internal test hook so the no-live-session guard can be
+ * exercised directly.
  */
-function detach(ctx: any): void {
+export function detach(): void {
 	if (attachedSessionId === null) return;
-	ctx.ui.setEditorComponent(undefined);
-	ctx.ui.setWidget("subagent-attach", undefined);
+	const ctx = liveSessionCtx;
+	if (ctx) {
+		ctx.ui.setEditorComponent(undefined);
+		ctx.ui.setWidget("subagent-attach", undefined);
+		ctx.ui.setStatus("subagent-attach", undefined);
+	}
 	attachedSessionId = null;
 	_attachCtx = null;
-	ctx.ui.setStatus("subagent-attach", undefined);
-	updateFooter(ctx);
+	updateFooter();
 }
 
 // ── Tool action formatting ─────────────────────────────────────────────────
@@ -2044,14 +2093,24 @@ function formatToolAction(toolName: string, args: Record<string, any>): string {
 /** Arm the stalled-turn watchdog for `rs`. Each assistant turn resets
  *  it via bumpStaleWatchdog; if it fires, a wake-up is delivered to the
  *  caller without killing the subagent — they decide whether to
- *  continue, inspect, or stop. */
-function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
+ *  continue, inspect, or stop. The wake-up is skipped when no live session
+ *  exists (the timer can outlive the spawning session; `pi` is invalidated
+ *  with the ctx). Exported as an @internal test hook. */
+export function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 	if (rs.staleTimer) clearTimeout(rs.staleTimer);
 	rs.staleTimer = setTimeout(() => {
 		rs.staleTimer = null;
 		// Skip if the subagent already finished between the timer fire
 		// and our callback running — completion delivers its own message.
 		if (rs.isDone || !running.has(rs.sessionId)) return;
+		// Post-turn async path: the spawning session may have ended while the
+		// child ran. pi invalidates its ExtensionAPI alongside the ctx, so
+		// `pi.sendUserMessage` below would throw uncaught from this timer.
+		// No live session → no receiver for a stall wake-up; skip.
+		if (!liveSessionCtx) {
+			debugLog(`stale-watchdog: no live session — skipping wake-up for ${rs.sessionId}`);
+			return;
+		}
 		// If the subagent is parked in a nested wait (it dispatched a child
 		// and is blocked on it), the stall is expected — soften the message
 		// so the caller doesn't reach for subagent_stop prematurely. The
@@ -2360,6 +2419,16 @@ export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: 
  *  @internal test hook so the delivered-marker contract (WO-2026-043
  *  integration contract) can be exercised with a stub `ExtensionAPI`. */
 export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
+	// No live session → the parent cannot receive the result. pi invalidates
+	// its ExtensionAPI alongside the ctx, so `pi.sendUserMessage` would throw
+	// from inside the child's close handler. Skip deliberately (not a
+	// try/catch): the child's own session file and
+	// /tmp/pi-subagent-<id>.log retain the full output.
+	// See decisions/subagents/026-subagent-events-after-session-disposal.md.
+	if (!liveSessionCtx) {
+		debugLog(`deliverResult: no live session — dropping result for ${rs.sessionId} (output retained in ${rs.logPath})`);
+		return;
+	}
 	const output = getFinalOutput(rs.messages) || "(no output)";
 
 	const wasAborted = exitCode !== 0 && rs.progress.turns < MAX_TURNS_HARD;
@@ -2399,17 +2468,36 @@ export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: n
 
 // ── Footer ─────────────────────────────────────────────────────────────────
 
-function updateFooter(ctx: any): void {
+/** Update the subagent footer on the LIVE session. Post-turn async callers
+ *  (socket data handlers, child close handlers) may run after the spawning
+ *  session ended, when the captured spawn-time ctx is invalidated — so this
+ *  reads the live-session ctx and no-ops when there is none. Exported as an
+ *  @internal test hook. */
+export function updateFooter(): void {
 	reconcileSleepGuards();
+	// No live session → nothing to render on. Deliberately not a try/catch:
+	// an explicit liveness check, per
+	// decisions/subagents/026-subagent-events-after-session-disposal.md.
+	if (!liveSessionCtx) return;
 	if (running.size === 0) {
-		ctx.ui.setStatus("subagent-async", undefined);
+		liveSessionCtx.ui.setStatus("subagent-async", undefined);
 		return;
 	}
 	const parts: string[] = [];
 	for (const rs of running.values()) {
 		parts.push(`${rs.agentName} (${rs.progress.turns}t)`);
 	}
-	ctx.ui.setStatus("subagent-async", `subagents: ${parts.join(", ")}`);
+	liveSessionCtx.ui.setStatus("subagent-async", `subagents: ${parts.join(", ")}`);
+}
+
+/** Notify the parent that an attached subagent ended. Post-turn async path —
+ *  the child can outlive the session that spawned it, so this notifies only
+ *  while a live session ctx exists (mirrors `updateFooter`/`deliverResult`).
+ *  The captured spawn-time ctx is never used here. Exported as an @internal
+ *  test hook. */
+export function notifyChildDetached(rs: RunningSubagent): void {
+	if (!liveSessionCtx) return;
+	liveSessionCtx.ui.notify(`Subagent ${rs.sessionId.slice(-8)} ended — detached.`, "info");
 }
 
 // ── Extension entry point ──────────────────────────────────────────────────
@@ -2418,6 +2506,10 @@ export default function (pi: ExtensionAPI) {
 	// ── Session lifecycle ──────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Track the live-session ctx before anything else can touch the UI.
+		// Every post-turn async path (footer, delivery, child-end notify,
+		// attach cleanup) reads this instead of a captured spawn-time ctx.
+		liveSessionCtx = ctx;
 		try {
 			const agents = discoverAgents(ctx.cwd, "user").agents;
 			const agentNames = agents.map((agent) => agent.name).sort();
@@ -2515,7 +2607,7 @@ export default function (pi: ExtensionAPI) {
 						/* already gone */
 					}
 					running.delete(sid);
-					updateFooter(ctx);
+					updateFooter();
 				});
 				sock.on("close", () => {
 					rs.sockClients.delete(sock);
@@ -2533,17 +2625,21 @@ export default function (pi: ExtensionAPI) {
 					} catch {}
 					deliverResult(pi, rs, 0, `\n[Isolation] Recovered from previous session.`);
 					running.delete(sid);
-					updateFooter(ctx);
+					updateFooter();
 				});
 
 				rs.sockClients.add(sock);
 				running.set(sid, rs);
-				updateFooter(ctx);
+				updateFooter();
 			}
 		} catch { /* best-effort */ }
 	});
 
 	pi.on("session_shutdown", () => {
+		// Clear the live-session ctx. pi emits this BEFORE invalidating the
+		// extension runner, so async child callbacks that observe a null ctx
+		// skip UI/delivery instead of throwing on a stale ctx.
+		liveSessionCtx = null;
 		// Don't kill subagents — they survive parent reloads/restarts.
 		// Their work commits to branches and is recoverable via git merge.
 		// Socket servers and log files persist at /tmp/pi-subagent-<sid>.*
@@ -2611,7 +2707,7 @@ export default function (pi: ExtensionAPI) {
 			// Empty arg while attached → convenience detach
 			if (!sid) {
 				if (attachedSessionId !== null) {
-					detach(ctx);
+					detach();
 					ctx.ui.notify("Detached.", "info");
 					return;
 				}
@@ -2688,7 +2784,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Not currently attached.", "info");
 				return;
 			}
-			detach(ctx);
+			detach();
 			ctx.ui.notify("Detached.", "info");
 		},
 	});
@@ -2976,7 +3072,7 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			updateFooter(ctx);
+			updateFooter();
 
 			return {
 				content: [
@@ -3250,7 +3346,7 @@ export default function (pi: ExtensionAPI) {
 			);
 
 			running.set(sid, rs);
-			updateFooter(ctx);
+			updateFooter();
 
 			// 6. DO NOT record a new reviewer-spawn tracker entry. The original
 			// spawn already recorded it; resume continues the same logical session.
@@ -3350,6 +3446,14 @@ export default function (pi: ExtensionAPI) {
 				// running.size here is belt-and-braces in case the callback
 				// was already queued.
 				if (running.size === 0) return;
+				// Post-turn async path: the spawning session may have ended while
+				// the timer was pending. pi invalidates its ExtensionAPI alongside
+				// the ctx, so `pi.sendUserMessage` below would throw uncaught from
+				// this timer. No live session → no receiver for a wait wake-up.
+				if (!liveSessionCtx) {
+					debugLog(`wait-timer: no live session — skipping wake-up`);
+					return;
+				}
 				const liveNames = [...running.values()].map((rs) => `${rs.agentName} (${rs.sessionId.slice(-8)})`);
 				pi.sendUserMessage(
 					`[wait timer] ${seconds}s elapsed — ${running.size} subagent${running.size === 1 ? "" : "s"} still running: ${liveNames.join(", ")}. If concerned about direction, use subagent_status to inspect or subagent_steer to redirect. If you trust the work, call wait() again with no argument to keep waiting.`,

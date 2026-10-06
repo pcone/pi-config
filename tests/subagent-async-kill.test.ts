@@ -58,6 +58,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import extension, {
 	dispatchKillSignals,
 	deliverCloseResult,
+	_testSetLiveSessionCtx,
 	_testRunning,
 } from "../extensions/subagent-async/index.ts";
 
@@ -97,6 +98,13 @@ function restoreSetTimeout(): void {
 }
 
 afterEach(restoreSetTimeout);
+
+// The liveness contract (decision 026): `deliverResult` only sends on a live
+// session. Tests below that exercise the delivery path must declare one; this
+// teardown keeps the module state clean for the next test.
+afterEach(() => {
+	_testSetLiveSessionCtx(null);
+});
 
 /** Build a RunningSubagent-shaped stub. `proc` is injected separately so
  *  tests can pass a live stub, an already-dead stub, or null (recovered). */
@@ -373,6 +381,8 @@ describe("deliverCloseResult (single owner of delivery)", () => {
 	});
 
 	it("11: kill/completion path delivers exactly one user message carrying the kill marker", () => {
+		// A live session is required for delivery (decision 026).
+		_testSetLiveSessionCtx({ ui: {} });
 		const sent: string[] = [];
 
 		// kill-tool via on a recovered (null-proc) session.
