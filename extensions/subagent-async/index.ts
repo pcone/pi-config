@@ -561,6 +561,89 @@ export function describeUnknownSession(idQuery: string): string {
 }
 
 /**
+ * The working directory pi recorded in a session file's header, or null when
+ * the file is unreadable or carries no cwd. pi refuses to resume a session
+ * whose stored cwd is missing, and in rpc mode there is no prompt to choose a
+ * replacement — the child exits 1 before its first turn.
+ * @for-testing-only — pure over the filesystem
+ */
+export function readSessionCwd(sessionFile: string): string | null {
+	try {
+		const fd = fs.openSync(sessionFile, "r");
+		let buf: Buffer;
+		try {
+			// The header is the first line; 16KB is far beyond its real size and
+			// avoids reading a multi-megabyte transcript to reach it.
+			buf = Buffer.alloc(16 * 1024);
+			const n = fs.readSync(fd, buf, 0, buf.length, 0);
+			buf = buf.subarray(0, n);
+		} finally {
+			fs.closeSync(fd);
+		}
+		const firstLine = buf.toString("utf-8").split("\n", 1)[0];
+		const header = JSON.parse(firstLine);
+		// Mirror pi's header acceptance (parseSessionHeaderCandidate: type
+		// "session" + a string id). A line 1 that pi does not recognize as the
+		// header is not what pi reads the cwd from — it falls back to its own
+		// cwd — so refusing on that cwd could block a resume pi would accept.
+		if (header?.type !== "session" || typeof header.id !== "string") return null;
+		return typeof header.cwd === "string" && header.cwd.trim() ? header.cwd : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Validate a meta object read from disk for resume. Returns either
+ * { ok: true } or { ok: false, error, isError }. Module scope so tests can
+ * cover every error path without spawning real processes.
+ * @for-testing-only — pure over the filesystem
+ */
+export function validateResumeMeta(
+	meta: Record<string, any> | null,
+	sid: string,
+): { ok: true } | { ok: false; error: string; isError: boolean } {
+	if (!meta) {
+		return {
+			ok: false,
+			error: `No prior session found with id "${sid}". The session may have been purged or never existed. Spawn a fresh subagent instead.`,
+			isError: false,
+		};
+	}
+	if (!meta.sessionFile) {
+		return {
+			ok: false,
+			error: `Session file not captured for "${sid}". The original subagent may have crashed before reporting its session. Spawn a fresh subagent instead.`,
+			isError: true,
+		};
+	}
+	if (!fs.existsSync(meta.sessionFile)) {
+		return {
+			ok: false,
+			error: `Session file ${meta.sessionFile} no longer exists. Cannot resume.`,
+			isError: true,
+		};
+	}
+	// The stored cwd, not the spawn cwd, is what pi validates when the session
+	// file is opened. A missing one kills the child at startup, so say why and
+	// name the two ways out instead of reporting a 0-turn child that exited 1.
+	const storedCwd = readSessionCwd(meta.sessionFile);
+	if (storedCwd && !fs.existsSync(storedCwd)) {
+		return {
+			ok: false,
+			error:
+				`Cannot resume: the session's recorded working directory no longer exists.\n` +
+				`  recorded cwd: ${storedCwd}\n` +
+				`pi refuses to resume a session whose stored cwd is missing, and rpc mode has no prompt to pick another (the child would exit 1 before its first turn).\n` +
+				`Recreate it and retry:  mkdir -p "${storedCwd}"\n` +
+				`Or point it at a live checkout:  ln -s "<checkout>" "${storedCwd}"`,
+			isError: true,
+		};
+	}
+	return { ok: true };
+}
+
+/**
  * Resolve an orchestrator-supplied parent_session_id to the actual tracker
  * key. The orchestrator passes the RPC handle returned by the subagent
  * dispatch (e.g. `subagent-81f2a34c-...`). Since the handle is passed to
@@ -3622,39 +3705,6 @@ export default function (pi: ExtensionAPI) {
 	// RPC process that loads the existing session JSONL and continues
 	// from where the previous run stopped. Preserves the original agent
 	// config (tools, model, system prompt) from the spawn-time meta file.
-
-	/**
-	 * Validate a meta object read from disk for resume. Returns either
-	 * { ok: true } or { ok: false, error, isError }. Extracted so tests
-	 * can cover all error paths without spawning real processes.
-	 */
-	function validateResumeMeta(
-		meta: Record<string, any> | null,
-		sid: string,
-	): { ok: true } | { ok: false; error: string; isError: boolean } {
-		if (!meta) {
-			return {
-				ok: false,
-				error: `No prior session found with id "${sid}". The session may have been purged or never existed. Spawn a fresh subagent instead.`,
-				isError: false,
-			};
-		}
-		if (!meta.sessionFile) {
-			return {
-				ok: false,
-				error: `Session file not captured for "${sid}". The original subagent may have crashed before reporting its session. Spawn a fresh subagent instead.`,
-				isError: true,
-			};
-		}
-		if (!fs.existsSync(meta.sessionFile)) {
-			return {
-				ok: false,
-				error: `Session file ${meta.sessionFile} no longer exists. Cannot resume.`,
-				isError: true,
-			};
-		}
-		return { ok: true };
-	}
 
 	/**
 	 * Build an AgentConfig from persisted meta fields. Uses the stored
