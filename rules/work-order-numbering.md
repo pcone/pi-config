@@ -22,6 +22,14 @@ on it:
 2. **Reserve-then-dispatch.** Before spawning the implementer: commit the WO
    file (renumbered to the next free id, read after a fresh
    `git fetch <shared>`) and `git push <shared> <branch>`.
+   **Read the id from every live ref, not just the one you're on:** a
+   divergent line's `work-orders/` is invisible to your fetch until a merge
+   brings it over, which is how two sessions allocated `WO-2026-160` 103
+   seconds apart (2026-10-07) with both reservations already pushed — tfd-d's
+   at 22:20:10, the integration clone's at 22:21:53, because the integration
+   line had not merged tfd-d since 156. `git ls-tree --name-only
+   origin/<other-line> work-orders/` is part of allocating, not an optional
+   precaution.
 3. **Collisions with landed history: the claim with landed references
    keeps the id.** Reserve-by-push can't see un-rebased parallel lineages
    — a fifth board's WOs are invisible until their lineage lands (real case
@@ -33,7 +41,13 @@ on it:
    first: renumbering it cascades through its decision refs and chained WOs
    (082-088 in the same case), rewriting history. The losing claim renumbers
    itself and fixes only its own live references (dispatch text, roadmap
-   rows) — before its implementer lands anything.
+   rows) — before its implementer lands anything. **If the loser is already
+   dispatched when the collision surfaces** (the window is narrow but never
+   zero: you dispatch by pushing, and the other session may allocate in
+   between), the fix is mechanical: rename the file to the new id, steer the
+   in-flight implementer with the new path, and write the record fixes
+   (ledger, roadmap rows, dispatch text) into its gate commit rather than as
+   a separate one — so the id and its references move together.
 4. **Non-fast-forward rejection is the collision alarm.** On rejection:
    pull-merge; if the merge brought a WO holding your id, renumber to the new
    next-free id, rewrite the id inside the file (and any references), re-push.
