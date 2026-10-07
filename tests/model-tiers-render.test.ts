@@ -5,7 +5,7 @@
  * in rendered output and blended cost computation.
  */
 import { describe, it, expect } from "bun:test";
-import { renderTable, scoreModels, scoreAllModels, isValidCache } from "../extensions/model-tiers/index";
+import { renderTable, renderFullTable, scoreModels, scoreAllModels, isValidCache, applyFreeCutoff } from "../extensions/model-tiers/index";
 
 // ---------------------------------------------------------------------------
 // Synthetic AA-like benchmark data for blended-cost testing
@@ -263,7 +263,7 @@ describe("degenerate bounds", () => {
     expect(scored[0].avg).toBe(50);
   });
 
-  it("keeps scoreAllModels free of negative averages", () => {
+  it("keeps scoreAllModels partial rows on their published-axis averages", () => {
     const b = BENCH([
       { slug: "mock/a", i: 10, c: 20, a: 5 },
       { slug: "mock/b", i: 30, c: null, a: null },
@@ -271,6 +271,10 @@ describe("degenerate bounds", () => {
     ]);
     const scored = scoreAllModels(b, MODELS(["mock/a", "mock/b", "mock/c"]));
     expect(scored).toHaveLength(3);
+    const bySlug = Object.fromEntries(scored.map((m) => [m.slug, m]));
+    expect(bySlug["mock/b"].avg).toBeCloseTo(100, 5); // i at the axis max
+    expect(bySlug["mock/c"].avg).toBeCloseTo(100, 5); // c at the axis max
+    expect(bySlug["mock/a"].avg).toBeCloseTo(((0 + 0 + 0.5) / 3) * 100, 5);
     for (const m of scored) expect(m.avg).toBeGreaterThanOrEqual(0);
   });
 });
@@ -294,5 +298,122 @@ describe("cache validation", () => {
 
   it("rejects payloads whose data fields are not arrays", () => {
     expect(isValidCache({ fetchedAt: now, benchmarks: { data: {} }, models: { data: [] } }, now, 24 * 3600 * 1000)).toBe(false);
+  });
+
+  it("accepts a cache exactly at the TTL boundary and one with extra fields", () => {
+    expect(isValidCache({ ...payload, fetchedAt: now - 24 * 3600 * 1000, extra: 1 }, now, 24 * 3600 * 1000)).toBe(true);
+  });
+
+  it("accepts a future fetchedAt (clock skew) rather than calling it expired", () => {
+    expect(isValidCache({ ...payload, fetchedAt: now + 5000 }, now, 24 * 3600 * 1000)).toBe(true);
+  });
+
+  it("keeps the TTL at 24h and routes cache reads through isValidCache", async () => {
+    const src = await Bun.file("extensions/model-tiers/index.ts").text();
+    expect(src).toMatch(/CACHE_TTL_MS\s*=\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
+    expect(src).toMatch(/isValidCache\(parsed, Date\.now\(\), CACHE_TTL_MS\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rendering: cutoff, footers, tier picks
+// ---------------------------------------------------------------------------
+
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+/** Render-relevant ScoredModel fixture; `cost` is $/M (stored as $/token). */
+const rm = (name: string, avg: number, cost: number, missingAxes: Array<"intelligence" | "coding" | "agentic"> = []) => ({
+  name,
+  slug: name.toLowerCase().replace(/\s+/g, "-"),
+  avg,
+  intelligence: null,
+  coding: null,
+  agentic: null,
+  blendedCost: cost / 1e6,
+  promptPrice: 0,
+  completionPrice: 0,
+  cacheRead: 0,
+  valueScore: cost > 0 ? avg / cost : Number.MAX_SAFE_INTEGER,
+  multimodal: false,
+  missingAxes,
+});
+
+describe("free-tier cutoff", () => {
+  it("shows the frontier down to the first sub-$0.005/M model and counts the rest", () => {
+    const frontier = [rm("Paid A", 90, 0.5), rm("Paid B", 80, 0.1), rm("Free C", 70, 0), rm("Free D", 60, 0), rm("Free E", 50, 0)];
+    const { shown, hidden } = applyFreeCutoff(frontier);
+    expect(shown.map((m) => m.name)).toEqual(["Paid A", "Paid B", "Free C"]);
+    expect(hidden).toBe(2);
+  });
+
+  it("keeps the whole frontier when nothing is free", () => {
+    const { shown, hidden } = applyFreeCutoff([rm("Paid A", 90, 0.5), rm("Paid B", 80, 0.1)]);
+    expect(shown).toHaveLength(2);
+    expect(hidden).toBe(0);
+  });
+
+  it("handles an empty frontier", () => {
+    expect(applyFreeCutoff([])).toEqual({ shown: [], hidden: 0 });
+  });
+});
+
+describe("renderFullTable", () => {
+  it("marks partial rows and reports the hidden free-tier tail", () => {
+    const out = stripAnsi(
+      renderFullTable([rm("Paid A", 90, 0.5), rm("Partial B", 80, 0.1, ["coding", "agentic"])], 3, "ALL MODELS", 2),
+    );
+    expect(out).toContain("† ");
+    expect(out).toMatch(/… 2 more \(free-tier models\)/);
+    expect(out).not.toMatch(/\$0\.00\/M cutoff/);
+  });
+
+  it("returns an empty string for no models", () => {
+    expect(renderFullTable([], 0, "EMPTY")).toBe("");
+  });
+});
+
+describe("tier picks", () => {
+  // Same tier (85–94.9). Two free rows tie on valueScore; the avg tiebreak must
+  // pick the higher-avg free row, not the one earlier in the input.
+  const models = [rm("Perf A", 90, 0.5), rm("Free C", 85, 0), rm("Free B", 88, 0)];
+  const pick = (needle: string) => stripAnsi(renderTable(models, "T")).split("\n").find((l) => l.includes(needle)) ?? "";
+
+  it("assigns PERF, VALUE (free) and ALT deterministically", () => {
+    expect(pick("★ PERF")).toContain("Perf A");
+    expect(pick("★ VALUE")).toContain("Free B");
+    expect(pick("☆ ALT")).toContain("Free C");
+  });
+
+  it("renders identically across calls", () => {
+    expect(renderTable(models, "T")).toBe(renderTable(models, "T"));
+  });
+
+  it("renders an empty table without crashing", () => {
+    expect(renderTable([], "EMPTY")).toContain("EMPTY");
+  });
+
+  it("ignores :free and :batch variants, even when listed before the standard entry", () => {
+    const variantModels = {
+      data: [
+        { id: "vendor/model-b:batch", canonical_slug: "vendor/model-b-20260101", pricing: { prompt: "5", completion: "20" } },
+        { id: "vendor/model-b:free", canonical_slug: "vendor/model-b-20260101", pricing: { prompt: "0", completion: "0" } },
+        { id: "vendor/model-b", canonical_slug: "vendor/model-b-20260101", pricing: { prompt: "10", completion: "40", input_cache_read: "1" } },
+      ],
+    };
+    const scored = scoreModels(BENCH([{ slug: "vendor/model-b-20260101", name: "Model B", i: 60, c: 70, a: 50 }]), variantModels);
+    expect(scored[0].blendedCost).toBeCloseTo(1.7464, 5);
+  });
+});
+
+describe("threshold floors", () => {
+  const at = (i: number | null, c: number | null, a: number | null) => scoreModels(BENCH([{ slug: "mock/x", i, c, a }]), MODELS(["mock/x"]));
+
+  it("keeps rows exactly at a floor and drops the value one below it, per axis", () => {
+    expect(at(40, 60, 30)).toHaveLength(1);
+    expect(at(39, 60, 30)).toHaveLength(0);
+    expect(at(60, 56, 30)).toHaveLength(1);
+    expect(at(60, 55, 30)).toHaveLength(0);
+    expect(at(60, 60, 30)).toHaveLength(1);
+    expect(at(60, 60, 29)).toHaveLength(0);
   });
 });

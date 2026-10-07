@@ -403,6 +403,17 @@ function paretoFilter2D(models: ScoredModel[]): ScoredModel[] {
   });
 }
 
+/**
+ * /tiers stops at the first frontier model under $0.005/M: everything above it
+ * (better, possibly paid) stays visible; the free-and-worse tail is summarized.
+ * @for-testing-only — export is safe; pure (no IO, no pi globals)
+ */
+export function applyFreeCutoff(frontier: ScoredModel[]): { shown: ScoredModel[]; hidden: number } {
+  const firstFree = frontier.findIndex((m) => m.blendedCost * 1e6 < 0.005);
+  const shown = firstFree >= 0 ? frontier.slice(0, firstFree + 1) : frontier;
+  return { shown, hidden: frontier.length - shown.length };
+}
+
 // ---------------------------------------------------------------------------
 // Table rendering
 // ---------------------------------------------------------------------------
@@ -472,7 +483,8 @@ export function renderTable(models: ScoredModel[], title = "MODEL TIERS", oCostM
   return lines.join("\n");
 }
 
-function renderFullTable(models: ScoredModel[], dominatedCount: number, title: string, hiddenCount?: number, oCostMin?: number, oCostMax?: number, oScoreMin?: number, oScoreMax?: number): string {
+// @for-testing-only — export is safe; renderFullTable is pure (no IO, no pi globals)
+export function renderFullTable(models: ScoredModel[], dominatedCount: number, title: string, hiddenCount?: number, oCostMin?: number, oCostMax?: number, oScoreMin?: number, oScoreMax?: number): string {
   if (models.length === 0) return "";
 
   const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
@@ -669,19 +681,14 @@ export default async function (pi: ExtensionAPI) {
 
         // 2D Pareto on all models
         const allFrontier = paretoFilter2D(scored);
-        const firstFree = allFrontier.findIndex((m) => m.blendedCost * 1e6 < 0.005);
-        const allCut = firstFree >= 0 ? allFrontier.slice(0, firstFree + 1) : allFrontier;
+        const { shown: allCut, hidden: allHidden } = applyFreeCutoff(allFrontier);
 
         // 2D Pareto on image-supporting models only
         const imgModels = scored.filter((m) => m.multimodal);
         const imgFrontier = paretoFilter2D(imgModels);
-        const imgFirstFree = imgFrontier.findIndex((m) => m.blendedCost * 1e6 < 0.005);
-        const imgCut =
-          imgFirstFree >= 0 ? imgFrontier.slice(0, imgFirstFree + 1) : imgFrontier;
+        const { shown: imgCut, hidden: imgHidden } = applyFreeCutoff(imgFrontier);
 
         const removed = scored.length - allFrontier.length;
-        const allHidden = allFrontier.length - allCut.length;
-        const imgHidden = imgFrontier.length - imgCut.length;
         const left = renderFullTable(allCut, removed, "ALL MODELS (2D Pareto: score × cost)", allHidden);
         const right = renderFullTable(imgCut, 0, "IMAGE-SUPPORTING (2D Pareto: score × cost)", imgHidden);
 

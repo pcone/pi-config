@@ -44,9 +44,14 @@ drop partial rows (hides exactly the newest models the table exists to compare);
 fall back to the benchmark feed's own pricing (no cache-read rate — overstates cost
 and mixes pricing bases).
 
-**Validation:** `tests/model-tiers-render.test.ts` (23 tests) pins each rule. Live:
+**Validation:** `tests/model-tiers-render.test.ts` (36 tests) pins each rule, including the/tiers cutoff, hidden-tail label, tier picks and threshold floors. Live:
 Opus 5.5 tops the compact table at 100.0 `†`; GLM-5.3, GLM 5.3 Flash and GPT-6.1 Sol
 appear; DeepSeek V4.1 Flash prices at $0.0296/M.
+
+**Tradeoff:** a `†` row's average spans fewer axes, so it is not strictly
+comparable to a complete row's three-axis average. The marker keeps the model
+visible with that caveat rather than hiding it; filling the gap from a second
+source is the pending question below.
 
 **Pending:** whether to add BenchLM (`benchlm.ai/api/data/*`) as a second coverage
 source for coding/agentic — it already carries Opus 5.5 (coding 83.54 / agentic
