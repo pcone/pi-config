@@ -44,10 +44,15 @@ describe("subagentDepth", () => {
 		expect(subagentDepth({ PI_SUBAGENT_DEPTH: "2" })).toBe(2);
 	});
 
-	it("treats garbage, zero, and negatives as 0", () => {
-		expect(subagentDepth({ PI_SUBAGENT_DEPTH: "nope" })).toBe(0);
+	it("treats unset, empty, and zero depth as the root session (0)", () => {
+		expect(subagentDepth({})).toBe(0);
+		expect(subagentDepth({ PI_SUBAGENT_DEPTH: "" })).toBe(0);
 		expect(subagentDepth({ PI_SUBAGENT_DEPTH: "0" })).toBe(0);
-		expect(subagentDepth({ PI_SUBAGENT_DEPTH: "-3" })).toBe(0);
+	});
+
+	it("fails closed on malformed or negative stamps (deny, never grant)", () => {
+		expect(subagentDepth({ PI_SUBAGENT_DEPTH: "nope" })).toBe(MAX_ORCHESTRATOR_NESTING_DEPTH);
+		expect(subagentDepth({ PI_SUBAGENT_DEPTH: "-3" })).toBe(MAX_ORCHESTRATOR_NESTING_DEPTH);
 	});
 });
 
@@ -165,6 +170,13 @@ describe("subagent tool boundary (nesting cap wiring)", () => {
 
 	it("refuses an orchestrator spawn at depth 2 (the cap is wired, not just theorized)", async () => {
 		process.env.PI_SUBAGENT_DEPTH = "2";
+		const text = await textOf("orchestrator");
+		expect(text).toContain("capped at one level");
+		expect(text).toContain("PI_SUBAGENT_DEPTH=2");
+	});
+
+	it("fails closed at the tool when the depth stamp is malformed", async () => {
+		process.env.PI_SUBAGENT_DEPTH = "junk";
 		const text = await textOf("orchestrator");
 		expect(text).toContain("capped at one level");
 		expect(text).toContain("PI_SUBAGENT_DEPTH=2");

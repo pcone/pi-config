@@ -59,8 +59,9 @@ execution-polluted context. In practice the split did not hold:
 
 - **Nesting cap is mechanical.** `buildSubagentEnv` stamps
   `PI_SUBAGENT_DEPTH = parent depth + 1` on every spawn; the subagent
-  tool refuses `orchestrator` when the current depth is ≥ 2. Prompt
-  guidance mirrors it: depth 1 may nest, depth 2 must not.
+  tool refuses `orchestrator` when the current depth is ≥ 2 (malformed
+  stamps parse as at-cap: they deny, never grant). Prompt guidance
+  mirrors it: depth 1 may nest, depth 2 must not.
 - **Most work does not nest.** A single orchestrator dispatching
   implementers is the default; nesting is for large multi-step
   workstreams whose chunks are themselves large and independently
@@ -102,10 +103,18 @@ execution-polluted context. In practice the split did not hold:
   `subagent_review_status` check, no duplicate reviews.
 - Roadmap-doc ownership must be explicit. Mitigation: one-writer rule
   in the prompt; children report instead of writing.
-- Migration: a persisted `plan` mode (`.pi/mode.json`,
-  `~/.pi/agent/modes.json`) is no longer valid and falls back to
+- Migration: a persisted `plan` mode is no longer valid — the project
+  file parses to `null`, falls through the global file, and defaults to
   `implement`; the user re-selects `orchestrate`. One-time, not silent
   data loss.
+- `subagent_resume` stamps the resumed process at resumer depth + 1, so
+  it can create a depth-3 orchestrator *process*. It cannot gain
+  orchestrator-spawn rights (the dispatch gate keys on the process's own
+  stamped depth), so the invariant holds; this is why the prompt says
+  spawns are refused, not that depth-3 processes can't exist.
+- Rollout: an orchestrator process still running pre-deploy code spawns
+  unstamped children for one process generation; restart in-flight
+  sessions on deploy. Self-resolving after one generation.
 
 **Validation result:** Not yet validated in a live multi-chunk
 workstream. First use lands with this change; revisit if the single-role

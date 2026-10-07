@@ -27,7 +27,7 @@ export function nextMode(current: Mode): Mode {
 	return current === "implement" ? "orchestrate" : "implement";
 }
 
-/** Pure helper: mode guard. Accepts exactly the three mode strings (case-sensitive, no whitespace). */
+/** Pure helper: mode guard. Accepts exactly the two mode strings (case-sensitive, no whitespace). */
 export function isValidMode(s: string): s is Mode {
 	return s === "implement" || s === "orchestrate";
 }
@@ -74,7 +74,8 @@ Most work does not nest. When a workstream splits into large,
 separately parallelizable chunks, dispatch an \`orchestrator\` subagent
 per chunk — hand it a chunk spec, the roadmap pointer, and the
 resolved policy. That is the only nesting level: the children dispatch
-implementers, not further orchestrators (the harness refuses depth 3).
+implementers, not further orchestrators (the harness refuses orchestrator
+spawns at depth 2+).
 
 ## Roadmap ownership + reconcile rule
 

@@ -62,10 +62,11 @@ If you notice a cross-chunk dependency, conflict, or opportunity, act
 within your own chunk and flag it in `notes_for_orchestrator` for your
 dispatcher.
 
-**One writer per roadmap doc.** The doc's owner — your dispatcher, or
-you when the workstream is yours — reconciles it as chunks land.
-Parallel writers churning the same doc was the largest source of merge
-conflicts in decision 007's validation.
+**One writer per roadmap doc.** Your dispatcher owns the roadmap doc
+unless the handoff explicitly transfers it to you — owning a chunk
+never implies owning the doc. The doc's owner reconciles it as chunks
+land; parallel writers churning the same doc was the largest source of
+merge conflicts in decision 007's validation.
 
 ## Research: direct vs scout dispatch
 

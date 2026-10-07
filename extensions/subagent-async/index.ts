@@ -1349,11 +1349,14 @@ export function resolveGlobalAppendPrompt(
 /**
  * Decision 028: nesting depth of the *current* process. The root session
  * is 0; each subagent spawn adds one. Used to cap orchestrator nesting
- * at one level.
+ * at one level. Malformed stamps fail closed (deny, never grant).
  */
 export function subagentDepth(env: NodeJS.ProcessEnv = process.env): number {
-	const n = Number(env.PI_SUBAGENT_DEPTH ?? 0);
-	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+	const raw = env.PI_SUBAGENT_DEPTH;
+	if (raw === undefined || raw === "") return 0;
+	const n = Number(raw);
+	if (!Number.isFinite(n) || n < 0) return MAX_ORCHESTRATOR_NESTING_DEPTH;
+	return Math.floor(n);
 }
 
 /** Decision 028: the depth stamped on a child spawned by this process. */
@@ -1367,8 +1370,8 @@ export const MAX_ORCHESTRATOR_NESTING_DEPTH = 2;
 /**
  * Decision 028: refuse an `orchestrator` spawn from a process already at
  * the nesting cap. Returns the error text, or null when the dispatch is
- * allowed. Only orchestrators carry sub-spawn rights (allowlist), so no
- * other agent needs a depth cap.
+ * allowed. Only orchestrators can spawn orchestrators, so no other agent
+ * needs the depth cap.
  */
 export function subagentNestingBlock(agentName: string, depth: number): string | null {
 	if (agentName !== "orchestrator" || depth < MAX_ORCHESTRATOR_NESTING_DEPTH) return null;
