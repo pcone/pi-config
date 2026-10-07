@@ -35,9 +35,9 @@ Fields:
 
 Rules get injected into the model's context window. Every line counts.
 
-- **Keep under 100 lines.** Hard cap enforced by the extension (truncated
-  with warning). Use `<!-- allow-large -->` as the first non-empty line to
-  override.
+- **Keep under 150 lines.** The extension warns past 150 and truncates past
+  200. Use `<!-- allow-large -->` as the first non-empty line only when the rule
+  genuinely cannot be split.
 - **State the non-obvious only.** Don't restate what the code already shows.
 - **Reference external docs** (`see docs/foo.md` for details) rather than
   duplicating them inline.

@@ -21,6 +21,12 @@ import picomatch from "picomatch";
 
 const STARTUP_SUMMARY_EVENT = "pi-config:startup-summary-item";
 
+// Rules inject on first touch of a matching path; the caps keep one rule from crowding out the
+// task. Warn at WARN so the squeeze is visible while writing, truncate at MAX so a rule that grew
+// unchecked still loads. Prefer trimming to `<!-- allow-large -->`, which lifts both.
+const WARN_RULE_LINES = 150;
+const MAX_RULE_LINES = 200;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -171,13 +177,23 @@ export function loadRule(filePath: string, warnings: string[]): Rule | null {
     let effectiveBody = body;
     let effectiveLineCount = bodyLines.length;
 
-    if (effectiveLineCount > 100 && !allowLarge) {
+    if (
+      !allowLarge &&
+      effectiveLineCount > WARN_RULE_LINES &&
+      effectiveLineCount <= MAX_RULE_LINES
+    ) {
       warnings.push(
-        `Rule "${path.basename(filePath, ".md")}" (${effectiveLineCount} lines) truncated to 100. Add <!-- allow-large --> to override.`,
+        `Rule "${path.basename(filePath, ".md")}" is ${effectiveLineCount} lines; trim it before ${MAX_RULE_LINES}`,
       );
-      effectiveBody = bodyLines.slice(0, 100).join("\n");
-      effectiveBody += `\n\n...(content truncated at 100 lines; full rule is ${effectiveLineCount} lines. Read the file directly to see the full rule.)`;
-      effectiveLineCount = 100;
+    }
+
+    if (effectiveLineCount > MAX_RULE_LINES && !allowLarge) {
+      warnings.push(
+        `Rule "${path.basename(filePath, ".md")}" (${effectiveLineCount} lines) truncated to ${MAX_RULE_LINES}. Add <!-- allow-large --> to override.`,
+      );
+      effectiveBody = bodyLines.slice(0, MAX_RULE_LINES).join("\n");
+      effectiveBody += `\n\n...(content truncated at ${MAX_RULE_LINES} lines; full rule is ${effectiveLineCount} lines. Read the file directly to see the full rule.)`;
+      effectiveLineCount = MAX_RULE_LINES;
     }
 
     const name = path.basename(filePath, ".md");
@@ -465,8 +481,13 @@ export default function rulesExtension(pi: ExtensionAPI) {
       for (const r of sorted) {
         const status = inScope.has(r.name) ? " [active]" : "";
         const manual = r.disableModelInvocation ? " [manual]" : "";
-        const truncated =
-          !r.allowLarge && r.lineCount >= 100 ? " (truncated)" : "";
+        const truncated = r.allowLarge
+          ? ""
+          : r.lineCount > MAX_RULE_LINES
+            ? " (truncated)"
+            : r.lineCount > WARN_RULE_LINES
+              ? " (near cap)"
+              : "";
         const desc = r.description ? ` - ${r.description}` : "";
         const paths = r.paths?.length ? `  paths: ${r.paths.join(", ")}` : "";
         lines.push(

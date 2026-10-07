@@ -116,4 +116,31 @@ describe("loadRule — warnings", () => {
 		const { warnings } = load(ruleFile("disable-model-invocation: true"));
 		expect(warnings).toEqual([]);
 	});
+
+	const longRule = (lines: number) =>
+		`---\npaths: "**/*.tfd"\n---\n\n` +
+		Array.from({ length: lines }, (_, i) => `line ${i}`).join("\n");
+
+	it("warns past 150 lines without truncating the body", () => {
+		const { rule, warnings } = load(longRule(160));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("trim it before 200");
+		expect(rule?.body).toContain("line 159");
+	});
+
+	it("truncates past 200 lines and says so", () => {
+		const { rule, warnings } = load(longRule(260));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("truncated to 200");
+		expect(rule?.body).toContain("content truncated at 200 lines");
+		expect(rule?.body).not.toContain("line 259");
+	});
+
+	it("allow-large lifts both thresholds", () => {
+		const content = `---\npaths: "**/*.tfd"\n---\n<!-- allow-large -->\n\n` +
+			Array.from({ length: 260 }, (_, i) => `line ${i}`).join("\n");
+		const { rule, warnings } = load(content);
+		expect(warnings).toEqual([]);
+		expect(rule?.body).toContain("line 259");
+	});
 });
