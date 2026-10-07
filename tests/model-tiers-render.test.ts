@@ -352,6 +352,13 @@ describe("free-tier cutoff", () => {
     expect(hidden).toBe(0);
   });
 
+  it("treats exactly $0.005/M as paid, not free", () => {
+    const frontier = [rm("Paid A", 90, 0.5), rm("Boundary B", 80, 0.005), rm("Free C", 70, 0), rm("Free D", 60, 0)];
+    const { shown, hidden } = applyFreeCutoff(frontier);
+    expect(shown.map((m) => m.name)).toEqual(["Paid A", "Boundary B", "Free C"]);
+    expect(hidden).toBe(1);
+  });
+
   it("handles an empty frontier", () => {
     expect(applyFreeCutoff([])).toEqual({ shown: [], hidden: 0 });
   });
