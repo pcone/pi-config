@@ -32,6 +32,7 @@ interface ReadRegion {
 
 /** State passed from checkpoint tool → compaction hook → onComplete callback. */
 interface PendingCheckpoint {
+	summary: string;
 	next: string;
 	doContinue: boolean;
 	archivePath?: string;
@@ -54,6 +55,13 @@ const readRegions = new Map<string, ReadRegion[]>();
 
 /** Pending checkpoint data that bridges execute() → session_before_compact → onComplete. */
 let pendingCheckpoint: PendingCheckpoint | null = null;
+
+/**
+ * True once the checkpoint tool has stashed a request and the turn's tool
+ * results have not yet settled. `turn_end` consumes it: a later checkpoint
+ * call in the same turn replaces the data but only one compaction fires.
+ */
+let compactRequested = false;
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -294,6 +302,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", () => {
 		readRegions.clear();
 		pendingCheckpoint = null;
+		compactRequested = false;
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {
@@ -307,6 +316,49 @@ export default function (pi: ExtensionAPI) {
 		const regions = readRegions.get(key) ?? [];
 		regions.push({ offset, limit });
 		readRegions.set(key, regions);
+	});
+
+	// -- Compaction trigger ----------------------------------------------
+	// The checkpoint tool only stashes its request in execute(); compaction is
+	// triggered here, at the turn-end boundary. The SDK emits `turn_end` from
+	// agent-loop's runLoop *after* every tool result message has been emitted
+	// (message_end → SessionManager.appendMessage) and pushed into context, so
+	// the checkpoint call's own result is already persisted and no sibling tool
+	// execution is still in flight. Compacting from inside execute() instead
+	// disconnected the agent mid-batch, so the checkpoint result was never
+	// persisted and a late tool result attached to the compaction entry — the
+	// orphan-toolResult defect this guards against.
+	pi.on("turn_end", (_event, ctx) => {
+		if (!compactRequested) return;
+		compactRequested = false;
+		// Snapshot: onComplete/onError own clearing the pending data. A later
+		// checkpoint call replaces it before this fires (last request wins).
+		const pending = pendingCheckpoint;
+		ctx.compact({
+			customInstructions: `${MARKER}\n${pending?.summary ?? ""}`,
+			onComplete: () => {
+				const inj = pending?.injection;
+				pendingCheckpoint = null;
+
+				try {
+					const archiveLine = pending?.archivePath ? `\nArchive: ${pending.archivePath}` : "";
+					ctx.ui.notify(`Checkpoint complete — context cleared.${archiveLine}`, "info");
+				} catch { /* ctx stale after reload */ }
+				if (pending?.doContinue) {
+					const parts = [pending.next];
+					if (inj?.text) parts.unshift(inj.text);
+					if (pending.archivePath) parts.push(`Archive: ${pending.archivePath}`);
+					const followUp = parts.join("\n\n");
+					pi.sendUserMessage(followUp, { deliverAs: "followUp" });
+				}
+			},
+			onError: (err) => {
+				pendingCheckpoint = null;
+				try {
+					ctx.ui.notify(`Checkpoint failed: ${err.message}`, "error");
+				} catch { /* ctx stale after reload */ }
+			},
+		});
 	});
 
 	// -- Compaction hook -------------------------------------------------
@@ -419,8 +471,11 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Stash params for session_before_compact to pick up (it has access
-			// to firstKeptEntryId, which lets us skip preserved files).
+			// to firstKeptEntryId, which lets us skip preserved files) and mark
+			// the request for the turn_end trigger. Do NOT compact here: the
+			// tool result has not been persisted yet.
 			pendingCheckpoint = {
+				summary: params.summary,
 				next,
 				doContinue,
 				archivePath,
@@ -428,32 +483,7 @@ export default function (pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				contextWindow,
 			};
-
-			ctx.compact({
-				customInstructions: `${MARKER}\n${params.summary}`,
-				onComplete: () => {
-					const inj = pendingCheckpoint?.injection;
-					pendingCheckpoint = null;
-
-					try {
-						const archiveLine = archivePath ? `\nArchive: ${archivePath}` : "";
-						ctx.ui.notify(`Checkpoint complete — context cleared.${archiveLine}`, "info");
-					} catch { /* ctx stale after reload */ }
-					if (doContinue) {
-						const parts = [next];
-						if (inj?.text) parts.unshift(inj.text);
-						if (archivePath) parts.push(`Archive: ${archivePath}`);
-						const followUp = parts.join("\n\n");
-						pi.sendUserMessage(followUp, { deliverAs: "followUp" });
-					}
-				},
-				onError: (err) => {
-					pendingCheckpoint = null;
-					try {
-						ctx.ui.notify(`Checkpoint failed: ${err.message}`, "error");
-					} catch { /* ctx stale after reload */ }
-				},
-			});
+			compactRequested = true;
 
 			const responseLines = [`Checkpoint queued.`];
 			if (archivePath) {

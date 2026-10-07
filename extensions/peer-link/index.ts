@@ -22,10 +22,12 @@
  * /peer-autoreply [on|off]. The LLM can coordinate via the peer_list and
  * peer_send tools.
  *
- * Loop safety: envelopes are consumed on read (deleted), auto-replies carry
- * expectReply:false, and each envelope is replied to at most once per
- * process. Peers that message each other deliberately (LLM-driven multi-turn
- * coordination) are fine; nothing here re-forwards a received reply.
+ * Loop safety: envelopes are acked (deleted) only after successful injection,
+ * auto-replies carry expectReply:false, and each envelope is replied to at most
+ * once per process. Peers that message each other deliberately (LLM-driven
+ * multi-turn coordination) are fine; nothing here re-forwards a received reply.
+ * Delivery is at-least-once: a crash between injection and ack duplicates a
+ * message rather than losing it.
  *
  * Delivery gate: a send to a name that matches no listed peer FAILS loudly
  * instead of queueing — an unlisted name (typo, chimera of two session
@@ -43,6 +45,7 @@ import {
 	SCAN_MS,
 	type Envelope,
 	type PeerInfo,
+	ackEnvelope,
 	deliveryModeFor,
 	ensureMailbox,
 	inboxDir,
@@ -222,7 +225,10 @@ export default function (pi: ExtensionAPI) {
 				pendingReplies.set(env.id, { env, text, queuedAt: Date.now() });
 			}
 			try {
-						pi.sendUserMessage(text, { deliverAs: deliveryModeFor(env) });
+				pi.sendUserMessage(text, { deliverAs: deliveryModeFor(env) });
+				// Ack only after injection succeeds: a throw leaves the envelope on
+				// disk so the next scan retries (at-least-once, duplicates over loss).
+				ackEnvelope(state.mailbox, state.peerName, env);
 			} catch {
 				seen.delete(env.id);
 				pendingReplies.delete(env.id);
