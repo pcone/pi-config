@@ -56,8 +56,10 @@ Flash prices at $0.033/M (standard).
 **Tradeoff:** a `†` row's average spans fewer axes, so it is not strictly
 comparable to a complete row's three-axis average. The marker keeps the model
 visible with that caveat rather than hiding it; filling the gap from a second
-source is the pending question below.
+source is the question answered in `002` — rejected, because the sources' axes do
+not share a scale.
 
 **Pending:** whether to add BenchLM (`benchlm.ai/api/data/*`) as a second coverage
-source for coding/agentic — it already carries Opus 5.5 (coding 83.54 / agentic
-88.48) where AA is null. Separate decision.
+source for coding/agentic — **evaluated and rejected in `002`**: its axes run 13.6
+points below AA's coding and 16.4 above its agentic for the same models, and the
+aligned variant of the idea changes one row's tier. No code change follows.
