@@ -144,7 +144,8 @@ Manage it:
 
 };
 
-function readModeFile(path: string): Mode | null {
+/** @internal Exported so tests can pin the persisted-mode parse + the "plan" retirement fallback. */
+export function readModeFile(path: string): Mode | null {
 	try {
 		if (!existsSync(path)) return null;
 		const data = JSON.parse(readFileSync(path, "utf-8")) as { mode?: string };

@@ -1,17 +1,28 @@
 /**
  * Decision 028: orchestrator nesting is capped at one level.
  *
- * - `subagentDepth` parses the current process depth from PI_SUBAGENT_DEPTH.
- * - `buildSubagentEnv` stamps the child's depth (parent + 1).
- * - `subagentNestingBlock` refuses orchestrator spawns at depth >= 2.
+ * - `subagentDepth` / `nextSubagentDepth` own the depth arithmetic.
+ * - `buildSubagentEnv` / `buildSubagentProcessEnv` stamp the child's depth
+ *   and prove the stamp overrides an inherited parent value.
+ * - `subagentNestingBlock` implements the cap, and the `subagent` tool
+ *   boundary is exercised to prove the wiring refuses the spawn at
+ *   depth >= 2. The boundary tests abort at the missing-`workOrderPath`
+ *   gate, which runs after the nesting gate and before any spawn — so a
+ *   mutation that deletes the nesting wiring fails the test instead of
+ *   launching a real subagent.
  *
  * Run: bun test tests/subagent-nesting.test.ts
  */
 
-import { describe, expect, it } from "bun:test";
-import {
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import subagentFactory, {
 	MAX_ORCHESTRATOR_NESTING_DEPTH,
 	buildSubagentEnv,
+	buildSubagentProcessEnv,
+	nextSubagentDepth,
 	subagentDepth,
 	subagentNestingBlock,
 } from "../extensions/subagent-async/index.ts";
@@ -40,17 +51,29 @@ describe("subagentDepth", () => {
 	});
 });
 
-describe("buildSubagentEnv depth stamping", () => {
-	it("stamps depth 1 for a spawn from the root session", () => {
-		// buildSubagentEnv receives the CHILD's depth; the caller computes
-		// subagentDepth() + 1, so a root-session spawn passes 1.
-		const env = buildSubagentEnv({ ...baseConfig, depth: 1 });
-		expect(env.PI_SUBAGENT_DEPTH).toBe("1");
+describe("nextSubagentDepth (spawn-site arithmetic)", () => {
+	it("adds one to the parent's depth", () => {
+		expect(nextSubagentDepth({})).toBe(1);
+		expect(nextSubagentDepth({ PI_SUBAGENT_DEPTH: "1" })).toBe(2);
+		expect(nextSubagentDepth({ PI_SUBAGENT_DEPTH: "2" })).toBe(3);
 	});
+});
 
-	it("stamps depth 2 for a spawn from a depth-1 orchestrator", () => {
-		const env = buildSubagentEnv({ ...baseConfig, depth: 2 });
+describe("buildSubagentEnv depth stamping", () => {
+	it("stamps the child's depth", () => {
+		expect(buildSubagentEnv({ ...baseConfig, depth: 1 }).PI_SUBAGENT_DEPTH).toBe("1");
+		expect(buildSubagentEnv({ ...baseConfig, depth: 2 }).PI_SUBAGENT_DEPTH).toBe("2");
+	});
+});
+
+describe("buildSubagentProcessEnv", () => {
+	it("overrides an inherited parent depth with the child's stamp", () => {
+		const env = buildSubagentProcessEnv(
+			{ ...baseConfig, depth: 2 },
+			{ PI_SUBAGENT_DEPTH: "9", PATH: "/usr/bin" },
+		);
 		expect(env.PI_SUBAGENT_DEPTH).toBe("2");
+		expect(env.PATH).toBe("/usr/bin");
 	});
 });
 
@@ -74,5 +97,98 @@ describe("subagentNestingBlock (decision 028 cap)", () => {
 	it("does not cap non-orchestrator agents", () => {
 		expect(subagentNestingBlock("implement", 5)).toBeNull();
 		expect(subagentNestingBlock("review-code", 2)).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Tool boundary: the `subagent` tool itself must refuse the spawn.
+//
+// A penetration past the nesting gate lands on the missing-workOrderPath
+// error (which runs after the nesting gate and before any spawn), so these
+// tests fail cleanly on a deleted/rewired cap instead of launching a child.
+// ---------------------------------------------------------------------------
+
+describe("subagent tool boundary (nesting cap wiring)", () => {
+	const tools: Record<string, any> = {};
+	const pi = {
+		on: () => {},
+		registerTool: (t: any) => { tools[t.name] = t; },
+		registerCommand: () => {},
+	} as any;
+	subagentFactory(pi);
+
+	let fixtureRoot = "";
+	const saved = {
+		depth: process.env.PI_SUBAGENT_DEPTH,
+		allowlist: process.env.PI_SUBAGENT_ALLOWLIST,
+		agentDir: process.env.PI_CODING_AGENT_DIR,
+	};
+
+	beforeAll(() => {
+		fixtureRoot = mkdtempSync(join(tmpdir(), "pi-nesting-fixture-"));
+		mkdirSync(join(fixtureRoot, "agents"), { recursive: true });
+		for (const name of ["orchestrator", "implement"]) {
+			writeFileSync(
+				join(fixtureRoot, "agents", `${name}.md`),
+				`---\nname: ${name}\ndescription: test\n---\n\nTest prompt.\n`,
+			);
+		}
+		process.env.PI_CODING_AGENT_DIR = fixtureRoot;
+	});
+
+	afterEach(() => {
+		delete process.env.PI_SUBAGENT_DEPTH;
+		delete process.env.PI_SUBAGENT_ALLOWLIST;
+	});
+
+	afterAll(() => {
+		const restore = (key: "PI_SUBAGENT_DEPTH" | "PI_SUBAGENT_ALLOWLIST" | "PI_CODING_AGENT_DIR", value: string | undefined) => {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		};
+		restore("PI_SUBAGENT_DEPTH", saved.depth);
+		restore("PI_SUBAGENT_ALLOWLIST", saved.allowlist);
+		restore("PI_CODING_AGENT_DIR", saved.agentDir);
+		rmSync(fixtureRoot, { recursive: true, force: true });
+	});
+
+	const run = (agent: string) =>
+		tools.subagent.execute(
+			"call-1",
+			{ agent, task: "noop", cwd: fixtureRoot, workOrderPath: "missing.md" },
+			undefined,
+			undefined,
+			{} as any,
+		);
+
+	const textOf = async (agent: string) => (await run(agent)).content[0].text as string;
+
+	it("refuses an orchestrator spawn at depth 2 (the cap is wired, not just theorized)", async () => {
+		process.env.PI_SUBAGENT_DEPTH = "2";
+		const text = await textOf("orchestrator");
+		expect(text).toContain("capped at one level");
+		expect(text).toContain("PI_SUBAGENT_DEPTH=2");
+	});
+
+	it("lets a depth-1 orchestrator past the cap gate", async () => {
+		process.env.PI_SUBAGENT_DEPTH = "1";
+		const text = await textOf("orchestrator");
+		expect(text).not.toContain("capped at one level");
+		expect(text).toContain("workOrderPath file not found"); // the post-cap gate
+	});
+
+	it("does not depth-cap a non-orchestrator agent", async () => {
+		process.env.PI_SUBAGENT_DEPTH = "2";
+		const text = await textOf("implement");
+		expect(text).not.toContain("capped at one level");
+		expect(text).toContain("workOrderPath file not found");
+	});
+
+	it("pins gate ordering: the allowlist refusal wins over the depth refusal", async () => {
+		process.env.PI_SUBAGENT_DEPTH = "2";
+		process.env.PI_SUBAGENT_ALLOWLIST = "implement";
+		const text = await textOf("orchestrator");
+		expect(text).toContain("not in this subagent's allowlist");
+		expect(text).not.toContain("capped at one level");
 	});
 });

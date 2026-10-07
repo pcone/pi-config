@@ -1356,6 +1356,11 @@ export function subagentDepth(env: NodeJS.ProcessEnv = process.env): number {
 	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
+/** Decision 028: the depth stamped on a child spawned by this process. */
+export function nextSubagentDepth(env: NodeJS.ProcessEnv = process.env): number {
+	return subagentDepth(env) + 1;
+}
+
 /** Decision 028: an orchestrator may nest once — depth 1 may spawn orchestrators, depth 2 may not. */
 export const MAX_ORCHESTRATOR_NESTING_DEPTH = 2;
 
@@ -1374,18 +1379,20 @@ export function subagentNestingBlock(agentName: string, depth: number): string |
 	);
 }
 
-/**
- * Build the env additions for a subagent pi process (spread over the
- * parent's process.env at spawn). Extracted so tests can assert the role
- * markers without spawning.
- */
-export function buildSubagentEnv(config: {
+export interface SubagentEnvConfig {
 	sessionId: string;
 	allowlist: string[] | undefined;
 	worktreePath: string | null;
 	parentCwdForCleanup: string;
 	depth: number;
-}): Record<string, string> {
+}
+
+/**
+ * Build the env additions for a subagent pi process (spread over the
+ * parent's process.env at spawn). Extracted so tests can assert the role
+ * markers without spawning.
+ */
+export function buildSubagentEnv(config: SubagentEnvConfig): Record<string, string> {
 	return {
 		// Marker that this process is a subagent. The modes extension
 		// (and any other extension that branches on orchestrator vs
@@ -1423,6 +1430,19 @@ export function buildSubagentEnv(config: {
 		// subagents collide on one mailbox identity.
 		PI_PEER_NAME: config.sessionId,
 	};
+}
+
+/**
+ * Full env for a spawned subagent: the parent's env with the subagent
+ * additions layered over it. The additions win (spread order), so an
+ * inherited PI_SUBAGENT_DEPTH can never survive into the child — the
+ * child's own stamped depth is authoritative.
+ */
+export function buildSubagentProcessEnv(
+	config: SubagentEnvConfig,
+	parentEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	return { ...parentEnv, ...buildSubagentEnv(config) };
 }
 
 // Decision 014: parse the work order's declared `review_policy`.
@@ -1668,16 +1688,13 @@ async function spawnSubagent(
 		cwd,
 		shell: false,
 		stdio: ["pipe", "pipe", "pipe"],
-		env: {
-			...process.env,
-			...buildSubagentEnv({
-				sessionId,
-				allowlist: agent.allowedSubagents,
-				worktreePath,
-				parentCwdForCleanup,
-				depth: subagentDepth() + 1,
-			}),
-		},
+		env: buildSubagentProcessEnv({
+			sessionId,
+			allowlist: agent.allowedSubagents,
+			worktreePath,
+			parentCwdForCleanup,
+			depth: nextSubagentDepth(),
+		}),
 	});
 
 	rs.proc = proc;
