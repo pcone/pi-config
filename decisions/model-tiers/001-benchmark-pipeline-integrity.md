@@ -44,7 +44,7 @@ drop partial rows (hides exactly the newest models the table exists to compare);
 fall back to the benchmark feed's own pricing (no cache-read rate — overstates cost
 and mixes pricing bases).
 
-**Validation:** `tests/model-tiers-render.test.ts` (36 tests) pins each rule, including the/tiers cutoff, hidden-tail label, tier picks and threshold floors. Live:
+**Validation:** `tests/model-tiers-render.test.ts` (36 tests) pins each rule, including the `/tiers` cutoff, hidden-tail label, tier picks and threshold floors. Live:
 Opus 5.5 tops the compact table at 100.0 `†`; GLM-5.3, GLM 5.3 Flash and GPT-6.1 Sol
 appear; DeepSeek V4.1 Flash prices at $0.0296/M.
 
