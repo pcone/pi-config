@@ -1660,6 +1660,65 @@ export function parseWorkOrderPolicy(woText: string): "required" | "skip" {
 	return m?.[1] === "skip" ? "skip" : "required";
 }
 
+// ── Model resolution (decision 031) ─────────────────────────────────────────
+
+/** The one seat that always tracks its caller's model. */
+const INHERITING_AGENT = "orchestrator";
+
+/** pi's thinking levels (`docs/extensions.md` → pi.getThinkingLevel). A model
+ *  spec's `:suffix` is a level only when it names one — otherwise it belongs to
+ *  the model id (`:free` is a real OpenRouter tag). */
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** Split `provider/id[:level]` into the bare spec and its level. */
+function splitModelSpec(spec: string): { id: string; level?: string } {
+	const i = spec.lastIndexOf(":");
+	if (i > 0 && THINKING_LEVELS.has(spec.slice(i + 1))) {
+		return { id: spec.slice(0, i), level: spec.slice(i + 1) };
+	}
+	return { id: spec };
+}
+
+/**
+ * The model a child process is spawned with. Single source of truth: the spawn
+ * args and the `meta.json` record both consume this result, so they cannot
+ * disagree about what a child ran on.
+ *
+ * - The orchestrator seat always tracks its caller (decision 031): the child
+ *   runs on the caller's model at the seat's own audited level. On today's
+ *   single-slug fleet that resolves to the same model the seat pinned anyway;
+ *   it bites when the caller runs something else (Opus, MiMo, …). With no
+ *   caller model it falls back to the seat's model — never to "no model".
+ *   `inheritParentModel` cannot opt this seat out: the orchestrator branch is
+ *   evaluated before the inherit branch, so an explicit `true` is ignored too
+ *   and the seat's model is used when there is no caller model.
+ * - `inheritParentModel` is the per-spawn opt-in for every other seat; the
+ *   caller's model passes through unsubstituted (decisions 020/022).
+ * - Resume keeps the recorded model verbatim (decision 022 site 2) —
+ *   re-deriving it would silently switch a resumed child's model.
+ * - Otherwise the agent frontmatter model wins, `FLEET_MODEL` when the seat
+ *   pins none (decision 022).
+ *
+ * `undefined` means no `--model` flag at all (pi picks its own default).
+ * Exported for tests (@for-testing-only): the precedence is the contract.
+ */
+export function resolveChildModel(opts: {
+	agentName: string;
+	agentModel?: string;
+	parentModel?: string;
+	inheritParentModel?: boolean;
+	isResume?: boolean;
+}): string | undefined {
+	if (opts.isResume) return opts.agentModel ?? FLEET_MODEL;
+	if (opts.agentName === INHERITING_AGENT) {
+		if (!opts.parentModel) return opts.agentModel ?? FLEET_MODEL;
+		const level = opts.agentModel ? splitModelSpec(opts.agentModel).level : undefined;
+		return level ? `${opts.parentModel}:${level}` : opts.parentModel;
+	}
+	if (opts.inheritParentModel) return opts.parentModel;
+	return opts.agentModel ?? FLEET_MODEL;
+}
+
 // ── Spawn & manage ──────────────────────────────────────────────────────────
 
 async function spawnSubagent(
@@ -1669,8 +1728,10 @@ async function spawnSubagent(
 	task: string,
 	cwd: string,
 	sessionId: string,
-	parentModel: string | undefined,
-	inheritParentModel: boolean,
+	// Resolved by the caller through resolveChildModel (decision 031) and used
+	// verbatim — the spawn args and the meta.json record consume one value, so
+	// they cannot disagree. Resume passes the recorded `meta.model`.
+	resolvedModel: string | undefined,
 	worktreePath: string | null,
 	isolationBranch: string | null,
 	parentHeadCommit: string | null,
@@ -1707,12 +1768,6 @@ async function spawnSubagent(
 	// identity (commit subject / "Task:" display); the preamble and
 	// review-policy annotation live only in promptForChild.
 	const promptForChild = promptMessage ?? task;
-	// Decision 022: fallback model for agents with no `model:` frontmatter.
-	// `inheritParentModel` passes the parent model through — an explicit spawn
-	// choice wins.
-	const effectiveModel = inheritParentModel
-		? parentModel
-		: agent.model ?? FLEET_MODEL;
 
 	// The shared global prompt (decisions/subagents/025-global-append-for-subagents.md).
 	// pi's resource loader discovers <agentDir>/APPEND_SYSTEM.md only when no
@@ -1745,7 +1800,7 @@ async function spawnSubagent(
 	// session id IS the handle. Resume: reopen the existing session file
 	// (its header id is the handle), which keeps the same id.
 	const args = buildSubagentArgs({
-		model: effectiveModel ?? "",
+		model: resolvedModel ?? "",
 		tools: agent.tools ?? [],
 		excludeTools: agent.excludeTools ?? [],
 		sessionFile: resumeSessionFile,
@@ -3294,7 +3349,8 @@ export default function (pi: ExtensionAPI) {
 		cwd: Type.Optional(Type.String({ description: "Working directory for the subagent process" })),
 		inheritParentModel: Type.Optional(
 			Type.Boolean({
-				description: "Use the parent session's active model instead of the agent default.",
+				description:
+					"Use the parent session's active model instead of the agent default. The orchestrator agent always inherits the caller's model regardless of this flag; it is how every other agent opts in.",
 				default: false,
 			}),
 		),
@@ -3465,6 +3521,17 @@ export default function (pi: ExtensionAPI) {
 				return undefined;
 			})();
 
+			// Decision 031: the orchestrator seat always tracks its caller's model;
+			// every other seat keeps its frontmatter model unless the spawn opts in
+			// via inheritParentModel (decision 020). Resolved once — the spawn call
+			// below and the meta.json record consume this same value.
+			const childModel = resolveChildModel({
+				agentName: agent.name,
+				agentModel: agent.model,
+				parentModel,
+				inheritParentModel: params.inheritParentModel ?? false,
+			});
+
 			// Worktree isolation (default: true)
 			let effectiveCwd = cwd;
 			let worktreePath: string | null = null;
@@ -3509,8 +3576,7 @@ export default function (pi: ExtensionAPI) {
 				params.task, // clean task identity (commit subject / display)
 				effectiveCwd,
 				sessionId,
-				parentModel,
-				params.inheritParentModel ?? false,
+				childModel,
 				worktreePath,
 				isolationBranch,
 				parentHeadCommit,
@@ -3540,9 +3606,6 @@ export default function (pi: ExtensionAPI) {
 		// session_start recovery scan can tell a genuine orphan (owner gone)
 		// from another live session's child (owner alive) — and so a recycled
 		// pid is not mistaken for the original owner (ownerStartToken).
-		const effectiveModel = params.inheritParentModel
-			? parentModel
-			: agent.model ?? FLEET_MODEL;
 		writeMetaJson(sessionId, buildSpawnMeta({
 			agentName: agent.name,
 			task: params.task,
@@ -3553,7 +3616,7 @@ export default function (pi: ExtensionAPI) {
 			parentHeadCommit,
 			parentCwd: cwd,
 			tools: agent.tools ?? [],
-			model: effectiveModel,
+			model: childModel,
 			systemPrompt: agent.systemPrompt,
 			allowedSubagents: agent.allowedSubagents ?? [],
 			excludeTools: agent.excludeTools ?? [],
@@ -3811,8 +3874,14 @@ export default function (pi: ExtensionAPI) {
 				params.task,
 				cwd,
 				sid,
-				undefined, // parentModel — not meaningful for resume
-				false, // inheritParentModel — already resolved in meta
+				// Resume reproduces the recorded model verbatim (decision 022
+				// site 2) — no inheritance here, not even for an orchestrator.
+				resolveChildModel({
+					agentName: syntheticAgent.name,
+					agentModel: resolvedMeta.model,
+					inheritParentModel: false,
+					isResume: true,
+				}),
 				null, // worktreePath
 				null, // isolationBranch
 				null, // parentHeadCommit

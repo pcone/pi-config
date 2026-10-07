@@ -37,3 +37,4 @@ date: 2026-07-14
 | 028 | One orchestrator role — retire super-orchestrator/`plan` mode, cap orchestrator nesting at one level | done |
 | 029 | Session id query forms and the not-attached message contract (2026-10-07 incident) | done |
 | 030 | Resume pre-check for a missing stored cwd (upstream ask recorded, unfiled) | done |
+| 031 | The orchestrator seat always runs on its caller's model (caller `provider/id` + the seat's level) | done |
