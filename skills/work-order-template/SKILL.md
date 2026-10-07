@@ -218,7 +218,8 @@ Write the work order to **`work-orders/` at the target repo's root**, as
 
 Do **not** put work orders under `docs/`. They are dispatch artifacts, not
 documentation: they are unindexed, they are never updated after landing, and in
-bulk they drown the curated doc set.
+bulk they drown the curated doc set — 173 accumulated work orders were 46% of
+one repo's `docs/` by volume before they were relocated.
 
 `work_order_id` is unique **per repo**, not globally. `WO-2026-013` names
 different work in `tfd` and in `pi-config`. Never assume an ID identifies a work

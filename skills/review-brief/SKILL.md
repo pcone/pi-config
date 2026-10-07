@@ -213,5 +213,5 @@ For a single item there is no index: the brief's first line is the row.
 - `docs/reviews/planned-work.md` — the queue index.
 
 **Where a brief lives.** A repo declares the home (TFD: `docs/reviews/`), and each review's item
-table follows the registry spec in `docs/reviews/README.md` — `scripts/reviews_status.py` prints
-the ask-list.
+table follows the registry spec in that repo's own registry README (TFD:
+`docs/reviews/README.md`, where `python3 scripts/reviews_status.py` prints the ask-list).

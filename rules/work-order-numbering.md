@@ -22,17 +22,15 @@ on it:
    `git fetch <shared>`) and `git push <shared> <branch>`.
    **Read the id from every live ref, not just the one you're on:** a
    divergent line's `work-orders/` is invisible to your fetch until a merge
-   brings it over, which is how two sessions allocated `WO-2026-160` 103
-   seconds apart (2026-10-07) with both reservations already pushed — tfd-d's
-   at 22:20:10, the integration clone's at 22:21:53, because the integration
-   line had not merged tfd-d since 156. `git ls-tree --name-only
+   brings it over, so two sessions can allocate the same id 103 seconds apart
+   with both reservations already pushed. `git ls-tree --name-only
    origin/<other-line> work-orders/` is part of allocating, not an optional
    precaution.
 3. **Collisions with landed history: the claim with landed references
    keeps the id.** Reserve-by-push can't see un-rebased parallel lineages
-   — a fifth board's WOs are invisible until their lineage lands (real case
-   2026-08-30: tfd-d's `WO-2026-081` landed on `loop-ergonomics` concurrent
-   with a mainline 081; the mainline claim renumbered to 089). Resolution:
+   — a fifth board's WOs are invisible until their lineage lands (observed:
+   `WO-2026-081` landed on a side line concurrent with a mainline 081, and the
+   mainline claim kept the id while the side line renumbered). Resolution:
    claims that exist only in an un-rebased lineage don't count until they
    land — a mainline push beats them. But a number that HAS landed anywhere
    is historical record and keeps the id regardless of which side landed
@@ -57,6 +55,11 @@ on it:
 The push is the atomic test-and-set against other mainline sessions, but the
 namespace resolves only at push, so lineage-invisible claims are handled by
 clause 3 (landed history wins), not by the push.
+
+Alternatives already rejected, so they are not re-proposed: a central counter
+file adds a second source of truth that git already provides; per-session
+number bands break chronological reading; session-prefixed ids break every
+existing reference format.
 
 Same pattern for any shared sequential namespace across sessions: decision
 record numbers, feature-dir numbering. Reserve by push, renumber on rejection.
