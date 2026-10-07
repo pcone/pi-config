@@ -101,6 +101,26 @@ work-order.
 > reviewers are separate sessions, so the peer still cannot self-approve
 > a fix.
 
+> **Amended (2026-10-07): verification stays in the peer's clone; the loop
+> is implement-mode.** Two operational rules from the first month of live
+> triage, recorded in `agents/bug-triage.md`.
+> *(1) Reproduce, pin, characterize, and root-cause are never delegated.*
+> The pin's value is that the triage peer measured it firsthand on the
+> confirmed tip; a subagent's report (isolated worktree off parent HEAD,
+> possibly a different tip) is a lead to re-measure, not evidence — and a
+> probe can arrive broken. Observed cost of the alternative: a handoff's
+> probe set included two files that did not compile (a value-literal
+> syntax slip), which the peer had to fix and re-run; the fixed override
+> probe then *rejected*, narrowing the class the order pins. Subagents and
+> peers are for context-heavy side investigation and the mandatory fix
+> gate.
+> *(2) Fetch ≠ checkout.* Confirm the tip (`git log --oneline -1`) before
+> reading any suite, probe, or IR result; a parked tree that lagged the
+> fetch silently measured the old tip — twice in one session.
+> Mode follows from (1): the loop is direct, tight-feedback work, and
+> orchestrate's "never implement directly" is incompatible with producing
+> an independently verified pin, so this role stays on implement.
+
 ## Tradeoffs
 
 - **No auto-spawn.** Launched and pinned manually (`/pin bug-triage`);

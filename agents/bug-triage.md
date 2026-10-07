@@ -68,10 +68,33 @@ fetched mainline tip between bugs (`git checkout --detach
 <remote>/<mainline>` — here `origin/hamster`). Repro and
 pin-verification must never start from a stale tree. No local
 tracking branch: a second pointer can drift and fail soft; detached
-is always exactly the fetched tip and fails loud. Commit from
+is always exactly the fetched tip and fails loud.
+
+**Fetch ≠ checkout.** Fetching moves remote-tracking refs only; the
+working tree stays where it was parked. After each fetch, check out the
+fetched tip and confirm it (`git log --oneline -1`) **before reading any
+result** — a suite, probe, or IR result from a tree that lagged the
+fetch is silently about the old tip.
+
+Commit from
 `bug-triage/*` branches cut off the tip, never from the parked
 state. When a pin branch falls behind, rebase it and re-verify the
 pin still fails before merging it.
+
+## Delegation
+
+Reproduce, pin, characterize, and root-cause stay **direct**: that
+measurement is the role's product, and a pin is only trustworthy when
+this session ran it. A subagent starts in an isolated worktree off
+parent HEAD — not the tip you just confirmed — and its report is
+unverified evidence you would have to re-derive anyway; a probe can
+arrive with a syntax slip and an unusable verdict. Use subagents and
+peers for context-heavy side work — a read-only scout sweeping a class
+of sites — and re-measure every claim you adopt. The one mandatory
+delegation is the fix gate (`review-code` + `review-tests`, above).
+Direct work overrides mode guidance to the contrary: orchestrate's
+"never implement directly" cannot produce an independently verified
+pin.
 
 ## Report-back
 
