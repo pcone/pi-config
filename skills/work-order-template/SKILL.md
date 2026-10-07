@@ -169,6 +169,12 @@ Known risk patterns for this task type. The implementer must explicitly check fo
 
 > The implementer must check every box above. If any check fails, the implementer must fix the issue before reporting completion or flag it in the completion report.
 
+> Every risk that applies must be **exercised by a named row**, or the report must
+> say why it cannot be. A risk list with no row behind it is a review round waiting
+> to happen. (Origin: tfd WO-2026-143 — two separate reviewer findings hit the same
+> pattern: the order's claimed guards did not actually cover the changed path until
+> rows were written for them.)
+
 ### Context
 
 **Prior work orders completed in this plan** (to maintain trajectory coherence):
@@ -279,7 +285,8 @@ grew to 650 lines carrying seven unrecorded rulings, and was unpacked into
 
 ## Notes for the Orchestrator
 
-- **Always set `invariant_exhaustiveness`**. Default to `implicit` if uncertain.
+- **Always set `invariant_exhaustiveness`**. Default to `implicit` if uncertain. When you set `implicit`, state what the enumeration must list — the list is the deliverable, and a *negative* result (no further sites) is a valid one. Do not write it up in a way that implies a find is expected.
+- **Cite constructs, not line numbers.** A number measured while writing the order is stale by dispatch — four landings moved one file by 21 lines inside a day — and a *wrong* number is worse than none: it sends the implementer into unrelated code (tfd WO-2026-143 cited a binding constructor at the line of a type-unification helper). Name the function and the enclosing construct, and add a grep anchor when the name alone is ambiguous.
 - **Always list files NOT to modify** when adjacent files could plausibly be touched — strongest signal against scope creep.
 - **Use repo-relative paths everywhere.** Subagents run in isolated worktrees; absolute parent-repo paths bypass isolation.
 - **Cross-reference AGENTS.md** for project-specific conventions.
