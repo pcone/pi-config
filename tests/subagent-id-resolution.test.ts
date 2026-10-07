@@ -5,6 +5,9 @@
  *    the caller's own session id via getParentTrackerKey(ctx) when omitted.
  * 2. `resolveRunningSession` — exact match, partial suffix match, unknown.
  * 3. `getParentTrackerKey` — with sessionManager and fallback to `pid:<n>`.
+ * 4. `normalizeIdQuery` / `describeUnknownSession` — the `subagent-`-prefixed
+ *    tail form resolves, and an unmatched id reports which form it needs
+ *    instead of reading as a dead session (2026-10-07 incident).
  *
  * Run: bun test tests/subagent-id-resolution.test.ts
  */
@@ -19,7 +22,11 @@ import {
 	metaPath,
 	readPersistedSpawns,
 	resolveRunningSession,
+	normalizeIdQuery,
+	describeUnknownSession,
+	findRunningByQuery,
 	_testRunning,
+	_testSetAttachState,
 	getParentTrackerKey,
 	buildSubagentArgs,
 	buildSubagentEnv,
@@ -235,8 +242,278 @@ describe("resolveRunningSession", () => {
 	});
 });
 
-// ── Cases 8-9: getParentTrackerKey ─────────────────────────────────────────
+describe("id query normalization (2026-10-07 incident)", () => {
+	it("10: normalizeIdQuery strips the display prefix only", () => {
+		expect(normalizeIdQuery("subagent-abc")).toBe("abc");
+		expect(normalizeIdQuery("abc")).toBe("abc");
+		expect(normalizeIdQuery("subagent-subagent-abc")).toBe("subagent-abc");
+	});
 
+	it("11: a `subagent-`-prefixed tail resolves — the form that silently failed", () => {
+		const fullSid = `subagent-${randomUUID()}`;
+		const prefixedTail = `subagent-${fullSid.slice(-12)}`;
+		trackCleanup(fullSid);
+		writeMetaJson(fullSid, {});
+
+		const mock = { sessionId: fullSid, agentName: "test-agent" } as any;
+		_testRunning.set(fullSid, mock);
+
+		// The raw `endsWith` form matched the bare tail but not this one, so a
+		// live child read as "No running subagent found".
+		expect(resolveSubagentMeta(prefixedTail)?.sid).toBe(fullSid);
+		expect(resolveRunningSession(prefixedTail)).toBe(mock);
+	});
+
+	it("12: an empty query matches nothing, with candidates present", () => {
+		// Seed a real meta first: on a machine with no ambient metas a dropped
+		// guard would have no candidate to over-match and the test would pass
+		// vacuously.
+		const fullSid = `subagent-${randomUUID()}`;
+		trackCleanup(fullSid);
+		writeMetaJson(fullSid, {});
+
+		// A candidate in the running map too: with an empty map the matcher's own
+		// empty-needle guard would be unpinned (an empty needle is a suffix of
+		// every id, so a dropped guard returns this mock).
+		_testRunning.set(fullSid, { sessionId: fullSid, agentName: "test-agent" } as any);
+
+		expect(resolveSubagentMeta("")).toBeNull();
+		expect(resolveSubagentMeta("subagent-")).toBeNull();
+		expect(findRunningByQuery(_testRunning, "")).toBeUndefined();
+	});
+
+	it("12b: findRunningByQuery accepts full id, bare tail and prefixed tail; rejects unknown", () => {
+		const fullSid = `subagent-${randomUUID()}`;
+		const mock = { sessionId: fullSid, agentName: "test-agent" } as any;
+		_testRunning.set(fullSid, mock);
+		trackCleanup(fullSid);
+		writeMetaJson(fullSid, {}); // the meta-scan assertions need a file to find
+
+		expect(findRunningByQuery(_testRunning, fullSid)).toBe(mock);
+		expect(findRunningByQuery(_testRunning, fullSid.slice(-12))).toBe(mock);
+		expect(findRunningByQuery(_testRunning, `subagent-${fullSid.slice(-12)}`)).toBe(mock);
+		// A tail spanning the `subagent-` boundary, and a padded query: the raw
+		// suffix form predates the fix and must keep working, and trimming is
+		// what makes the same query work at every entry point.
+		expect(findRunningByQuery(_testRunning, fullSid.slice(-37))).toBe(mock);
+		expect(findRunningByQuery(_testRunning, `  ${fullSid.slice(-12)}  `)).toBe(mock);
+		expect(resolveSubagentMeta(fullSid.slice(-37))?.sid).toBe(fullSid);
+		expect(resolveSubagentMeta(`  ${fullSid.slice(-12)}  `)?.sid).toBe(fullSid);
+		expect(resolveSubagentMeta(fullSid)?.sid).toBe(fullSid); // full id, meta path
+		expect(findRunningByQuery(_testRunning, `subagent-${randomUUID()}`)).toBeUndefined();
+	});
+
+	it("12c: an ambiguous partial id is returned as text by describeUnknownSession, not thrown", () => {
+		// Two metas sharing a suffix: the meta scan must report the ambiguity
+		// (the tools are text-only) instead of propagating the throw.
+		const tail = "0f0f0f0f";
+		const first = `subagent-11111111-1111-4111-8111-${tail}`;
+		const second = `subagent-22222222-2222-4222-8222-${tail}`;
+		trackCleanup(first);
+		trackCleanup(second);
+		writeMetaJson(first, {});
+		writeMetaJson(second, {});
+
+		expect(() => resolveSubagentMeta(tail)).toThrow(/Ambiguous partial session id/);
+		const msg = describeUnknownSession(tail);
+		expect(msg).toMatch(/Ambiguous partial session id/);
+		expect(msg).not.toMatch(/last 8\+ characters/);
+	});
+});
+
+describe("describeUnknownSession", () => {
+	it("13: an unknown id explains the accepted forms", () => {
+		const msg = describeUnknownSession(`subagent-${randomUUID()}`);
+		expect(msg).toMatch(/No session matches/);
+		expect(msg).toMatch(/last 8\+ characters/);
+	});
+
+	it("14: a session with no socket file is reported with the facts, never as running elsewhere", () => {
+		const fullSid = `subagent-${randomUUID()}`;
+		trackCleanup(fullSid);
+		// A live owner pid with no socket file: the message must report both facts
+		// rather than infer the child's state — the owner being alive is not
+		// evidence that this child is running.
+		writeMetaJson(fullSid, {
+			isolationBranch: "pi-subagent-abc123abc123",
+			worktreePath: "/tmp/pi-subagent-wt-abc123abc123",
+			ownerPid: process.pid,
+			ownerStartToken: null,
+		});
+
+		const msg = describeUnknownSession(fullSid.slice(-12));
+		expect(msg).toMatch(/not attached to this session's tracker/);
+		expect(msg).toMatch(/Not attached here: no socket file exists at \/tmp\/pi-subagent-/);
+		expect(msg).toMatch(/its recorded owner process \(pid \d+\) is still running/);
+		expect(msg).not.toMatch(/Running under another session/);
+		expect(msg).toMatch(/Branch: pi-subagent-abc123abc123/);
+		expect(msg).toMatch(/Worktree: \/tmp\/pi-subagent-wt-abc123abc123/);
+		expect(msg).toMatch(/Log: \/tmp\/pi-subagent-/);
+		expect(msg).not.toMatch(/No session matches/);
+	});
+
+	it("15: a live owner with a served socket reports running under another session", () => {
+		const fullSid = `subagent-${randomUUID()}`;
+		trackCleanup(fullSid);
+		writeMetaJson(fullSid, { ownerPid: process.pid, ownerStartToken: null });
+		// Unconditional: a failed setup must fail the test, not skip the
+		// assertion (an `if (existsSync(sock))` guard green-lights on failure).
+		const sock = `/tmp/pi-subagent-${fullSid}.sock`;
+		writeFileSync(sock, "");
+		filesToClean.push(sock);
+
+		const msg = describeUnknownSession(fullSid.slice(-12));
+		expect(msg).toMatch(/not attached to this session's tracker/);
+		expect(msg).toMatch(/Running under another session \(owner pid \d+\)/);
+	});
+
+	it("16: a legacy meta with no ownerPid never claims running elsewhere or 'pid undefined'", () => {
+		const fullSid = `subagent-${randomUUID()}`;
+		trackCleanup(fullSid);
+		writeMetaJson(fullSid, {}); // pre-027 meta: no owner recorded
+		const sock = `/tmp/pi-subagent-${fullSid}.sock`;
+		writeFileSync(sock, "");
+		filesToClean.push(sock);
+
+		const msg = describeUnknownSession(fullSid.slice(-12));
+		expect(msg).not.toMatch(/Running under another session/);
+		expect(msg).not.toMatch(/pid undefined/);
+		// Socket present, owner unknown: neither "running elsewhere" nor a
+		// liveness claim the code cannot make.
+		expect(msg).toMatch(/Not attached here: a socket file exists/);
+		expect(msg).toMatch(/no owner process was recorded/);
+	});
+
+	it("16b: a leftover socket with a dead owner reports both facts, not a liveness claim", async () => {
+		const dead = Bun.spawn(["true"]);
+		const deadPid = dead.pid;
+		await dead.exited;
+
+		const fullSid = `subagent-${randomUUID()}`;
+		trackCleanup(fullSid);
+		writeMetaJson(fullSid, { ownerPid: deadPid, ownerStartToken: null });
+		const sock = `/tmp/pi-subagent-${fullSid}.sock`;
+		writeFileSync(sock, "");
+		filesToClean.push(sock);
+
+		const msg = describeUnknownSession(fullSid.slice(-12));
+		expect(msg).toMatch(/Not attached here: a socket file exists/);
+		expect(msg).toMatch(new RegExp(`its recorded owner process \\(pid ${deadPid}\\) is gone`));
+		expect(msg).not.toMatch(/Running under another session/);
+	}, 15_000); // spawns a subprocess: bun's implicit 5000ms budget is not a real limit (pcone/pi-config#3)
+});
+
+// ── Tool and command entry points ───────────────────────────────────────────
+
+/** Minimal ExtensionAPI stub — captures tool and command definitions. */
+function createPiStub(): { pi: any; tools: Map<string, any>; commands: Map<string, any> } {
+	const tools = new Map<string, any>();
+	const commands = new Map<string, any>();
+	const pi: any = {
+		events: { emit: () => {} },
+		registerTool: (def: any) => { tools.set(def.name, def); },
+		registerCommand: (name: string, def: any) => { commands.set(name, def); },
+		on: () => {},
+		sendUserMessage: () => {},
+		ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {} },
+	};
+	return { pi, tools, commands };
+}
+
+describe("id queries through the tool and command entry points", () => {
+	it("17: subagent_status for a known-but-detached session returns the detailed message", async () => {
+		const { pi, tools } = createPiStub();
+		subagentFactory(pi);
+		const status = tools.get("subagent_status");
+		expect(status).toBeDefined();
+
+		const fullSid = `subagent-${randomUUID()}`;
+		trackCleanup(fullSid);
+		writeMetaJson(fullSid, { isolationBranch: "pi-subagent-abc123abc123", ownerPid: process.pid });
+
+		const res = await status.execute("tc", { session_id: `subagent-${fullSid.slice(-12)}` });
+		const text = res.content[0].text;
+		expect(text).toMatch(/not attached to this session's tracker/);
+		expect(text).toMatch(/Branch: pi-subagent-abc123abc123/);
+		expect(text).not.toMatch(/No running subagent found/);
+	});
+
+	it("18: /watch resolves a `subagent-`-prefixed tail", async () => {
+		const { pi, commands } = createPiStub();
+		subagentFactory(pi);
+		const watch = commands.get("watch");
+		expect(watch).toBeDefined();
+
+		const fullSid = `subagent-${randomUUID()}`;
+		const mock = { sessionId: fullSid, agentName: "test-agent", logLines: [], usageStats: {} } as any;
+		_testRunning.set(fullSid, mock);
+
+		const notices: string[] = [];
+		const widgets: string[] = [];
+		const ctx: any = {
+			ui: {
+				notify: (m: string) => { notices.push(m); },
+				setWidget: (id: string) => { widgets.push(id); },
+			},
+		};
+
+		await watch.handler(`subagent-${fullSid.slice(-12)}`, ctx);
+		expect(notices.join("\n")).toMatch(/Watching test-agent/);
+		expect(notices.join("\n")).not.toMatch(/No running subagent matching/);
+		expect(widgets).toContain("subagent-watch");
+	});
+
+	it("19: /attach resolves a `subagent-`-prefixed tail", async () => {
+		const { pi, commands } = createPiStub();
+		subagentFactory(pi);
+		const attach = commands.get("attach");
+		expect(attach).toBeDefined();
+
+		const fullSid = `subagent-${randomUUID()}`;
+		const mock = { sessionId: fullSid, agentName: "test-agent", isDone: false, stdin: { destroyed: false } } as any;
+		_testRunning.set(fullSid, mock);
+
+		const notices: string[] = [];
+		const ctx: any = {
+			ui: {
+				notify: (m: string) => { notices.push(m); },
+				setStatus: () => {},
+				setWidget: () => {},
+				setEditorComponent: () => {},
+			},
+		};
+
+		await attach.handler(`subagent-${fullSid.slice(-12)}`, ctx);
+		expect(notices.join("\n")).toMatch(/Attached to test-agent/);
+		expect(notices.join("\n")).not.toMatch(/No running session matches/);
+
+		// Leave no attach state behind for the next test.
+		_testSetAttachState(null);
+	});
+
+	// The other three not-found call sites are the same shape as subagent_status;
+	// pin each so a copy-paste revert of one cannot pass unseen.
+	for (const toolName of ["subagent_steer", "subagent_stop", "subagent_kill"] as const) {
+		it(`20: ${toolName} resolves a prefixed tail and reports the detached session`, async () => {
+			const { pi, tools } = createPiStub();
+			subagentFactory(pi);
+			const tool = tools.get(toolName);
+			expect(tool).toBeDefined();
+
+			const fullSid = `subagent-${randomUUID()}`;
+			trackCleanup(fullSid);
+			writeMetaJson(fullSid, { isolationBranch: "pi-subagent-abc123abc123" });
+
+			const text = (await tool.execute("tc", { session_id: `subagent-${fullSid.slice(-12)}` }))
+				.content[0].text;
+			expect(text).toMatch(/not attached to this session's tracker/);
+			expect(text).toMatch(/Branch: pi-subagent-abc123abc123/);
+			expect(text).not.toMatch(/No running subagent found/);
+		});
+	}
+});
+
+// ── Cases 8-9: getParentTrackerKey ─────────────────────────────────────────
 describe("getParentTrackerKey", () => {
 	it("8: with sessionManager.getSessionId() returns the session id", () => {
 		const sessionId = randomUUID();

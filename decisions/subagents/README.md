@@ -35,3 +35,4 @@ date: 2026-07-14
 | 026 | Subagent events after session disposal — guard async callbacks with a live-session ctx | done |
 | 027 | Recovery scan ownership — adopt a subagent socket only when its spawning process is this process or is gone | done |
 | 028 | One orchestrator role — retire super-orchestrator/`plan` mode, cap orchestrator nesting at one level | done |
+| 029 | Session id query forms and the not-attached message contract (2026-10-07 incident) | done |

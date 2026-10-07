@@ -417,6 +417,53 @@ export function buildSpawnMeta(
 }
 
 /**
+ * Strip the display prefix from a session-id query. Callers pass ids in four
+ * shapes — `subagent-<uuid>`, a bare `<uuid>`, or either truncated to an 8+
+ * character tail. Matching is a suffix test against the stored full id, so the
+ * prefix must go first: `subagent-c3587cc8c12e` was not a suffix of
+ * `subagent-ac5fe548-…-c3587cc8c12e` while the bare `c3587cc8c12e` was, and the
+ * miss surfaced as "No running subagent found" — read as death, which cost two
+ * live worktrees to a peer's force-reap (2026-10-07).
+ * Exported for unit testing.
+ */
+export function normalizeIdQuery(s: string): string {
+	return s.replace(/^subagent-/, "");
+}
+
+/**
+ * True when a stored session id matches a user-supplied query. Both stores key
+ * by the full `subagent-<uuid>` handle — the running map directly, and meta
+ * files named `pi-subagent-<handle>.meta.json` — so a query matches when it is
+ * a suffix of the handle (`-ac5fe548-…-c3587cc8c12e`, a `subagent-`-prefixed
+ * tail) or of the handle with that prefix stripped (a bare tail). Surrounding
+ * whitespace is ignored; an empty query matches nothing, since every id is a
+ * superset of the empty string.
+ * @for-testing-only — pure
+ */
+export function idMatchesQuery(storedId: string, query: string): boolean {
+	const q = query.trim();
+	const needle = normalizeIdQuery(q);
+	if (needle.length === 0) return false; // empty query must not match every id
+	return storedId.endsWith(q) || normalizeIdQuery(storedId).endsWith(needle);
+}
+
+/**
+ * Match a session query against the running map. Shared by /watch and /attach
+ * so both accept the same forms, and backed by `idMatchesQuery` — the one
+ * definition of what an id query means (the /tmp meta scan uses it too).
+ * @for-testing-only — pure over the injected map
+ */
+export function findRunningByQuery(
+	runningMap: Map<string, RunningSubagent>,
+	query: string,
+): RunningSubagent | undefined {
+	for (const [id, rs] of runningMap) {
+		if (idMatchesQuery(id, query)) return rs;
+	}
+	return undefined;
+}
+
+/**
  * Resolve a subagent session ID from a full or partial (last 8+ chars)
  * identifier. Scans /tmp/pi-subagent-*.meta.json and matches on the
  * session id portion (the part between "pi-subagent-" and ".meta.json").
@@ -433,11 +480,12 @@ export function resolveSubagentMeta(sessionId: string): { sid: string; meta: Rec
 		return null;
 	}
 
-	// Extract the session id portion from the filename
+	// Extract the session id portion from the filename. `idMatchesQuery` owns the
+	// empty-query guard, so this loop needs no separate one.
 	const candidates: Array<{ sid: string; meta: Record<string, any> }> = [];
 	for (const f of files) {
 		const sid = f.replace("pi-subagent-", "").replace(".meta.json", "");
-		if (sid === sessionId || sid.endsWith(sessionId)) {
+		if (idMatchesQuery(sid, sessionId)) {
 			const meta = readMetaJson(sid);
 			if (meta) candidates.push({ sid, meta });
 		}
@@ -452,6 +500,64 @@ export function resolveSubagentMeta(sessionId: string): { sid: string; meta: Rec
 		`Ambiguous partial session id "${sessionId}" matches multiple sessions: ${ids}. ` +
 			`Use a longer suffix or the full id.`,
 	);
+}
+
+/**
+ * Not-found message for the tracker-based tools. Distinguishes an id that
+ * matches nothing from a session that exists on disk but is not attached to
+ * this process — the two used to share one sentence, so a live child queried
+ * with a slightly-off id read as dead. Reports the disk facts (branch,
+ * worktree, log) and whether the recorded owner process is still alive.
+ * Exported for unit testing.
+ */
+export function describeUnknownSession(idQuery: string): string {
+	let resolved: { sid: string; meta: Record<string, any> } | null = null;
+	try {
+		resolved = resolveSubagentMeta(idQuery);
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	if (!resolved) {
+		return (
+			`No session matches "${idQuery}". Pass the full id (subagent-<uuid>) or its last 8+ characters ` +
+			`(with or without the subagent- prefix); /subagents lists this session's running children.`
+		);
+	}
+
+	const { sid, meta } = resolved;
+	const parts = [`Session ${sid} is not attached to this session's tracker.`];
+	const recordedPid = meta.ownerPid;
+	const sock = `/tmp/pi-subagent-${sid}.sock`;
+	// Report the facts that were checked, never a fact the code did not observe.
+	// The old single sentence ("No running subagent found") read as death and got
+	// live worktrees force-reaped, so the state must stay legible from the text:
+	// whether a socket file is present, whether an owner was recorded, and
+	// whether that owner is still alive. `isOwnerAlive` alone returns true for a
+	// legacy meta with no owner, which would render "pid undefined is alive".
+	const hasRecordedOwner = Number.isInteger(recordedPid) && recordedPid > 0;
+	const ownerAlive = hasRecordedOwner ? isOwnerAlive(meta) : undefined;
+	const sockExists = fs.existsSync(sock);
+	const sockFact = sockExists
+		? `a socket file exists at ${sock}`
+		: `no socket file exists at ${sock}`;
+	const ownerFact = hasRecordedOwner
+		? `its recorded owner process (pid ${recordedPid}) is ${ownerAlive ? "still running" : "gone"}`
+		: "no owner process was recorded for it";
+
+	if (sockExists && ownerAlive === true) {
+		parts.push(
+			`Running under another session (owner pid ${recordedPid}) — query it there or use /subagents in that session.`,
+		);
+	} else {
+		// No claim about the child's state beyond the two observed facts: a
+		// leftover socket file with a dead owner is common, and only the owner
+		// session can settle whether the child is still there.
+		parts.push(`Not attached here: ${sockFact}, and ${ownerFact}.`);
+	}
+	if (meta.isolationBranch) parts.push(`Branch: ${meta.isolationBranch}.`);
+	if (meta.worktreePath) parts.push(`Worktree: ${meta.worktreePath}.`);
+	parts.push(`Log: /tmp/pi-subagent-${sid}.log`);
+	return parts.join(" ");
 }
 
 /**
@@ -1207,13 +1313,7 @@ function resolveAttachTarget(
 ): { ok: true; rs: RunningSubagent } | { ok: false; reason: "empty" | "notFound" | "done" | "noStdin" } {
 	if (!sid.trim()) return { ok: false, reason: "empty" };
 
-	let rs: RunningSubagent | undefined;
-	for (const [id, r] of runningMap) {
-		if (id === sid || id.endsWith(sid)) {
-			rs = r;
-			break;
-		}
-	}
+	const rs = findRunningByQuery(runningMap, sid);
 	if (!rs) return { ok: false, reason: "notFound" };
 	if (rs.isDone) return { ok: false, reason: "done" };
 	if (!rs.stdin || rs.stdin.destroyed) return { ok: false, reason: "noStdin" };
@@ -2991,14 +3091,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Match by full session ID or partial match
-			let rs: RunningSubagent | undefined;
-			for (const [id, r] of running) {
-				if (id === sid || id.endsWith(sid)) {
-					rs = r;
-					break;
-				}
-			}
+			// Match by full session ID, bare tail, or `subagent-`-prefixed tail
+			const rs = findRunningByQuery(running, sid);
 			if (!rs) {
 				ctx.ui.notify(`No running subagent matching "${sid}".`);
 				return;
@@ -3157,23 +3251,23 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	const StatusParams = Type.Object({
-		session_id: Type.String({ description: "Session ID of the running subagent" }),
+		session_id: Type.String({ description: "Session ID of the running subagent (full id, or its last 8+ characters)" }),
 	});
 
 	const SteerParams = Type.Object({
-		session_id: Type.String({ description: "Session ID of the running subagent" }),
+		session_id: Type.String({ description: "Session ID of the running subagent (full id, or its last 8+ characters)" }),
 		message: Type.String({ description: "Steering message to inject" }),
 	});
 
 	const StopParams = Type.Object({
-		session_id: Type.String({ description: "Session ID of the running subagent" }),
+		session_id: Type.String({ description: "Session ID of the running subagent (full id, or its last 8+ characters)" }),
 		final_message: Type.Optional(
 			Type.String({ description: "Final steering message before stopping" }),
 		),
 	});
 
 	const KillParams = Type.Object({
-		session_id: Type.String({ description: "Session ID of the running subagent to hard-kill" }),
+		session_id: Type.String({ description: "Session ID of the running subagent to hard-kill (full id, or its last 8+ characters)" }),
 	});
 
 	// If the EFFECTIVE review policy is "skip" — from the referenced work
@@ -3442,12 +3536,11 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			const rs = resolveRunningSession(params.session_id);
 			if (!rs) {
-				// Check if it finished recently — result might still be in flight
 				return {
 					content: [
 						{
 							type: "text",
-							text: `No running subagent found with session "${params.session_id}". It may have already finished or been stopped.`,
+							text: describeUnknownSession(params.session_id),
 						},
 					],
 				};
@@ -3814,7 +3907,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `No running subagent found with session "${params.session_id}".`,
+							text: describeUnknownSession(params.session_id),
 						},
 					],
 				};
@@ -3876,7 +3969,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `No running subagent found with session "${params.session_id}".`,
+							text: describeUnknownSession(params.session_id),
 						},
 					],
 				};
@@ -3990,7 +4083,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `No running subagent found with session "${params.session_id}". It may have already finished or been stopped.`,
+							text: describeUnknownSession(params.session_id),
 						},
 					],
 				};
