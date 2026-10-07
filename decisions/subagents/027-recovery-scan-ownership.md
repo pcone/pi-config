@@ -121,3 +121,14 @@ connection; dead-listener dropped and its stale sock unlinked; already-tracked
 sid not re-adopted; connect path asserted); and the real `session_start`
 handler adopting a self-owned socket from an injected directory (the
 handler→scan wiring).
+
+**Footnote (2026-10-08): the child's session file is not a liveness signal.** pi
+creates a session file lazily when spawned with `--session-id` — it does not
+exist until the first turn's appends (observed: a bare `get_state` on a fresh
+`--session-id` session leaves no file behind). Presence or mtime therefore
+cannot distinguish a live child from a dead one: right after spawn the file is
+absent, and under load a stale mtime reads as death. Liveness stays on
+`ownerPid` + `ownerStartToken` (and the socket) as ruled above. This cost a
+1-in-4 full-suite flake in decision 031's spawn tests before it was identified;
+the same correction was made independently in the tfd repo's
+`docs/plans/git-coordination.md` (commit `68e3ff8a`).
