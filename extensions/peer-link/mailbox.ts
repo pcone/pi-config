@@ -4,10 +4,13 @@
  * A mailbox directory holds one subdirectory per peer. Peers publish a
  * heartbeat to `_peers/<name>.json` so others can discover who is online;
  * messages are envelope files dropped into the recipient's subdirectory.
- * Envelopes are consumed on read (deleted), which makes delivery
- * at-most-once across restarts: a message sent to a listed peer while it is
- * offline just sits in its inbox until the peer's next scan. (Senders gate
- * on this: peer-link fails sends to names that match no listed peer.)
+ * Reading an inbox is non-destructive; the receiver acks (deletes) each
+ * envelope only after successfully injecting it. Delivery is therefore
+ * at-least-once across restarts: a crash between injection and ack can
+ * duplicate a message, and a duplicate is preferable to a loss. A message
+ * sent to a listed peer while it is offline just sits in its inbox until the
+ * peer's next scan. (Senders gate on this: peer-link fails sends to names
+ * that match no listed peer.)
  */
 
 import { randomUUID } from "node:crypto";
@@ -144,7 +147,14 @@ function isEnvelope(value: unknown): value is Envelope {
 	);
 }
 
-/** Read and consume (delete) all valid envelopes in a peer's inbox. */
+/**
+ * Read all valid envelopes in a peer's inbox without consuming them.
+ *
+ * Non-destructive by design: the caller must call ackEnvelope() only after
+ * the envelope has been delivered. This trades at-most-once for at-least-once
+ * — an envelope read but not acked is retried (and may duplicate) rather than
+ * silently dropped. Unreadable files are left in place for manual inspection.
+ */
 export function readIncoming(mailbox: string, name: string): Envelope[] {
 	const dir = inboxDir(mailbox, name);
 	let entries: string[];
@@ -164,14 +174,22 @@ export function readIncoming(mailbox: string, name: string): Envelope[] {
 			continue; // leave unreadable files for manual inspection
 		}
 		if (!isEnvelope(envelope)) continue;
-		try {
-			fs.unlinkSync(file);
-		} catch {
-			continue; // another consumer won the race; it will deliver
-		}
 		envelopes.push(envelope);
 	}
 	return envelopes;
+}
+
+/**
+ * Acknowledge (delete) an envelope after it has been successfully delivered.
+ * Idempotent: an already-removed file is not an error. The filename matches
+ * sendEnvelope's `${from}-${id}.json` convention.
+ */
+export function ackEnvelope(mailbox: string, name: string, env: Envelope): void {
+	try {
+		fs.unlinkSync(path.join(inboxDir(mailbox, name), `${env.from}-${env.id}.json`));
+	} catch {
+		// already acked (or vanished) — nothing to do
+	}
 }
 
 export function writeHeartbeat(mailbox: string, info: PeerInfo): void {

@@ -26,8 +26,10 @@ import {
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
+	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import {
+	ackEnvelope,
 	deliveryModeFor,
 	ensureMailbox,
 	inboxDir,
@@ -45,6 +47,7 @@ import {
 	type Envelope,
 } from "../extensions/peer-link/mailbox";
 import { deliveryDecision } from "../extensions/peer-link/index";
+import peerLink from "../extensions/peer-link/index";
 
 const PEER_LINK_INDEX = join(import.meta.dir, "..", "extensions", "peer-link", "index.ts");
 
@@ -80,7 +83,7 @@ describe("peer-link mailbox", () => {
 		expect(ownPeerName({} as NodeJS.ProcessEnv)).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/);
 	});
 
-	it("envelopes round-trip and are consumed on read", () => {
+	it("envelopes round-trip; read is non-destructive until acked", () => {
 		ensureMailbox(dir, "bob");
 		const env: Envelope = {
 			id: "env-1",
@@ -94,7 +97,9 @@ describe("peer-link mailbox", () => {
 		const got = readIncoming(dir, "bob");
 		expect(got).toHaveLength(1);
 		expect(got[0]).toEqual(env);
-		expect(readIncoming(dir, "bob")).toHaveLength(0); // consumed
+		expect(readIncoming(dir, "bob")).toHaveLength(1); // non-destructive read
+		ackEnvelope(dir, "bob", env);
+		expect(readIncoming(dir, "bob")).toHaveLength(0); // acked → gone
 	});
 
 	it("delivers offline mail: sender creates the recipient inbox", () => {
@@ -247,6 +252,128 @@ describe("peer-link identity chain (peerIdentityFrom)", () => {
 	it("trims the display name", () => {
 		expect(peerIdentityFrom({}, "  bug-triage  ", undefined)).toBe("bug-triage");
 	});
+});
+
+// ---------------------------------------------------------------------------
+// consumeInbox ack semantics (real extension code, injected send)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal ExtensionAPI stand-in that captures registered handlers so the real
+ * peer-link extension can be driven without the full runner. `sendUserMessage`
+ * is the injected transport — tests make it throw to exercise the ack path in
+ * the extension's real consumeInbox, not a reimplementation.
+ */
+function makeFakePi(sendUserMessage: (text: string, options?: { deliverAs?: string }) => void) {
+	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+			const list = handlers.get(event) ?? [];
+			list.push(handler);
+			handlers.set(event, list);
+		},
+		registerTool: () => {},
+		registerCommand: () => {},
+		sendUserMessage,
+	} as unknown as ExtensionAPI;
+	const emit = async (event: string, ctx?: unknown) => {
+		for (const handler of handlers.get(event) ?? []) await handler({ type: event }, ctx);
+	};
+	return {
+		api,
+		sessionStart: (ctx: unknown) => emit("session_start", ctx),
+		sessionShutdown: () => emit("session_shutdown"),
+	};
+}
+
+function fakeExtensionCtx(cwd: string) {
+	return {
+		cwd,
+		ui: { notify: () => {} },
+		sessionManager: {
+			getSessionFile: () => undefined,
+			getSessionName: () => undefined,
+		},
+	};
+}
+
+describe("peer-link consumeInbox acks after delivery", () => {
+	it("leaves the envelope on disk when injection throws, then retries on the next scan", async () => {
+		const mailbox = await mkdtemp(join(tmpdir(), "peer-ack-"));
+		const prevName = process.env.PI_PEER_NAME;
+		const prevMailbox = process.env.PI_PEER_MAILBOX;
+		process.env.PI_PEER_NAME = "bob";
+		process.env.PI_PEER_MAILBOX = mailbox;
+		const attempts: string[] = [];
+		let failNext = true;
+		const fake = makeFakePi((text) => {
+			attempts.push(text);
+			if (failNext) throw new Error("simulated sendUserMessage failure");
+		});
+		try {
+			peerLink(fake.api);
+			sendEnvelope(mailbox, {
+				id: "env-retry",
+				from: "alice",
+				to: "bob",
+				text: "retry me",
+				expectReply: false,
+				sentAt: Date.now(),
+			});
+			await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+			// Initial consumeInbox ran, injection threw, and the envelope must
+			// still be on disk (read is non-destructive).
+			expect(attempts).toHaveLength(1);
+			expect(readIncoming(mailbox, "bob").map((e) => e.id)).toEqual(["env-retry"]);
+
+			// The 2s scan retries; on success the envelope is acked.
+			failNext = false;
+			await waitFor(
+				() => (attempts.length >= 2 ? true : undefined),
+				10_000,
+				"peer-link retry scan",
+			);
+			expect(readIncoming(mailbox, "bob")).toHaveLength(0);
+		} finally {
+			await fake.sessionShutdown();
+			if (prevName === undefined) delete process.env.PI_PEER_NAME;
+			else process.env.PI_PEER_NAME = prevName;
+			if (prevMailbox === undefined) delete process.env.PI_PEER_MAILBOX;
+			else process.env.PI_PEER_MAILBOX = prevMailbox;
+			await rm(mailbox, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("acks only the envelopes that delivered when one injection throws", async () => {
+		const mailbox = await mkdtemp(join(tmpdir(), "peer-ack-"));
+		const prevName = process.env.PI_PEER_NAME;
+		const prevMailbox = process.env.PI_PEER_MAILBOX;
+		process.env.PI_PEER_NAME = "bob";
+		process.env.PI_PEER_MAILBOX = mailbox;
+		const attempts: string[] = [];
+		const fake = makeFakePi((text) => {
+			attempts.push(text);
+			if (text.includes("bad message")) throw new Error("simulated sendUserMessage failure");
+		});
+		try {
+			peerLink(fake.api);
+			sendEnvelope(mailbox, { id: "env-bad", from: "alice", to: "bob", text: "bad message", expectReply: false, sentAt: Date.now() });
+			sendEnvelope(mailbox, { id: "env-good", from: "alice", to: "bob", text: "good message", expectReply: false, sentAt: Date.now() });
+			await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+			expect(attempts.some((t) => t.includes("good message"))).toBe(true);
+			// The delivered envelope is acked; the failed one stays for retry.
+			expect(readIncoming(mailbox, "bob").map((e) => e.id)).toEqual(["env-bad"]);
+		} finally {
+			await fake.sessionShutdown();
+			if (prevName === undefined) delete process.env.PI_PEER_NAME;
+			else process.env.PI_PEER_NAME = prevName;
+			if (prevMailbox === undefined) delete process.env.PI_PEER_MAILBOX;
+			else process.env.PI_PEER_MAILBOX = prevMailbox;
+			await rm(mailbox, { recursive: true, force: true });
+		}
+	}, 30_000);
 });
 
 // ---------------------------------------------------------------------------
