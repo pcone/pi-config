@@ -132,6 +132,13 @@ describe("subagent tool boundary (nesting cap wiring)", () => {
 	};
 
 	beforeAll(() => {
+		// This block drives the tool with ambient env: a subagent session inherits
+		// PI_SUBAGENT_ALLOWLIST/PI_SUBAGENT_DEPTH, and the allowlist gate fires
+		// before the nesting gate, so an inherited allowlist would refuse the spawn
+		// for the wrong reason (and make the suite red from inside a subagent).
+		// Snapshot is taken above; afterAll restores it.
+		delete process.env.PI_SUBAGENT_DEPTH;
+		delete process.env.PI_SUBAGENT_ALLOWLIST;
 		fixtureRoot = mkdtempSync(join(tmpdir(), "pi-nesting-fixture-"));
 		mkdirSync(join(fixtureRoot, "agents"), { recursive: true });
 		for (const name of ["orchestrator", "implement"]) {
