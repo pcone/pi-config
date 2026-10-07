@@ -9,9 +9,7 @@ description: Reserve-then-dispatch for sequential work-order ids in multi-sessio
 Sequential work-order ids (`WO-<year>-<NNN>`) in a repo driven by multiple
 concurrent sessions collide when a session allocates from a stale clone: it
 reads the highest local number, another session lands the same number on the
-shared remote, and both dispatch. (Real case, tfd 2026-08-29: two sessions
-claimed `WO-2026-079` within hours; a peer caught it in flight by vigilance —
-there was no mechanism.)
+shared remote, and both dispatch.
 
 Git push atomicity already detects the race. The protocol makes dispatch wait
 on it:
@@ -56,12 +54,9 @@ on it:
    before any work order reference escapes your session (dispatch task text,
    roadmap rows, decision links).
 
-Why not alternatives: a central counter file adds a second source of truth git
-already provides; per-session number bands break chronological reading;
-session-prefixed ids break every existing reference format. The push IS the
-atomic test-and-set against other mainline sessions — but five boards share
-one mainline and the namespace resolves only at push, so lineage-invisible
-claims are handled by clause 3 (landed history wins), not by the push.
+The push is the atomic test-and-set against other mainline sessions, but the
+namespace resolves only at push, so lineage-invisible claims are handled by
+clause 3 (landed history wins), not by the push.
 
 Same pattern for any shared sequential namespace across sessions: decision
 record numbers, feature-dir numbering. Reserve by push, renumber on rejection.

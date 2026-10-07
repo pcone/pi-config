@@ -7,9 +7,9 @@ description: Work order schema for delegating implementation tasks to subagents 
 
 ## Instructions for the Orchestrator
 
-You are generating a work order to dispatch to an implementation agent. Fill in every section below. If a section does not apply to the task, write `N/A` with a brief explanation rather than omitting it.
+You are generating a work order to dispatch to an implementation agent. Fill in every section that applies; omit the rest.
 
-Your work order quality directly determines whether the implementer succeeds on the first pass. Be exhaustive. If you cannot fully specify all invariants, set `invariant_exhaustiveness: implicit` so the implementer knows to enumerate them.
+Your work order quality directly determines whether the implementer succeeds on the first pass. If you cannot fully specify all invariants, set `invariant_exhaustiveness: implicit` so the implementer knows to enumerate them.
 
 ---
 
@@ -218,9 +218,7 @@ Write the work order to **`work-orders/` at the target repo's root**, as
 
 Do **not** put work orders under `docs/`. They are dispatch artifacts, not
 documentation: they are unindexed, they are never updated after landing, and in
-bulk they drown the curated doc set. (Precedent: 173 work orders had accumulated
-in `tfd/docs/plans/` — 46% of that repo's `docs/` by volume and 81% of its
-doc-validation findings — and were relocated on 2026-08-26.)
+bulk they drown the curated doc set.
 
 `work_order_id` is unique **per repo**, not globally. `WO-2026-013` names
 different work in `tfd` and in `pi-config`. Never assume an ID identifies a work
@@ -236,10 +234,7 @@ preference**: the gate parses `review_policy` with
 /^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m   ??   /^review_policy:\s*(\S+)/m
 ```
 
-— canonical bullet first, YAML frontmatter as fallback (added 2026-08-26; until
-then frontmatter declarations were silently read as `required` — fail-safe,
-extra reviews never skipped ones, but inert, which defeats the point of
-decision 014 making the WO the source of truth). When both are present the
+— canonical bullet first, YAML frontmatter as fallback. When both are present the
 bullet wins. Anything else — `required`, the template literal
 `required | skip`, or no declaration at all — reads as `required`.
 
@@ -277,9 +272,7 @@ a forward link:
 **Watch for a work order that keeps growing.** If a WO accretes progress banners,
 phase ledgers and review rounds, that is the signal it has outgrown its genre and
 should have graduated into a design plan. A 650-line work order is a failure of
-this rule, not a thorough one. (Precedent: `WO-comptime-escaping-slugs-cife.md`
-grew to 650 lines carrying seven unrecorded rulings, and was unpacked into
-`docs/design/unified-type-param-application.md` plus seven decision records.)
+this rule, not a thorough one.
 
 ---
 
@@ -292,7 +285,7 @@ grew to 650 lines carrying seven unrecorded rulings, and was unpacked into
 - **Use repo-relative paths everywhere.** Subagents run in isolated worktrees; absolute parent-repo paths bypass isolation.
 - **Cross-reference AGENTS.md** for project-specific conventions.
 - **Consider pre-dispatch simplification.** If the change looks larger than the goal warrants, route through `review-plan` first.
-## Review routing criterion (adopted 2026-08-26, both boards)
+## Review routing criterion
 
 `review_policy: skip` is for changes where **no invariant can fail** — not changes where
 the invariant is cheap. Size is not the criterion. Calibration case: a "trivial" directory
