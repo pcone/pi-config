@@ -130,7 +130,9 @@ need to be explicitly requested.
 
 6. **Stale rules and missing files**: a rule whose `paths` patterns match no file in the working tree at session start is dormant. It does not inject until the agent touches or creates a matching file. This is the same as Claude Code and avoids paying for rules the user is not yet using.
 
-7. **Limits**:
+7. **Refresh**: discovery is a snapshot of *which* rules exist, not of what they say. A rule is re-read from disk at the moment it is injected, so an edit reaches the next injection instead of the next process start; the discovered set is rebuilt on compact, so files added or removed mid-session appear at the segment boundary. A rule whose file no longer loads injects nothing — stale text is never injected. Rationale and rejected alternatives: `decisions/rules/001-rule-refresh-semantics.md`.
+
+8. **Limits**:
    - **Per-rule line cap**: warn at 150, truncate at 200, both lifted by `<!-- allow-large -->`. No upper bound once the escape hatch is set.
    - **No pattern cap**: rules can have as many `paths` entries as the author wants. We trust the author; rules are project-local config, not a hostile input vector.
    - **No eviction**: once a rule is in the conversation, it stays. Eviction would invalidate the prompt cache for every subsequent turn and is forbidden. If the user wants to free context, they compact — which clears the in-scope set and lets the next round of file touches re-inject only the rules that are still relevant.
@@ -187,7 +189,7 @@ design's abstract operations to pi's event hooks:
 
 | Design operation | pi hook |
 |---|---|
-| Rule discovery — scan directories, parse frontmatter | Async extension factory (runs on load) |
+| Rule discovery — scan directories, parse frontmatter | Async extension factory (runs on load, and again on `session_compact`) |
 | Path-triggered injection | `tool_result` event — watch `read`/`edit`/`write`, check path against rule registry, append rule body to `event.content` |
 | Manual-only injection | `/rule <name>` command reads the rule body from the registry and injects it into the conversation |
 | In-scope set | In-memory `Set<string>` of rule filenames that have fired this segment |
@@ -199,7 +201,7 @@ design's abstract operations to pi's event hooks:
 
 ### In-scope set lifecycle
 
-- **Start**: empty. Rules are discovered at extension startup. No injection has happened.
+- **Start**: empty. Rules are discovered at extension startup, and re-discovered on compact. No injection has happened.
 - **Mid-session**: on first `read`/`edit`/`write` of a matching path, the rule is added to the in-scope set and its body is appended to the tool result.
 - **Compact**: the in-scope set is cleared. Rules that were injected before the compact are gone from the history (replaced by the summary). A subsequent file touch re-injects them.
 - **Session resume**: the in-scope set is not persisted. On resume it is empty. The old rule text is in the loaded history; a subsequent file touch re-injects the rule body, producing temporary duplication. This is acceptable for v1 and can be optimized later by scanning history for `<rule>` tags to rebuild the in-scope set.
@@ -222,7 +224,7 @@ loop. The in-scope `Set` is accessed synchronously — no race condition exists.
 
 ## Rejected alternatives
 
-- **Per-tool-call re-injection**: re-evaluating the rule set on every tool call is wasted work; rules don't change in-session. First-match-injects-and-stays gives the same behavior for less cost.
+- **Per-tool-call re-injection**: re-evaluating the rule set and re-injecting a rule body on every tool call is wasted work — the first injection already put the text in the conversation. (Rules are *re-read* per candidate, but a rule already injected this segment is not re-read and not re-injected; see decision 7 and `decisions/rules/001-rule-refresh-semantics.md`.)
 - **Putting path-scoped rules in a system-prompt block that grows over time**: invalidates the prompt cache every time a new rule is triggered. The per-message append is the only way to keep the system prompt byte-stable.
 - **A single global `~/.pi/rules.md` file with glob sections inside**: the per-file model is easier to maintain, share via symlinks, and reason about. One file per rule.
 - **Adopting the full Claude Code rules spec verbatim (`.claude/rules/` only)**: not portable to other harnesses. The pi-native path (`.pi/rules/`) is the primary, with `.claude/rules/` as a recognized alias.
@@ -237,7 +239,7 @@ loop. The in-scope `Set` is accessed synchronously — no race condition exists.
 - [x] Discovery and file format
 - [x] Frontmatter schema
 - [x] Rule modes (path-triggered + manual-only; unconditional removed)
-- [x] Triggering semantics — all 7 decisions locked
+- [x] Triggering semantics — all 8 decisions locked
 - [x] Injection point (per-message append at trigger)
 - [x] Composition with skills (stacking, no prompt-prompt displacement)
 - [x] `allow-large` escape hatch

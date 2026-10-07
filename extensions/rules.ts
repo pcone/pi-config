@@ -40,6 +40,8 @@ interface Rule {
   disableModelInvocation: boolean;
   body: string;
   lineCount: number;
+  /** Body was longer than the cap and got truncated (allow-large not set). */
+  truncated: boolean;
   allowLarge: boolean;
 }
 
@@ -175,25 +177,29 @@ export function loadRule(filePath: string, warnings: string[]): Rule | null {
       firstNonEmpty?.trim() === "<!-- allow-large -->";
 
     let effectiveBody = body;
-    let effectiveLineCount = bodyLines.length;
+    // Full line count before any truncation: what /rules reports, so a
+    // truncated rule shows its real size and the (truncated) marker is
+    // reachable (lineCount used to be clamped to the cap, hiding both).
+    const totalLineCount = bodyLines.length;
+    let truncated = false;
 
     if (
       !allowLarge &&
-      effectiveLineCount > WARN_RULE_LINES &&
-      effectiveLineCount <= MAX_RULE_LINES
+      totalLineCount > WARN_RULE_LINES &&
+      totalLineCount <= MAX_RULE_LINES
     ) {
       warnings.push(
-        `Rule "${path.basename(filePath, ".md")}" is ${effectiveLineCount} lines; trim it before ${MAX_RULE_LINES}`,
+        `Rule "${path.basename(filePath, ".md")}" is ${totalLineCount} lines; trim it before ${MAX_RULE_LINES}`,
       );
     }
 
-    if (effectiveLineCount > MAX_RULE_LINES && !allowLarge) {
+    if (totalLineCount > MAX_RULE_LINES && !allowLarge) {
       warnings.push(
-        `Rule "${path.basename(filePath, ".md")}" (${effectiveLineCount} lines) truncated to ${MAX_RULE_LINES}. Add <!-- allow-large --> to override.`,
+        `Rule "${path.basename(filePath, ".md")}" (${totalLineCount} lines) truncated to ${MAX_RULE_LINES}. Add <!-- allow-large --> to override.`,
       );
       effectiveBody = bodyLines.slice(0, MAX_RULE_LINES).join("\n");
-      effectiveBody += `\n\n...(content truncated at ${MAX_RULE_LINES} lines; full rule is ${effectiveLineCount} lines. Read the file directly to see the full rule.)`;
-      effectiveLineCount = MAX_RULE_LINES;
+      effectiveBody += `\n\n...(content truncated at ${MAX_RULE_LINES} lines; full rule is ${totalLineCount} lines. Read the file directly to see the full rule.)`;
+      truncated = true;
     }
 
     const name = path.basename(filePath, ".md");
@@ -235,7 +241,8 @@ export function loadRule(filePath: string, warnings: string[]): Rule | null {
       description,
       disableModelInvocation,
       body: effectiveBody,
-      lineCount: effectiveLineCount,
+      lineCount: totalLineCount,
+      truncated,
       allowLarge,
     };
   } catch (err) {
@@ -301,7 +308,7 @@ function discoverRules(
       if (fs.statSync(resolved).isDirectory()) {
         add(resolved, `--rule ${p}`);
       } else {
-        const rule = loadRule(resolved);
+        const rule = loadRule(resolved, warnings);
         if (rule) {
           // Override if name exists from discovery
           seenNames.add(rule.name);
@@ -342,6 +349,17 @@ function matchesAnyGlob(
 // Injection
 // ---------------------------------------------------------------------------
 
+/**
+ * Re-read a rule from disk immediately before it is injected. Discovery is a
+ * snapshot taken at session start, but a session can outlive an edit to a rule
+ * it has not injected yet, and a rule fix that only reaches the next process
+ * start is a dead fix. Returns null when the file no longer yields a rule
+ * (missing, unreadable, emptied) — nothing stale is ever injected.
+ */
+function refreshRule(rule: Rule): Rule | null {
+  return loadRule(rule.filePath, []);
+}
+
 /** Build the text block appended to a tool result. */
 function buildInjection(rules: Rule[]): string {
   const blocks = rules.map((r) => {
@@ -357,8 +375,24 @@ function buildInjection(rules: Rule[]): string {
 
 export default function rulesExtension(pi: ExtensionAPI) {
   const inScope = new Set<string>();
+  const dropped = new Set<string>();
   let rules: Map<string, Rule> = new Map();
   let cwd: string = "";
+  let noDiscovery = false;
+  let explicitPaths: string[] = [];
+
+  /** Re-run discovery. `announce` is startup-only: a compact refreshes silently. */
+  const rediscover = (announce: boolean, ctx?: any): void => {
+    const warnings: string[] = [];
+    rules = discoverRules(noDiscovery, explicitPaths, cwd, warnings);
+    if (warnings.length === 0) return;
+    const text = "[rules] " + warnings.join("; ");
+    if (announce && ctx?.hasUI) {
+      ctx.ui.notify(text, "warning");
+    } else {
+      console.warn(text);
+    }
+  };
 
   // ------------------------------------------------------------------
   // Flags
@@ -381,27 +415,17 @@ export default function rulesExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     inScope.clear();
+    dropped.clear();
     cwd = ctx.cwd;
 
-    const explicitPaths: string[] = [];
+    explicitPaths = [];
     const ruleFlag = pi.getFlag("rule");
     if (typeof ruleFlag === "string" && ruleFlag.trim()) {
       explicitPaths.push(ruleFlag.trim());
     }
 
-    const noDiscovery = pi.getFlag("no-rules") === true || pi.getFlag("no-rules") === "true";
-    const warnings: string[] = [];
-    rules = discoverRules(noDiscovery, explicitPaths, cwd, warnings);
-
-    // Surface warnings — UI notification for interactive, console fallback
-    if (warnings.length > 0) {
-      const text = "[rules] " + warnings.join("; ");
-      if (ctx.hasUI) {
-        ctx.ui.notify(text, "warning");
-      } else {
-        console.warn(text);
-      }
-    }
+    noDiscovery = pi.getFlag("no-rules") === true || pi.getFlag("no-rules") === "true";
+    rediscover(true, ctx);
 
     if (rules.size > 0) {
       const ruleNames = Array.from(rules.keys()).sort();
@@ -429,14 +453,29 @@ export default function rulesExtension(pi: ExtensionAPI) {
     const targetPath: unknown = event.input?.path;
     if (typeof targetPath !== "string" || !targetPath) return;
 
-    // Collect matching rules not yet injected this segment
+    // Collect matching rules not yet injected this segment. Each candidate is
+    // re-read from disk first: a rule edited since discovery must inject its
+    // current body (and current paths), and a rule file deleted since discovery
+    // must not inject at all.
     const matching: Rule[] = [];
     for (const rule of rules.values()) {
-      if (rule.disableModelInvocation) continue;
-      if (!rule.paths || rule.paths.length === 0) continue;
       if (inScope.has(rule.name)) continue;
-      if (matchesAnyGlob(rule.paths, targetPath, cwd)) {
-        matching.push(rule);
+
+      const fresh = refreshRule(rule);
+      if (!fresh) {
+        if (!dropped.has(rule.name)) {
+          dropped.add(rule.name);
+          console.warn(
+            `[rules] Rule "${rule.name}" no longer loads from ${rule.filePath}; not injecting it.`,
+          );
+        }
+        continue;
+      }
+
+      if (fresh.disableModelInvocation) continue;
+      if (!fresh.paths || fresh.paths.length === 0) continue;
+      if (matchesAnyGlob(fresh.paths, targetPath, cwd)) {
+        matching.push(fresh);
       }
     }
 
@@ -459,6 +498,10 @@ export default function rulesExtension(pi: ExtensionAPI) {
 
   pi.on("session_compact", async () => {
     inScope.clear();
+    dropped.clear();
+    // Re-read from disk: files added, edited or removed since session start
+    // reach the new segment. Silent — a compact is not a startup.
+    rediscover(false);
   });
 
   // ------------------------------------------------------------------
@@ -474,16 +517,20 @@ export default function rulesExtension(pi: ExtensionAPI) {
       }
 
       const lines: string[] = [];
-      const sorted = [...rules.values()].sort((a, b) =>
-        a.name.localeCompare(b.name),
-      );
+      // Display fresh facts, not the discovery snapshot: line counts and cap
+      // markers must describe the file as it is now (a rule can grow or be
+      // deleted mid-session).
+      const sorted = [...rules.values()]
+        .map((snapshot) => ({ snapshot, fresh: refreshRule(snapshot) }))
+        .sort((a, b) => a.snapshot.name.localeCompare(b.snapshot.name));
 
-      for (const r of sorted) {
+      for (const { snapshot, fresh } of sorted) {
+        const r = fresh ?? snapshot;
         const status = inScope.has(r.name) ? " [active]" : "";
         const manual = r.disableModelInvocation ? " [manual]" : "";
-        const truncated = r.allowLarge
-          ? ""
-          : r.lineCount > MAX_RULE_LINES
+        const suffix = fresh === null
+          ? " (no longer loads)"
+          : r.truncated
             ? " (truncated)"
             : r.lineCount > WARN_RULE_LINES
               ? " (near cap)"
@@ -491,7 +538,7 @@ export default function rulesExtension(pi: ExtensionAPI) {
         const desc = r.description ? ` - ${r.description}` : "";
         const paths = r.paths?.length ? `  paths: ${r.paths.join(", ")}` : "";
         lines.push(
-          `  ${r.name}${manual}${status}${desc} (${r.lineCount} lines${truncated})`,
+          `  ${r.name}${manual}${status}${desc} (${r.lineCount} lines${suffix})`,
         );
         if (paths) lines.push(paths);
       }
@@ -516,9 +563,21 @@ export default function rulesExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const rule = rules.get(name);
-      if (!rule) {
+      const snapshot = rules.get(name);
+      if (!snapshot) {
         ctx.ui.notify(`Rule not found: "${name}". Use /rules to list.`, "warning");
+        return;
+      }
+
+      // Manual injection is an injection: serve the body on disk now, not the
+      // discovery snapshot. A rule that no longer loads injects nothing and is
+      // left out of the in-scope set so it can recover if the file returns.
+      const rule = refreshRule(snapshot);
+      if (!rule) {
+        ctx.ui.notify(
+          `Rule "${name}" no longer loads from ${snapshot.filePath} — not injecting it.`,
+          "warning",
+        );
         return;
       }
 
