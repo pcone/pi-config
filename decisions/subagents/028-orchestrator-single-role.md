@@ -11,7 +11,8 @@ date: 2026-10-07
 retired. `orchestrate` mode and the `orchestrator` agent become the
 single orchestration role, used at any scale: an orchestrate-mode
 session owns its workstream and dispatches implementers directly, or
-`orchestrator` subagents for large, separately parallelizable chunks.
+`orchestrator` subagents for chunks large enough to deserve their own
+orchestrator context (sequential or parallel).
 An orchestrator subagent may itself dispatch orchestrator children —
 exactly one nesting level — but only from the top level
 (`PI_SUBAGENT_DEPTH=1`); a nested orchestrator (`PI_SUBAGENT_DEPTH=2`)
@@ -21,6 +22,12 @@ removed: orchestrators may read the whole roadmap and reason across
 chunks. They still must not re-plan their parent's work or write a
 roadmap doc they don't own — the one-writer rule preserves decision
 007's conflict-avoidance finding under nesting.
+
+> **Amendment (2026-10-07):** the nesting trigger is **context
+> isolation, not parallelism**. A child orchestrator absorbs its
+> sub-chunk's design/dispatch/review noise and returns a completion
+> report, so sequential chunks qualify exactly as much as parallel
+> ones; the design section below is updated accordingly.
 
 **Why:** Decision 007 split planning (SO in `plan` mode) from execution
 (orchestrator subagents) to keep planning judgment out of an
@@ -64,8 +71,9 @@ execution-polluted context. In practice the split did not hold:
   mirrors it: depth 1 may nest, depth 2 must not.
 - **Most work does not nest.** A single orchestrator dispatching
   implementers is the default; nesting is for large multi-step
-  workstreams whose chunks are themselves large and independently
-  parallelizable.
+  workstreams whose chunks each deserve their own orchestrator context
+  — sequential chunks qualify because nesting isolates context, not
+  because they run concurrently.
 - **Cross-chunk awareness.** Orchestrators may read the roadmap and
   other chunks, and must flag cross-chunk dependencies in
   `notes_for_orchestrator`. They do not reorder their parent's items or

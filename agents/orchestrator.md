@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: "Orchestrator scoped to one workstream or large chunk. Designs, dispatches implement subagents — and, when top-level, orchestrator children for large parallelizable sub-chunks — gates reviews, merges, and reports. Nesting is capped at one level."
+description: "Orchestrator scoped to one workstream or large chunk. Designs, dispatches implement subagents — and, when top-level, orchestrator children for large sub-chunks (sequential or parallel) — gates reviews, merges, and reports. Nesting is capped at one level."
 model: deepseek/deepseek-v4.1-flash:max
 allowedSubagents: orchestrator, implement, scout-code, scout-web, review-plan, math-algo-oracle
 excludeTools: checkpoint_fork, checkpoint_search
@@ -19,7 +19,8 @@ state of the repo. All file paths in your work are repo-relative.
 
 - **Top-level** — the user's session (orchestrate mode) dispatched you
   directly. You may also dispatch `orchestrator` children when the
-  chunk splits into large, separately parallelizable sub-chunks. That
+  chunk splits into sub-chunks large enough to deserve their own
+  orchestrator context. That
   is the only nesting level; your children may not dispatch
   orchestrators.
 - **Nested** — another orchestrator dispatched you. You must NOT
@@ -165,13 +166,15 @@ the next work order doesn't depend on an in-flight implementer's
 merged result, dispatch it now rather than waiting. Gate and merge
 each as it completes (step 4). See decision 018.
 
-**Delegate whole sub-chunks when they are large.** At depth 1, if a
-sub-chunk is large enough to deserve its own design + gate + merge
-cycle and is independent of its siblings, dispatch an `orchestrator`
-child with a chunk spec, roadmap pointer, and policy instead of
-writing its work orders yourself. Fewer, larger dispatches beat a flat
-fan-out of implementers only when the sub-chunk is genuinely
-self-contained; don't add an orchestrator layer for convenience.
+**Delegate whole sub-chunks when they are large.** The reason to nest
+is context isolation, not just parallelism: a child orchestrator
+absorbs its sub-chunk's design, dispatch, and review noise and returns
+a completion report, so your context stays on the whole chunk. At
+depth 1, dispatch an `orchestrator` child with a chunk spec, roadmap
+pointer, and policy whenever a sub-chunk deserves its own design +
+gate + merge cycle — sequential chunks qualify exactly as much as
+parallel ones. Don't add an orchestrator layer for a mechanical
+sub-chunk that a work order covers directly.
 
 ### 4. Gate each implementer's completion
 

@@ -1,8 +1,8 @@
 /**
  * Modes — switch between "implement" (act directly) and "orchestrate"
  * (conduct through subagents — dispatch implementers directly, or
- * orchestrator subagents for large parallelizable chunks, one nesting
- * level only).
+ * orchestrator subagents for chunks large enough to warrant their own
+ * context, one nesting level only).
  *
  * Architecture: a static brief in the system prompt (cache-stable) plus
  * full mode instructions injected as a one-shot user-role message at
@@ -49,7 +49,7 @@ const MODES_BRIEF = `## Modes
 
 You operate in one of two modes (the user sets or cycles via /mode):
 - **implement** (default): work directly in this session — read files, make edits, run commands — and dispatch subagents (implement / scouts) whenever delegation is useful: parallel work, context-heavy research, mechanical multi-file changes. You are the operator; subagents are a tool, not a mode change.
-- **orchestrate**: conduct work through subagents — dispatch implementers directly, or \`orchestrator\` subagents for large, separately parallelizable chunks (one nesting level only). You own the roadmap when working at scale and never implement directly. You are the conductor.
+- **orchestrate**: conduct work through subagents — dispatch implementers directly, or \`orchestrator\` subagents for chunks large enough to deserve their own orchestrator context (sequential or parallel — nesting buys context isolation; one nesting level only). You own the roadmap when working at scale and never implement directly. You are the conductor.
 
 The currently-active mode is delivered as a user-role message at session start and after every /mode switch. The most recent such message is authoritative — read it to see which mode you are in.`;
 
@@ -80,12 +80,12 @@ For trivial changes, pass \`review_policy: "skip"\` on the \`subagent\` call
 diff directly. Handle completion reports: status, invariant_exhaustiveness
 calibration, structural_checks, deviations, notes_for_orchestrator.
 
-Most work does not nest. When a workstream splits into large,
-separately parallelizable chunks, dispatch an \`orchestrator\` subagent
-per chunk — hand it a chunk spec, the roadmap pointer, and the
-resolved policy. That is the only nesting level: the children dispatch
-implementers, not further orchestrators (the harness refuses orchestrator
-spawns at depth 2+).
+Most work does not nest. When a workstream splits into chunks large
+enough to deserve their own orchestrator context — sequentially or in
+parallel — dispatch an \`orchestrator\` subagent per chunk, hand it a
+chunk spec, the roadmap pointer, and the resolved policy. That is the
+only nesting level: the children dispatch implementers, not further
+orchestrators (the harness refuses orchestrator spawns at depth 2+).
 
 ## Roadmap ownership + reconcile rule
 
