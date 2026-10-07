@@ -1439,13 +1439,15 @@ export function buildSubagentEnv(config: SubagentEnvConfig): Record<string, stri
  * Full env for a spawned subagent: the parent's env with the subagent
  * additions layered over it. The additions win (spread order), so an
  * inherited PI_SUBAGENT_DEPTH can never survive into the child — the
- * child's own stamped depth is authoritative.
+ * child's own stamped depth is authoritative. This is the spawn site's
+ * env builder and computes the depth itself, so no caller can forget
+ * the increment.
  */
 export function buildSubagentProcessEnv(
-	config: SubagentEnvConfig,
+	config: Omit<SubagentEnvConfig, "depth">,
 	parentEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-	return { ...parentEnv, ...buildSubagentEnv(config) };
+	return { ...parentEnv, ...buildSubagentEnv({ ...config, depth: nextSubagentDepth(parentEnv) }) };
 }
 
 // Decision 014: parse the work order's declared `review_policy`.
@@ -1696,7 +1698,6 @@ async function spawnSubagent(
 			allowlist: agent.allowedSubagents,
 			worktreePath,
 			parentCwdForCleanup,
-			depth: nextSubagentDepth(),
 		}),
 	});
 

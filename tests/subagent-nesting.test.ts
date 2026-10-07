@@ -71,13 +71,15 @@ describe("buildSubagentEnv depth stamping", () => {
 	});
 });
 
-describe("buildSubagentProcessEnv", () => {
-	it("overrides an inherited parent depth with the child's stamp", () => {
-		const env = buildSubagentProcessEnv(
-			{ ...baseConfig, depth: 2 },
-			{ PI_SUBAGENT_DEPTH: "9", PATH: "/usr/bin" },
-		);
-		expect(env.PI_SUBAGENT_DEPTH).toBe("2");
+describe("buildSubagentProcessEnv (the spawn site's env builder)", () => {
+	it("computes the child depth from the parent env", () => {
+		expect(buildSubagentProcessEnv(baseConfig, {}).PI_SUBAGENT_DEPTH).toBe("1");
+		expect(buildSubagentProcessEnv(baseConfig, { PI_SUBAGENT_DEPTH: "1" }).PI_SUBAGENT_DEPTH).toBe("2");
+	});
+
+	it("overrides an inherited parent stamp and preserves the rest of the env", () => {
+		const env = buildSubagentProcessEnv(baseConfig, { PI_SUBAGENT_DEPTH: "9", PATH: "/usr/bin" });
+		expect(env.PI_SUBAGENT_DEPTH).toBe("10");
 		expect(env.PATH).toBe("/usr/bin");
 	});
 });

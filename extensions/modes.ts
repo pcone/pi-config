@@ -32,6 +32,16 @@ export function isValidMode(s: string): s is Mode {
 	return s === "implement" || s === "orchestrate";
 }
 
+/**
+ * @internal Exported for tests: resolve a /mode argument to a target mode,
+ * or null when the argument is not a known mode. An empty argument cycles.
+ */
+export function resolveModeArg(current: Mode, arg: string): Mode | null {
+	const a = arg.trim().toLowerCase();
+	if (a === "") return nextMode(current);
+	return isValidMode(a) ? a : null;
+}
+
 const PROJECT_FILE = join(process.cwd(), ".pi", "mode.json");
 const GLOBAL_FILE = join(homedir(), ".pi", "agent", "modes.json");
 
@@ -166,7 +176,12 @@ function writeModeFile(path: string, mode: Mode): void {
 	}
 }
 
-const loadMode = (): Mode => readModeFile(PROJECT_FILE) ?? readModeFile(GLOBAL_FILE) ?? "implement";
+/** @internal Exported for tests: project file wins, then global, then implement. */
+export function loadModeFrom(projectPath: string, globalPath: string): Mode {
+	return readModeFile(projectPath) ?? readModeFile(globalPath) ?? "implement";
+}
+
+const loadMode = (): Mode => loadModeFrom(PROJECT_FILE, GLOBAL_FILE);
 const saveMode = (mode: Mode): void => { writeModeFile(PROJECT_FILE, mode); writeModeFile(GLOBAL_FILE, mode); };
 
 export default function modesExt(pi: ExtensionAPI): void {
@@ -196,14 +211,8 @@ export default function modesExt(pi: ExtensionAPI): void {
 	pi.registerCommand("mode", {
 		description: "Set or cycle the session mode (implement / orchestrate)",
 		handler: async (args, ctx) => {
-			const arg = args.trim().toLowerCase();
-			let next: Mode;
-
-			if (isValidMode(arg)) {
-				next = arg;
-			} else if (arg === "") {
-				next = nextMode(currentMode);
-			} else {
+			const next = resolveModeArg(currentMode, args);
+			if (next === null) {
 				ctx.ui.notify(`Current mode: ${currentMode}\nUsage: /mode [implement|orchestrate]`, "info");
 				return;
 			}
