@@ -4,7 +4,14 @@
  * 24 hours to avoid rate limiting.
  *
  * Startup: 2D Pareto (avg score × cost) with thresholds — compact tier picks.
- * /tiers:  3D Pareto (avg score × cost × multimodal) — full frontier, no thresholds.
+ * /tiers:  2D Pareto across all models, plus the image-supporting subset.
+ *
+ * Scoring:
+ * - An AA index that hasn't been published is omitted from the average, never
+ *   treated as zero; `missingAxes` marks such rows (rendered `†`).
+ * - Rows that resolve to no standard models-endpoint entry, or to an entry
+ *   without pricing, cannot sit on a cost axis and are skipped — `:batch`/
+ *   `:free` variants must not lend their price to the standard model.
  *
  * Pricing assumes 96% cache hit, 99/1 input/output split.
  */
@@ -12,7 +19,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync, renameSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -52,20 +59,22 @@ interface ModelsResponse {
   data: ModelInfo[];
 }
 
+type AxisKey = "intelligence" | "coding" | "agentic";
+
 interface ScoredModel {
   name: string;
   slug: string;
   avg: number;
-  intelligence: number;
-  coding: number;
-  agentic: number;
+  intelligence: number | null;
+  coding: number | null;
+  agentic: number | null;
   blendedCost: number;
   promptPrice: number;
   completionPrice: number;
   cacheRead: number;
   valueScore: number;
   multimodal: boolean;
-  contextTier: number; // 4=1M+, 3=500K+, 2=200K+, 1=<200K
+  missingAxes: AxisKey[];
 }
 
 interface CacheData {
@@ -80,20 +89,7 @@ interface CacheData {
 
 const CACHE_DIR = resolve(homedir(), ".pi", "cache", "model-tiers");
 const CACHE_FILE = join(CACHE_DIR, "cache.json");
-const CACHE_TTL_MS = 72 * 60 * 60 * 1000;
-
-// Sweep stale cache files older than CACHE_TTL_MS on each pi startup.
-// Cleanup runs only here — no periodic or close-time sweeps.
-try {
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const now = Date.now();
-  for (const f of readdirSync(CACHE_DIR)) {
-    const fp = join(CACHE_DIR, f);
-    try {
-      if (now - statSync(fp).mtimeMs > CACHE_TTL_MS) rmSync(fp);
-    } catch { /* race with concurrent removal */ }
-  }
-} catch { /* dir may not exist yet */ }
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const THRESHOLDS = {
   intelligence: 40,
@@ -160,15 +156,28 @@ function getOpenRouterKey(): string | undefined {
 // Data fetching with cache
 // ---------------------------------------------------------------------------
 
+/**
+ * A cache is usable only when its fetch time is finite and within the TTL and
+ * both payloads are arrays — a missing/NaN `fetchedAt` must not read as fresh.
+ * @for-testing-only — pure validation, no IO
+ */
+export function isValidCache(cache: unknown, now: number, ttlMs: number): cache is CacheData {
+  const c = cache as CacheData | null;
+  return (
+    !!c &&
+    typeof c.fetchedAt === "number" &&
+    Number.isFinite(c.fetchedAt) &&
+    now - c.fetchedAt <= ttlMs &&
+    Array.isArray(c.benchmarks?.data) &&
+    Array.isArray(c.models?.data)
+  );
+}
+
 function loadCache(): CacheData | null {
   try {
     if (!existsSync(CACHE_FILE)) return null;
-    const raw = readFileSync(CACHE_FILE, "utf-8");
-    const cache = JSON.parse(raw) as CacheData;
-    const age = Date.now() - cache.fetchedAt;
-    if (age > CACHE_TTL_MS) return null;
-    if (!cache.benchmarks?.data || !cache.models?.data) return null;
-    return cache;
+    const parsed: unknown = JSON.parse(readFileSync(CACHE_FILE, "utf-8"));
+    return isValidCache(parsed, Date.now(), CACHE_TTL_MS) ? parsed : null;
   } catch {
     return null;
   }
@@ -178,7 +187,9 @@ function saveCache(data: CacheData): void {
   try {
     const dir = dirname(CACHE_FILE);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
+    const tmp = CACHE_FILE + ".tmp";
+    writeFileSync(tmp, JSON.stringify(data, null, 2));
+    renameSync(tmp, CACHE_FILE); // atomic: a reader never sees a half-written cache
   } catch { /* silently fail */ }
 }
 
@@ -201,41 +212,30 @@ async function fetchModels(): Promise<ModelsResponse> {
 // Scoring
 // ---------------------------------------------------------------------------
 
-function normValue(value: number, min: number, max: number): number {
-  const range = max - min;
-  return range > 0 ? (value - min) / range : 0;
+function normValue(value: number, lo: number, hi: number): number {
+  if (hi <= lo) return 0.5; // no spread: the axis carries no ranking information
+  return (value - lo) / (hi - lo);
 }
 
-/** Build a model lookup from the /v1/models response. */
+/**
+ * Build a model lookup from the /v1/models response. Variant ids (`:batch`,
+ * `:free`) share the standard entry's `canonical_slug`; last-write-wins at the
+ * same key would let a variant lend its price to the standard model, so they
+ * are skipped.
+ */
 function buildLookup(models: ModelsResponse): Map<string, ModelInfo> {
   const map = new Map<string, ModelInfo>();
   for (const m of models.data) {
+    if (m.id?.includes(":") || m.canonical_slug?.includes(":")) continue;
     if (m.canonical_slug) map.set(m.canonical_slug, m);
     if (m.id) map.set(m.id, m);
   }
   return map;
 }
 
-/**
- * Model ids treated as open-weights before their `hugging_face_id` is populated.
- * Used to surface upcoming open-weight releases in the open-weights tier
- * lists. Remove an entry once the weights ship. Canonical slugs with a
- * date suffix (e.g. `<base>-20260727`) are matched via prefix.
- */
-const UPCOMING_OPEN_WEIGHTS: readonly string[] = [
-  "moonshotai/kimi-k3", // open-weights release planned 2026-07-27
-];
-
-/** Check whether a model has open weights (hugging_face_id is non-null),
- *  or is an upcoming open-weights release listed in UPCOMING_OPEN_WEIGHTS. */
+/** Open weights are signalled by a non-null `hugging_face_id`. */
 function isOpenWeights(mi: ModelInfo | undefined): boolean {
-  if (mi?.hugging_face_id) return true;
-  if (!mi) return false;
-  for (const base of UPCOMING_OPEN_WEIGHTS) {
-    if (mi.id === base) return true;
-    if (mi.canonical_slug && (mi.canonical_slug === base || mi.canonical_slug.startsWith(base + "-"))) return true;
-  }
-  return false;
+  return !!mi?.hugging_face_id;
 }
 
 /** Check whether a model supports image input. */
@@ -244,149 +244,122 @@ function isMultimodal(mi: ModelInfo | undefined): boolean {
   return mod.includes("image");
 }
 
-/** Quantize context window size into comparable tiers. */
-function contextTier(mi: ModelInfo | undefined): number {
-  const ctx = mi?.context_length ?? 0;
-  return ctx >= 1_000_000 ? 2 : 1;  // 1M+ vs below
-}
+type AxisBounds = Record<AxisKey, { lo: number; hi: number } | null>;
 
-/** 3D: avg, multimodal, cost. Used for /tiers. */
-function paretoFilter3D(models: ScoredModel[]): ScoredModel[] {
-  return models.filter((a) => {
-    for (const b of models) {
-      if (
-        b.avg > a.avg &&
-        (b.multimodal ? 1 : 0) > (a.multimodal ? 1 : 0) &&
-        b.blendedCost < a.blendedCost
-      )
-        return false;
-    }
-    return true;
-  });
-}
-
-/** Compute global min/max for each AA index across all benchmarked models. */
-function computeBounds(benchmarks: BenchmarksResponse) {
-  let iMin = Infinity, iMax = -Infinity;
-  let cMin = Infinity, cMax = -Infinity;
-  let aMin = Infinity, aMax = -Infinity;
+/** Per-axis min/max over every row that carries that index — partial rows count. */
+function computeBounds(benchmarks: BenchmarksResponse): AxisBounds {
+  const values: Record<AxisKey, number[]> = { intelligence: [], coding: [], agentic: [] };
   for (const b of benchmarks.data) {
-    const i = b.intelligence_index, c = b.coding_index, a = b.agentic_index;
-    if (i != null && c != null && a != null) {
-      iMin = Math.min(iMin, i); iMax = Math.max(iMax, i);
-      cMin = Math.min(cMin, c); cMax = Math.max(cMax, c);
-      aMin = Math.min(aMin, a); aMax = Math.max(aMax, a);
-    }
+    if (b.intelligence_index != null) values.intelligence.push(b.intelligence_index);
+    if (b.coding_index != null) values.coding.push(b.coding_index);
+    if (b.agentic_index != null) values.agentic.push(b.agentic_index);
   }
-  return { iMin, iMax, cMin, cMax, aMin, aMax };
+  const span = (xs: number[]): { lo: number; hi: number } | null =>
+    xs.length ? { lo: Math.min(...xs), hi: Math.max(...xs) } : null;
+  return {
+    intelligence: span(values.intelligence),
+    coding: span(values.coding),
+    agentic: span(values.agentic),
+  };
 }
 
-// @for-testing-only — export is safe; scoreModels is pure (no IO, no pi globals)
+const AXES: readonly AxisKey[] = ["intelligence", "coding", "agentic"];
+
+function axisValues(b: BenchmarkEntry): Record<AxisKey, number | null> {
+  return { intelligence: b.intelligence_index, coding: b.coding_index, agentic: b.agentic_index };
+}
+
+/**
+ * Score one benchmark row. Missing indices are omitted from the average (never
+ * zero); rows with no standard-model pricing are skipped — see file header.
+ */
+function scoreRow(
+  b: BenchmarkEntry,
+  lookup: Map<string, ModelInfo>,
+  bnd: AxisBounds,
+): ScoredModel | null {
+  const values = axisValues(b);
+  const present = AXES.filter((k) => values[k] != null);
+  if (present.length === 0) return null;
+
+  const mi = lookup.get(b.model_permaslug);
+  const p = mi?.pricing;
+  if (!p) return null;
+  const parsedPrompt = parseFloat(p.prompt ?? "");
+  const parsedCompletion = parseFloat(p.completion ?? "");
+  if (!Number.isFinite(parsedPrompt) && !Number.isFinite(parsedCompletion)) return null;
+
+  const promptPrice = Number.isFinite(parsedPrompt) ? parsedPrompt : 0;
+  const completionPrice = Number.isFinite(parsedCompletion) ? parsedCompletion : 0;
+  const cacheRead = parseFloat(p.input_cache_read ?? "0") || 0;
+  const effectiveInput =
+    cacheRead > 0 ? MISS_RATE * promptPrice + CACHE_HIT_RATE * cacheRead : promptPrice;
+  const blended = effectiveInput * INPUT_RATIO + completionPrice * OUTPUT_RATIO;
+
+  const avg =
+    (present.reduce((sum, k) => {
+      const range = bnd[k];
+      return sum + (range ? normValue(values[k] as number, range.lo, range.hi) : 0.5);
+    }, 0) /
+      present.length) *
+    100;
+
+  return {
+    name: b.display_name,
+    slug: b.model_permaslug,
+    avg,
+    intelligence: values.intelligence,
+    coding: values.coding,
+    agentic: values.agentic,
+    blendedCost: blended,
+    promptPrice,
+    completionPrice,
+    cacheRead,
+    // Free models rank above every paid model on value; MAX_SAFE_INTEGER keeps
+    // the comparator finite and deterministic where Infinity did not.
+    valueScore: blended > 0 ? avg / (blended * 1e6) : Number.MAX_SAFE_INTEGER,
+    multimodal: isMultimodal(mi),
+    missingAxes: AXES.filter((k) => values[k] == null),
+  };
+}
+
+/** Compact-table thresholds apply only to the axes a row actually publishes. */
+function passesThresholds(s: ScoredModel): boolean {
+  return (
+    (s.intelligence == null || s.intelligence >= THRESHOLDS.intelligence) &&
+    (s.coding == null || s.coding >= THRESHOLDS.coding) &&
+    (s.agentic == null || s.agentic >= THRESHOLDS.agentic)
+  );
+}
+
+function scoreRows(
+  benchmarks: BenchmarksResponse,
+  models: ModelsResponse,
+  thresholds: boolean,
+): ScoredModel[] {
+  const lookup = buildLookup(models);
+  const bnd = computeBounds(benchmarks);
+  const results: ScoredModel[] = [];
+
+  for (const b of benchmarks.data) {
+    const s = scoreRow(b, lookup, bnd);
+    if (!s) continue;
+    if (thresholds && !passesThresholds(s)) continue;
+    results.push(s);
+  }
+
+  results.sort((a, b) => b.avg - a.avg);
+  return results;
+}
+
+// @for-testing-only — export is safe; both scorers are pure (no IO, no pi globals)
 export function scoreModels(benchmarks: BenchmarksResponse, models: ModelsResponse): ScoredModel[] {
-  const lookup = buildLookup(models);
-  const bnd = computeBounds(benchmarks);
-  const results: ScoredModel[] = [];
-
-  for (const b of benchmarks.data) {
-    const intelligence = b.intelligence_index ?? 0;
-    const coding = b.coding_index ?? 0;
-    const agentic = b.agentic_index ?? 0;
-    if (
-      intelligence < THRESHOLDS.intelligence ||
-      coding < THRESHOLDS.coding ||
-      agentic < THRESHOLDS.agentic
-    )
-      continue;
-
-    const avg =
-      ((normValue(intelligence, bnd.iMin, bnd.iMax) +
-        normValue(coding, bnd.cMin, bnd.cMax) +
-        normValue(agentic, bnd.aMin, bnd.aMax)) /
-        3) *
-      100;
-
-    const mi = lookup.get(b.model_permaslug);
-    const p = mi?.pricing ?? {};
-    const promptPrice = parseFloat(p.prompt ?? "0") || 0;
-    const completionPrice = parseFloat(p.completion ?? "0") || 0;
-    const cacheRead = parseFloat(p.input_cache_read ?? "0") || 0;
-    const effectiveInput =
-      cacheRead > 0
-        ? MISS_RATE * promptPrice + CACHE_HIT_RATE * cacheRead
-        : promptPrice;
-    const blended = effectiveInput * INPUT_RATIO + completionPrice * OUTPUT_RATIO;
-    const valueScore = blended > 0 ? avg / (blended * 1e6) : Infinity;
-
-    results.push({
-      name: b.display_name,
-      slug: b.model_permaslug,
-      avg,
-      intelligence,
-      coding,
-      agentic,
-      blendedCost: blended,
-      promptPrice,
-      completionPrice,
-      cacheRead,
-      valueScore,
-      multimodal: isMultimodal(mi),
-      contextTier: contextTier(mi),
-    });
-  }
-
-  results.sort((a, b) => b.avg - a.avg);
-  return results;
+  return scoreRows(benchmarks, models, true);
 }
 
-function scoreAllModels(benchmarks: BenchmarksResponse, models: ModelsResponse): ScoredModel[] {
-  const lookup = buildLookup(models);
-  const bnd = computeBounds(benchmarks);
-  const results: ScoredModel[] = [];
-
-  for (const b of benchmarks.data) {
-    const intelligence = b.intelligence_index ?? 0;
-    const coding = b.coding_index ?? 0;
-    const agentic = b.agentic_index ?? 0;
-    if (intelligence === 0 && coding === 0 && agentic === 0) continue;
-
-    const avg =
-      ((normValue(intelligence, bnd.iMin, bnd.iMax) +
-        normValue(coding, bnd.cMin, bnd.cMax) +
-        normValue(agentic, bnd.aMin, bnd.aMax)) /
-        3) *
-      100;
-
-    const mi = lookup.get(b.model_permaslug);
-    const p = mi?.pricing ?? {};
-    const promptPrice = parseFloat(p.prompt ?? "0") || 0;
-    const completionPrice = parseFloat(p.completion ?? "0") || 0;
-    const cacheRead = parseFloat(p.input_cache_read ?? "0") || 0;
-    const effectiveInput =
-      cacheRead > 0
-        ? MISS_RATE * promptPrice + CACHE_HIT_RATE * cacheRead
-        : promptPrice;
-    const blended = effectiveInput * INPUT_RATIO + completionPrice * OUTPUT_RATIO;
-    const valueScore = blended > 0 ? avg / (blended * 1e6) : Infinity;
-
-    results.push({
-      name: b.display_name,
-      slug: b.model_permaslug,
-      avg,
-      intelligence,
-      coding,
-      agentic,
-      blendedCost: blended,
-      promptPrice,
-      completionPrice,
-      cacheRead,
-      valueScore,
-      multimodal: isMultimodal(mi),
-      contextTier: contextTier(mi),
-    });
-  }
-
-  results.sort((a, b) => b.avg - a.avg);
-  return results;
+// @for-testing-only — the /tiers path: no thresholds, every rankable row
+export function scoreAllModels(benchmarks: BenchmarksResponse, models: ModelsResponse): ScoredModel[] {
+  return scoreRows(benchmarks, models, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +434,7 @@ export function renderTable(models: ScoredModel[], title = "MODEL TIERS", oCostM
     if (members.length === 0) continue;
 
     const byPerf = [...members].sort((a, b) => b.avg - a.avg);
-    const byValue = [...members].sort((a, b) => b.valueScore - a.valueScore);
+    const byValue = [...members].sort((a, b) => (b.valueScore - a.valueScore) || (b.avg - a.avg));
     const bestPerf = byPerf[0];
     const bestValue = byValue[0];
     const remaining = members.filter((m) => m !== bestPerf && m !== bestValue);
@@ -481,14 +454,19 @@ export function renderTable(models: ScoredModel[], title = "MODEL TIERS", oCostM
       const avgPlain = m.avg.toFixed(1).padStart(5);
       const costPlain = `$${(m.blendedCost * 1e6).toFixed(2)}/M`.padStart(9);
       const nameStr = m.name.length > 45 ? m.name.slice(0, 44) + "…" : m.name;
+      const mark = m.missingAxes.length > 0 ? "† " : "  ";
       lines.push(
-        `    ${color(label.padEnd(7))} ${nameStr.padEnd(46)} ${sc}${avgPlain}${reset} avg  ${cc}${costPlain}${reset}`,
+        `    ${color(label.padEnd(7))} ${mark}${nameStr.padEnd(46)} ${sc}${avgPlain}${reset} avg  ${cc}${costPlain}${reset}`,
       );
     };
 
     show("★ PERF", green, bestPerf);
     if (bestValue !== bestPerf) show("★ VALUE", cyan, bestValue);
     if (runnerUp && runnerUp !== bestPerf && runnerUp !== bestValue) show("☆ ALT", yellow, runnerUp);
+  }
+
+  if (models.some((m) => m.missingAxes.length > 0)) {
+    lines.push(dim("  † AA index not published yet — averaged over published indices only"));
   }
 
   return lines.join("\n");
@@ -519,13 +497,14 @@ function renderFullTable(models: ScoredModel[], dominatedCount: number, title: s
     const sc = scoreColor(m.avg, scoreMin, scoreMax);
     const cc = costColor(m.blendedCost, costMin, costMax);
     const nameStr = m.name.length > 48 ? m.name.slice(0, 47) + "…" : m.name;
+    const mark = m.missingAxes.length > 0 ? "† " : "  ";
     lines.push(
-      `  ${nameStr.padEnd(49)} ${sc}${m.avg.toFixed(1).padStart(5)}${reset} ${cc}$${(m.blendedCost * 1e6).toFixed(2)}/M${reset}`,
+      `  ${mark}${nameStr.padEnd(49)} ${sc}${m.avg.toFixed(1).padStart(5)}${reset} ${cc}$${(m.blendedCost * 1e6).toFixed(2)}/M${reset}`,
     );
   }
 
   if (hiddenCount && hiddenCount > 0) {
-    lines.push(dim(`  … ${hiddenCount} more (below $0.00/M cutoff)`));
+    lines.push(dim(`  … ${hiddenCount} more (free-tier models)`));
   }
 
   return lines.join("\n");
@@ -589,6 +568,19 @@ function sideBySide(left: string, right: string): string {
 // ---------------------------------------------------------------------------
 
 export default async function (pi: ExtensionAPI) {
+  // Sweep stale cache files on pi startup only. Kept out of module scope so
+  // importing this module (tests) has no side effects on the real cache.
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    const now = Date.now();
+    for (const f of readdirSync(CACHE_DIR)) {
+      const fp = join(CACHE_DIR, f);
+      try {
+        if (now - statSync(fp).mtimeMs > CACHE_TTL_MS) rmSync(fp);
+      } catch { /* race with concurrent removal */ }
+    }
+  } catch { /* dir may not exist yet */ }
+
   // ── TUI entry renderer (startup tiers — never enters LLM context) ──
   pi.registerEntryRenderer<{ content: string }>("model-tiers", (entry, _options, theme) => {
     const data = entry.data ?? { content: "" };
@@ -663,7 +655,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /tiers: full 3D Pareto, no thresholds ──
+  // ── /tiers: 2D Pareto across all models + the image-supporting subset ──
   pi.registerCommand("tiers", {
     description: "Show 2D Pareto frontiers: all models + image-only",
     handler: async (_args, ctx) => {
