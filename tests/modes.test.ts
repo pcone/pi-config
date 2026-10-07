@@ -1,7 +1,13 @@
 /**
  * Mode definitions after decision 028: two modes (implement/orchestrate);
  * `plan` is retired. `readModeFile` pins the persisted-mode parse, including
- * the fallback leg `loadMode() = project ?? global ?? "implement"` relies on.
+ * the fallback leg `loadModeFrom` relies on; `loadModeFrom` pins the
+ * project → global → implement chain; `resolveModeArg` pins the /mode
+ * argument logic.
+ *
+ * The /mode handler's persistence (`saveMode` writes real `.pi/mode.json`
+ * paths) is deliberately not driven: a handler test would clobber real user
+ * config. The handler's only logic above persistence is `resolveModeArg`.
  *
  * Run: bun test tests/modes.test.ts
  */
