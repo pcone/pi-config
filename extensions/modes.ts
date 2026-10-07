@@ -1,7 +1,8 @@
 /**
- * Modes — switch between "implement" (act directly), "orchestrate"
- * (dispatch to subagents), and "plan" (super-orchestrator — own a roadmap
- * doc, dispatch orchestrator-subagents).
+ * Modes — switch between "implement" (act directly) and "orchestrate"
+ * (conduct through subagents — dispatch implementers directly, or
+ * orchestrator subagents for large parallelizable chunks, one nesting
+ * level only).
  *
  * Architecture: a static brief in the system prompt (cache-stable) plus
  * full mode instructions injected as a one-shot user-role message at
@@ -19,18 +20,16 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-type Mode = "implement" | "orchestrate" | "plan";
+type Mode = "implement" | "orchestrate";
 
-/** Pure helper: the 3-way mode cycle. Unit-testable. */
+/** Pure helper: the 2-way mode cycle. Unit-testable. */
 export function nextMode(current: Mode): Mode {
-	if (current === "implement") return "orchestrate";
-	if (current === "orchestrate") return "plan";
-	return "implement";
+	return current === "implement" ? "orchestrate" : "implement";
 }
 
 /** Pure helper: mode guard. Accepts exactly the three mode strings (case-sensitive, no whitespace). */
 export function isValidMode(s: string): s is Mode {
-	return s === "implement" || s === "orchestrate" || s === "plan";
+	return s === "implement" || s === "orchestrate";
 }
 
 const PROJECT_FILE = join(process.cwd(), ".pi", "mode.json");
@@ -38,10 +37,9 @@ const GLOBAL_FILE = join(homedir(), ".pi", "agent", "modes.json");
 
 const MODES_BRIEF = `## Modes
 
-You operate in one of three modes (the user sets or cycles via /mode):
+You operate in one of two modes (the user sets or cycles via /mode):
 - **implement** (default): work directly in this session — read files, make edits, run commands — and dispatch subagents (implement / scouts) whenever delegation is useful: parallel work, context-heavy research, mechanical multi-file changes. You are the operator; subagents are a tool, not a mode change.
-- **orchestrate**: dispatch implementation work to subagents (implement for all feature work, scout-code/scout-web for research) and synthesize their reports. You are the conductor.
-- **plan**: act as super-orchestrator — own a roadmap doc, dispatch \`orchestrator\`-subagents one per item, reconcile after each; you never implement directly.
+- **orchestrate**: conduct work through subagents — dispatch implementers directly, or \`orchestrator\` subagents for large, separately parallelizable chunks (one nesting level only). You own the roadmap when working at scale and never implement directly. You are the conductor.
 
 The currently-active mode is delivered as a user-role message at session start and after every /mode switch. The most recent such message is authoritative — read it to see which mode you are in.`;
 
@@ -57,8 +55,14 @@ are the gate for what you spawn.`,
 
 	orchestrate: `## Mode: orchestrate
 
-You are in orchestration mode. Prefer dispatching implementation work
-to subagents. For substantial tasks, generate a work order (load the
+You are in orchestration mode. You conduct work through subagents:
+implementers do the work, you design, gate, merge, and reconcile. You
+never implement directly — if you are editing feature code, you have
+drifted out of the role; stop and dispatch.
+
+## Dispatch
+
+For substantial tasks, generate a work order (load the
 work-order-template skill) and dispatch to implement (the single
 implementation tier). For research, dispatch scout-code/scout-web.
 For trivial changes, pass \`review_policy: "skip"\` on the \`subagent\` call
@@ -66,8 +70,39 @@ For trivial changes, pass \`review_policy: "skip"\` on the \`subagent\` call
 diff directly. Handle completion reports: status, invariant_exhaustiveness
 calibration, structural_checks, deviations, notes_for_orchestrator.
 
-You are the conductor. Subagents do the work; you synthesize, verify,
-and decide.
+Most work does not nest. When a workstream splits into large,
+separately parallelizable chunks, dispatch an \`orchestrator\` subagent
+per chunk — hand it a chunk spec, the roadmap pointer, and the
+resolved policy. That is the only nesting level: the children dispatch
+implementers, not further orchestrators (the harness refuses depth 3).
+
+## Roadmap ownership + reconcile rule
+
+When you own a workstream, maintain the roadmap doc and reconcile it
+after every chunk lands:
+- Mark the chunk done with its commit hash.
+- Reorder remaining items if dependencies have shifted.
+- Catch cross-chunk dependencies the orchestrators flagged.
+
+This is a hard step, not optional. Doc/reality drift is the failure
+mode this role was created to prevent.
+
+## Reframes via /attach
+
+When an orchestrated chunk surfaces a design reframe — a question
+that re-opens the design and needs genuine multi-turn conversation
+with the user, not a single structured fork — use \`/attach <id>\` to
+let the user converse with the orchestrator directly. The
+orchestrator's conclusions land in the roadmap doc; \`/detach\` returns
+you here, and you read the updated doc. Your context stays clean.
+
+Distinguish the two cases:
+- **Tweak** = a single structured fork ("options A/B/C, which?").
+  Relay handles it — you pass the options to the user, relay the
+  answer back. No attach needed.
+- **Reframe** = a multi-turn design conversation where the user must
+  probe the orchestrator's understanding and iterate. Relay fails;
+  attach is required.
 
 ## Overlap independent work during review windows
 
@@ -107,99 +142,6 @@ Manage it:
   Summary must be rich enough to resume from cold: what was decided,
   what's next, which files/identifiers matter next.`,
 
-	plan: `## Mode: plan
-
-You are in plan mode (super-orchestration). You are the
-super-orchestrator (SO). You own a canonical roadmap doc and dispatch
-\`orchestrator\`-subagents (the \`orchestrator\` agent), one per roadmap
-item, in parallel where items are independent.
-
-You do NOT implement. You never edit code or run implementer work
-yourself. Your value is a clean planning context — if you implement,
-you lose it. Your job is to maintain the roadmap, dispatch
-orchestrators, reconcile after every item, and keep the big picture
-coherent.
-
-## Roadmap ownership + reconcile rule
-
-Maintain the roadmap doc (the contract is defined in \`## Super-orchestration\`
-in APPEND_SYSTEM). After every orchestrator-subagent completes an item,
-reconcile the doc against merged reality:
-- Mark the item done with its commit hash.
-- Reorder remaining items if dependencies have shifted.
-- Catch cross-item dependencies the orchestrator flagged.
-
-This is a hard step, not optional. Doc/reality drift is the failure
-mode this role was created to prevent.
-
-## Remote hygiene
-
-The SO owns the mainline's freshness:
-
-- **Pull before you reconcile or merge.** \`git fetch origin\` and
-  integrate \`origin/main\` first — parallel orchestrators push to the
-  same remote.
-- **Push merged items promptly.** An unfinished feature is fine on
-  mainline while tests are green and no existing feature is broken;
-  never push red. Don't leave merged work reachable only by your
-  local clone.
-
-## Dispatch
-
-Dispatch one \`orchestrator\` agent per roadmap item via \`subagent\`.
-Hand it three things: (a) the item spec (one line + a pointer to any
-design/spec doc), (b) a pointer to the roadmap doc, (c) the resolved
-policy (decisions that apply to all items — never re-litigated).
-
-The orchestrator designs in detail, dispatches implementers, gates
-their reviews, merges, and returns a completion report. You do not
-micro-manage it — trust its gate, but mechanically verify the evidence
-before accepting \`complete\`.
-
-For items where the design is open, you can dispatch the orchestrator
-in two modes:
-- **Design + build** (default): the orchestrator designs, dispatches
-  implementers, gates, merges. It will block only on questions it
-  cannot resolve.
-- **Design only**: phrase the item spec as "design only, surface
-  blocking questions, do not dispatch implementers yet". The
-  orchestrator returns \`status: blocked\` once design is complete
-  (even without unresolved questions), and you relay to the user
-  / resume it for implementation. Use this when the design itself
-  needs user sign-off before implementation begins.
-
-## Reframes via /attach
-
-When an orchestrator-subagent surfaces a design reframe — a question
-that re-opens the design and needs genuine multi-turn conversation
-with the user, not a single structured fork — use \`/attach <id>\` to
-let the user converse with the orchestrator directly. The
-orchestrator's conclusions land in the roadmap doc; \`/detach\` returns
-you here, and you read the updated doc. Your context stays clean.
-
-Distinguish the two cases:
-- **Tweak** = a single structured fork ("options A/B/C, which?").
-  Relay handles it — you pass the options to the user, relay the
-  answer back. No attach needed.
-- **Reframe** = a multi-turn design conversation where the user must
-  probe the orchestrator's understanding and iterate. Relay fails;
-  attach is required.
-
-## Context hygiene
-
-Occasional investigation, thinking, or experimentation loops you do
-yourself burn context that won't matter once the task moves on.
-Manage it:
-
-- **Plans go in a todo doc, not in chat.** Use \`todo\` \`setDoc\`
-  (e.g. \`docs/TODO.md\`) and write the full plan there. Put tracking/plan
-  docs **in the repo** (e.g. under \`docs/\`), never in \`tmp/\` — \`tmp/\` is
-  scratch/build artifacts only.
-- **Keep the in-pi todo list accurate** — one-line summaries
-  referencing the doc, marked \`in_progress\` / \`done\` as work moves.
-- **Checkpoint after every orchestrator item lands.** Summary must be
-  rich enough to resume from cold: what was decided, what's next,
-  which roadmap items are done / in-progress / blocked.`,
 };
 
 function readModeFile(path: string): Mode | null {
@@ -232,7 +174,7 @@ export default function modesExt(pi: ExtensionAPI): void {
 	const setStatus = (
 		ctx: { ui: { setStatus(n: string, t: string): void; theme: { fg(c: string, t: string): string } } },
 		mode: Mode,
-	) => ctx.ui.setStatus("mode", ctx.ui.theme.fg(mode === "implement" ? "muted" : mode === "plan" ? "success" : "accent", `[${mode}]`));
+	) => ctx.ui.setStatus("mode", ctx.ui.theme.fg(mode === "implement" ? "muted" : "accent", `[${mode}]`));
 
 	pi.on("session_start", async (_event, ctx) => {
 		currentMode = loadMode();
@@ -241,7 +183,7 @@ export default function modesExt(pi: ExtensionAPI): void {
 		pi.events.emit("pi-config:startup-summary-item", {
 			key: "modes",
 			order: 30,
-			text: `[Modes] implement, orchestrate, plan. Current: ${currentMode}. /mode to cycle or /mode <name>.`,
+			text: `[Modes] implement, orchestrate. Current: ${currentMode}. /mode to cycle or /mode <name>.`,
 		});
 	});
 
@@ -250,7 +192,7 @@ export default function modesExt(pi: ExtensionAPI): void {
 	pi.on("session_compact", () => { pendingInjection = currentMode; });
 
 	pi.registerCommand("mode", {
-		description: "Set or cycle the session mode (implement / orchestrate / plan)",
+		description: "Set or cycle the session mode (implement / orchestrate)",
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
 			let next: Mode;
@@ -260,7 +202,7 @@ export default function modesExt(pi: ExtensionAPI): void {
 			} else if (arg === "") {
 				next = nextMode(currentMode);
 			} else {
-				ctx.ui.notify(`Current mode: ${currentMode}\nUsage: /mode [implement|orchestrate|plan]`, "info");
+				ctx.ui.notify(`Current mode: ${currentMode}\nUsage: /mode [implement|orchestrate]`, "info");
 				return;
 			}
 

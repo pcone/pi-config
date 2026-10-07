@@ -354,6 +354,7 @@ describe("buildSubagentEnv (peer identity)", () => {
 			allowlist: undefined,
 			worktreePath: null,
 			parentCwdForCleanup: "",
+			depth: 1,
 		});
 		expect(env.PI_PEER_NAME).toBe(handle);
 	});
@@ -364,15 +365,18 @@ describe("buildSubagentEnv (peer identity)", () => {
 			allowlist: ["implement", "scout"],
 			worktreePath: null,
 			parentCwdForCleanup: "",
+			depth: 1,
 		});
 		expect(env.PI_IS_SUBAGENT).toBe("1");
 		expect(env.PI_SUBAGENT_ALLOWLIST).toBe("implement,scout");
+		expect(env.PI_SUBAGENT_DEPTH).toBe("1");
 
 		const noAllow = buildSubagentEnv({
 			sessionId: "subagent-x",
 			allowlist: undefined,
 			worktreePath: null,
 			parentCwdForCleanup: "",
+			depth: 1,
 		});
 		expect(noAllow.PI_SUBAGENT_ALLOWLIST).toBeUndefined();
 	});
@@ -383,6 +387,7 @@ describe("buildSubagentEnv (peer identity)", () => {
 			allowlist: undefined,
 			worktreePath: "/tmp/pi-subagent-wt-abc",
 			parentCwdForCleanup: "/Users/scott/repo",
+			depth: 1,
 		});
 		expect(isolated.PI_SUBAGENT_WORKTREE).toBe("/tmp/pi-subagent-wt-abc");
 		expect(isolated.PI_SUBAGENT_PARENT_CWD).toBe("/Users/scott/repo");
@@ -392,6 +397,7 @@ describe("buildSubagentEnv (peer identity)", () => {
 			allowlist: undefined,
 			worktreePath: null,
 			parentCwdForCleanup: "/Users/scott/repo",
+			depth: 1,
 		});
 		expect(bare.PI_SUBAGENT_WORKTREE).toBe("");
 		expect(bare.PI_SUBAGENT_PARENT_CWD).toBe("");

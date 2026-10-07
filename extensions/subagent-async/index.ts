@@ -1347,6 +1347,34 @@ export function resolveGlobalAppendPrompt(
 }
 
 /**
+ * Decision 028: nesting depth of the *current* process. The root session
+ * is 0; each subagent spawn adds one. Used to cap orchestrator nesting
+ * at one level.
+ */
+export function subagentDepth(env: NodeJS.ProcessEnv = process.env): number {
+	const n = Number(env.PI_SUBAGENT_DEPTH ?? 0);
+	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/** Decision 028: an orchestrator may nest once — depth 1 may spawn orchestrators, depth 2 may not. */
+export const MAX_ORCHESTRATOR_NESTING_DEPTH = 2;
+
+/**
+ * Decision 028: refuse an `orchestrator` spawn from a process already at
+ * the nesting cap. Returns the error text, or null when the dispatch is
+ * allowed. Only orchestrators carry sub-spawn rights (allowlist), so no
+ * other agent needs a depth cap.
+ */
+export function subagentNestingBlock(agentName: string, depth: number): string | null {
+	if (agentName !== "orchestrator" || depth < MAX_ORCHESTRATOR_NESTING_DEPTH) return null;
+	return (
+		`Orchestrator nesting is capped at one level: this session is already at ` +
+		`PI_SUBAGENT_DEPTH=${depth}, so it cannot dispatch another orchestrator. ` +
+		`Delegate to implementers (or flatten the work into work orders).`
+	);
+}
+
+/**
  * Build the env additions for a subagent pi process (spread over the
  * parent's process.env at spawn). Extracted so tests can assert the role
  * markers without spawning.
@@ -1356,6 +1384,7 @@ export function buildSubagentEnv(config: {
 	allowlist: string[] | undefined;
 	worktreePath: string | null;
 	parentCwdForCleanup: string;
+	depth: number;
 }): Record<string, string> {
 	return {
 		// Marker that this process is a subagent. The modes extension
@@ -1364,6 +1393,10 @@ export function buildSubagentEnv(config: {
 		// like "you are the conductor." Set unconditionally so the
 		// signal is present even when allowedSubagents is empty.
 		PI_IS_SUBAGENT: "1",
+		// Decision 028: this process's nesting depth (root session 0, +1 per
+		// spawn). The subagent tool refuses orchestrator spawns at
+		// depth >= MAX_ORCHESTRATOR_NESTING_DEPTH.
+		PI_SUBAGENT_DEPTH: String(config.depth),
 		...(config.allowlist && config.allowlist.length > 0
 			? { PI_SUBAGENT_ALLOWLIST: config.allowlist.join(",") }
 			: {}),
@@ -1642,6 +1675,7 @@ async function spawnSubagent(
 				allowlist: agent.allowedSubagents,
 				worktreePath,
 				parentCwdForCleanup,
+				depth: subagentDepth() + 1,
 			}),
 		},
 	});
@@ -3182,6 +3216,14 @@ export default function (pi: ExtensionAPI) {
 						}],
 					};
 				}
+			}
+
+			// Decision 028: cap orchestrator nesting at one level. A process
+			// at depth >= 2 is a nested orchestrator; refuse to deepen the
+			// tree rather than letting a role-confusion bug nest silently.
+			const nestingBlock = subagentNestingBlock(agent.name, subagentDepth());
+			if (nestingBlock) {
+				return { content: [{ type: "text", text: nestingBlock }] };
 			}
 
 			// Check if session is already running

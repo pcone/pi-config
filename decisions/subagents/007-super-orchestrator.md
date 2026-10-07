@@ -1,11 +1,16 @@
 ---
 title: "Super-orchestrator (plan mode): role separation for multi-workstream work"
 type: decision
-status: done
+status: superseded
 date: 2026-07-19
 ---
 
 # Super-orchestrator (`plan` mode): role separation for multi-workstream work
+
+> Superseded 2026-10-07 by decision 028: the SO role and `plan` mode
+> are retired; one `orchestrator` role subsumes both, with nesting
+> capped at one level. Kept as the historical record of the split and
+> its validation findings.
 
 **What:** A third parent mode `plan` (super-orchestrate) is added
 alongside `implement` and `orchestrate`. In `plan` mode the parent

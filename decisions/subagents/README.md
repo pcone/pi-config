@@ -13,7 +13,7 @@ date: 2026-07-14
 | 004 | Parallel review gate (review-code + review-tests) for code-changing work | amended (reviewer invocation guard, WO-2026-011) |
 | 005 | Review tiers: standard (Mimo) vs thorough (GLM) | done |
 | 006 | Reviewer-driven re-review signal and round cap | done |
-| 007 | Super-orchestrator (`plan` mode): role separation for multi-workstream work | done |
+| 007 | Super-orchestrator (`plan` mode): role separation for multi-workstream work | superseded by 028 |
 | 008 | Orchestrator → GLM-5.2, compaction → DeepSeek V4 Flash | done |
 | 009 | Clean task identity vs. worktree-isolation prompt wrapper (commit-subject leak fix) | done |
 | 010 | Pricing source: pi.dev catalog instead of models.json cost overrides | done |
@@ -34,3 +34,4 @@ date: 2026-07-14
 | 025 | Global append prompt for subagents — inject shared `APPEND_SYSTEM.md` explicitly | done |
 | 026 | Subagent events after session disposal — guard async callbacks with a live-session ctx | done |
 | 027 | Recovery scan ownership — adopt a subagent socket only when its spawning process is this process or is gone | done |
+| 028 | One orchestrator role — retire super-orchestrator/`plan` mode, cap orchestrator nesting at one level | done |
