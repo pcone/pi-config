@@ -29,8 +29,9 @@ on it:
 3. **Collisions with landed history: the claim with landed references
    keeps the id.** Reserve-by-push can't see un-rebased parallel lineages
    — a fifth board's WOs are invisible until their lineage lands (observed:
-   `WO-2026-081` landed on a side line concurrent with a mainline 081, and the
-   mainline claim kept the id while the side line renumbered). Resolution:
+   `WO-2026-081` landed on a side line concurrent with a mainline 081; the
+   side line's landed claim kept the id and the mainline's in-flight claim
+   renumbered to 089). Resolution:
    claims that exist only in an un-rebased lineage don't count until they
    land — a mainline push beats them. But a number that HAS landed anywhere
    is historical record and keeps the id regardless of which side landed
