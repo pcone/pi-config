@@ -60,6 +60,7 @@ source is the question answered in `002` — rejected, because the sources' axes
 not share a scale.
 
 **Pending:** whether to add BenchLM (`benchlm.ai/api/data/*`) as a second coverage
-source for coding/agentic — **evaluated and rejected in `002`**: its axes run 13.6
-points below AA's coding and 16.4 above its agentic for the same models, and the
-aligned variant of the idea changes one row's tier. No code change follows.
+source for coding/agentic — **evaluated and rejected in `002`**: its axes run 11.3
+points below AA's coding and 15.7 above its agentic for the same models, and an
+aligned fill re-anchors every row's normalized average by up to 12 points. No code
+change follows.

@@ -37,12 +37,23 @@ agentic lands ~16 points high, admitting rows AA would reject. Both directions
 were observed in the candidate fills, not hypothesized.
 
 **Affine-aligned fill** (map BenchLM onto AA via the per-axis fit above, the
-strongest version of the idea): admits **0** models that the compact table does
-not already show, evicts **0**, and changes exactly **one** row's tier — Opus 5.5,
-T4→T3 — via a **clamped extrapolation** (its BenchLM coding 83.54 maps to aa≈105,
-past AA's observed maximum of 81.6; the fit's top is saturated). Paying a
-per-refresh refit, a provenance marker and a fetch to move one row by one band is
-not a trade worth making.
+strongest version of the idea), measured through the extension's own `scoreModels`
+on the 2026-10-07 cache: it admits and evicts **0** rows at the thresholds, but it
+**re-anchors the normalization**. `computeBounds` spans every row carrying an axis,
+so a clamped extrapolation becomes the new axis maximum (coding hi: 81.6 → 100) and
+every complete row moves — all 15 of them, up to **−12.0** (Claude Fable 5.1
+97.4→85.4; Claude Opus 5 93.5→81.9; Qwen3.8 Max 89.1→77.7). On the compact table
+the stricter `supported`-only fill drops three of the seven frontier rows
+(Muse Spark 1.3, GLM-5.3, GLM 5.3 Flash) and adds one (GPT-6.1 Sol), while
+Sonnet 5.5 falls T1→T2; admitting `estimated` evidence too keeps one of the
+dropped rows (frontier 7→6) but adds two more tier moves (Muse Spark 1.3
+T2→T3, MiMo-V2.6-Pro T3→T4).
+
+The row the fill was meant to help needs it least: Opus 5.5 already renders at
+**100.0, Tier 1** in the AA-only table, because its published intelligence *is* the
+axis maximum; the fill leaves it at 100.0 and degrades everything else. And its
+aligned coding needs an extrapolation to exist at all — BenchLM's 83.54 maps to
+AA≈105, past AA's observed maximum of 81.6.
 
 **Residual noise.** Even the aligned fit leaves ~±5 points — half a 10-point tier
 band — which is the same magnitude as the gaps being fixed.
