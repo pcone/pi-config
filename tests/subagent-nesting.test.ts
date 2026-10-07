@@ -184,6 +184,12 @@ describe("subagent tool boundary (nesting cap wiring)", () => {
 		expect(text).toContain("PI_SUBAGENT_DEPTH=2");
 	});
 
+	it("fails closed at the tool on a negative stamp", async () => {
+		process.env.PI_SUBAGENT_DEPTH = "-3";
+		const text = await textOf("orchestrator");
+		expect(text).toContain("capped at one level");
+	});
+
 	it("lets a depth-1 orchestrator past the cap gate", async () => {
 		process.env.PI_SUBAGENT_DEPTH = "1";
 		const text = await textOf("orchestrator");
