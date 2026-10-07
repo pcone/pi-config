@@ -206,10 +206,20 @@ For a single item there is no index: the brief's first line is the row.
 
 ## Worked examples
 
-- `~/Developer/tfd/docs/investigations/review-brief-pilot.md` — pre-enforcement draft.
-- `~/Developer/tfd/docs/investigations/review-brief-pilot-v2.md` — ISO pass, with the
-  reader-test results table documenting each defect the gate caught and fixed.
-- `~/Developer/tfd/docs/investigations/review-brief-lane-{a,b,c}.md` — the chunked
-  review units from a 15-item batch. Their monolithic assembly
-  (`review-brief-planned-work.md`) is the drift case the chunking rule replaces;
-  it remains as a before-picture, not a target shape.
+- `docs/reviews/lane-c2.md` — a chunked review unit in the registry format. The per-item
+  index table is the **authority**; the prose below it is the human half.
+- `docs/reviews/array-conversion.md` — one review holding one item that bundles three
+  `DECIDE` asks: the smallest usable shape.
+- `docs/reviews/planned-work.md` — the queue index.
+
+**Where a brief lives.** The earlier pointers here (`review-brief-pilot.md`,
+`-pilot-v2.md`, and a monolithic `review-brief-planned-work.md`) are retired: the pilots no
+longer exist, and the monolith no longer carries items. The registry replaced them. A repo
+declares the home (TFD: `docs/reviews/`), each review owns its own item table on two axes —
+`question-state` (`open | answered | deferred | withdrawn`) and `impl-state`
+(`not-started | in-progress | landed | dropped`) — and the index is items-free, so the drift
+the chunking rule guards against is now structural rather than editorial. `open` is the
+ask-list and only that. In TFD, `python3 scripts/reviews_status.py` prints the open items
+(`--unanswered` adds parked ones with their revisit triggers, `--all` prints the matrix), and
+`scripts/docs_validate.py` enforces the axes' coupling plus an advisory for asks parked
+outside the registry.
