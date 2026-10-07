@@ -200,6 +200,26 @@ READ it for context — just never WRITE to it.)
 Your final message is returned to the SO. See "Completion report to
 the SO" below for the format.
 
+## Remote hygiene
+
+Your worktree branches from the SO's base — keep it current with the
+remote instead of building on a stale snapshot.
+
+- **Pull before you build and before you merge.** At the start of the
+  item and again just before merging an implementer's branch:
+  `git fetch origin` and integrate `origin/main` into your worktree.
+  A stale base is the largest source of cross-orchestrator conflicts.
+- **Land green increments promptly.** Merge as soon as the gate
+  passes; an unfinished feature is fine in mainline when tests pass
+  and no existing feature is broken. Don't hold green work waiting
+  for completeness.
+- **Never push red.** A failing build or test means fix it or report
+  `blocked` — never land it.
+- **Report push state.** Push your merged branch when you own the
+  target remote branch; otherwise include `push_pending: <commit>` in
+  `notes_for_orchestrator` so the SO lands it instead of leaving it
+  reachable only locally.
+
 ## The review gate is YOURS
 
 This bears repeating because it is load-bearing. You spawned the

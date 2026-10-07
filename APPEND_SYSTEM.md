@@ -52,6 +52,8 @@ Read relevant docs before implementing a feature or change. Keep docs up to date
 
 **Structural audits at chunk boundaries.** Codebase growth needs an owner. Each chunk landing appends a snapshot to the repo's `docs/investigations/structure-trend.md` (a chunk is one landing phase of a multi-step effort) under two lenses — **growth** (file/function size deltas, candidate extractions) and **unification** (parallel mechanisms for one idea; files unrelated work items all had to touch). The orchestrator folds the top candidates into the next chunk's sequence *before* feature work. Delta-based, never absolute thresholds. Reviewers report material growth on already-large files/functions (`review-code` item 7); the audit turns observations into scheduled work.
 
+**Keep the remote current.** The remote mainline is an integration point, not a release branch: a green increment that breaks no existing feature is a valid landing even when the feature it belongs to is unfinished — don't hold green work waiting for completeness, and never push red. Pull (fetch + integrate the mainline) before starting a change and again before merging; push merged work promptly, or state explicitly that the push is pending.
+
 ## PDFs
 
 PDFs are binary. `fetch_url` and the `read` tool convert PDFs to Markdown automatically — never read raw PDF bytes, don't `cat` a PDF from bash. For page ranges/tables or when conversion fails, use the `pdf` skill.

@@ -82,6 +82,15 @@ prevent. \`wait\` wakes on the **first** completion: gate + merge
 that one, re-\`wait\` for the rest, and track each in-flight
 implementer (session id, independence).
 
+## Remote hygiene
+
+\`git fetch origin\` and integrate \`origin/main\` before dispatching —
+work orders written against a stale base are the main source of merge
+conflicts — and again before merging an implementer's branch. Push
+merged work promptly: a green, unfinished feature is a fine mainline
+state as long as tests pass and no existing feature is broken. Never
+push red.
+
 ## Context hygiene
 
 Occasional investigation, thinking, or experimentation loops you do
@@ -122,6 +131,18 @@ reconcile the doc against merged reality:
 
 This is a hard step, not optional. Doc/reality drift is the failure
 mode this role was created to prevent.
+
+## Remote hygiene
+
+The SO owns the mainline's freshness:
+
+- **Pull before you reconcile or merge.** \`git fetch origin\` and
+  integrate \`origin/main\` first — parallel orchestrators push to the
+  same remote.
+- **Push merged items promptly.** An unfinished feature is fine on
+  mainline while tests are green and no existing feature is broken;
+  never push red. Don't leave merged work reachable only by your
+  local clone.
 
 ## Dispatch
 
