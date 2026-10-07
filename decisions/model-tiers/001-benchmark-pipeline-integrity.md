@@ -16,10 +16,11 @@ five independently-reproduced reasons; all are fixed:
    covers published axes only, thresholds apply per published axis, per-axis bounds
    span every row that carries the axis, and partial rows render with `†`.
 2. **`:batch`/`:free` variants lent their price to standard models.** Variants
-   share the standard entry's `canonical_slug`; last-write-wins priced 56/160 cached
-   rows from a variant — DeepSeek V4.1 Flash at $0.011/M (batch) instead of
-   $0.0296/M, GLM 5.3 Flash at $0.016 instead of $0.040. The lookup now skips
-   `:`-suffixed ids.
+   share the standard entry's `canonical_slug`; last-write-wins priced 56 of the
+   160 benchmark rows in the 2026-10-05 cache from a variant (67/224 after the
+   next refresh — the count moves with the feed). At fix time DeepSeek V4.1 Flash
+   read $0.011/M (batch) instead of $0.030/M and GLM 5.3 Flash $0.016 instead of
+   $0.040. The lookup now skips `:`-suffixed ids.
 3. **Unmatched slugs priced at $0.** Delisted/renamed permaslugs rendered as
    `$0.00/M`, dominated the Pareto, and tripped the `/tiers` cutoff at frontier
    index 3 (4 of 35 rows shown). Rows without a resolvable standard entry and
@@ -42,11 +43,15 @@ rename). The startup sweep moved out of module scope, so importing the module
 **Why not:** treat missing indices as zero (not-yet-benchmarked is not scored-worst);
 drop partial rows (hides exactly the newest models the table exists to compare);
 fall back to the benchmark feed's own pricing (no cache-read rate — overstates cost
-and mixes pricing bases).
+and mixes pricing bases); price a `:free`-only model at $0 (rate-limited free tiers
+are not a like-for-like cost basis — six such slugs exist in the 2026-10-07
+catalog; those rows are dropped like other unpriced rows rather than ranked free).
 
-**Validation:** `tests/model-tiers-render.test.ts` (36 tests) pins each rule, including the `/tiers` cutoff, hidden-tail label, tier picks and threshold floors. Live:
-Opus 5.5 tops the compact table at 100.0 `†`; GLM-5.3, GLM 5.3 Flash and GPT-6.1 Sol
-appear; DeepSeek V4.1 Flash prices at $0.0296/M.
+**Validation:** `tests/model-tiers-render.test.ts` (37 tests) pins each rule, including
+the `/tiers` cutoff (including the exact $0.005/M boundary), hidden-tail label, tier
+picks and threshold floors. Live at the 2026-10-07 cache: Opus 5.5 tops the compact
+table at 100.0 `†`; GLM-5.3, GLM 5.3 Flash and GPT-6.1 Sol appear; DeepSeek V4.1
+Flash prices at $0.033/M (standard).
 
 **Tradeoff:** a `†` row's average spans fewer axes, so it is not strictly
 comparable to a complete row's three-axis average. The marker keeps the model

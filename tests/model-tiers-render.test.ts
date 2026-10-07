@@ -370,6 +370,7 @@ describe("renderFullTable", () => {
       renderFullTable([rm("Paid A", 90, 0.5), rm("Partial B", 80, 0.1, ["coding", "agentic"])], 3, "ALL MODELS", 2),
     );
     expect(out).toContain("† ");
+    expect(out).toMatch(/averaged over published indices only/);
     expect(out).toMatch(/… 2 more \(free-tier models\)/);
     expect(out).not.toMatch(/\$0\.00\/M cutoff/);
   });

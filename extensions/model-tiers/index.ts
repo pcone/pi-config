@@ -187,7 +187,7 @@ function saveCache(data: CacheData): void {
   try {
     const dir = dirname(CACHE_FILE);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const tmp = CACHE_FILE + ".tmp";
+    const tmp = `${CACHE_FILE}.${process.pid}.tmp`; // per-writer name: concurrent sessions can't interleave writes
     writeFileSync(tmp, JSON.stringify(data, null, 2));
     renameSync(tmp, CACHE_FILE); // atomic: a reader never sees a half-written cache
   } catch { /* silently fail */ }
@@ -517,6 +517,10 @@ export function renderFullTable(models: ScoredModel[], dominatedCount: number, t
 
   if (hiddenCount && hiddenCount > 0) {
     lines.push(dim(`  … ${hiddenCount} more (free-tier models)`));
+  }
+
+  if (models.some((m) => m.missingAxes.length > 0)) {
+    lines.push(dim("  † AA index not published yet — averaged over published indices only"));
   }
 
   return lines.join("\n");
