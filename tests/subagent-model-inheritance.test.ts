@@ -273,9 +273,24 @@ function cleanupArtifacts(sid: string): void {
 }
 
 afterEach(async () => {
-	for (const child of children.splice(0)) {
+	const batch = children.splice(0);
+	for (const child of batch) {
 		await killChild(child);
 		cleanupArtifacts(child.sid);
+	}
+	if (batch.length) {
+		// Pin: the close handler writes its completion footer to the spawn log
+		// and only then untracks the child, so a cleanup that unlinks straight
+		// after the kill races that write and the footer recreates the file.
+		// Wait past the handler, then require that nothing survived. Today this
+		// leaks two logs per run (53 bytes each, footer-only) while the suite
+		// stays green; work-order-policy-wiring.test.ts carries the
+		// settled-then-remove pattern that fixed the same race.
+		await new Promise((r) => setTimeout(r, 1_000));
+		const leaked = batch
+			.map((child) => `/tmp/pi-subagent-${child.sid}.log`)
+			.filter((log) => existsSync(log));
+		expect(leaked).toEqual([]);
 	}
 });
 
