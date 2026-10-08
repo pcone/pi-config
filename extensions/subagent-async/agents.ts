@@ -17,7 +17,8 @@ export type AgentScope = "user" | "project" | "both";
 // `reviewer_kind: implementation` or `reviewer_kind: tests`.
 //
 // `reviewParentRequirements` (string[] | undefined): parsed from comma-separated
-// frontmatter `requires_parent_reviewers: review-code,review-tests`. When a
+// frontmatter `requires_parent_reviewers: implementation,tests` (kind tokens,
+// not agent names — e.g. `review-code` reviews the `implementation` kind). When a
 // parent (e.g. implement) declares this list, the harness
 // emits a soft prompt to the parent at stop time if any required reviewerKind
 // has not yet been spawned from this parent. See the "Reviewer invocation

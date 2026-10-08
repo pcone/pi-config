@@ -58,3 +58,12 @@ session started somewhere else than it was spawned.
 The pre-check here is the pi-config-side mitigation until then. Filing it
 against pi needs the owner: no issue channel for the pi package is reachable
 from this repo.
+
+**Observed 2026-10-08 — the same ask at the harness layer.** The agent
+harness's own `subagent_resume` fails identically on a worktree-isolated
+session once the worktree is gone: the resume aborts with 0 turns and
+`Stored session working directory does not exist: <worktree path>` on stderr.
+Its `cwd` parameter does **not** bypass the check — pi validates the session
+header's stored cwd, not the process cwd — so unlike the pi-config tool above
+there is no harness-side workaround either. Second caller for the same ask
+(found resuming round-2 reviewer sessions, 2026-10-08).
