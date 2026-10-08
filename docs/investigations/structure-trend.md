@@ -9,6 +9,62 @@ files unrelated work items all had to touch). Delta-based — no absolute
 thresholds. Each audit runs as `scout-code` over the delta since the previous
 entry; the ranked candidates feed the next chunk's sequence before feature work.
 
+## 2026-10-08 — chunk: work-order grammar landing (`16eb6fe..` this landing)
+
+2 commits, 1 work item: the audit artifact itself (`71bd902`) plus the
+decision-032 work-order grammar (bare-bold `review_policy` accepted, one
+resolver for all three gate sites, mirror synced, `implement` allowlist widened).
+Measurements from git refs / `wc` / brace-matched spans. Excluded, as in the
+entry below: another session's uncommitted `extensions/auto-checkpoint.ts` +
+`tests/auto-checkpoint.test.ts`, `settings.json` (owner's model switch), and the
+untracked `agents/scout-sweep.md` — the table covers only this chunk's files.
+
+### Growth
+
+| file | now | base (`71bd902`) | Δ |
+|---|---|---|---|
+| `extensions/subagent-async/index.ts` | 4258 | 4251 | **+7** |
+| `extensions/subagent-async/test-workorder-policy.cjs` | 411 | 302 | **+109** |
+| `tests/work-order-policy.test.ts` | 132 | 69 | +63 |
+| `tests/work-order-policy-wiring.test.ts` | 268 | — | new |
+| `tests/discover-agents-cache.test.ts` | 336 | 322 | +14 |
+
+Functions: the top-1 file's factory is still **1082 lines** (3177–4258, shifted
++7) and `spawnSubagent` still **664** (1731–2394) — the +7 net landed in the
+module-scope parser block, so the delta grew neither large function. The mirror's
++109 is the second implementation's tax, acknowledged in decision 032 with a
+reopening trigger. One work item touched `index.ts` this chunk — no churn smell.
+
+### Unification
+
+- **Landed — previous candidate 3.** `review_policy` is now one dash-optional
+  `POLICY_BOLD_RE` + one `POLICY_YAML_RE` + one `parseWorkOrderPolicy` + one
+  `taskDeclaresPolicySkip`; the gate fallback and the injection detector call the
+  detector instead of carrying byte-identical private regexes.
+- **Half-landed — previous candidate 2.** The mirror learned the YAML
+  alternative it had drifted away from (the stale claim in the entry below) and
+  gained precedence/first-token rows; the fold onto shared logic stays open, and
+  the mirror is still not wired into any runner — its filename matches none of
+  bun's test patterns (`.test.*` / `_test_*` / `.spec.*`) and no runner
+  references it.
+- **Worsened — previous candidate 1.** `createPiStub` is now in **7** test files
+  (the new wiring file adds a minimal copy). Extract before the next test-heavy
+  chunk.
+- **New seam worth watching (not yet a candidate).**
+  `tests/work-order-policy-wiring.test.ts` spawns a stand-in `pi` script (holds
+  the RPC pipe open, no model call) so the real `subagent.execute` gate and
+  injection paths are assertable cheaply. First occurrence — generalize from it
+  rather than copying it if a second file needs it.
+
+### Extraction candidates (carried forward, ranked)
+
+| # | candidate | status |
+|---|---|---|
+| 1 | shared test `createPiStub` helper, called from all test files | open — now 7 copies |
+| 2 | fold `test-workorder-policy.cjs` onto shared logic | open — YAML drift closed by decision 032 |
+| 3 | one `review_policy` resolver for the three sites | **landed** (decision 032) |
+| 4 | model-tiers `†` mark + legend helper | open (details in the entry below) |
+
 ## 2026-10-08 — chunk: WO-2026-052 → decision 031 (`4cdce3b..16eb6fe`)
 
 25 commits, 12 source files, **+2153/−314** lines (vendored code excluded;

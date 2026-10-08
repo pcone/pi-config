@@ -320,3 +320,17 @@ describe("discoverAgents scope gate", () => {
 		expect(result.projectAgentsDir).toBe(projectAgentsDir);
 	});
 });
+
+// ── The repo's own agent configs parse ────────────────────────────────────
+// Pins the frontmatter values the decisions rest on, through the same parser
+// discovery uses — a trim/typo/unplanned widening goes red here, not at spawn.
+describe("the repo's own agent configs parse", () => {
+	it("implement keeps a bounded allowlist and admits the read-only plan reviewer (decision 032)", () => {
+		const agents = _loadAgentsFromDir(join(import.meta.dir, "..", "agents"), "user");
+		const implement = agents.find((a) => a.name === "implement");
+		expect(implement, "agents/implement.md parses").toBeTruthy();
+		// Decision 004 as amended: the exact bound is the invariant (a widening
+		// without a ruling is as much a finding as a trim).
+		expect(implement!.allowedSubagents).toEqual(["scout-code", "review-plan", "review-code", "review-tests"]);
+	});
+});

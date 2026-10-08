@@ -3,7 +3,7 @@ name: implement
 description: "Single implementation tier for all feature work — mechanical boilerplate through complex multi-file changes. Use for any task: explicit or implicit invariants, 1-file or N-file, trivial or new API surface, any error-handling complexity. Reads code, discovers patterns, makes implementation decisions, and produces working code. The orchestrator routes all implementation work here."
 model: deepseek/deepseek-v4.1-flash:high
 requires_parent_reviewers: implementation,tests
-allowedSubagents: scout-code, review-code, review-tests
+allowedSubagents: scout-code, review-plan, review-code, review-tests
 excludeTools: checkpoint_fork, checkpoint_search
 ---
 

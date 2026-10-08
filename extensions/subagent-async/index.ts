@@ -1633,31 +1633,38 @@ export function buildSubagentProcessEnv(
 	return { ...parentEnv, ...buildSubagentEnv({ ...config, depth: nextSubagentDepth(parentEnv) }) };
 }
 
-// Decision 014: parse the work order's declared `review_policy`.
+// Decision 014 (+ 2026-10-07 ruling): one grammar for the work order's
+// declared `review_policy`. Two encodings, in priority order:
+//   1. the bold line — `**review_policy**: skip`. The leading bullet is
+//      OPTIONAL: a bare bold line is how a human writes a metadata block, and
+//      before the ruling it matched no form and was silently read as
+//      `required` — inert, which defeats decision 014 making the WO the single
+//      source of truth (the same class as the frontmatter gap fixed
+//      2026-08-26, and observed for real in another repo's work orders).
+//   2. YAML frontmatter  — `review_policy: skip`, for work orders written that
+//      way. The bold line wins when both are present.
 //
-// Two encodings are accepted, in priority order:
-//   1. the canonical bullet — `- **review_policy**: skip`
-//   2. YAML frontmatter     — `review_policy: skip`
-// The bullet is what the work-order template prescribes and wins when both are
-// present. Frontmatter is accepted because a large share of real work orders
-// use it: before 2026-08-26 this function matched the bullet only, so those
-// declarations were silently read as `required` (fail-safe — extra reviews,
-// never skipped ones — but inert, which defeats the point of decision 014
-// making the WO the single source of truth).
-//
-// First-word-after-colon semantics in BOTH forms: `skip` → skip; anything else
+// First-word-after-colon semantics in both forms: `skip` → skip; anything else
 // — `required`, the template literal `required | skip`, or no declaration at
 // all — → required. Trailing rationale after the first token is ignored, so
-// `skip — because ...` still reads as skip. First-word semantics mirrors the
-// task-text regex used by the gate
-// (`/^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m`), which also fails on
-// `required | skip` because `skip` is not the first token. Deliberately NOT a
-// substring match for `skip`.
+// `skip — because ...` still reads as skip. Deliberately NOT a substring match
+// for `skip`.
+const POLICY_BOLD_RE = /^\s*(?:-\s*)?\*\*review_policy\*\*:\s*(\S+)/m;
+// YAML frontmatter is work-order scope only — a task string never carries it.
+const POLICY_YAML_RE = /^review_policy:\s*(\S+)/m;
+
 export function parseWorkOrderPolicy(woText: string): "required" | "skip" {
-	const m =
-		woText.match(/^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m) ??
-		woText.match(/^review_policy:\s*(\S+)/m);
+	const m = woText.match(POLICY_BOLD_RE) ?? woText.match(POLICY_YAML_RE);
 	return m?.[1] === "skip" ? "skip" : "required";
+}
+
+/** Does this dispatch's task text declare `skip`? The bold line only — YAML
+ *  frontmatter is a work-order spelling, not something a task string carries —
+ *  with the same first-word semantics as `parseWorkOrderPolicy`. The gate's
+ *  WO-less fallback and the skip-bullet injection share this one detector.
+ *  @for-testing-only — exported to pin the task-text scope. */
+export function taskDeclaresPolicySkip(task: string): boolean {
+	return POLICY_BOLD_RE.exec(task)?.[1] === "skip";
 }
 
 // ── Model resolution (decision 031) ─────────────────────────────────────────
@@ -1812,15 +1819,15 @@ async function spawnSubagent(
 	const sockPath = `/tmp/pi-subagent-${sessionId}.sock`;
 
 	// Decision 014: the review gate keys on the WORK ORDER when one is
-	// referenced (workOrderPolicy), else on the tool param / task-text
-	// canonical bullet (prior behavior). With a WO present, its parsed
-	// policy wins on disagreement — the task-text fallback applies only to
-	// WO-less dispatches. Computed before the RS record so the soft-prompt
-	// guard and `subagent_review_status` see the same value.
+	// referenced (workOrderPolicy), else on the tool param / a bold declaration
+	// in the task text (prior behavior). With a WO present, its parsed policy
+	// wins on disagreement — the task-text fallback applies only to WO-less
+	// dispatches. Computed before the RS record so the soft-prompt guard and
+	// `subagent_review_status` see the same value.
 	const effectiveReviewPolicy = workOrderPolicy ?? reviewPolicy;
 	const gateSkipped =
 		effectiveReviewPolicy === "skip" ||
-		(workOrderPolicy === undefined && /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task));
+		(workOrderPolicy === undefined && taskDeclaresPolicySkip(task));
 
 	// Decision 015 stage-2: resolve the per-spawn silence timeout. Undefined
 	// → 30-min default; 0/negative (and NaN/Infinity) → disabled (0).
@@ -3411,15 +3418,15 @@ export default function (pi: ExtensionAPI) {
 
 	// If the EFFECTIVE review policy is "skip" — from the referenced work
 	// order when `workOrderPath` is set (decision 014), else from the
-	// `review_policy` tool param — but the canonical bullet is not already
-	// in the task, append it so the implementer's own agent-level reasoning
-	// (Gate B) matches the harness's gate suppression (Gate A). Single
-	// source of truth: the work order, when `workOrderPath` is set; else
-	// the tool arg. When the WO declares `required`, nothing is injected
+	// `review_policy` tool param — but the task does not already declare it
+	// with the bold line, append one so the implementer's own agent-level
+	// reasoning (Gate B) matches the harness's gate suppression (Gate A).
+	// Single source of truth: the work order, when `workOrderPath` is set;
+	// else the tool arg. When the WO declares `required`, nothing is injected
 	// even if the param says `skip` — the WO wins.
 	function maybeInjectReviewPolicySkip(task: string, reviewPolicy: "required" | "skip" | undefined): string {
 		if (reviewPolicy !== "skip") return task;
-		if (/^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m.test(task)) return task;
+		if (taskDeclaresPolicySkip(task)) return task;
 		const skipLine = "\n\n- **review_policy**: skip (set by orchestrator on the subagent call — do not spawn reviewers; orchestrator will review the diff directly)";
 		return task + skipLine;
 	}

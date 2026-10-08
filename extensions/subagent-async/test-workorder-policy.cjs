@@ -34,39 +34,48 @@ const os = require("node:os");
 const path = require("node:path");
 
 // ── parseWorkOrderPolicy — KEEP IN SYNC with index.ts ─────────────────────
-// Decision 014: first-word-after-colon semantics. `- **review_policy**:
+// Decision 014 + 2026-10-07 ruling: the bold line (leading bullet OPTIONAL —
+// a bare `**review_policy**: skip` metadata line is accepted) or the YAML
+// frontmatter line. First-word-after-colon semantics: `- **review_policy**:
 // skip ...` → skip; anything else (required, template literal `required |
 // skip`, absent) → required. Deliberately NOT a substring match for `skip`.
+const POLICY_BOLD_RE = /^\s*(?:-\s*)?\*\*review_policy\*\*:\s*(\S+)/m;
+const POLICY_YAML_RE = /^review_policy:\s*(\S+)/m;
+
 function parseWorkOrderPolicy(woText) {
-	const m = woText.match(/^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m);
+	const m = woText.match(POLICY_BOLD_RE) || woText.match(POLICY_YAML_RE);
 	return m && m[1] === "skip" ? "skip" : "required";
 }
 
 // ── Review-gate decision — KEEP IN SYNC with index.ts ─────────────────────
-// The canonical task-text bullet regex used by the WO-less fallback. It
-// fails on the template literal `required | skip` (skip is not the first
+// The task-text declaration is the bold line only (YAML is a work-order
+// spelling, not something a task string carries), same first-word semantics.
+// It fails on the template literal `required | skip` (skip is not the first
 // token) — first-token semantics, mirrored by parseWorkOrderPolicy.
-const REVIEW_POLICY_SKIP_BULLET = /^\s*-\s*\*\*review_policy\*\*:\s*skip\b/m;
+function taskDeclaresPolicySkip(task) {
+	const m = POLICY_BOLD_RE.exec(task);
+	return !!m && m[1] === "skip";
+}
 
 // Mirrors spawnSubagent's gate computation: effective policy = the WO's
 // parsed value when a workOrderPolicy is present (it wins over the tool
-// param), else the tool param; the task-text bullet applies ONLY to
+// param), else the tool param; the task-text declaration applies ONLY to
 // WO-less dispatches.
 function computeGate(workOrderPolicy, reviewPolicy, task) {
 	const effectiveReviewPolicy = workOrderPolicy ?? reviewPolicy;
 	const gateSkipped =
 		effectiveReviewPolicy === "skip" ||
-		(workOrderPolicy === undefined && REVIEW_POLICY_SKIP_BULLET.test(task));
+		(workOrderPolicy === undefined && taskDeclaresPolicySkip(task));
 	return { effectiveReviewPolicy, gateSkipped };
 }
 
 // ── maybeInjectReviewPolicySkip — KEEP IN SYNC with index.ts ──────────────
-// Injects the canonical skip bullet when the EFFECTIVE policy is skip but
-// the task lacks the bullet. When the WO declares required (effective =
+// Injects a skip declaration when the EFFECTIVE policy is skip but the task
+// does not already declare it. When the WO declares required (effective =
 // required), nothing is injected even if the param said skip — WO wins.
 function maybeInjectReviewPolicySkip(task, reviewPolicy) {
 	if (reviewPolicy !== "skip") return task;
-	if (REVIEW_POLICY_SKIP_BULLET.test(task)) return task;
+	if (taskDeclaresPolicySkip(task)) return task;
 	const skipLine = "\n\n- **review_policy**: skip (set by orchestrator on the subagent call — do not spawn reviewers; orchestrator will review the diff directly)";
 	return task + skipLine;
 }
@@ -144,7 +153,7 @@ function eq(actual, expected, msg) {
 
 // Agent configs mirroring the real ones: implement has the two-reviewer
 // gate; scout has no `requires_parent_reviewers` (no gate either way).
-const IMPLEMENT = { name: "implement", reviewParentRequirements: ["review-code", "review-tests"] };
+const IMPLEMENT = { name: "implement", reviewParentRequirements: ["implementation", "tests"] };
 const SCOUT = { name: "scout-code", reviewParentRequirements: undefined };
 
 const TASK = "Execute work order `work-orders/WO-2026-XXX.md` in this repository. Read it fully first.";
@@ -166,9 +175,22 @@ const WO_REQUIRED =
 const WO_TEMPLATE_LITERAL =
 	"# WO-2026-XXX\n\n## Metadata\n\n- **review_policy**: required | skip — default `required`\n";
 const WO_NO_BULLET = "# WO-2026-XXX\n\n## Metadata\n\n- **work_order_id**: WO-2026-XXX\n";
+// Metadata block written the way a human writes one: bold lines, no bullets.
+const WO_BARE_SKIP =
+	"# WO-2026-XXX\n\n### Metadata\n\n**work_order_id**: WO-2026-XXX\n**review_policy**: skip (documentation-only; orchestrator reviews the diff)\n";
+// YAML frontmatter — the encoding the mirror did not accept before 2026-10-07.
+const WO_YAML_SKIP =
+	"---\nwork_order_id: WO-2026-XXX\nreview_policy: skip\n---\n\n# WO-2026-XXX\n";
 // Metadata says required; a LATER line says skip — first occurrence wins.
 const WO_LATE_SKIP =
 	"# WO-2026-XXX\n\n## Metadata\n\n- **review_policy**: required\n\n## Notes\n\n- **review_policy**: skip\n";
+// Both encodings present — the bold line is the one the work-order template
+// prescribes and wins, in either direction. Round-1 review: precedence was
+// pinned only in the TS suite's parser rows, not through the mirror's gate.
+const WO_BOTH_BOLD_SKIP =
+	"---\nwork_order_id: WO-2026-XXX\nreview_policy: required\n---\n\n# WO-2026-XXX\n\n**review_policy**: skip (docs-only)\n";
+const WO_BOTH_BOLD_REQUIRED =
+	"---\nwork_order_id: WO-2026-XXX\nreview_policy: skip\n---\n\n# WO-2026-XXX\n\n**review_policy**: required\n";
 
 // ── parseWorkOrderPolicy unit pins ─────────────────────────────────────────
 test("parse: `skip` first word → skip", () => {
@@ -191,12 +213,51 @@ test("parse: first occurrence wins (metadata required, body skip → required)",
 	eq(parseWorkOrderPolicy(WO_LATE_SKIP), "required");
 });
 
+test("parse: bare bold line (no bullet) → skip (2026-10-07 ruling)", () => {
+	eq(parseWorkOrderPolicy(WO_BARE_SKIP), "skip");
+});
+
+test("parse: YAML frontmatter → skip (mirror gap fixed 2026-10-07)", () => {
+	eq(parseWorkOrderPolicy(WO_YAML_SKIP), "skip");
+});
+
+test("parse: bold line beats YAML when both are present (bold says skip)", () => {
+	eq(parseWorkOrderPolicy(WO_BOTH_BOLD_SKIP), "skip");
+});
+
+test("parse: bold line beats YAML when both are present (bold says required)", () => {
+	eq(parseWorkOrderPolicy(WO_BOTH_BOLD_REQUIRED), "required");
+});
+
+test("parse: leading whitespace tolerated on the bold line (dash or no dash)", () => {
+	eq(parseWorkOrderPolicy("  **review_policy**: skip"), "skip");
+});
+
+// ── taskDeclaresPolicySkip unit pins ──────────────────────────────────────
+// First-token semantics: `skip,` is not `skip`. Round-1 review: the TS suite
+// pinned this, the mirror did not — a `\bskip\b` regression here was silent.
+test("task-text: `skip,` is not a first-token skip (dashed spelling)", () => {
+	eq(taskDeclaresPolicySkip("- **review_policy**: skip, because docs"), false);
+});
+
+test("task-text: `skip,` is not a first-token skip (bare spelling)", () => {
+	eq(taskDeclaresPolicySkip("**review_policy**: skip, because docs"), false);
+});
+
+test("task-text: `skip` with trailing rationale IS a first-token skip", () => {
+	eq(taskDeclaresPolicySkip("**review_policy**: skip (docs-only; orchestrator reviews)"), true);
+});
+
 // ── Matrix rows through the call-site shape (spawnDecisionMirror) ─────────
 withTempDir((dir) => {
 	fs.writeFileSync(path.join(dir, "WO-SKIP.md"), WO_SKIP);
 	fs.writeFileSync(path.join(dir, "WO-REQ.md"), WO_REQUIRED);
 	fs.writeFileSync(path.join(dir, "WO-TMPL.md"), WO_TEMPLATE_LITERAL);
 	fs.writeFileSync(path.join(dir, "WO-NO.md"), WO_NO_BULLET);
+	fs.writeFileSync(path.join(dir, "WO-BARE.md"), WO_BARE_SKIP);
+	fs.writeFileSync(path.join(dir, "WO-YAML.md"), WO_YAML_SKIP);
+	fs.writeFileSync(path.join(dir, "WO-BOTH-SKIP.md"), WO_BOTH_BOLD_SKIP);
+	fs.writeFileSync(path.join(dir, "WO-BOTH-REQ.md"), WO_BOTH_BOLD_REQUIRED);
 
 	test("(a) WO declares skip + workOrderPath, no param → gate suppressed + bullet injected", () => {
 		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-SKIP.md", task: TASK }, IMPLEMENT);
@@ -210,21 +271,21 @@ withTempDir((dir) => {
 		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-REQ.md", review_policy: "skip", task: TASK }, IMPLEMENT);
 		eq(r.workOrderPolicy, "required");
 		eq(r.effectiveReviewPolicy, "required", "WO wins over the tool param");
-		assert.deepStrictEqual(r.reviewParentRequirements, ["review-code", "review-tests"], "gate stays live");
+		assert.deepStrictEqual(r.reviewParentRequirements, ["implementation", "tests"], "gate stays live");
 		eq(r.taskForChild, TASK, "no skip injection when WO declares required");
 	});
 
 	test("WO template literal unedited (`required | skip`) → parses required → gate LIVE", () => {
 		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-TMPL.md", task: TASK }, IMPLEMENT);
 		eq(r.workOrderPolicy, "required");
-		assert.deepStrictEqual(r.reviewParentRequirements, ["review-code", "review-tests"], "gate live");
+		assert.deepStrictEqual(r.reviewParentRequirements, ["implementation", "tests"], "gate live");
 		eq(r.taskForChild, TASK, "no injection");
 	});
 
 	test("WO with no review_policy bullet → required → gate LIVE", () => {
 		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-NO.md", task: TASK }, IMPLEMENT);
 		eq(r.workOrderPolicy, "required");
-		assert.deepStrictEqual(r.reviewParentRequirements, ["review-code", "review-tests"]);
+		assert.deepStrictEqual(r.reviewParentRequirements, ["implementation", "tests"]);
 	});
 
 	test("(c) missing WO path → loud tool error, no spawn (no gate decision, no injection)", () => {
@@ -269,9 +330,57 @@ withTempDir((dir) => {
 		eq(r.taskForChild, bulletTask, "bullet already present — not injected twice");
 	});
 
+	test("no WO, bare bold line in task text → gate suppressed, no double injection (ruling)", () => {
+		const bareTask = TASK + "\n\n**review_policy**: skip (docs-only; orchestrator reviews the diff)";
+		const r = spawnDecisionMirror(dir, { task: bareTask }, IMPLEMENT);
+		eq(r.workOrderPolicy, undefined);
+		eq(r.reviewParentRequirements, undefined, "bare bold declaration suppresses the gate");
+		eq(r.taskForChild, bareTask, "declaration already present — not injected twice");
+	});
+
+	test("no WO, YAML line in task text → NOT a task-text declaration (scope: WO only)", () => {
+		const yamlTask = TASK + "\n\nreview_policy: skip";
+		const r = spawnDecisionMirror(dir, { task: yamlTask }, IMPLEMENT);
+		eq(r.workOrderPolicy, undefined);
+		assert.deepStrictEqual(
+			r.reviewParentRequirements,
+			["implementation", "tests"],
+			"YAML does not suppress the gate in a task string",
+		);
+	});
+
+	test("WO declaring the bare bold line → gate suppressed + declaration injected", () => {
+		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-BARE.md", task: TASK }, IMPLEMENT);
+		eq(r.workOrderPolicy, "skip");
+		eq(r.reviewParentRequirements, undefined, "gate suppressed via the bare declaration");
+		assert.ok(r.taskForChild.includes("- **review_policy**: skip"), "declaration injected into task");
+	});
+
+	test("WO declaring YAML frontmatter → gate suppressed (mirror gap fixed)", () => {
+		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-YAML.md", task: TASK }, IMPLEMENT);
+		eq(r.workOrderPolicy, "skip");
+		eq(r.reviewParentRequirements, undefined, "gate suppressed via frontmatter");
+		assert.ok(r.taskForChild.includes("- **review_policy**: skip"), "declaration injected into task");
+	});
+
+	test("WO with YAML required + bold skip → bold wins → gate suppressed", () => {
+		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-BOTH-SKIP.md", task: TASK }, IMPLEMENT);
+		eq(r.workOrderPolicy, "skip");
+		eq(r.effectiveReviewPolicy, "skip");
+		eq(r.reviewParentRequirements, undefined, "bold declaration suppresses the gate");
+		assert.ok(r.taskForChild.includes("- **review_policy**: skip"), "declaration injected into task");
+	});
+
+	test("WO with YAML skip + bold required → bold wins → gate LIVE", () => {
+		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-BOTH-REQ.md", task: TASK }, IMPLEMENT);
+		eq(r.workOrderPolicy, "required");
+		assert.deepStrictEqual(r.reviewParentRequirements, ["implementation", "tests"], "gate live");
+		eq(r.taskForChild, TASK, "no injection");
+	});
+
 	test("no WO, no param, no bullet → gate LIVE, no injection (unchanged)", () => {
 		const r = spawnDecisionMirror(dir, { task: TASK }, IMPLEMENT);
-		assert.deepStrictEqual(r.reviewParentRequirements, ["review-code", "review-tests"]);
+		assert.deepStrictEqual(r.reviewParentRequirements, ["implementation", "tests"]);
 		eq(r.taskForChild, TASK);
 	});
 
@@ -285,7 +394,7 @@ withTempDir((dir) => {
 	test("WO declares required + param required (agree) → gate LIVE, no injection", () => {
 		const r = spawnDecisionMirror(dir, { workOrderPath: "WO-REQ.md", review_policy: "required", task: TASK }, IMPLEMENT);
 		eq(r.effectiveReviewPolicy, "required");
-		assert.deepStrictEqual(r.reviewParentRequirements, ["review-code", "review-tests"], "gate live");
+		assert.deepStrictEqual(r.reviewParentRequirements, ["implementation", "tests"], "gate live");
 		eq(r.taskForChild, TASK, "no injection");
 	});
 

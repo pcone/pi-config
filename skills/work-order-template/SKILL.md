@@ -24,7 +24,7 @@ Your work order quality directly determines whether the implementer succeeds on 
 - **invariant_exhaustiveness**: explicit | implicit
 - **priority**: critical | normal | low
 - **estimated_complexity**: trivial | moderate | complex
-- **review_policy**: required | skip — default `required`. Set `skip` only for documentation-only changes or explicit justified exceptions (state the reason).
+- **review_policy**: required | skip — default `required`. Set `skip` only for documentation-only changes or explicit justified exceptions (state the reason). The bullet is the prescribed form; a bare bold line (no dash) and the YAML `review_policy:` form are also accepted — see [Encoding](#encoding--use-the-bolded--metadata-block).
 
 ### Task Summary
 
@@ -229,15 +229,19 @@ order without knowing which repo it belongs to.
 
 Write metadata as the bolded bullet list shown in the template above; that is
 the canonical form the parser prefers. This is a **code contract, not a style
-preference**: the gate parses `review_policy` with
+preference**: the gate parses `review_policy` with two regexes —
 
 ```
-/^\s*-\s*\*\*review_policy\*\*:\s*(\S+)/m   ??   /^review_policy:\s*(\S+)/m
+/^\s*(?:-\s*)?\*\*review_policy\*\*:\s*(\S+)/m   ??   /^review_policy:\s*(\S+)/m
 ```
 
-— canonical bullet first, YAML frontmatter as fallback. When both are present the
-bullet wins. Anything else — `required`, the template literal
-`required | skip`, or no declaration at all — reads as `required`.
+— the bold line first (the leading dash is optional, so a bare
+`**review_policy**: skip` metadata line is accepted; before the 2026-10-07
+ruling it matched nothing and silently read as `required`), YAML frontmatter as
+fallback. When both are present the bold line wins. Anything else — `required`,
+the template literal `required | skip`, or no declaration at all — reads as
+`required`. The task-text declaration a WO-less dispatch can carry is the bold
+line only; a YAML line in a task string is not read.
 
 ### Persistence — commit it, then freeze it
 

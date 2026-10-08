@@ -117,11 +117,14 @@ completion.
 ## Bounded allowlist and reviewer read-only
 
 Implementer `allowedSubagents` is bounded to
-`scout-code, review-code, review-tests`. Reviewers have read-only
+`scout-code, review-code, review-tests` (amended 2026-10-07, decision 032:
+`review-plan` added — the read-only plan reviewer, for pre-implementation
+checks; the *required* set, `requires_parent_reviewers`, is unchanged). Reviewers have read-only
 tools (`read, grep, find, ls, bash` for read-only inspection) and
 no recursive subagent fan-out. This restores the controlled
 nested-delegation channel that `WO-2026-008` closed by default,
-for exactly these three read-only agents. The runtime's
+for exactly these read-only agents (four since 2026-10-07 —
+decision 032 added `review-plan`). The runtime's
 `PI_SUBAGENT_ALLOWLIST` env-var gate (added in `WO-2026-008`) is
 the structural enforcer.
 
@@ -160,7 +163,8 @@ never accepts a non-converged loop as `complete`.
   `subagent`, `subagent_status`, `subagent_steer`, `subagent_stop`,
   or `wait` (implementer must keep those for review orchestration).
 - Manual `grep` check: `allowedSubagents` is bounded to the three
-  read-only agents.
+  read-only agents (four since 2026-10-07 — `review-plan` added by
+  decision 032).
 - Existing e2e test (`tests/e2e-checkpoint.test.ts`) covers the
   checkpoint tool but not the subagent dispatch path; the
   review-gate is enforced by prompt text and the runtime's
