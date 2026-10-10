@@ -22,6 +22,7 @@
  * Run: bun test tests/subagent-model-inheritance.test.ts
  */
 
+import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
@@ -275,7 +276,15 @@ function cleanupArtifacts(sid: string): void {
 afterEach(async () => {
 	for (const child of children.splice(0)) {
 		await killChild(child);
+		const settled = await waitUntilUntracked(child.sid);
 		cleanupArtifacts(child.sid);
+		if (!settled) {
+			// The close handler can still write a footer after the initial unlink.
+			await new Promise((r) => setTimeout(r, 250));
+			cleanupArtifacts(child.sid);
+		}
+		const log = `/tmp/pi-subagent-${child.sid}.log`;
+		expect(existsSync(log)).toBe(false);
 	}
 });
 

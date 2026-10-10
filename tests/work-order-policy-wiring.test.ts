@@ -20,6 +20,7 @@
  * Run: bun test tests/work-order-policy-wiring.test.ts
  */
 
+import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -129,14 +130,7 @@ const children: Array<{ sid: string; tools: Map<string, any>; ctx: any }> = [];
  *  deterministic signal that the log is final. Unlinking straight after
  *  `subagent_kill` races that handler and the footer recreates the file
  *  (round-3 review: 7 leaked logs per run). */
-async function waitUntilUntracked(sid: string, ms = 10_000): Promise<boolean> {
-	const deadline = Date.now() + ms;
-	while (Date.now() < deadline) {
-		if (!resolveRunningSession(sid)) return true;
-		await new Promise((r) => setTimeout(r, 25));
-	}
-	return false;
-}
+
 
 afterEach(async () => {
 	for (const child of children.splice(0)) {
