@@ -203,11 +203,11 @@ describe("peer_send requireOnline gate (deliveryDecision)", () => {
 	const online = (names: string[]) => names.map((name) => ({ name, online: true }));
 	it("ok when target online", () => {
 		const r = deliveryDecision("bob", online(["bob"]), false);
-		expect(r).toEqual({ ok: true, online: true });
+		expect(r).toEqual({ ok: true, online: true, external: false });
 	});
 	it("ok when target offline and requireOnline false (default: queue)", () => {
 		const r = deliveryDecision("bob", [{ name: "bob", online: false }], false);
-		expect(r).toEqual({ ok: true, online: false });
+		expect(r).toEqual({ ok: true, online: false, external: false });
 	});
 	it("fails when target offline and requireOnline true", () => {
 		const r = deliveryDecision("bob", [{ name: "bob", online: false }], true);
@@ -228,7 +228,7 @@ describe("peer_send requireOnline gate (deliveryDecision)", () => {
 	});
 	it("ok when target online even with requireOnline true", () => {
 		const r = deliveryDecision("bob", online(["bob"]), true);
-		expect(r).toEqual({ ok: true, online: true });
+		expect(r).toEqual({ ok: true, online: true, external: false });
 	});
 });
 

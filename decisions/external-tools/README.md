@@ -15,3 +15,4 @@ isn't re-litigated every time the tool trends on HN.
 | --- | --- | --- |
 | [001](001-rtk-rejected.md) | RTK (Rust Token Killer) — rejected, no expected savings | done |
 | [002](002-ponytail.md) | Ponytail — ladder adopted into system prompt, tool not installed | deferred |
+| [003](003-claude-code-external-peer.md) | Claude Code joins peer-link as an external peer; mail delivered only on the user's prompt | done |
