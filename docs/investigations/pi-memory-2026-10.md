@@ -65,15 +65,16 @@ tail in the three largest live sessions:
 | `tfd` | 127.3 MB | 26 882 | 199 | 0.7 MB |
 | `tfd-triage` | 100.6 MB | 35 876 | 180 | 0.9 MB |
 
-Prototype (`/tmp` scratch, not landed): keep the session header, the entries from
-`firstKeptEntryId` onward, and the last `model_change` / `thinking_level_change`
-re-rooted at the head of the kept chain (settings live on the path, so dropping
-them would resume on the wrong model). Result on `tfd`:
+Landed as `extensions/session-trim.ts` (decision `decisions/sessions/001`): keep the
+session header, the entries from `firstKeptEntryId` onward, and the last
+`model_change` / `thinking_level_change` / `session_info` re-rooted at the head of
+the kept chain (settings and name live outside the kept region, so dropping them
+would resume on the wrong model or lose the session's name). Result on `tfd`:
 
-- 127.3 MB → 0.7 MB, 456 of 26 882 entries kept.
+- 127.3 MB → 0.7 MB, 456 of 26 882 entries kept. On `tfd-d`: 61.0 MB → 0.42 MB.
 - `buildSessionContext()` identical: same 456 messages, same SHA-256, same
   `thinkingLevel: high`, same `model`. Context is unaffected, as expected.
-- Load peak RSS 219 MB → 126 MB (one run each, same noise caveat as above).
+- Load peak RSS 210 MB → 121 MB (`tfd-d` copy).
 - Load does not rewrite or "repair" the trimmed file: hash unchanged, no `.pre-*`
   backup created.
 

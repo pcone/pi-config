@@ -1,6 +1,6 @@
 auth.json
 bin/
-sessions/
+/sessions/
 checkpoints/
 .pi/mode.json
 node_modules
