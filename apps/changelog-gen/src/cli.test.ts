@@ -115,11 +115,11 @@ describe('CLI integration', () => {
 
   beforeAll(() => {
     tempRepo = createTempGitRepo();
-  });
+  }, 30_000);
 
   afterAll(() => {
     rmSync(tempRepo, { recursive: true, force: true });
-  });
+  }, 30_000);
 
   it('happy path --format md', () => {
     const result = runCli([tempRepo, '--format', 'md']);
