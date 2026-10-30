@@ -17,6 +17,10 @@ stays the single definition of dead history rather than being re-derived. Model,
 thinking level and session name are carried across the cut: they live outside the
 kept region and would otherwise silently reset.
 
+While history is stranded in a live process, a footer status says `restart frees ~N MB`
+(N = 3× the trimmed JSON, the measured parse cost), and clears on the next
+`session_start` because a resume or fork swaps in a fresh `SessionManager`.
+
 **Why.** A pi process costs ~180 MB before it reads a session, then ~3× the
 session's JSONL bytes, because `SessionManager.fileEntries` keeps every parsed
 entry for the process's life and the file is append-only. Compaction shrinks what
@@ -34,6 +38,23 @@ it. `session_before_tree` cancels a rewind whose target was trimmed and names th
 archive file, so the loss is stated rather than silent. The ordinary transcript is
 unaffected — it already renders from `buildContextEntries()`, so pre-compaction
 history was never displayed there.
+
+**Prompt caching is unaffected.** Providers key their cache on request content, and
+the request is unchanged: `buildSessionContext()` is byte-identical across a trim
+(pinned by test), and a trim inside a live process touches no in-process state at
+all — the next request is the same message array. The auto-trim also fires only
+after a compaction, which is the one moment the request had already changed. A live
+provider check was not possible at the time of writing (Anthropic OAuth refresh
+token expired, OpenRouter out of credits), so this rests on request equality plus
+pi's own cache accounting, which detects misses from per-turn `usage` and idle time,
+never from file identity.
+
+What does change is pi's per-session tallies: `computeCacheWaste` and
+`getUsageCostBreakdown` scan entries, so after a trim the footer's cache waste,
+token and cost figures restart at the retained tail. Measured on the 61 MB
+`tfd-d` copy: cache waste 492 misses / 18.6 M tokens → 0, cost $30.58 → $0.07. That
+is accounting, not caching; the spend is still in the archive. Callers who want the
+pre-trim figures should read the archive before the next trim.
 
 **Safety rules, both structural.**
 

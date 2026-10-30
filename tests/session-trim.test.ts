@@ -12,9 +12,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { SessionEntry, SessionHeader } from "@earendil-works/pi-coding-agent";
-import {
+import sessionTrim, {
+	HINT_MIN_DROPPED_BYTES,
 	nextArchivePath,
 	planTrim,
+	restartHint,
 	treeNavigationBlocked,
 	TRIM_MARKER,
 	writeTrim,
@@ -92,6 +94,16 @@ function withDir<T>(fn: (dir: string) => T): T {
 	const dir = mkdtempSync(join(tmpdir(), "session-trim-"));
 	try {
 		return fn(dir);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+/** Awaiting variant: the extension handlers are async, so cleanup must wait for them. */
+async function withDirAsync(fn: (dir: string) => Promise<void>): Promise<void> {
+	const dir = mkdtempSync(join(tmpdir(), "session-trim-"));
+	try {
+		await fn(dir);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -222,5 +234,119 @@ describe("treeNavigationBlocked", () => {
 
 	it("stays out of the way when this session was never trimmed", () => {
 		expect(treeNavigationBlocked([], "u1")).toBeNull();
+	});
+});
+
+describe("restartHint", () => {
+	it("stays quiet below the threshold", () => {
+		expect(restartHint(0)).toBeUndefined();
+		expect(restartHint(HINT_MIN_DROPPED_BYTES - 1)).toBeUndefined();
+	});
+
+	it("reports the heap a restart reclaims, at 3x the trimmed JSON", () => {
+		expect(restartHint(HINT_MIN_DROPPED_BYTES)).toBe("restart frees ~24 MB");
+		expect(restartHint(60 * 1024 * 1024)).toBe("restart frees ~180 MB");
+	});
+});
+
+describe("extension wiring", () => {
+	/** A session whose dropped prefix is large enough to trip the restart hint. */
+	function writeLargeSession(dir: string): string {
+		const file = join(dir, "2026-10-30T00-00-00-000Z_bulk.jsonl");
+		const header = {
+			type: "session",
+			version: 3,
+			id: "01a10000-0000-7000-8000-000000000001",
+			timestamp: STAMP,
+			cwd: dir,
+		};
+		const body = [
+			{ type: "model_change", id: "mc1", parentId: null, timestamp: STAMP, provider: "p", modelId: "m" },
+			{ type: "message", id: "u1", parentId: "mc1", timestamp: STAMP, message: message("user", "old prompt") },
+			{
+				type: "message",
+				id: "bulk",
+				parentId: "u1",
+				timestamp: STAMP,
+				message: { role: "assistant", content: [{ type: "text", text: "x".repeat(9 * 1024 * 1024) }] },
+			},
+			{ type: "message", id: "u2", parentId: "bulk", timestamp: STAMP, message: message("user", "kept prompt") },
+			{
+				type: "compaction",
+				id: "cp1",
+				parentId: "u2",
+				timestamp: STAMP,
+				summary: "summary",
+				firstKeptEntryId: "u2",
+				tokensBefore: 1000,
+			},
+			{ type: "message", id: "u3", parentId: "cp1", timestamp: STAMP, message: message("user", "after") },
+		];
+		writeFileSync(file, [header, ...body].map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+		return file;
+	}
+
+	function loadExtension() {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
+		const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+		const entries: Array<{ customType: string; data: unknown }> = [];
+		const statuses: Array<[string, string | undefined]> = [];
+		const pi = {
+			on(event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) {
+				handlers.set(event, handler);
+			},
+			registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+				commands.set(name, options.handler);
+			},
+			registerEntryRenderer() {},
+			appendEntry(customType: string, data: unknown) {
+				entries.push({ customType, data });
+			},
+		};
+		const notifications: string[] = [];
+		const ctxFor = (file: string) => ({
+			hasUI: true,
+			sessionManager: SessionManager.open(file),
+			ui: {
+				setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+				notify: (message: string) => notifications.push(message),
+			},
+		});
+		sessionTrim(pi as never);
+		return { handlers, commands, entries, statuses, notifications, ctxFor };
+	}
+
+	it("/trim rewrites the file, records a marker and shows the restart hint", async () => {
+		await withDirAsync(async (dir) => {
+			const file = writeLargeSession(dir);
+			const { commands, entries, statuses, notifications, ctxFor } = loadExtension();
+			await commands.get("trim")!("", ctxFor(file));
+			expect(readFileSync(file, "utf8").length).toBeLessThan(1024 * 1024);
+			expect(entries.map((entry) => entry.customType)).toEqual([TRIM_MARKER]);
+			expect(statuses).toHaveLength(1);
+			expect(statuses[0][0]).toBe("session-trim");
+			expect(statuses[0][1]).toMatch(/^restart frees ~\d+ MB$/);
+			expect(notifications[0]).toMatch(/^Trimmed 9\.0 MB \(3 entries\)/);
+		});
+	});
+
+	it("leaves a small file alone on compaction", async () => {
+		await withDirAsync(async (dir) => {
+			const file = writeSession(dir, { compaction: true });
+			const sizeBefore = readFileSync(file, "utf8").length;
+			const { handlers, notifications, ctxFor } = loadExtension();
+			await handlers.get("session_compact")!({ type: "session_compact" }, ctxFor(file));
+			expect(readFileSync(file, "utf8").length).toBe(sizeBefore);
+			expect(notifications).toEqual([]);
+		});
+	});
+
+	it("clears the hint when a resume or fork swaps the session manager", async () => {
+		const { handlers, statuses } = loadExtension();
+		await handlers.get("session_start")!(
+			{ type: "session_start", reason: "resume" },
+			{ hasUI: true, ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]) } },
+		);
+		expect(statuses).toEqual([["session-trim", undefined]]);
 	});
 });

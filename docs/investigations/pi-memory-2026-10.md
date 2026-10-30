@@ -87,6 +87,15 @@ What the prefix is still needed for, none of it model-facing:
 - Two of 24 648 dropped entries in `tfd-d` and 58 of 26 882 in `tfd` are on other
   branches, not ancestors of the leaf; those branches go too.
 
+**Prompt caching.** A trim cannot invalidate a cached prefix: the request body is
+unchanged (identical `buildSessionContext()`), and providers key their cache on
+request content. pi's own cache accounting detects misses from per-turn `usage` and
+idle time (`core/cache-stats.js`), not from the file, and it already treats a
+compaction entry as a content reset. What does move is the *tally*: `computeCacheWaste`
+and `getUsageCostBreakdown` scan entries, so after a trim the session's waste, token
+and cost figures restart at the retained tail — 492 misses / 18.6 M tokens / $30.58
+→ 0 / 0 / $0.07 on the `tfd-d` copy. The spend stays in the archive.
+
 **Cross-process hazard.** pi does not lock session files (only auth, settings and
 trust are locked). A rewrite is only safe when the writing process is the session's
 only writer: a second live pi holding the untrimmed session in memory will append

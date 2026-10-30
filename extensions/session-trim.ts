@@ -14,7 +14,13 @@
  * compaction rule; the trimmed file sends the same context as the untrimmed one.
  *
  * The in-process heap does not shrink — the entries are already parsed and
- * `sessionManager` is read-only. The saving lands on the next start.
+ * `sessionManager` is read-only. The saving lands on the next start, so the footer
+ * carries a "restart frees ~N MB" status once enough history is stranded.
+ *
+ * Prompt caching is unaffected: the request body is unchanged (proved by the
+ * context-equality test), and providers key their cache on request content. Only
+ * pi's own per-session tallies — cost, tokens, cache waste — restart at the trim
+ * boundary, because `getUsageCostBreakdown` and `computeCacheWaste` scan entries.
  */
 
 import { existsSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -29,6 +35,24 @@ import type {
 
 /** Trim once the live file passes this; below it a load costs <25 MB. */
 export const TRIM_THRESHOLD_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Parsed entries cost ~3× their JSON bytes (docs/investigations/pi-memory-2026-10.md),
+ * so this is what a restart reclaims per byte of history trimmed in this process.
+ */
+const HEAP_PER_JSON_BYTE = 3;
+
+/** Footer hint threshold: below this a restart is not worth interrupting work for. */
+export const HINT_MIN_DROPPED_BYTES = TRIM_THRESHOLD_BYTES;
+
+/** Footer status key, so a resume/restart can clear it. */
+const STATUS_KEY = "session-trim";
+
+/** "restart frees ~N MB" once enough history is stranded in this process's heap. */
+export function restartHint(droppedBytes: number): string | undefined {
+	if (droppedBytes < HINT_MIN_DROPPED_BYTES) return undefined;
+	return `restart frees ~${Math.round((droppedBytes * HEAP_PER_JSON_BYTE) / 1048576)} MB`;
+}
 
 /** Marker entry recording what a trim moved out, so a later process can cite the archive. */
 export const TRIM_MARKER = "session-trim";
@@ -177,6 +201,13 @@ export function treeNavigationBlocked(
 }
 
 export default function (pi: ExtensionAPI) {
+	/** Bytes of history this process has moved out of the file but still holds parsed. */
+	let trimmedInProcess = 0;
+
+	function setHint(ctx: ExtensionContext): void {
+		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, restartHint(trimmedInProcess));
+	}
+
 	function trim(ctx: ExtensionContext): TrimReport | null {
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile || !existsSync(sessionFile)) return null;
@@ -190,6 +221,8 @@ export default function (pi: ExtensionAPI) {
 			droppedBytes: report.droppedBytes,
 			droppedEntries: report.droppedEntries,
 		});
+		trimmedInProcess += report.droppedBytes;
+		setHint(ctx);
 		return report;
 	}
 
@@ -230,6 +263,12 @@ export default function (pi: ExtensionAPI) {
 				"info",
 			);
 		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		// A resume or fork swaps in a fresh SessionManager, so nothing is stranded.
+		trimmedInProcess = 0;
+		setHint(ctx);
 	});
 
 	pi.on("session_compact", async (_event, ctx) => {
