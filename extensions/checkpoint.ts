@@ -542,12 +542,18 @@ export default function (pi: ExtensionAPI) {
 					git: await captureGitBinding(ctx.cwd),
 				},
 			);
-			ctx.ui.notify(`📦 Archived session for grepping: ${archivePath}`, "info");
+			// Best-effort: the archive is written and compaction is what the user is
+			// waiting on, so a stale ctx must not turn either outcome into an error.
+			try {
+				ctx.ui.notify(`📦 Archived session for grepping: ${archivePath}`, "info");
+			} catch { /* ctx stale after reload */ }
 		} catch (err) {
-			ctx.ui.notify(
-				`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
-				"warning",
-			);
+			try {
+				ctx.ui.notify(
+					`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
+					"warning",
+				);
+			} catch { /* ctx stale after reload */ }
 		}
 	});
 
