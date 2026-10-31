@@ -22,6 +22,7 @@
 
 import { describe, expect, it, beforeAll, afterAll } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile, readFile, rm, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -328,7 +329,7 @@ describe("checkpoint: basic flow", () => {
 			"Call the checkpoint tool with continue: true. summary must be an object with all five fields: " +
 				"{goal: 'Found secret codes in haystack files', " +
 				"filesTouched: ['haystack_1.ts','haystack_2.ts','haystack_3.ts','haystack_4.ts','haystack_5.ts'], " +
-				"decisions: ['none'], triedAndFailed: ['none'], constraints: 'none'}. " +
+				"decisions: ['none'], triedAndFailed: ['a first pass that read the files one at a time'], constraints: 'none'}. " +
 				"Include all 5 haystack files (haystack_1.ts through haystack_5.ts) in relevantPaths.",
 		);
 		await waitForSettled(session);
@@ -364,6 +365,20 @@ describe("checkpoint: basic flow", () => {
 		expect(injected).toHaveLength(1);
 		for (const needle of NEEDLES) expect(injected[0]).toContain(needle);
 
+		// §5.3 anti-vacuity: the composed summary itself carries the file bytes,
+		// inside the machine block — the authored text above it never does, so a
+		// needle in the summary cannot be the model's paraphrase. (The boundary is
+		// the `[file]` marker, not a needle: a model may quote a code in prose.)
+		const composed = String(
+			compactionEntries(sessionManager).find((e) => e.fromHook === true)?.summary ?? "",
+		);
+		const machineAt = composed.indexOf("### Machine facts");
+		expect(machineAt).toBeGreaterThan(0);
+		expect(composed).toContain("### Injection");
+		expect(composed.slice(0, machineAt)).not.toContain("[haystack_1.ts]");
+		expect(composed.slice(machineAt)).toContain("[haystack_1.ts]");
+		for (const needle of NEEDLES) expect(composed.slice(machineAt)).toContain(needle);
+
 		await session.prompt(
 			"Without using read, bash, grep, or any tools — answer purely from the context above. " +
 				"What are the 5 secret activation codes hidden in the haystack files? " +
@@ -397,7 +412,8 @@ describe("checkpoint: sibling tool in the same turn", () => {
 			"Issue BOTH tool calls together in a single assistant response (parallel tool calls): " +
 				"(1) read haystack_1.ts with offset=1 and limit=30; " +
 				"(2) checkpoint with summary {goal: 'Checkpoint batched with a read', filesTouched: ['haystack_1.ts'], " +
-				"decisions: ['none'], triedAndFailed: ['none'], constraints: 'none'} and relevantPaths [haystack_1.ts]. " +
+				"decisions: ['none'], triedAndFailed: ['a first pass that skipped the read'], constraints: 'none'} " +
+				"and relevantPaths [haystack_1.ts]. " +
 				"Both tool calls must be in the same message.",
 		);
 		await waitForSettled(session);
@@ -505,16 +521,43 @@ function makeCheckpointHarness() {
 // Deterministic checkpoint driver + fixtures
 // ---------------------------------------------------------------------------
 
-/** The schema's fields with the `"none"` slots pre-filled, each overridable. */
+/**
+ * The schema's fields with a valid, deliberately narrated default (a checkpoint
+ * whose `decisions` and `triedAndFailed` are both `"none"` is rejected —
+ * nothing to resume, WO-2026-062 C10), each overridable.
+ */
 function summaryFields(over: Partial<SummaryInput> = {}): SummaryInput {
 	return {
 		goal: "deterministic summary",
-		filesTouched: [],
+		filesTouched: ["none"],
 		decisions: ["none"],
-		triedAndFailed: ["none"],
+		triedAndFailed: ["a first attempt — it failed, so the next window does not retry it"],
 		constraints: "none",
 		...over,
 	};
+}
+
+/** An empty `preparation.fileOps`, the one field `prepareCompaction` always sets. */
+function fileOps(over: Partial<Record<"read" | "written" | "edited", string[]>> = {}) {
+	return {
+		read: new Set(over.read ?? []),
+		written: new Set(over.written ?? []),
+		edited: new Set(over.edited ?? []),
+	};
+}
+
+/** The `CompactionPreparation` fields the checkpoint handlers read. */
+function preparation(over: Record<string, unknown> = {}) {
+	return { firstKeptEntryId: "entry-0", tokensBefore: 1000, fileOps: fileOps(), ...over };
+}
+
+/**
+ * A branch entry the cut boundary can name. `preparation.firstKeptEntryId` always
+ * references one — pi's `findProjectedCutPoint` picks a real index — so the
+ * hook's ancestry walk asserts on a miss.
+ */
+function boundaryEntry(id = "entry-0") {
+	return { id, parentId: null, type: "message", message: { role: "user", content: [] } };
 }
 
 /** The meta record written beside an archive. */
@@ -572,6 +615,23 @@ async function gitFixture(): Promise<string> {
 	return cwd;
 }
 
+/** A tmp git repo one commit ahead of a real upstream, clean tree, plus its bare remote. */
+async function gitFixtureWithUpstream(): Promise<{ cwd: string; remote: string }> {
+	const cwd = await mkdtemp(join(tmpdir(), "ckpt-git-up-"));
+	const remote = await mkdtemp(join(tmpdir(), "ckpt-git-remote-"));
+	sh(remote, ["git", "init", "--bare", "-b", "main"]);
+	await writeFile(join(cwd, "tracked.txt"), "v1\n");
+	sh(cwd, ["git", "init", "-b", "main"]);
+	sh(cwd, ["git", "add", "tracked.txt"]);
+	sh(cwd, ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "base"]);
+	sh(cwd, ["git", "remote", "add", "origin", remote]);
+	sh(cwd, ["git", "push", "-q", "-u", "origin", "main"]);
+	await writeFile(join(cwd, "tracked.txt"), "v2\n");
+	sh(cwd, ["git", "add", "tracked.txt"]);
+	sh(cwd, ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "ahead"]);
+	return { cwd, remote };
+}
+
 /** pi's default session dir for a cwd (`getDefaultSessionDir` isn't exported). */
 function defaultSessionDir(cwd: string): string {
 	const safePath = `--${resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
@@ -584,9 +644,9 @@ function defaultSessionDir(cwd: string): string {
 
 /**
  * Run one full deterministic checkpoint: queue it, fire `turn_end`, fire
- * `session_before_compact` (where the injection is built), then complete the
- * compaction. Returns the follow-up message text, which is the injection's real
- * delivery path.
+ * `session_before_compact` (where the injection and the machine block are
+ * built), then complete the compaction. Returns the follow-up message text and
+ * the summary the compaction entry would store.
  */
 async function checkpointAndInject(
 	h: ReturnType<typeof makeCheckpointHarness>,
@@ -596,32 +656,41 @@ async function checkpointAndInject(
 		summary?: SummaryInput;
 		branchEntries?: any[];
 		firstKeptEntryId?: string;
+		continue?: boolean;
+		prep?: Record<string, unknown>;
 	},
-): Promise<string> {
+): Promise<{ followUp: string; summary: string; result: any }> {
 	const checkpoint = h.tools.get("checkpoint");
-	await checkpoint.execute(
+	const result = await checkpoint.execute(
 		"call-1",
 		{
 			summary: opts.summary ?? summaryFields(),
 			nextSteps: "NEXT-STEP",
 			relevantPaths: opts.relevantPaths.map((path) => ({ path })),
+			...(opts.continue === undefined ? {} : { continue: opts.continue }),
 		},
 		undefined,
 		undefined,
 		ctx,
 	);
+	if (result.isError) throw new Error(`checkpoint rejected: ${result.content[0].text}`);
 	await h.emit("turn_end", ctx);
 	const compact = h.compactCalls[h.compactCalls.length - 1];
 	if (!compact) throw new Error("turn_end did not request a compaction");
-	await h.emit("session_before_compact", ctx, {
+	const results = await h.emit("session_before_compact", ctx, {
 		customInstructions: compact.customInstructions,
-		preparation: { firstKeptEntryId: opts.firstKeptEntryId ?? "entry-0", tokensBefore: 1000 },
-		branchEntries: opts.branchEntries ?? [],
+		preparation:
+			opts.prep ?? preparation({ firstKeptEntryId: opts.firstKeptEntryId ?? "entry-0" }),
+		branchEntries: opts.branchEntries ?? [boundaryEntry(opts.firstKeptEntryId ?? "entry-0")],
 		reason: "manual",
 		willRetry: false,
 	});
 	compact.onComplete?.({});
-	return h.sent[h.sent.length - 1]?.text ?? "";
+	return {
+		followUp: h.sent[h.sent.length - 1]?.text ?? "",
+		summary: String((results[0] as any).compaction.summary),
+		result,
+	};
 }
 
 describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact spy)", () => {
@@ -675,8 +744,8 @@ describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact sp
 
 			await h.emit("turn_end", ctx);
 			expect(h.compactCalls).toHaveLength(1); // exactly one
-			expect(h.compactCalls[0].customInstructions).toContain("second");
-			expect(h.compactCalls[0].customInstructions).not.toContain("first");
+			expect(h.compactCalls[0].customInstructions).toContain("Goal: second");
+			expect(h.compactCalls[0].customInstructions).not.toContain("Goal: first");
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
@@ -773,18 +842,29 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 		try {
 			const ctx = h.makeCtx(cwd);
 			await h.emit("session_start", ctx);
-			const fields = summaryFields({ goal: "nothing to report" });
+			// One field may be N/A while the other records what happened (both N/A
+			// is rejected — C10); each call here pins one `none` rendering.
+			const decisionsNone = summaryFields({ goal: "nothing decided yet" });
+			const triedNone = summaryFields({
+				goal: "a decision, no failed approach",
+				decisions: ["kept the two-tool split because the fork needs its own cwd"],
+				triedAndFailed: ["none"],
+			});
 
-			const { result, compact } = await runCheckpoint(h, ctx, { summary: fields });
+			const first = await runCheckpoint(h, ctx, { summary: decisionsNone });
+			const firstInstructions = String(first.compact.customInstructions);
+			expect(firstInstructions).toContain("Files touched: none");
+			expect(firstInstructions).toContain("Decisions: none");
+			expect(firstInstructions).toContain("Tried and failed (and why):\n  - a first attempt");
+			expect(firstInstructions).toContain("Constraints: none");
 
-			const instructions = String(compact.customInstructions);
-			expect(instructions).toContain("Files touched: none");
-			expect(instructions).toContain("Decisions: none");
-			expect(instructions).toContain("Tried and failed (and why): none");
-			expect(instructions).toContain("Constraints: none");
+			const second = await runCheckpoint(h, ctx, { summary: triedNone });
+			const secondInstructions = String(second.compact.customInstructions);
+			expect(secondInstructions).toContain("Tried and failed (and why): none");
+			expect(secondInstructions).toContain("  - kept the two-tool split");
 
-			const meta = await readMeta(archivePathFrom(result));
-			expect(meta.summaryFields).toEqual(fields);
+			const meta = await readMeta(archivePathFrom(second.result));
+			expect(meta.summaryFields).toEqual(triedNone);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
@@ -836,7 +916,7 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 		try {
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
 
-			const text = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+			const { followUp: text } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
 
 			expect(text.split("\n")[0]).toContain("Disk snapshot taken at checkpoint time");
 			expect(text).toContain("NEXT-STEP");
@@ -949,14 +1029,16 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 
 			const first = await runCheckpoint(h, ctx, { summary: summaryFields() });
 			const firstMeta = await readMeta(archivePathFrom(first.result));
-			expect(firstMeta.git).toEqual({ head, branch, dirty: false });
+			// No upstream in this fixture: ahead/behind is a stated absence, and the
+			// rest of the binding still lands.
+			expect(firstMeta.git).toEqual({ head, branch, dirty: false, aheadBehind: null });
 
 			// The archive's own `.pi/checkpoints` files are untracked, so a second
 			// checkpoint taken after them reports the tree as dirty — proof the
 			// first capture happened before the write, not after it.
 			const second = await runCheckpoint(h, ctx, { summary: summaryFields() });
 			const secondMeta = await readMeta(archivePathFrom(second.result));
-			expect(secondMeta.git).toEqual({ head, branch, dirty: true });
+			expect(secondMeta.git).toEqual({ head, branch, dirty: true, aheadBehind: null });
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
@@ -1052,7 +1134,7 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 			const meta = JSON.parse(
 				await readFile(join(sourceCwd, ".pi", "checkpoints", archives[0]), "utf8"),
 			);
-			expect(meta.git).toEqual({ head, branch, dirty: false });
+			expect(meta.git).toEqual({ head, branch, dirty: false, aheadBehind: null });
 			expect(meta.newCwd).toBe(targetCwd);
 			expect(meta.summaryFields).toEqual(fields);
 			expect(meta.summary.startsWith("Goal: Fork into the target dir")).toBe(true);
@@ -1081,28 +1163,38 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 		}
 	}, 60_000);
 
-	it("S12: marker dispatch is untouched — the compaction takes the rendered text", async () => {
+	it("S12: marker dispatch is untouched — the compaction takes the rendered text, then the machine block", async () => {
 		const h = makeCheckpointHarness();
 		const cwd = await mkdtemp(join(tmpdir(), "ckpt-meta-"));
 		try {
 			const ctx = h.makeCtx(cwd);
 			await h.emit("session_start", ctx);
-			const { compact } = await runCheckpoint(h, ctx, { summary: summaryFields() });
+			// Driven in pi's own order — queue, turn_end, the hook, then onComplete
+			// — because the hook reads the pending state `onComplete` clears.
+			await h.tools
+				.get("checkpoint")
+				.execute("call-1", { summary: summaryFields(), nextSteps: "NEXT-STEP" }, undefined, undefined, ctx);
+			await h.emit("turn_end", ctx);
+			const compact = h.compactCalls[h.compactCalls.length - 1];
 
+			const authored = String(compact.customInstructions).replace("[CHECKPOINT]", "").trim();
 			const results = await h.emit("session_before_compact", ctx, {
 				customInstructions: compact.customInstructions,
-				preparation: { firstKeptEntryId: "entry-0", tokensBefore: 1000 },
-				branchEntries: [],
+				preparation: preparation(),
+				branchEntries: [boundaryEntry()],
 				reason: "manual",
 				willRetry: false,
 			});
 			const compaction = (results[0] as any).compaction;
-			expect(compaction.summary).toBe(
-				String(compact.customInstructions).replace("[CHECKPOINT]", "").trim(),
-			);
+			// The authored text is the byte-identical prefix; the machine block is
+			// appended after it, possibly behind the in-flight section
+			// (WO-2026-062 §1).
+			expect(compaction.summary.startsWith(`${authored}\n\n`)).toBe(true);
+			expect(compaction.summary).toContain("\n\n### Machine facts\n");
 			expect(compaction.summary).toContain("Tried and failed (and why):");
 			expect(compaction.firstKeptEntryId).toBe("entry-0");
 			expect(compaction.tokensBefore).toBe(1000);
+			await compact.onComplete?.({});
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
@@ -1160,7 +1252,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 		try {
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
 
-			const text = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+			const { followUp: text } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
 
 			expect(text).toContain("[haystack_1.ts]");
 			expect(text).toContain(NEEDLES[0]);
@@ -1175,7 +1267,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 		try {
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
 
-			const text = await checkpointAndInject(h, ctx, {
+			const { followUp: text } = await checkpointAndInject(h, ctx, {
 				relevantPaths: ["haystack_1.ts"],
 				branchEntries: [keptReadEntry("kept", "haystack_1.ts")],
 				firstKeptEntryId: "kept",
@@ -1195,7 +1287,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 		try {
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
 
-			const text = await checkpointAndInject(h, ctx, {
+			const { followUp: text } = await checkpointAndInject(h, ctx, {
 				relevantPaths: ["haystack_1.ts", "haystack_2.ts"],
 			});
 
@@ -1213,7 +1305,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 5 });
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 20, limit: 3 });
 
-			const text = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+			const { followUp: text } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
 
 			expect(text).toContain("placeholder_001");
 			expect(text).toContain("placeholder_005");
@@ -1243,7 +1335,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
 			await emitRead(h, ctx, "haystack_2.ts", { offset: 1, limit: 50 });
 
-			const text = await checkpointAndInject(h, ctx, {
+			const { followUp: text } = await checkpointAndInject(h, ctx, {
 				relevantPaths: ["haystack_1.ts", "haystack_2.ts"],
 			});
 
@@ -1275,7 +1367,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 				args: { path: "haystack_1.ts", offset: 1, limit: 50 },
 			});
 
-			const text = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+			const { followUp: text } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
 
 			expect(text).not.toContain("[haystack_1.ts]");
 			expect(text).not.toContain(NEEDLES[0]);
@@ -1298,7 +1390,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 				],
 			});
 
-			const text = await checkpointAndInject(h, ctxWithHistory, {
+			const { followUp: text } = await checkpointAndInject(h, ctxWithHistory, {
 				relevantPaths: ["haystack_1.ts"],
 				branchEntries: [{ id: "boundary", type: "message", message: { role: "user", content: [] } }],
 				firstKeptEntryId: "boundary",
@@ -1322,7 +1414,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 			const original = await readFile(join(cwd, "haystack_1.ts"), "utf-8");
 			await writeFile(join(cwd, "haystack_1.ts"), `// edited after read\n${original}`);
 
-			const text = await checkpointAndInject(h, ctx, {
+			const { followUp: text } = await checkpointAndInject(h, ctx, {
 				relevantPaths: ["haystack_1.ts", "haystack_2.ts"],
 			});
 
@@ -1349,7 +1441,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 			const inserted = Array.from({ length: 20 }, (_, i) => `// inserted ${i + 1}`).join("\n");
 			await writeFile(join(cwd, "haystack_1.ts"), `${inserted}\n${original}`);
 
-			const text = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+			const { followUp: text } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
 
 			expect(text).not.toContain(NEEDLES[0]);
 			expect(text).not.toContain("inserted 1");
@@ -1372,7 +1464,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 			const newCtx = h.makeCtx(newCwd);
 			await h.emit("session_start", newCtx);
 
-			const text = await checkpointAndInject(h, newCtx, { relevantPaths: ["haystack_1.ts"] });
+			const { followUp: text } = await checkpointAndInject(h, newCtx, { relevantPaths: ["haystack_1.ts"] });
 
 			expect(text).not.toContain("[haystack_1.ts]");
 			expect(text).not.toContain(NEEDLES[0]);
@@ -1387,7 +1479,7 @@ describe("checkpoint: file injection (deterministic, captured handlers)", () => 
 		try {
 			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
 
-			const text = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+			const { followUp: text } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
 
 			const header = text.split("\n")[0];
 			expect(header).toContain("Disk snapshot taken at checkpoint time");
@@ -1446,7 +1538,7 @@ describe("checkpoint: the injection is what answers", () => {
 			"Call the checkpoint tool now with these exact arguments: " +
 				"summary: {goal: 'Read five haystack files; no findings recorded.', " +
 				"filesTouched: ['haystack_1.ts','haystack_2.ts','haystack_3.ts','haystack_4.ts','haystack_5.ts'], " +
-				"decisions: ['none'], triedAndFailed: ['none'], constraints: 'none'}; continue: true; " +
+				"decisions: ['none'], triedAndFailed: ['a first pass that read nothing'], constraints: 'none'}; continue: true; " +
 				"relevantPaths: [{path:'haystack_1.ts'},{path:'haystack_2.ts'},{path:'haystack_3.ts'}," +
 				"{path:'haystack_4.ts'},{path:'haystack_5.ts'}]; " +
 				`nextSteps: ${JSON.stringify(NEEDLE_QUESTION)}`,
@@ -1461,7 +1553,8 @@ describe("checkpoint: the injection is what answers", () => {
 		for (const needle of NEEDLES) expect(injected[0]).toContain(needle);
 
 		// (b) nothing else after the compaction could have supplied them: no read
-		// result, and no needle in the summary the checkpoint handed the model.
+		// result, and the file bytes ride the summary's machine block (the
+		// injection), never the authored text above it.
 		const branch = sessionManager.getBranch() as any[];
 		const compactionIdx = branch.findIndex((e) => e.type === "compaction");
 		const after = branch.slice(compactionIdx + 1);
@@ -1469,7 +1562,15 @@ describe("checkpoint: the injection is what answers", () => {
 			(e) => e.type === "message" && e.message?.role === "toolResult" && e.message?.toolName === "read",
 		);
 		expect(postCompactionReads).toEqual([]);
-		for (const needle of NEEDLES) expect(branch[compactionIdx].summary).not.toContain(needle);
+		const composed = String(
+			compactionEntries(sessionManager).find((e) => e.fromHook === true)?.summary ?? "",
+		);
+		const machineAt = composed.indexOf("### Machine facts");
+		expect(machineAt).toBeGreaterThan(0);
+		// The summary is scripted without a code, so a needle above the block would
+		// mean the model wrote one — and then the answer could be the model's prose.
+		for (const needle of NEEDLES) expect(composed.slice(0, machineAt)).not.toContain(needle);
+		for (const needle of NEEDLES) expect(composed.slice(machineAt)).toContain(needle);
 
 		// (c) the answer carries all five.
 		const answers = after
@@ -1478,4 +1579,559 @@ describe("checkpoint: the injection is what answers", () => {
 		const answer = answers[answers.length - 1] ?? "";
 		for (const needle of NEEDLES) expect(answer).toContain(needle);
 	}, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+// Composed summary: machine block, file facts, field validation (WO-2026-062)
+// ---------------------------------------------------------------------------
+
+/**
+ * A harness whose in-flight registry is empty and whose cwd is a fresh temp
+ * dir, so the composed text is a pure function of the row's own facts.
+ */
+async function composeFixture() {
+	const h = makeCheckpointHarness();
+	const registryDir = await mkdtemp(join(tmpdir(), "ckpt-compose-registry-"));
+	_testSetInflightScanDir(registryDir);
+	const cwd = await mkdtemp(join(tmpdir(), "ckpt-compose-"));
+	const ctx = h.makeCtx(cwd);
+	await h.emit("session_start", ctx);
+	return { h, cwd, ctx, registryDir };
+}
+
+/** Queue one checkpoint and fire `turn_end`, the way pi's turn boundary does. */
+async function queueCheckpoint(
+	h: ReturnType<typeof makeCheckpointHarness>,
+	ctx: any,
+	args: Record<string, unknown> = {},
+) {
+	const result = await h.tools
+		.get("checkpoint")
+		.execute("call-1", { summary: summaryFields(), nextSteps: "NEXT-STEP", ...args }, undefined, undefined, ctx);
+	await h.emit("turn_end", ctx);
+	const compact = h.compactCalls[h.compactCalls.length - 1];
+	return { result, compact };
+}
+
+/** Fire the compaction hook and return the compaction it hands pi. */
+async function emitCompactionHook(
+	h: ReturnType<typeof makeCheckpointHarness>,
+	ctx: any,
+	compact: CompactSpyCall,
+	over: Record<string, unknown> = {},
+): Promise<any> {
+	const results = await h.emit("session_before_compact", ctx, {
+		customInstructions: compact.customInstructions,
+		preparation: preparation(),
+		branchEntries: [boundaryEntry()],
+		reason: "manual",
+		willRetry: false,
+		...over,
+	});
+	return (results[0] as any).compaction;
+}
+
+/** The `### Machine facts` section of a composed summary. */
+function machineSection(summary: string): string {
+	const start = summary.indexOf("### Machine facts");
+	if (start < 0) throw new Error(`no machine block in:\n${summary}`);
+	return summary.slice(start);
+}
+
+describe("checkpoint: composed summary and machine block", () => {
+	it("C1: authored text is a byte-identical prefix, then the machine block's facts", async () => {
+		const h = makeCheckpointHarness();
+		const cwd = await gitFixture();
+		const registryDir = await mkdtemp(join(tmpdir(), "ckpt-compose-registry-"));
+		_testSetInflightScanDir(registryDir);
+		try {
+			const head = sh(cwd, ["git", "rev-parse", "HEAD"]);
+			const branch = sh(cwd, ["git", "rev-parse", "--abbrev-ref", "HEAD"]);
+			const ctx = h.makeCtx(cwd, { tokens: 99_000 });
+			await h.emit("session_start", ctx);
+			const fields: SummaryInput = {
+				goal: "Wire the composed summary",
+				filesTouched: ["extensions/checkpoint.ts"],
+				decisions: ["appended a machine block rather than merging facts into the prose"],
+				triedAndFailed: ["a second renderer — it drifted from renderSummary"],
+				constraints: "compaction-model.ts is off limits",
+			};
+
+			const { summary, result, followUp } = await checkpointAndInject(h, ctx, {
+				relevantPaths: [],
+				summary: fields,
+				// `tokensBefore` deliberately differs from the live-context count:
+				// the boundary's number is the authoritative one.
+				prep: preparation({
+					tokensBefore: 120_000,
+					fileOps: fileOps({ read: ["src/read.ts"], edited: ["src/edit.ts"] }),
+				}),
+			});
+
+			const authored = [
+				"Goal: Wire the composed summary",
+				"Files touched: extensions/checkpoint.ts",
+				"Decisions:\n  - appended a machine block rather than merging facts into the prose",
+				"Tried and failed (and why):\n  - a second renderer — it drifted from renderSummary",
+				"Constraints: compaction-model.ts is off limits",
+				"Next: NEXT-STEP",
+			].join("\n");
+			expect(summary.startsWith(`${authored}\n\n### Machine facts\n`)).toBe(true);
+
+			const machine = machineSection(summary);
+			expect(machine).toContain(
+				`- git: ${branch} @ ${head.slice(0, 7)} (clean; ahead/behind unknown (no upstream))`,
+			);
+			expect(machine).toContain("- files read: src/read.ts");
+			expect(machine).toContain("- files modified: src/edit.ts");
+			const archivePath = archivePathFrom(result);
+			expect(machine).toContain(`- archive: ${archivePath} — grep with \`rg PATTERN ${archivePath}\``);
+			expect(machine).toContain("- tokens: 120,000 → after: unknown");
+			expect(machine).toContain("### Injection\nnone — no relevantPaths requested");
+
+			// The follow-up keeps its own shape; it is no longer the only carrier.
+			expect(followUp).toContain("NEXT-STEP");
+			// The archive keeps the authored text, with no machine block duplicated.
+			const meta = await readMeta(archivePath);
+			expect(meta.summary).toBe(authored);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	it("C2: composition is byte-deterministic — twice, and independent of file order", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const { compact } = await queueCheckpoint(h, ctx);
+			const emit = async (read: string[], written: string[]) =>
+				String(
+					(
+						await emitCompactionHook(h, ctx, compact, {
+							preparation: preparation({ fileOps: fileOps({ read, written }) }),
+						})
+					).summary,
+				);
+
+			// The real control is the reorder: same facts, Set insertion order
+			// swapped, so a dropped `sort()` reds it. Re-emitting the same facts
+			// only guards against state leaking between two compositions.
+			const first = await emit(["src/b.ts", "src/a.ts"], ["src/z.ts", "src/m.ts"]);
+			const second = await emit(["src/b.ts", "src/a.ts"], ["src/z.ts", "src/m.ts"]);
+			const reordered = await emit(["src/a.ts", "src/b.ts"], ["src/m.ts", "src/z.ts"]);
+
+			expect(second).toBe(first);
+			expect(reordered).toBe(first);
+			expect(machineSection(first)).toContain("- files read: src/a.ts, src/b.ts");
+			expect(machineSection(first)).toContain("- files modified: src/m.ts, src/z.ts");
+			// No timestamp the composition added: the only date is inside the archive
+			// filename, which is a fact of the archive, not of the block.
+			for (const line of machineSection(first).split("\n")) {
+				if (line.startsWith("- archive: ")) continue;
+				expect(line).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+			}
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C3: outside a repo the block says git: none rather than omitting the line", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const { compact } = await queueCheckpoint(h, ctx);
+			const { summary } = { summary: String((await emitCompactionHook(h, ctx, compact)).summary) };
+
+			expect(machineSection(summary)).toContain("\n- git: none\n");
+			// The rest of the block is unaffected by the missing binding.
+			expect(machineSection(summary)).toContain("- files read: none");
+			expect(machineSection(summary)).toContain("- tokens: 1,000 → after: unknown");
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C4: a window that touched nothing still carries the previous checkpoint's file facts", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const { compact } = await queueCheckpoint(h, ctx);
+			const branchEntries = [
+				{
+					id: "c0",
+					parentId: null,
+					type: "compaction",
+					details: { readFiles: ["old/read.ts"], modifiedFiles: ["old/mod.ts"] },
+				},
+				{ id: "boundary", parentId: "c0", type: "message", message: { role: "user", content: [] } },
+				// A compaction on an abandoned branch: not in this ancestry, so its
+				// file list must not leak in (§5.4).
+				{
+					id: "off",
+					parentId: null,
+					type: "compaction",
+					details: { readFiles: ["off/branch.ts"], modifiedFiles: [] },
+				},
+			];
+
+			const compaction = await emitCompactionHook(h, ctx, compact, {
+				preparation: preparation({ firstKeptEntryId: "boundary", fileOps: fileOps() }),
+				branchEntries,
+			});
+
+			expect(compaction.details).toEqual({
+				readFiles: ["old/read.ts"],
+				modifiedFiles: ["old/mod.ts"],
+			});
+			expect(compaction.summary).toContain("- files read: old/read.ts");
+			expect(compaction.summary).toContain("- files modified: old/mod.ts");
+			expect(compaction.summary).not.toContain("off/branch.ts");
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C5: a tracked read region reaches the composed summary, not just the follow-up", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			await createHaystackFiles(cwd);
+			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
+
+			const { summary } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+
+			// The anti-vacuity pin: before the machine block this text existed only
+			// in the follow-up message, and the summary carried no file bytes at all.
+			expect(summary).toContain("### Injection");
+			expect(summary).toContain("[haystack_1.ts]");
+			expect(summary).toContain(NEEDLES[0]);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C6: a path read only through bash is named with its remedy, not dropped", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			await createHaystackFiles(cwd);
+			// A window that looked at the file through bash leaves no tracked region.
+			await h.emit("tool_result", ctx, {
+				toolCallId: "bash-1",
+				toolName: "bash",
+				input: { command: "sed -n '1,50p' haystack_2.ts" },
+				content: [{ type: "text", text: "file contents" }],
+				isError: false,
+			});
+
+			const { summary } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_2.ts"] });
+
+			expect(summary).toMatch(
+				/no tracked read region — re-read after compaction: haystack_2\.ts/,
+			);
+			expect(summary).not.toContain(NEEDLES[1]);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C7: a file edited since the read is named in the changed bucket, with no stale bytes", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			await createHaystackFiles(cwd);
+			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
+			const original = await readFile(join(cwd, "haystack_1.ts"), "utf-8");
+			await writeFile(join(cwd, "haystack_1.ts"), `// edited after read\n${original}`);
+
+			const { summary } = await checkpointAndInject(h, ctx, { relevantPaths: ["haystack_1.ts"] });
+
+			expect(summary).toMatch(/changed since read — re-read if needed: haystack_1\.ts/);
+			expect(summary).not.toContain(NEEDLES[0]);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C8: continue:false keeps the injection in the summary and sends no follow-up", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			await createHaystackFiles(cwd);
+			await emitRead(h, ctx, "haystack_1.ts", { offset: 1, limit: 50 });
+
+			const { summary, followUp } = await checkpointAndInject(h, ctx, {
+				relevantPaths: ["haystack_1.ts"],
+				continue: false,
+			});
+
+			expect(followUp).toBe("");
+			expect(h.sent).toHaveLength(0);
+			expect(summary).toContain(NEEDLES[0]);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C15: the git fact renders clean, then dirty, with the real ahead/behind counts", async () => {
+		const { cwd, remote } = await gitFixtureWithUpstream();
+		const h = makeCheckpointHarness();
+		const registryDir = await mkdtemp(join(tmpdir(), "ckpt-compose-registry-"));
+		_testSetInflightScanDir(registryDir);
+		try {
+			const head = sh(cwd, ["git", "rev-parse", "HEAD"]);
+			const ctx = h.makeCtx(cwd);
+			await h.emit("session_start", ctx);
+			// One commit ahead of a pushed base, so the counts are non-zero and a
+			// swapped ahead/behind label reads `behind 1`.
+			const clean = await checkpointAndInject(h, ctx, {
+				relevantPaths: [],
+				prep: preparation({
+					fileOps: fileOps({ read: ["src/dup.ts"], written: ["src/dup.ts"] }),
+				}),
+			});
+			expect(machineSection(clean.summary)).toContain(
+				`- git: main @ ${head.slice(0, 7)} (clean; ahead 1, behind 0)`,
+			);
+			// A path both read and written is modified, never read-only.
+			expect(machineSection(clean.summary)).toContain("- files read: none");
+			expect(machineSection(clean.summary)).toContain("- files modified: src/dup.ts");
+
+			// The same tree, now dirty (the archive's own `.pi/` is untracked).
+			const dirty = await checkpointAndInject(h, ctx, {
+				relevantPaths: [],
+				summary: summaryFields({ goal: "second pass on a dirty tree" }),
+			});
+			expect(machineSection(dirty.summary)).toContain(
+				`- git: main @ ${head.slice(0, 7)} (dirty; ahead 1, behind 0)`,
+			);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(remote, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	it("C16: the in-flight section precedes the machine block", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		const sid = "subagent-99999999-1111-4111-8111-999999999999";
+		try {
+			await writeFile(
+				join(registryDir, `pi-subagent-${sid}.meta.json`),
+				JSON.stringify({
+					ownerPid: process.pid,
+					agentName: "implement",
+					task: "still running",
+					isolationBranch: "pi-subagent-999999999999",
+				}),
+			);
+			await writeFile(join(registryDir, `pi-subagent-${sid}.log`), "── Turn 1 ──\nworking…\n");
+
+			const { summary } = await checkpointAndInject(h, ctx, { relevantPaths: [] });
+
+			const inFlight = summary.indexOf("### In-flight subagents");
+			const machine = summary.indexOf("### Machine facts");
+			expect(inFlight).toBeGreaterThan(0);
+			expect(machine).toBeGreaterThan(inFlight);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+});
+
+describe("checkpoint: field validation", () => {
+	/** Run one tool call and return its result text. */
+	async function callCheckpoint(
+		h: ReturnType<typeof makeCheckpointHarness>,
+		ctx: any,
+		summary: unknown,
+		args: Record<string, unknown> = {},
+	) {
+		return h.tools
+			.get("checkpoint")
+			.execute("call-1", { summary, ...args }, undefined, undefined, ctx);
+	}
+
+	it("C17: checkpoint_fork rejects an invalid summary and stages nothing", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		const target = await mkdtemp(join(tmpdir(), "ckpt-fork-target-"));
+		try {
+			const result = await h.tools
+				.get("checkpoint_fork")
+				.execute(
+					"call-fork",
+					{ newCwd: target, summary: summaryFields({ decisions: [] }) },
+					undefined,
+					undefined,
+					ctx,
+				);
+
+			expect(result.isError).toBe(true);
+			expect(String(result.content[0].text)).toContain("decisions");
+			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
+			// Nothing staged for /go.
+			expect(takePendingGo()).toBeNull();
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(target, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C9: decisions: [] is rejected, naming the field, and lands nothing", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const result = await callCheckpoint(h, ctx, summaryFields({ decisions: [] }));
+			const text = String(result.content[0].text);
+
+			expect(result.isError).toBe(true);
+			expect(text).toContain("decisions");
+			expect(text).toContain("[] is rejected");
+			await h.emit("turn_end", ctx);
+			expect(h.compactCalls).toHaveLength(0);
+			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C10: decisions and triedAndFailed both none is rejected — nothing to resume", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const result = await callCheckpoint(
+				h,
+				ctx,
+				summaryFields({ decisions: ["none"], triedAndFailed: ["none"] }),
+			);
+			const text = String(result.content[0].text);
+
+			expect(result.isError).toBe(true);
+			expect(text).toContain("decisions + triedAndFailed");
+			expect(text).toContain("nothing to resume");
+			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C11: a blank constraints is rejected; the literal none is accepted and rendered", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const rejected = await callCheckpoint(h, ctx, summaryFields({ constraints: "" }));
+			expect(rejected.isError).toBe(true);
+			expect(String(rejected.content[0].text)).toContain("constraints");
+
+			const { compact } = await queueCheckpoint(h, ctx, { summary: summaryFields({ constraints: "none" }) });
+			expect(String(compact.customInstructions)).toContain("Constraints: none");
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C12: every violation comes back in one error, and nothing is written", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const result = await callCheckpoint(
+				h,
+				ctx,
+				summaryFields({
+					goal: "   ",
+					filesTouched: ["   "],
+					decisions: [],
+					constraints: "",
+				}),
+			);
+			const text = String(result.content[0].text);
+
+			expect(result.isError).toBe(true);
+			expect(result.content).toHaveLength(1); // one result, not four
+			for (const field of ["goal", "filesTouched", "decisions", "constraints"]) {
+				expect(text).toContain(`${field}`);
+			}
+			expect(text.match(/^- /gm)?.length).toBe(4);
+			await h.emit("turn_end", ctx);
+			expect(h.compactCalls).toHaveLength(0);
+			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C13: the minimal valid checkpoint is accepted and its summary stored", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const fields = summaryFields({
+				goal: "Minimal but real",
+				decisions: ["none"],
+				triedAndFailed: ["the first approach — it failed on a stale window"],
+			});
+			const { result, compact } = await queueCheckpoint(h, ctx, { summary: fields });
+			expect(result.isError).toBeFalsy();
+
+			const compaction = await emitCompactionHook(h, ctx, compact);
+			expect(compaction.summary.startsWith("Goal: Minimal but real\n")).toBe(true);
+			expect(compaction.summary).toContain(
+				"Tried and failed (and why):\n  - the first approach — it failed on a stale window",
+			);
+			expect(compaction.summary).toContain("Decisions: none");
+
+			const meta = await readMeta(archivePathFrom(result));
+			expect(meta.summaryFields).toEqual(fields);
+			expect(meta.summary.startsWith("Goal: Minimal but real\n")).toBe(true);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("C14: the entry carries details, the preparation's boundary, and no usage", async () => {
+		const { h, cwd, ctx, registryDir } = await composeFixture();
+		try {
+			const { compact } = await queueCheckpoint(h, ctx);
+			const prep = preparation({
+				firstKeptEntryId: "kept-entry",
+				tokensBefore: 42_000,
+				fileOps: fileOps({ read: ["src/a.ts"], written: ["src/b.ts"] }),
+			});
+
+			const compaction = await emitCompactionHook(h, ctx, compact, {
+				preparation: prep,
+				branchEntries: [
+					{ id: "kept-entry", parentId: null, type: "message", message: { role: "user", content: [] } },
+				],
+			});
+
+			expect(compaction.firstKeptEntryId).toBe("kept-entry");
+			expect(compaction.tokensBefore).toBe(42_000);
+			expect(compaction.details).toEqual({ readFiles: ["src/a.ts"], modifiedFiles: ["src/b.ts"] });
+			// No summariser call happens, so there is no usage to record (decision 003).
+			expect("usage" in compaction).toBe(false);
+		} finally {
+			_testSetInflightScanDir(undefined);
+			await rm(cwd, { recursive: true, force: true });
+			await rm(registryDir, { recursive: true, force: true });
+		}
+	}, 30_000);
 });

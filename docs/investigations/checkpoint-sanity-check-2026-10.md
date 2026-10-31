@@ -140,4 +140,23 @@ Suggested sequencing: 1 and 4 landed; 2 after the owner's summary-ownership ruli
 - **Q2 — Owner ruling needed, pi upgrade**: 0.83.0 → 1.3.x on the roadmap now or batched later? Research landed (2026-10-21): GO but sequenced *after* the summary-ownership fix — the upgrade arms the dormant fleet override (pi-upgrade-2026-10 §7). The remaining ruling is purely timing: schedule the upgrade order now, or batch later. (Asked 2026-10-21.)
 - **Q3 — Owner ruling needed, uncommitted `auto-checkpoint.ts` WIP** (identified in `structure-trend.md` as another session's work): hands-off + migrate in a follow-up order, or land it? (Asked 2026-10-21.)
 - **Q4 — Owner ruling needed, April-era features removed by `9925257`** (`doCheckpoint`, `checkpoint-continue`/`-stop`, `isAbnormalStop`, context strip): restore any, or record removal as intentional? (Asked 2026-10-21.)
+- **Q5 — Owner ruling needed, WO-2026-062's "tests unchanged" row**: its Verification Criteria
+  say `tests/checkpoint-meta.test.ts` and `tests/checkpoint-recoverability.test.ts` stay
+  unchanged, but the order's own mechanism forces two fixture edits — extending
+  `captureGitBinding` adds a git call to the hung-git row's exact-argv witness, and C10 rejects
+  the recoverability fixture's both-none summary. May the row be amended to "unchanged
+  assertions"? (Asked 2026-10-31, WO-2026-062 review; the edits are fixture-only and
+  assertion-preserving.)
+- **Q6 — Owner ruling needed, the machine block's `after` count**: §1 says the tokens line's
+  after count is "patched at `onComplete` if the entry carries it". pi appends the compaction
+  entry and only then estimates the new context (`dist/core/agent-session.js`:
+  `appendCompaction` … `estimateMessagesTokens`), so no compose site can know it; WO-2026-062
+  renders `after: unknown` (a stated fact) and records the known count in the notify and the
+  meta. Strike the clause, or authorize a mechanism that rewrites a committed entry? (Asked
+  2026-10-31.)
+- **Q7 — Owner ruling needed, duplicated injection bytes**: with the injection riding the
+  summary, a `continue: true` checkpoint now delivers the same file block twice — inside the
+  compaction summary and again as the follow-up message. WO-2026-062 §3 sanctions it ("the
+  follow-up message decides only whether the injection text is *also* sent"). Keep the
+  duplicate, or drop it from the follow-up now that the summary carries it? (Asked 2026-10-31.)
 - ~~Open — injection utility~~ **Resolved (2026-10-21)**: keep with changes — validated 5/5 vs 0/4; fixes folded into WO-2026-055 (§5.7).

@@ -73,11 +73,13 @@ interface SummaryFields {
 	constraints: string;
 }
 
+// A checkpoint whose `decisions` and `triedAndFailed` are both `"none"` is
+// rejected (WO-2026-062 C10), so the fixture states one failed approach.
 const SUMMARY: SummaryFields = {
 	goal: "recoverability fixture",
-	filesTouched: [],
+	filesTouched: ["none"],
 	decisions: ["none"],
-	triedAndFailed: ["none"],
+	triedAndFailed: ["a first attempt — it failed, so the next window does not retry it"],
 	constraints: "none",
 };
 
@@ -86,7 +88,7 @@ const SUMMARY_TEXT = [
 	"Goal: recoverability fixture",
 	"Files touched: none",
 	"Decisions: none",
-	"Tried and failed (and why): none",
+	"Tried and failed (and why):\n  - a first attempt — it failed, so the next window does not retry it",
 	"Constraints: none",
 	"Next: Continue work",
 ].join("\n");
