@@ -9,3 +9,4 @@ date: 2026-10-08
 |---|---|---|
 | 001 | Orphaned tool results — repair by re-anchoring the declaration | active |
 | 002 | Idle compaction fires before the prompt cache expires, not after | active |
+| 003 | Checkpoint compactions own their summary text | active |
