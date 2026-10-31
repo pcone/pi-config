@@ -91,7 +91,10 @@ async function runAutoBranch(cwd: string, ctx: unknown): Promise<void> {
  * `return { compaction }` for a reason unrelated to the bug.
  */
 async function expectNoEscape(promise: Promise<unknown>): Promise<void> {
-	expect(await promise.then(() => undefined, (err: unknown) => err)).toBeUndefined();
+	// Rejection is encoded as a string, not carried through: a handler rejecting
+	// with `undefined` would otherwise read as a resolution.
+	expect(await promise.then(() => "resolved", (err: unknown) => `rejected: ${String(err)}`))
+		.toBe("resolved");
 }
 
 const throwingNotify: Notify = () => {
@@ -152,6 +155,46 @@ describe("checkpoint extension: stale ctx during auto-archive", () => {
 
 		expect(seen.length).toBe(1);
 		expect(seen[0].message).toContain("Archive failed (compaction continues)");
+		// The underlying cause travels with the warning, not just the prefix.
+		expect(seen[0].message).toContain("session entries unavailable");
 		expect(seen[0].level).toBe("warning");
+	}, ROW_TIMEOUT_MS);
+
+	it("swallows a stale ctx whose `ui` getter throws, not only a throwing notify", async () => {
+		// pi's real stale mechanism is the getter itself (`assertActive()` in
+		// `runner.js:613-637`); a helper that read `ctx.ui` outside its `try` would
+		// pass every other row here.
+		const cwd = await tempDir("ckpt-stale-getter-");
+		dirs.push(cwd);
+		const live = ctxFor(cwd, () => {});
+		const stale: Record<string, unknown> = {
+			...Object.fromEntries(Object.entries(live).filter(([k]) => k !== "ui")),
+		};
+		Object.defineProperty(stale, "ui", {
+			get() {
+				throw new Error("This extension ctx is stale after session replacement or reload");
+			},
+		});
+
+		await expectNoEscape(runAutoBranch(cwd, stale));
+	}, ROW_TIMEOUT_MS);
+
+	it("a notify that throws after delivering still reports success, not a false archive failure", async () => {
+		// A success notify that throws once (then works) must not be misreported as
+		// an archive failure: the archive did succeed.
+		const cwd = await tempDir("ckpt-live-flaky-");
+		dirs.push(cwd);
+		const seen: Array<{ message: string; level: string }> = [];
+		let calls = 0;
+
+		await runAutoBranch(
+			cwd,
+			ctxFor(cwd, (message, level) => {
+				if (calls++ === 0) throw new Error("transient");
+				seen.push({ message, level });
+			}),
+		);
+
+		expect(seen.length).toBe(0);
 	}, ROW_TIMEOUT_MS);
 });
