@@ -17,6 +17,7 @@
     "extensions/append-system-local.ts",
     "extensions/pinned-sessions.ts",
     "extensions/bug-triage.ts",
+    "extensions/session-trim.ts",
     "~/.pi/local-extensions/session-icon.ts"
   ],
   "defaultThinkingLevel": "max",
