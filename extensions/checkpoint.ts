@@ -184,9 +184,14 @@ export function formatInFlightSection(entries: InFlightSubagent[]): string {
 	return lines.join("\n");
 }
 
-/** The stored summary: the model's three-part summary plus the machine section. */
-function composeSummary(summary: string, section: string): string {
-	return section ? `${summary}\n\n${section}` : summary;
+/**
+ * The stored summary: every section, authored text first, blank-line
+ * separated. Empty sections are dropped — a section is empty only when its
+ * producer has nothing to record (e.g. no in-flight subagents), which is a
+ * stated absence, not a missing line.
+ */
+function composeSummary(sections: ReadonlyArray<string>): string {
+	return sections.filter((section) => section.length > 0).join("\n\n");
 }
 
 /**
@@ -608,8 +613,10 @@ export default function (pi: ExtensionAPI) {
 			// R3-1: one composed summary serves both the archive and the restore
 			// path, so the in-flight record is in the context after compaction.
 			const inFlight = listInFlightSubagents({ dir: inflightScanDirOverride });
-			const section = formatInFlightSection(inFlight);
-			const summary = composeSummary(renderSummary(summaryFields, next), section);
+			const summary = composeSummary([
+				renderSummary(summaryFields, next),
+				formatInFlightSection(inFlight),
+			]);
 
 			// Archive *before* compaction so all entries are captured in full.
 			let archivePath: string | undefined;
@@ -749,8 +756,10 @@ export default function (pi: ExtensionAPI) {
 			// R3-1: both the fork-source archive and the new session's summary
 			// carry the in-flight record.
 			const inFlight = listInFlightSubagents({ dir: inflightScanDirOverride });
-			const section = formatInFlightSection(inFlight);
-			const summary = composeSummary(renderSummary(summaryFields, next), section);
+			const summary = composeSummary([
+				renderSummary(summaryFields, next),
+				formatInFlightSection(inFlight),
+			]);
 
 			// Fork creates a new session — no preservation to dedup against.
 			const injection = await buildFileInjection(
