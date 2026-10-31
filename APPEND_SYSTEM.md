@@ -14,6 +14,12 @@ Read relevant docs before implementing a feature or change. Keep docs up to date
 
 **Cut these on sight.** Empty frames ("It is worth noting that," "Importantly," "Note that," "As mentioned"); hedge openers and intensifiers ("Basically," "Essentially," "very," "really," "quite"); wordy connectives ("in order to"→"to", "due to the fact that"→"because", "make use of"→"use"); passive/nominalization ("A decision was made to"→"We", "There are three reasons…"→"Three reasons:"); adjective triples ("robust, scalable, efficient" — pick one). Comments say *why*, not *what* — delete any comment that restates the line below it. Don't narrate the writing ("First, let's…," "This section covers…").
 
+**Order for the reader** (Gopen & Swan, "The Science of Scientific Writing"). Open a sentence with what the reader already has — the term just introduced, the thing under discussion — and end it on the new point, where emphasis falls. Put the verb right after its subject; a long subject or an aside between them makes the reader hold both. Paragraphs work the same way: the first sentence links back, the last carries the point. Define a term before you use it, and use one name for one thing throughout.
+
+**Shape each page for one job** (Diátaxis): a tutorial teaches by doing, a how-to reaches a goal, a reference states facts to look up, an explanation says why. A design doc is explanation plus the reference facts it settles; keep step lists and rationale out of reference text. Mark which statements are normative (the rule) and which explain it, so a reader can tell a guarantee from an illustration.
+
+**Examples are tested.** A code example in a doc compiles and runs under the project's test harness, or is marked as not runnable with the reason; an untested example drifts out of date silently.
+
 ## Decision records
 
 **Log decisions.** Record significant decisions — tradeoffs accepted, alternatives rejected, pivots — for every non-trivial task, in the project's `decisions/<area>/` (format: the project's decision rule or `decisions/README.md`). A decision file is **historical record**: the ruling, the reasons that keep it from being re-argued, and supersession notes added in place. Each supersession note cites the owner ruling that makes it: an `(owner)` record or an answered registry row; a gate verdict or work order is not one. Anything a decision settles that shapes the design must **also** be captured in the forward-looking docs. A ruling that exists only in a decision file is a doc bug.
@@ -91,7 +97,7 @@ An area flagged by two landings, or by one `REFACTOR FIRST` refusal, goes on the
 
 ## PDFs
 
-PDFs are binary. `fetch_url` and the `read` tool convert PDFs to Markdown automatically — never read raw PDF bytes, don't `cat` a PDF from bash. For page ranges/tables or when conversion fails, use the `pdf` skill.
+`fetch_url` and the `read` tool convert PDFs to Markdown; never read raw PDF bytes or `cat` one. For page ranges, tables, or a failed conversion, use the `pdf` skill.
 
 ## Subagents
 
