@@ -18,6 +18,26 @@ refactor lands.
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
 | `extensions/checkpoint.ts` growth | 1 (2026-10-21) | **resolved 2026-10-21 by WO-2026-057** — the named extraction landed (901 → 818 lines; git/token helpers now in `extensions/lib/checkpoint-meta.ts`) | done |
 
+## 2026-10-31 — chunk: WO-2026-061 summary-ownership dispatch
+
+**growth.** `extensions/compaction-model.ts` 70 → 90 lines: one predicate plus one `notify`
+guard; no function grew, no extraction candidate appeared. New
+`extensions/lib/checkpoint-marker.ts` (9 lines) holds the `[CHECKPOINT]` literal. New
+`tests/summary-ownership.test.ts` (600 lines, 12 rows: real handlers, module-seam
+`compact()` mock). No strikes.
+
+**unification.** Three copies of one idea remain, each out of this order's reach because the
+other copy lives in a file another order owns or forbids changing:
+- notify guard — `extensions/compaction-model.ts:34-40` repeats `extensions/checkpoint.ts`'s
+  inline `try/catch` notify sites (`:461`, `:475`, `:489`, `:547`). Carrier: WO-2026-062 if
+  it rewrites those sites, otherwise `extensions/lib/notify.ts` under its own order.
+- captured-handler-table harness — `tests/summary-ownership.test.ts:105-224` repeats
+  `tests/e2e-checkpoint.test.ts:447-505`. Carrier: a `tests/helpers/extension-harness.ts`
+  extraction, blocked while `tests/e2e-checkpoint.test.ts` is required unchanged.
+- the `[CHECKPOINT]` literal — `extensions/checkpoint.ts:32` and
+  `extensions/lib/checkpoint-marker.ts:9`. Carrier: WO-2026-062 (owner of `checkpoint.ts`).
+No strikes: no area took work it must be refactored before.
+
 ## 2026-10-22 — chunk: seat-config ruling batch (3bf7b2f, ff7a78f, 9833b88, 28f10c2, 2bbcae3)
 
 **Growth:** production delta small — `extensions/lib/fleet-model.ts` (one join exported),
