@@ -18,6 +18,7 @@ import {
 	type GitBinding,
 } from "./lib/checkpoint-meta.ts";
 import { validateNextStepsOwnerState } from "./lib/owner-row.ts";
+import { safeNotify } from "./lib/safe-notify.ts";
 import {
 	ReadTracker,
 	collectPreservedReadPaths,
@@ -456,13 +457,12 @@ export default function (pi: ExtensionAPI) {
 				// visible as "Checkpoint failed" — pi's compaction wrapper only sees
 				// synchronous throws from this callback.
 				try {
-					try {
-						const archiveLine = pending?.archivePath ? `\nArchive: ${pending.archivePath}` : "";
-						ctx.ui.notify(
-							`Checkpoint complete — context cleared.${renderTokenDelta(tokens)}${archiveLine}`,
-							"info",
-						);
-					} catch { /* ctx stale after reload */ }
+					const archiveLine = pending?.archivePath ? `\nArchive: ${pending.archivePath}` : "";
+					safeNotify(
+						ctx,
+						`Checkpoint complete — context cleared.${renderTokenDelta(tokens)}${archiveLine}`,
+						"info",
+					);
 					if (pending?.doContinue) {
 						const parts = [pending.next];
 						if (inj?.text) parts.unshift(inj.text);
@@ -471,12 +471,11 @@ export default function (pi: ExtensionAPI) {
 						pi.sendUserMessage(followUp, { deliverAs: "followUp" });
 					}
 				} catch (err) {
-					try {
-						ctx.ui.notify(
-							`Checkpoint failed: ${err instanceof Error ? err.message : String(err)}`,
-							"error",
-						);
-					} catch { /* ctx stale after reload */ }
+					safeNotify(
+						ctx,
+						`Checkpoint failed: ${err instanceof Error ? err.message : String(err)}`,
+						"error",
+					);
 				}
 
 				try {
@@ -485,9 +484,7 @@ export default function (pi: ExtensionAPI) {
 			},
 			onError: (err) => {
 				pendingCheckpoint = null;
-				try {
-					ctx.ui.notify(`Checkpoint failed: ${err.message}`, "error");
-				} catch { /* ctx stale after reload */ }
+				safeNotify(ctx, `Checkpoint failed: ${err.message}`, "error");
 			},
 		});
 	});
@@ -544,16 +541,13 @@ export default function (pi: ExtensionAPI) {
 			);
 			// Best-effort: the archive is written and compaction is what the user is
 			// waiting on, so a stale ctx must not turn either outcome into an error.
-			try {
-				ctx.ui.notify(`📦 Archived session for grepping: ${archivePath}`, "info");
-			} catch { /* ctx stale after reload */ }
+			safeNotify(ctx, `📦 Archived session for grepping: ${archivePath}`, "info");
 		} catch (err) {
-			try {
-				ctx.ui.notify(
-					`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
-					"warning",
-				);
-			} catch { /* ctx stale after reload */ }
+			safeNotify(
+				ctx,
+				`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			);
 		}
 	});
 
@@ -598,7 +592,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const ownerState = checkOwnerState(params.nextSteps ?? "", ctx.cwd);
 			if (ownerState.error) return ownerState.error;
-			if (ownerState.warning) ctx.ui.notify(ownerState.warning, "warning");
+			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
 
 			const next = params.nextSteps ?? "Continue work";
 			const doContinue = params.continue !== false;
@@ -628,7 +622,8 @@ export default function (pi: ExtensionAPI) {
 					{ summaryFields, tokens, git },
 				);
 			} catch (err) {
-				ctx.ui.notify(
+				safeNotify(
+					ctx,
 					`Archive failed (compaction continues): ${err instanceof Error ? err.message : String(err)}`,
 					"warning",
 				);
@@ -737,7 +732,7 @@ export default function (pi: ExtensionAPI) {
 			// tool result, so it must not sit behind an early `return`.
 			const ownerState = checkOwnerState(params.nextSteps ?? "", ctx.cwd);
 			if (ownerState.error) return ownerState.error;
-			if (ownerState.warning) ctx.ui.notify(ownerState.warning, "warning");
+			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
 
 			const next = params.nextSteps ?? "Continue work";
 			const doContinue = params.continue !== false;
@@ -779,9 +774,10 @@ export default function (pi: ExtensionAPI) {
 							cmdCtx.sessionManager.getSessionId(),
 							{ summaryFields, tokens, git, newCwd: params.newCwd },
 						);
-						cmdCtx.ui.notify(`📦 Fork source archived: ${forkArchivePath}`, "info");
+						safeNotify(cmdCtx, `📦 Fork source archived: ${forkArchivePath}`, "info");
 					} catch (err) {
-						cmdCtx.ui.notify(
+						safeNotify(
+							cmdCtx,
 							`Fork archive failed (switch continues): ${err instanceof Error ? err.message : String(err)}`,
 							"warning",
 						);
@@ -816,7 +812,7 @@ export default function (pi: ExtensionAPI) {
 				},
 			});
 
-			ctx.ui.notify(`Fork prepared → ${params.newCwd}. Run /go to switch.`, "info");
+			safeNotify(ctx, `Fork prepared → ${params.newCwd}. Run /go to switch.`, "info");
 
 			const responseLines = [`Fork prepared → ${params.newCwd}. Run /go to switch.`];
 			if (ownerState.warning) responseLines.push(ownerState.warning);
@@ -848,7 +844,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const files = (await readdir(archiveDir)).filter((f) => f.endsWith(".meta.json"));
 				if (files.length === 0) {
-					ctx.ui.notify("No checkpoints yet.", "info");
+					safeNotify(ctx, "No checkpoints yet.", "info");
 					return;
 				}
 				const lines: string[] = [`Checkpoints in ${archiveDir}:`];
@@ -863,9 +859,9 @@ export default function (pi: ExtensionAPI) {
 					lines.push(`  ${meta.timestamp} — ${headline}${git}`);
 					lines.push(`        archive: …${shortPath}`);
 				}
-				ctx.ui.notify(lines.join("\n"), "info");
+				safeNotify(ctx, lines.join("\n"), "info");
 			} catch {
-				ctx.ui.notify("No checkpoints yet.", "info");
+				safeNotify(ctx, "No checkpoints yet.", "info");
 			}
 		},
 	});
@@ -901,7 +897,7 @@ export default function (pi: ExtensionAPI) {
 				: `${basePrompt}${fileHint}`;
 
 			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
-			ctx.ui.notify("Checkpoint queued — will run after current work.", "info");
+			safeNotify(ctx, "Checkpoint queued — will run after current work.", "info");
 		},
 	});
 }
