@@ -10,6 +10,10 @@
  *     only fires on explicit set/cycle, never on resume/startup, and ctx.model
  *     is undefined at session_start. turn_end must self-heal by (re-)deriving
  *     from ctx.model.
+ *  3. The idle-compaction `onError` handler threw `ctx.ui.notify is not a
+ *     function` (pi-config#13) — pi calls it from its compaction wrapper, so the
+ *     throw replaced the real compaction error, and `ctx.hasUI` is itself an
+ *     `assertActive()` getter, so reading it as a guard threw for a stale ctx too.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
@@ -433,6 +437,56 @@ describe("idle compaction", () => {
 		expect(entries[0].customType).toBe("auto-checkpoint");
 		expect(entries[0].data).toMatchObject({ tokens: 300_000, percent: 28.6 });
 		expect(typeof entries[0].data.idleMinutes).toBe("number");
+	});
+
+	// pi calls `onError` from its compaction wrapper (`agent-session.js:2839`),
+	// so a throw in the handler replaces the compaction error with the handler's
+	// own crash and the real cause is lost (pi-config#13).
+	it("survives a compaction failure when the ctx has no notify", async () => {
+		await start(base);
+		const { ctx, calls } = idleCtx({ ui: {} });
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
+		await sleep(TTL_MS * 4);
+		expect(calls.length).toBe(1);
+
+		expect(() => calls[0].onError(new Error("summarization failed"))).not.toThrow();
+	});
+
+	it("does not throw when the ctx goes stale during the compaction", async () => {
+		await start(base);
+		const { ctx, calls } = idleCtx();
+		// pi backs both `hasUI` and `ui` with the same `assertActive()` getter, so a
+		// dispose during a long summarization throws from either read — including
+		// the one an `if (ctx.hasUI)` guard would do before the helper runs.
+		for (const key of ["hasUI", "ui"] as const) {
+			Object.defineProperty(ctx, key, {
+				configurable: true,
+				get() {
+					throw new Error("This extension ctx is stale after session replacement or reload");
+				},
+			});
+		}
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
+		await sleep(TTL_MS * 4);
+		expect(calls.length).toBe(1);
+
+		expect(() => calls[0].onError(new Error("summarization failed"))).not.toThrow();
+	});
+
+	it("control: a ctx with a notify reports the compaction failure once", async () => {
+		await start(base);
+		const seen: Array<{ message: string; level: string }> = [];
+		const { ctx, calls } = idleCtx({
+			ui: { notify: (message: string, level: string) => seen.push({ message, level }) },
+		});
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
+		await sleep(TTL_MS * 4);
+		expect(calls.length).toBe(1);
+
+		calls[0].onError(new Error("summarization failed"));
+		expect(seen.length).toBe(1);
+		expect(seen[0].message).toContain("Idle compaction failed: summarization failed");
+		expect(seen[0].level).toBe("error");
 	});
 
 	it("does not compact below the threshold", async () => {

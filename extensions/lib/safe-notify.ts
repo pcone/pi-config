@@ -14,7 +14,7 @@
  * A notification is never the point of the work that raises it; letting either
  * state escape turns a recoverable outcome into an extension error, and in an
  * error handler it replaces the reported bug with the handler's own crash
- * (`extensions/auto-checkpoint.ts` still does, pi-config#13). See pi-config#12.
+ * (pi-config#12, pi-config#13).
  */
 export type NotifyLevel = "info" | "warning" | "error";
 

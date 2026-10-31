@@ -75,6 +75,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { ReadTracker, formatRanges } from "./lib/read-tracking.ts";
+import { safeNotify } from "./lib/safe-notify.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -454,7 +455,10 @@ function fireIdleCompaction(pi: ExtensionAPI, ctx: ExtensionContext): void {
 			pi.appendEntry("auto-checkpoint", { tokens, percent, idleMinutes });
 		},
 		onError: (error: Error) => {
-			if (ctx.hasUI) ctx.ui.notify(`Idle compaction failed: ${error.message}`, "error");
+			// No `hasUI` guard: pi derives it from the ui context, and the helper
+			// already no-ops when there is nothing to notify. A throw here would
+			// replace the real compaction error (pi-config#13).
+			safeNotify(ctx, `Idle compaction failed: ${error.message}`, "error");
 		},
 	});
 }
@@ -669,7 +673,7 @@ export default function (pi: ExtensionAPI) {
 
 			lines.push(`last nudge: turn ${state.lastNudgedTurn} at ${state.lastNudgedMs > 0 ? new Date(state.lastNudgedMs).toLocaleTimeString() : "never"}`);
 
-			ctx.ui.notify(lines.join("\n"), "info");
+			safeNotify(ctx, lines.join("\n"), "info");
 		},
 	});
 }
