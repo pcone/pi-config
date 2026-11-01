@@ -7,7 +7,7 @@ description: Work order schema for delegating implementation tasks to subagents 
 
 ## Instructions for the Orchestrator
 
-You are generating a work order to dispatch to an implementation agent. Fill in every section that applies; omit the rest.
+You are generating a work order to dispatch to an implementation agent. Fill in every section that applies; omit the rest. When the repo keeps a short form (`work-orders/TEMPLATE.md`), write the order in that shape; this skill says what each part is for, and the short form keeps every guard below.
 
 Your work order quality directly determines whether the implementer succeeds on the first pass. If you cannot fully specify all invariants, set `invariant_exhaustiveness: implicit` so the implementer knows to enumerate them.
 

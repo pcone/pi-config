@@ -144,8 +144,9 @@ Your dispatcher is pacing the work and will resume you via
 
 ### 3. Write work orders and dispatch implementers
 
-For each work order: load `work-order-template` for the schema, fill
-it out completely, and dispatch to `implement`. **Write the work-order
+For each work order: load `work-order-template` for the schema (in the
+repo's `work-orders/TEMPLATE.md` shape when it has one), fill it out
+completely, and dispatch to `implement`. **Write the work-order
 file to `work-orders/<id>-<slug>.md` at the target repo's root, commit
 it, and push to reserve the id before dispatch** (see
 `rules/work-order-numbering.md`); pass that repo-relative path as
