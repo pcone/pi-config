@@ -16,7 +16,20 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runSessionLogHook, type SessionLogEvent } from "./lib.ts";
 
+/**
+ * Disabled 2026-11-01 (owner, session 8f90746f): tfd retired its session logs
+ * (tfd `decisions/session-logs/015`), so these hooks keep current a log that no
+ * longer exists. Until the retirement commit deletes this extension they still
+ * cost 3.3 s at every session start and 1.5 s at every settled turn, measured in
+ * 015 — hence the switch rather than waiting for the deletion.
+ *
+ * The ruling rules out resurrecting the log, so this flips back only if that
+ * ruling is overturned; the retirement commit removes the switch with the file.
+ */
+const HOOKS_ENABLED = false;
+
 export default function (pi: ExtensionAPI) {
+	if (!HOOKS_ENABLED) return;
 	if (process.env.PI_SUBAGENT_DEPTH) return;
 
 	// One nudge per turn: a nudge starts a turn, and if the model does not act

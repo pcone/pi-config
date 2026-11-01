@@ -151,142 +151,15 @@ describe("runSessionLogHook", () => {
 // pi extension (index.ts)
 // ---------------------------------------------------------------------------
 
-interface Sent {
-	message: { customType: string; content: string; display: boolean };
-	options: { triggerTurn?: boolean };
-}
-
-async function loadPi(cwd = repo, opts: { execThrows?: boolean; execResult?: { stdout: string; code: number } } = {}) {
-	const handlers = new Map<string, (event: any, ctx: any) => Promise<any> | any>();
-	const sent: Sent[] = [];
-	const execCalls: string[][] = [];
-	const fakePi: any = {
-		on(event: string, handler: any) {
-			handlers.set(event, handler);
-		},
-		sendMessage(message: any, options: any) {
-			sent.push({ message, options });
-		},
-		async exec(command: string, args: string[], options?: any) {
-			execCalls.push(args);
-			if (opts.execThrows) throw new Error("exec unavailable");
-			if (opts.execResult) return opts.execResult;
-			const p = Bun.spawnSync([command, ...args], { cwd: options?.cwd, env: process.env });
-			return { stdout: p.stdout.toString(), code: p.exitCode ?? 1 };
-		},
-	};
-	loadExtension(fakePi);
-	return { handlers, sent, execCalls, ctx: { cwd, sessionManager: { getSessionId: () => "sid-1" } } };
-}
-
-describe("pi extension wiring", () => {
-	it("injects the start text at session start and compact text after compaction", async () => {
-		const { handlers, sent, ctx } = await loadPi();
-		await handlers.get("session_start")!({ type: "session_start" }, ctx);
-		expect(sent).toHaveLength(1);
-		expect(sent[0].message.customType).toBe("session-log");
-		expect(sent[0].message.display).toBe(true);
-		expect(sent[0].message.content).toContain(`stub hook start --session sid-1 --harness pi`);
-		expect(sent[0].options?.triggerTurn).toBe(false);
-
-		await handlers.get("session_compact")!({ type: "session_compact" }, ctx);
-		expect(sent).toHaveLength(2);
-		expect(sent[1].message.content).toContain(`stub hook compact --session sid-1 --harness pi`);
-		expect(sent[1].options?.triggerTurn).toBe(false);
-	}, 30_000);
-
-	it("nudges at most once per settle episode, re-armed by a user prompt", async () => {
-		const { handlers, sent, ctx } = await loadPi();
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(1);
-		expect(sent[0].message.content).toContain(`stub hook stop --session sid-1 --harness pi`);
-		expect(sent[0].options?.triggerTurn).toBe(true);
-
-		// Same episode: the nudge started a turn; settling again must not start another.
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(1);
-
-		// A user prompt re-arms it.
-		await handlers.get("before_agent_start")!({ type: "before_agent_start" }, ctx);
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(2);
-	}, 30_000);
-
-	it("does not re-check the hook once it has nudged, until the user prompts again", async () => {
-		const { handlers, sent, execCalls, ctx } = await loadPi();
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(1);
-		expect(execCalls.length).toBe(1); // one settle, one hook run
-		const afterNudge = execCalls.length;
-
-		// Same episode: no hook run, no second turn.
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(1);
-		expect(execCalls.length).toBe(afterNudge);
-
-		// A user prompt re-arms it, and the next settle checks once.
-		await handlers.get("before_agent_start")!({ type: "before_agent_start" }, ctx);
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(2);
-		expect(execCalls.length).toBe(afterNudge + 1);
-	}, 30_000);
-
-	it("re-arms the settle nudge at session start", async () => {
-		const { handlers, sent, ctx } = await loadPi();
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(1);
-
-		await handlers.get("session_start")!({ type: "session_start" }, ctx); // start text + guard reset
-		expect(sent).toHaveLength(2);
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(3);
-		expect(sent[2].options?.triggerTurn).toBe(true);
-	}, 30_000);
-
-	it("injects nothing when the hook prints nothing", async () => {
-		const { handlers, sent, ctx } = await loadPi();
-		process.env.SESSION_LOG_STUB_MODE = "empty";
-		try {
-			await handlers.get("session_start")!({ type: "session_start" }, ctx);
-			await handlers.get("session_compact")!({ type: "session_compact" }, ctx);
-		} finally {
-			delete process.env.SESSION_LOG_STUB_MODE;
-		}
-		expect(sent).toHaveLength(0);
-	}, 30_000);
-
-	it("stays silent in a repo with no script", async () => {
-		const { handlers, sent, ctx } = await loadPi(bare);
-		await handlers.get("session_start")!({ type: "session_start" }, ctx);
-		await handlers.get("session_compact")!({ type: "session_compact" }, ctx);
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(0);
-	}, 15_000);
-
-	it("does not register handlers in a subagent session", () => {
-		const restore = scrubSubagentEnv();
-		process.env.PI_SUBAGENT_DEPTH = "1";
-		try {
-			const handlers = new Map<string, unknown>();
-			loadExtension({ on: (event: string, handler: unknown) => handlers.set(event, handler) } as any);
-			expect(handlers.size).toBe(0);
-		} finally {
-			restore();
-		}
-	});
-
-	it("contains exec failures instead of throwing", async () => {
-		const { handlers, sent, ctx } = await loadPi(repo, { execThrows: true });
-		await handlers.get("session_start")!({ type: "session_start" }, ctx);
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(0);
-	});
-
-	it("stays silent when the hook exits non-zero with partial stdout", async () => {
-		const { handlers, sent, ctx } = await loadPi(repo, { execResult: { stdout: "partial junk", code: 1 } });
-		await handlers.get("session_start")!({ type: "session_start" }, ctx);
-		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
-		expect(sent).toHaveLength(0);
+// The handler wiring is gone with the hooks: the owner disabled them 2026-11-01
+// (tfd decisions/session-logs/015 — the log they kept current is retired). Only
+// the switch's effect is worth pinning until the retirement commit deletes this
+// file and its test together.
+describe("pi extension wiring (disabled)", () => {
+	it("registers no handlers while the hooks are switched off", async () => {
+		const handlers = new Map<string, unknown>();
+		loadExtension({ on: (event: string, handler: unknown) => handlers.set(event, handler) } as any);
+		expect(handlers.size).toBe(0);
 	});
 });
 
