@@ -530,7 +530,7 @@ function archivePathFrom(result: any): string {
 	return match[1];
 }
 
-/** Run one deterministic checkpoint to completion (execute → turn_end → onComplete). */
+/** Run one deterministic checkpoint to completion (execute → turn_end → settled → onComplete). */
 async function runCheckpoint(
 	h: ReturnType<typeof makeCheckpointHarness>,
 	ctx: any,
@@ -541,8 +541,9 @@ async function runCheckpoint(
 		.get("checkpoint")
 		.execute("call-1", { nextSteps: "NEXT-STEP", ...args }, undefined, undefined, ctx);
 	await h.emit("turn_end", ctx);
+	await h.emit("agent_settled", ctx);
 	const compact = h.compactCalls[h.compactCalls.length - 1];
-	if (!compact) throw new Error("turn_end did not request a compaction");
+	if (!compact) throw new Error("agent_settled did not request a compaction");
 	await compact.onComplete?.(onCompleteResult);
 	return { result, compact };
 }
@@ -611,8 +612,9 @@ async function checkpointAndInject(
 		ctx,
 	);
 	await h.emit("turn_end", ctx);
+	await h.emit("agent_settled", ctx);
 	const compact = h.compactCalls[h.compactCalls.length - 1];
-	if (!compact) throw new Error("turn_end did not request a compaction");
+	if (!compact) throw new Error("agent_settled did not request a compaction");
 	await h.emit("session_before_compact", ctx, {
 		customInstructions: compact.customInstructions,
 		preparation: { firstKeptEntryId: opts.firstKeptEntryId ?? "entry-0", tokensBefore: 1000 },
@@ -625,7 +627,7 @@ async function checkpointAndInject(
 }
 
 describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact spy)", () => {
-	it("execute() never compacts; turn_end compacts exactly once and continues", async () => {
+	it("execute() never compacts; agent_settled compacts exactly once and continues", async () => {
 		const h = makeCheckpointHarness();
 		const cwd = await mkdtemp(join(tmpdir(), "ckpt-trigger-"));
 		try {
@@ -643,7 +645,12 @@ describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact sp
 			expect(result.content[0].text).toContain("Checkpoint queued.");
 			expect(h.compactCalls).toHaveLength(0); // must not compact inside execute()
 
+			// turn_end runs inside the agent loop. Compacting there aborts the run
+			// instead of compacting it, so the request must survive it untouched.
 			await h.emit("turn_end", ctx);
+			expect(h.compactCalls).toHaveLength(0);
+
+			await h.emit("agent_settled", ctx);
 			expect(h.compactCalls).toHaveLength(1);
 			expect(h.compactCalls[0].customInstructions).toContain("[CHECKPOINT]");
 			expect(h.compactCalls[0].customInstructions).toContain("summary-one");
@@ -653,15 +660,15 @@ describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact sp
 			expect(h.sent[0].text).toContain("next-one");
 			expect(h.sent[0].options).toEqual({ deliverAs: "followUp" });
 
-			// No stuck request: a further turn_end must not compact again.
-			await h.emit("turn_end", ctx);
+			// No stuck request: a further settle must not compact again.
+			await h.emit("agent_settled", ctx);
 			expect(h.compactCalls).toHaveLength(1);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
 	}, 30_000);
 
-	it("two checkpoint calls before turn_end → one compaction, last request wins", async () => {
+	it("two checkpoint calls before the settle → one compaction, last request wins", async () => {
 		const h = makeCheckpointHarness();
 		const cwd = await mkdtemp(join(tmpdir(), "ckpt-trigger-"));
 		try {
@@ -673,7 +680,7 @@ describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact sp
 			await checkpoint.execute("call-2", { summary: summaryFields({ goal: "second" }) }, undefined, undefined, ctx);
 			expect(h.compactCalls).toHaveLength(0);
 
-			await h.emit("turn_end", ctx);
+			await h.emit("agent_settled", ctx);
 			expect(h.compactCalls).toHaveLength(1); // exactly one
 			expect(h.compactCalls[0].customInstructions).toContain("second");
 			expect(h.compactCalls[0].customInstructions).not.toContain("first");
@@ -691,7 +698,7 @@ describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact sp
 			const checkpoint = h.tools.get("checkpoint");
 
 			await checkpoint.execute("call-1", { summary: summaryFields({ goal: "failing" }) }, undefined, undefined, ctx);
-			await h.emit("turn_end", ctx);
+			await h.emit("agent_settled", ctx);
 			expect(h.compactCalls).toHaveLength(1);
 
 			h.compactCalls[0].onError?.(new Error("Already compacted"));
@@ -701,7 +708,7 @@ describe("checkpoint: compaction trigger boundary (deterministic, ctx.compact sp
 
 			// No stuck pending request: a fresh checkpoint fires again.
 			await checkpoint.execute("call-2", { summary: summaryFields({ goal: "recovered" }) }, undefined, undefined, ctx);
-			await h.emit("turn_end", ctx);
+			await h.emit("agent_settled", ctx);
 			expect(h.compactCalls).toHaveLength(2);
 			expect(h.compactCalls[1].customInstructions).toContain("recovered");
 		} finally {

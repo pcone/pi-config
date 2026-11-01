@@ -427,15 +427,23 @@ export default function (pi: ExtensionAPI) {
 
 	// -- Compaction trigger ----------------------------------------------
 	// The checkpoint tool only stashes its request in execute(); compaction is
-	// triggered here, at the turn-end boundary. The SDK emits `turn_end` from
-	// agent-loop's runLoop *after* every tool result message has been emitted
-	// (message_end → SessionManager.appendMessage) and pushed into context, so
-	// the checkpoint call's own result is already persisted and no sibling tool
-	// execution is still in flight. Compacting from inside execute() instead
-	// disconnected the agent mid-batch, so the checkpoint result was never
-	// persisted and a late tool result attached to the compaction entry — the
-	// orphan-toolResult defect this guards against.
-	pi.on("turn_end", (_event, ctx) => {
+	// triggered here, once the run has finished. Two constraints fix this point.
+	//
+	// After execute(): compacting from inside the tool disconnected the agent
+	// mid-batch, so the checkpoint result was never persisted and a late tool
+	// result attached to the compaction entry — the orphan-toolResult defect this
+	// guards against.
+	//
+	// After the run, not at `turn_end`: `ctx.compact()` opens with
+	// `await this.abort()`, which waits for the session to go idle, and `turn_end`
+	// is dispatched *inside* the run loop (`_dispatchTurnEndBoundary` is awaited by
+	// it). Compacting there asks the loop to go idle while the loop is waiting for
+	// this handler: the run aborts instead — an empty `stopReason: error`
+	// assistant message, persisted with every such checkpoint — and the compaction
+	// waits for an idle that the handler it is blocking can never reach.
+	// `agent_settled` is emitted after `_isAgentRunActive` is cleared, so `abort()`
+	// finds the session idle and the compaction runs.
+	pi.on("agent_settled", (_event, ctx) => {
 		if (!compactRequested) return;
 		compactRequested = false;
 		// Snapshot: onComplete/onError own clearing the pending data. A later
