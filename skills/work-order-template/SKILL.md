@@ -59,11 +59,17 @@ duplicate, and check the repo's refactor-needed register (`docs/investigations/s
 A closed area needs its refactor scheduled first, as this commit or as an earlier order. It never
 gets a note saying the debt will be folded later.
 
-### Rejected alternatives
+### Rulings
 
-Only alternatives the owner rejected, each citing its ruling (decision, registry row or brief with
-date). Never filled from the order author's own reasoning; omit the section when there are none.
-Landing a listed alternative is not this work order.
+Each owner ruling the order rests on, by its record (registry anchor or `(owner)` decision) and
+date, quoted. A choice the order's author made is labelled as the author's, never as the owner's.
+An open registry row is a question: an order resting on one waits for the answer.
+- <e.g., "[MM45](docs/reviews/memory-model.md#MM45) (owner 2026-10-31): \"exact fit first, then the most recent\"">
+- <e.g., "Author's choice: visitor pattern rather than match-based traversal">
+
+**Rejected alternatives**: only alternatives the owner rejected, each citing its ruling. Never
+filled from the author's own reasoning; omit when there are none. Landing a listed alternative is
+not this work order.
 
 ### Scope
 
@@ -82,6 +88,15 @@ file not named below when the invariants hold, and lists it under `unexpected_ch
 - `path/to/do_not_touch.rs` — <reason: e.g., "downstream pass depends on current IR shape">
 
 **Out of scope**: <anything adjacent that might tempt the implementer but is not part of this work order>
+
+### Prohibitions
+
+What this order forbids beyond the files Scope protects, each with the check that shows it holds
+at the tip: an `rg`, a row, or a diff fact. Breaking one is a departure. The completion report
+answers each with its check's output.
+
+- <e.g., "No cache beyond `_REVS` and `_MEASURED` — `rg -n '^_[A-Z_]+ = \{\}' scripts/`">
+- <e.g., "The spawn count is measured over a fresh process — the row's harness spawns the validator">
 
 ### Implementation Specification
 
@@ -189,15 +204,6 @@ INADEQUATE.
 - <e.g., "`cargo build` succeeds with no warnings related to this change">
 - <e.g., "Do not modify Cargo.toml unless adding a dependency that is explicitly required">
 
-### Prohibitions
-
-What this order forbids beyond the files Scope protects, each with the check that shows it holds
-at the tip: an `rg`, a row, or a diff fact. Breaking one is a departure. The completion report
-answers each with its check's output.
-
-- <e.g., "No cache beyond `_REVS` and `_MEASURED` — `rg -n '^_[A-Z_]+ = \{\}' scripts/`">
-- <e.g., "The spawn count is measured over a fresh process — the row's harness spawns the validator">
-
 ### Structural Risks
 
 Risk patterns every order shares. The implementer checks each one.
@@ -225,12 +231,6 @@ Risk patterns every order shares. The implementer checks each one.
 
 **Upcoming work orders** (so the implementer doesn't break future work):
 1. <WO-2026-008: Will add dead code elimination pass> — <implementer must not change the pass registration interface>
-
-**Rulings this order rests on**: each owner ruling by its record (registry anchor or `(owner)`
-decision) and date, quoted. A choice the order's author made is labelled as the author's, never as
-the owner's.
-- <e.g., "[MM45](docs/reviews/memory-model.md#MM45) (owner 2026-10-31): \"exact fit first, then the most recent\"">
-- <e.g., "Author's choice: visitor pattern rather than match-based traversal">
 
 ### Completion Report Format
 
