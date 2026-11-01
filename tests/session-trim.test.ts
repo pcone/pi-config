@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { getCurrentTools } from "@earendil-works/pi-ai";
 import type { SessionEntry, SessionHeader } from "@earendil-works/pi-coding-agent";
 import sessionTrim, {
 	HINT_MIN_DROPPED_BYTES,
@@ -348,5 +349,77 @@ describe("extension wiring", () => {
 			{ hasUI: true, ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]) } },
 		);
 		expect(statuses).toEqual([["session-trim", undefined]]);
+	});
+});
+
+/**
+ * pi rebuilds the tool loadout from every system message on the branch
+ * (`_restoreToolsFromTranscript`). Built-ins follow that replay; extension tools
+ * that the branch never mentions are re-activated. So a trimmed-away system
+ * message costs exactly the built-ins — the 2026-11-01 wedge, where a resumed
+ * session came back without `read`/`bash`/`edit`/`write`.
+ */
+describe("tool loadout survives the cut", () => {
+	const TOOLS = ["read", "bash", "edit", "write", "subagent", "peer_send"].map((name) => ({
+		name,
+		description: `${name} tool`,
+		parameters: { type: "object", properties: {} },
+	}));
+
+	const systemMessages = (entries: SessionEntry[]) =>
+		entries.flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "system" ? [entry.message] : [],
+		);
+
+	const loadout = (entries: SessionEntry[]) =>
+		getCurrentTools(systemMessages(entries) as any).map((tool) => tool.name);
+
+	/** A session whose loadout was declared before the compaction, as pi writes it. */
+	function writeSessionWithLoadout(dir: string): string {
+		const file = writeSession(dir, { compaction: true });
+		const [header, ...entries] = readFileSync(file, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		const declared = {
+			type: "message",
+			id: "sys1",
+			parentId: null,
+			timestamp: STAMP,
+			message: { role: "system", content: "", timestamp: STAMP, toolsAdded: TOOLS },
+		};
+		const rebased = entries.map((entry, index) =>
+			index === 0 ? { ...entry, parentId: "sys1" } : entry,
+		);
+		writeFileSync(
+			file,
+			[header, declared, ...rebased].map((entry) => `${JSON.stringify(entry)}\n`).join(""),
+		);
+		return file;
+	}
+
+	it("keeps the declared loadout across the cut", () => {
+		withDir((dir) => {
+			const file = writeSessionWithLoadout(dir);
+			const manager = SessionManager.open(file);
+			const before = loadout(manager.getEntries());
+			expect(before).toContain("bash");
+
+			const plan = planTrim(manager.getEntries(), manager.buildContextEntries())!;
+			expect(plan.dropped.map((entry) => entry.id)).toContain("sys1");
+
+			const resumed = [...plan.carried, ...plan.kept];
+			expect(loadout(resumed)).toEqual(before);
+		});
+	});
+
+	it("carries the system messages unchanged, in file order", () => {
+		withDir((dir) => {
+			const manager = SessionManager.open(writeSessionWithLoadout(dir));
+			const plan = planTrim(manager.getEntries(), manager.buildContextEntries())!;
+			expect(systemMessages([...plan.carried, ...plan.kept])).toEqual(
+				systemMessages(manager.getEntries()),
+			);
+		});
 	});
 });

@@ -123,6 +123,17 @@ export function planTrim(
 	);
 	carry("session_info", kept.some((entry) => entry.type === "session_info"));
 
+	// The tool loadout is replayed from every system message on the branch
+	// (`_restoreToolsFromTranscript`), and built-in tools follow that replay instead of
+	// the "unmentioned extension tools are new" rule — so dropping a system message
+	// that declared `read`/`bash`/`edit`/`write` loses them on the next resume while the
+	// extension tools come back. Keep every system message, in file order.
+	const systemMessages = dropped
+		.filter((entry) => entry.type === "message" && entry.message.role === "system")
+		.map((entry) => ({ ...entry, parentId: null }));
+	carried.unshift(...systemMessages);
+
+	carried[0].parentId = null;
 	for (let i = 1; i < carried.length; i++) carried[i].parentId = carried[i - 1].id;
 	kept[0] = { ...kept[0], parentId: carried.length ? carried[carried.length - 1].id : null };
 
