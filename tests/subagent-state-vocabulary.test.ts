@@ -290,6 +290,33 @@ describe("listInFlightSubagents — adoption gate + state", () => {
 		expect(entries.find((e) => e.sid === "running-1")?.resumeCall).toBeNull();
 		expect(entries.find((e) => e.sid === "running-1")?.branch).toBe("b-running");
 	});
+
+	it("does not adopt another session's dead-owner child", () => {
+		// Every pi process reads the same /tmp metas, so owner death says nothing
+		// about ownership. This meta is a tfd implementer left by a dead process;
+		// it showed up in a pi-config session's checkpoint summary as "orphaned".
+		const dir = tempDir();
+		const write = (sid: string, meta: Record<string, unknown>) =>
+			writeFileSync(join(dir, `pi-subagent-${sid}.meta.json`), JSON.stringify(meta));
+		write("foreign-dead", {
+			ownerPid: 424242,
+			ownerStartToken: "other",
+			parentSessionId: "session-tfd-d",
+			agentName: "implement",
+			parentCwd: "/Users/scott/Developer/tfd",
+		});
+		writeFileSync(join(dir, "pi-subagent-foreign-dead.log"), "── Turn 1 ──\n");
+		// Our own child from before a restart: same shape, our session id.
+		write("own-dead", { ownerPid: 424242, ownerStartToken: "other", parentSessionId: "session-mine" });
+		writeFileSync(join(dir, "pi-subagent-own-dead.log"), "── Turn 1 ──\n");
+
+		const probe = { exists: () => false, startToken: () => null };
+		const ids = listInFlightSubagents({ dir, selfSessionId: "session-mine", probe })
+			.map((entry) => entry.sid)
+			.sort();
+		expect(ids).toEqual(["own-dead"]);
+	});
+
 });
 
 describe("resumeCallFor", () => {

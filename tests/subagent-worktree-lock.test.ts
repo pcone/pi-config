@@ -193,6 +193,11 @@ afterEach(async () => {
 
 // ── Lock lifecycle ─────────────────────────────────────────────────────────
 
+/** The scan reads the live session id off ctx; a bare `{}` cannot answer it. */
+function scanCtx(): any {
+	return { sessionManager: { getSessionId: () => "session-under-test" } };
+}
+
 describe("worktree lock lifecycle (real git)", () => {
 	it("locks after `worktree add`, refuses force-remove while the child lives, and removes after completion", async () => {
 		const repo = makeRepo();
@@ -309,7 +314,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			logLastLine: "── Completed (3 turns, exit 0) ──\n",
 		});
 
-		const results = await reapFinishedWorktrees({} as any, {} as any, { dir, selfPid: process.pid });
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 		expect(results.map((r) => r.outcome)).toEqual(["removed"]);
 		expect(existsSync(worktreePath)).toBe(false);
 		expect(worktreeEntry(repo, worktreePath)).toBeNull();
@@ -322,7 +327,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			dirty: true,
 		});
 
-		const results = await reapFinishedWorktrees({} as any, {} as any, { dir, selfPid: process.pid });
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 		expect(results.map((r) => r.outcome)).toEqual(["kept-uncommitted"]);
 		expect(existsSync(join(worktreePath, "uncommitted.txt"))).toBe(true);
 		const meta = JSON.parse(readFileSync(join(dir, "pi-subagent-dirty-1.meta.json"), "utf8"));
@@ -333,7 +338,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		const repo = makeRepo();
 		const { dir, worktreePath } = makeEntry(repo, "unfinished-1", { logLastLine: "── Turn 1 ──\nworking…\n" });
 
-		const results = await reapFinishedWorktrees({} as any, {} as any, { dir, selfPid: process.pid });
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 		expect(results).toEqual([]);
 		expect(existsSync(worktreePath)).toBe(true);
 		expect(worktreeEntry(repo, worktreePath)).not.toBeNull();
@@ -357,7 +362,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		// Probe stub: every recorded pid is alive with an unknown token.
 		const probe = { exists: () => true, startToken: () => null };
 
-		const results = await reapFinishedWorktrees({} as any, {} as any, { dir: foreign.dir, selfPid: -1, probe });
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir: foreign.dir, selfPid: -1, probe });
 		expect(results).toEqual([]);
 		expect(existsSync(foreign.worktreePath)).toBe(true);
 		expect(existsSync(legacy.worktreePath)).toBe(true);
@@ -371,7 +376,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		const { _testRunning } = await import("../extensions/subagent-async/index.ts");
 		_testRunning.set("tracked-1", { sessionId: "tracked-1" } as any);
 		try {
-			const results = await reapFinishedWorktrees({} as any, {} as any, { dir, selfPid: process.pid });
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 			expect(results).toEqual([]);
 			expect(existsSync(worktreePath)).toBe(true);
 		} finally {
@@ -394,7 +399,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		git(worktreePath, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]);
 		expect(git(worktreePath, ["status", "--porcelain", "-uall"]).out.trim()).toBe("");
 
-		const results = await reapFinishedWorktrees({} as any, {} as any, { dir, selfPid: process.pid });
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 		expect(results.map((r) => r.outcome)).toEqual(["kept-remove-failed"]);
 		expect(existsSync(worktreePath)).toBe(true);
 
@@ -402,7 +407,9 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		expect(entry).not.toBeNull();
 		expect(entry!).toContain("locked");
 		expect(entry!).toContain("(reap failed)");
-	});
+		// Two repos, a submodule add/update and a refused worktree remove: ~6 s
+		// alone, over the 5 s default on a loaded box.
+	}, 30_000);
 
 	it("the real session_start handler runs the reap (wiring)", async () => {
 		const repo = makeRepo();

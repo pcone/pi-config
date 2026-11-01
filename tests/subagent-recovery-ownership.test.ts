@@ -57,6 +57,7 @@ import extension, {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const SELF_PID = 999_001;
+const SELF_SESSION = "session-self";
 
 /** Probe where `exists` and `startToken` are driven by a pid → token map. */
 function probeFrom(map: Map<number, string | null>): OwnerProbe {
@@ -111,11 +112,11 @@ afterEach(() => {
 
 // ── Pure decision matrix ───────────────────────────────────────────────────
 
-describe("decideRecoveryAdoption (decision 027)", () => {
+describe("decideRecoveryAdoption (decision 027, narrowed by ownership)", () => {
 	it("skips a meta with no owner field (legacy, pre-027)", () => {
-		expect(decideRecoveryAdoption({ agentName: "x" }, { selfPid: SELF_PID })).toBe("skip-legacy");
-		expect(decideRecoveryAdoption(null, { selfPid: SELF_PID })).toBe("skip-legacy");
-		expect(decideRecoveryAdoption({ ownerPid: 0 }, { selfPid: SELF_PID })).toBe("skip-legacy");
+		expect(decideRecoveryAdoption({ agentName: "x" }, { selfPid: SELF_PID, selfSessionId: SELF_SESSION })).toBe("skip-legacy");
+		expect(decideRecoveryAdoption(null, { selfPid: SELF_PID, selfSessionId: SELF_SESSION })).toBe("skip-legacy");
+		expect(decideRecoveryAdoption({ ownerPid: 0 }, { selfPid: SELF_PID, selfSessionId: SELF_SESSION })).toBe("skip-legacy");
 	});
 
 	it("isOwnerAlive fails safe (true) for a missing owner, matching skip-legacy", () => {
@@ -126,43 +127,68 @@ describe("decideRecoveryAdoption (decision 027)", () => {
 		expect(isOwnerAlive(null)).toBe(true);
 	});
 
+	it("adopts a dead owner that is OUR session (the restart case)", () => {
+		const meta = { ownerPid: 4242, ownerStartToken: "start-A", parentSessionId: SELF_SESSION };
+		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe: probeFrom(new Map()) })).toBe("adopt");
+	});
+
+	it("skips a dead owner from ANOTHER session — the stranger-adoption bug", () => {
+		// Every pi process on the machine reads the same /tmp metas. Owner death
+		// says nobody is looking after the child, not that it is ours.
+		const meta = { ownerPid: 4242, ownerStartToken: "start-A", parentSessionId: "session-tfd-d" };
+		expect(
+			decideRecoveryAdoption(meta, { selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe: probeFrom(new Map()) }),
+		).toBe("skip-foreign-session");
+	});
+
+	it("skips a dead owner with no recorded parent session (unknown provenance)", () => {
+		const meta = { ownerPid: 4242, ownerStartToken: "start-A" };
+		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe: probeFrom(new Map()) })).toBe("skip-legacy");
+	});
+
+	it("fails closed when the caller has no session id to compare", () => {
+		const meta = { ownerPid: 4242, ownerStartToken: "start-A", parentSessionId: SELF_SESSION };
+		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, probe: probeFrom(new Map()) })).toBe("skip-legacy");
+	});
+
 	it("skips a live FOREIGN owner (stranger's child)", () => {
-		const meta = { ownerPid: 4242, ownerStartToken: "start-A" };
+		const meta = { ownerPid: 4242, ownerStartToken: "start-A", parentSessionId: "session-tfd-d" };
 		const probe = probeFrom(new Map([[4242, "start-A"]]));
-		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, probe })).toBe("skip-live-owner");
+		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe })).toBe("skip-live-owner");
 	});
 
-	it("adopts when the owner process is gone", () => {
-		const meta = { ownerPid: 4242, ownerStartToken: "start-A" };
-		const probe = probeFrom(new Map()); // pid absent → dead
-		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, probe })).toBe("adopt");
-	});
-
-	it("adopts when the pid was recycled (start token mismatch)", () => {
-		const meta = { ownerPid: 4242, ownerStartToken: "start-A" };
+	it("adopts our session's child when the pid was recycled (start token mismatch)", () => {
+		const meta = { ownerPid: 4242, ownerStartToken: "start-A", parentSessionId: SELF_SESSION };
 		const probe = probeFrom(new Map([[4242, "start-B"]])); // same pid, new process
-		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, probe })).toBe("adopt");
+		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe })).toBe("adopt");
 		expect(isOwnerAlive(meta, probe)).toBe(false);
 	});
 
 	it("treats an unreadable current token as alive → skip (safe direction)", () => {
-		const meta = { ownerPid: 4242, ownerStartToken: "start-A" };
+		const meta = { ownerPid: 4242, ownerStartToken: "start-A", parentSessionId: "session-tfd-d" };
 		const probe = probeFrom(new Map([[4242, null]])); // exists, token unknown
 		expect(isOwnerAlive(meta, probe)).toBe(true);
-		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, probe })).toBe("skip-live-owner");
+		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe })).toBe("skip-live-owner");
 	});
 
 	it("treats a missing or empty recorded token on a live pid as alive → skip", () => {
 		const probe = probeFrom(new Map([[4242, "start-A"]]));
 		expect(isOwnerAlive({ ownerPid: 4242 }, probe)).toBe(true);
 		expect(isOwnerAlive({ ownerPid: 4242, ownerStartToken: "" }, probe)).toBe(true);
-		expect(decideRecoveryAdoption({ ownerPid: 4242, ownerStartToken: "" }, { selfPid: SELF_PID, probe })).toBe("skip-live-owner");
+		expect(
+			decideRecoveryAdoption(
+				{ ownerPid: 4242, ownerStartToken: "", parentSessionId: "session-tfd-d" },
+				{ selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe },
+			),
+		).toBe("skip-live-owner");
 	});
 
 	it("adopts a same-process owner (session reload/new keeps the socket server)", () => {
+		// pid === self covers a recycled pid in this process too, so ownership
+		// needs no parentSessionId here.
 		const meta = { ownerPid: SELF_PID, ownerStartToken: "self-token" };
 		const probe = probeFrom(new Map([[SELF_PID, "self-token"]]));
-		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, probe })).toBe("adopt");
+		expect(decideRecoveryAdoption(meta, { selfPid: SELF_PID, selfSessionId: SELF_SESSION, probe })).toBe("adopt");
 	});
 });
 
@@ -189,14 +215,15 @@ describe("buildSpawnMeta (decision 027)", () => {
 	};
 
 	it("stamps ownerPid and ownerStartToken from the injected owner", () => {
-		const meta = buildSpawnMeta(fields, { pid: 4321, startToken: "tok-A" });
+		const meta = buildSpawnMeta(fields, { pid: 4321, startToken: "tok-A", sessionId: SELF_SESSION });
 		expect(meta.ownerPid).toBe(4321);
 		expect(meta.ownerStartToken).toBe("tok-A");
 		expect(meta.agentName).toBe("scout-code");
 	});
 
-	it("defaults to THIS process's pid and real start token", () => {
-		const meta = buildSpawnMeta(fields);
+	it("stamps the spawning SESSION, which is what adoption matches on", () => {
+		const meta = buildSpawnMeta(fields, { pid: process.pid, startToken: selfStartToken(), sessionId: SELF_SESSION });
+		expect(meta.parentSessionId).toBe(SELF_SESSION);
 		expect(meta.ownerPid).toBe(process.pid);
 		expect(meta.ownerStartToken).toBe(selfStartToken());
 	});
@@ -295,7 +322,15 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		writeTriplet(
 			dir,
 			sid,
-			{ agentName: "scout-code", task: "t", cwd: dir, ownerPid: 4242, ownerStartToken: "gone" },
+			{
+				agentName: "scout-code",
+				task: "t",
+				cwd: dir,
+				ownerPid: 4242,
+				ownerStartToken: "gone",
+				parentSessionId: SELF_SESSION,
+				parentSessionId: SELF_SESSION,
+			},
 			"── Turn 1 ──\nresult text\n── Completed (1 turns, exit 0) ──\n",
 		);
 
@@ -306,6 +341,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		recoverOrphanedSubagents(pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			probe: probeFrom(new Map()), // owner gone
 			connect: (p) => {
 				connectPaths.push(p);
@@ -352,6 +388,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 				cwd: dir,
 				ownerPid: 4242,
 				ownerStartToken: "gone",
+				parentSessionId: SELF_SESSION,
 				systemPrompt: "## Completion report\n\n**owner_asks:** none, or `<file>#<id>` row ids\n",
 			},
 			"── Turn 1 ──\n**status:** complete\n\n**owner_asks:** merge it already, no row\n── Completed (1 turns, exit 0) ──\n",
@@ -363,6 +400,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		recoverOrphanedSubagents(pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			probe: probeFrom(new Map()), // owner gone → adopt
 			connect: () => {
 				const s = makeFakeSocket();
@@ -396,6 +434,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			probe: probeFrom(new Map([[4242, "alive"]])), // foreign owner alive
 			connect: () => { connectCalls++; return makeFakeSocket() as any; },
 		});
@@ -413,6 +452,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			connect: () => { connectCalls++; return makeFakeSocket() as any; },
 		});
 
@@ -435,6 +475,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			probe: probeFrom(new Map([[SELF_PID, "self"]])),
 			connect: () => { const s = makeFakeSocket(); sockets.push(s); return s as any; },
 		});
@@ -448,12 +489,19 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		const dir = mkdtempSync(path.join(tmpdir(), "pi-recovery-"));
 		tempDirs.push(dir);
 		const sid = "subagent-dead-socket";
-		writeTriplet(dir, sid, { agentName: "scout-code", task: "t", ownerPid: 4242, ownerStartToken: "gone" });
+		writeTriplet(dir, sid, {
+			agentName: "scout-code",
+			task: "t",
+			ownerPid: 4242,
+			ownerStartToken: "gone",
+			parentSessionId: SELF_SESSION,
+		});
 
 		const sockets: FakeSocket[] = [];
 		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			probe: probeFrom(new Map()),
 			connect: () => { const s = makeFakeSocket(); sockets.push(s); return s as any; },
 		});
@@ -478,6 +526,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			connect: () => { connectCalls++; return makeFakeSocket() as any; },
 		});
 
@@ -496,6 +545,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
 			dir,
 			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
 			probe: probeFrom(new Map([[SELF_PID, "self"]])),
 			connect: () => { connectCalls++; return makeFakeSocket() as any; },
 		});

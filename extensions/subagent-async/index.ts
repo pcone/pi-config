@@ -323,9 +323,14 @@ export interface SpawnMetaFields {
  */
 export function buildSpawnMeta(
 	fields: SpawnMetaFields,
-	owner: { pid: number; startToken: string | null } = { pid: process.pid, startToken: selfStartToken() },
+	owner: { pid: number; startToken: string | null; sessionId: string },
 ): Record<string, any> {
-	return { ...fields, ownerPid: owner.pid, ownerStartToken: owner.startToken };
+	return {
+		...fields,
+		ownerPid: owner.pid,
+		ownerStartToken: owner.startToken,
+		parentSessionId: owner.sessionId,
+	};
 }
 
 /**
@@ -3212,6 +3217,8 @@ export interface RecoveryScanDeps {
 	dir?: string;
 	/** Override for the current process pid (tests). */
 	selfPid?: number;
+	/** Override for the current session id (tests); defaults to the live session's. */
+	selfSessionId?: string;
 	/** Override for the OS owner probe (tests). */
 	probe?: OwnerProbe;
 	/** Override for the socket client factory (tests). */
@@ -3256,7 +3263,11 @@ export function recoverOrphanedSubagents(
 
 			// Decision 027: adopt only if the owner is this process (session
 			// reload / new in the same process) or the owner process is gone.
-			const adoption = decideRecoveryAdoption(meta, { selfPid: deps.selfPid, probe: deps.probe });
+			const adoption = decideRecoveryAdoption(meta, {
+				selfPid: deps.selfPid,
+				selfSessionId: deps.selfSessionId ?? ctx.sessionManager.getSessionId(),
+				probe: deps.probe,
+			});
 			if (adoption !== "adopt") {
 				debugLog(`recovery: ${adoption} for ${sid} (ownerPid=${meta?.ownerPid ?? "none"})`);
 				continue;
@@ -3416,7 +3427,14 @@ export async function reapFinishedWorktrees(
 		const dir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		for (const { sid, meta } of listSubagentMetas(dir)) {
 			if (running.has(sid)) continue; // this process is still tracking it
-			if (decideRecoveryAdoption(meta, { selfPid: deps.selfPid, probe: deps.probe }) !== "adopt") continue;
+			if (
+				decideRecoveryAdoption(meta, {
+					selfPid: deps.selfPid,
+					selfSessionId: deps.selfSessionId ?? ctx.sessionManager.getSessionId(),
+					probe: deps.probe,
+				}) !== "adopt"
+			)
+				continue;
 			const worktreePath = typeof meta.worktreePath === "string" ? meta.worktreePath : null;
 			if (!worktreePath) continue;
 
@@ -3945,7 +3963,7 @@ export default function (pi: ExtensionAPI) {
 			allowedSubagents: agent.allowedSubagents ?? [],
 			excludeTools: agent.excludeTools ?? [],
 			workRecord: dispatch.record,
-		}));
+		}, { pid: process.pid, startToken: selfStartToken(), sessionId: ctx.sessionManager.getSessionId() }));
 
 			// Reviewer-spawn tracker: if the spawned agent is a declared reviewer
 			// (reviewerKind set in frontmatter), record this spawn under the

@@ -132,3 +132,24 @@ absent, and under load a stale mtime reads as death. Liveness stays on
 1-in-4 full-suite flake in decision 031's spawn tests before it was identified;
 the same correction was made independently in the tfd repo's
 `docs/plans/git-coordination.md` (commit `68e3ff8a`).
+
+**Superseded in part (2026-11-02, `decideRecoveryAdoption` narrowed to ownership).**
+The matrix above adopts on owner death. That rule was wrong for the machine, not
+for this repo: every pi process reads the same `/tmp` metas, so a dead owner said
+only that nobody was looking after the child, and each session adopted the
+others' orphans. A tfd WO-2026-441 implementer whose parent cwd was
+`~/Developer/tfd` was listed as `b0d918d1 orphaned` in a pi-config session's
+checkpoint summary, and `reapFinishedWorktrees` would have reached its worktree.
+
+Adoption now needs proof that the child is ours. `buildSpawnMeta` stamps
+`parentSessionId` beside `ownerPid`/`ownerStartToken`, and the scan adopts a dead
+owner only when that id equals the live session's. `pid === selfPid` still adopts
+without it — same process means the previous session in this process, and a
+recycled pid means the original owner is gone either way. A meta with no
+`parentSessionId`, or a caller with no session id to compare, is `skip-legacy`:
+unknown provenance is not ours to adopt. A live foreign owner stays
+`skip-live-owner`; a dead foreign owner is the new `skip-foreign-session`.
+
+The same reading applies to all three consumers — the in-flight list, the
+`session_start` recovery scan, and the worktree reap. Metas written before this
+change are no longer adopted by any of them.

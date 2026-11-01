@@ -133,30 +133,45 @@ export function isOwnerAlive(
 	return current === recorded;
 }
 
-export type RecoveryAdoption = "adopt" | "skip-live-owner" | "skip-legacy";
+export type RecoveryAdoption = "adopt" | "skip-live-owner" | "skip-legacy" | "skip-foreign-session";
 
 /**
  * Decide whether the recovery scan may adopt the socket described by `meta`.
  * Pure and injectable so the adopt/skip matrix is unit-testable without
  * touching /tmp or the real OS.
  *
- * A same-process owner (pid === selfPid) is adopted even though it is alive:
- * the previous session in THIS process left the socket server running
- * (/reload, /new), and re-attaching to it is the recovery path the scan exists
- * for. A live FOREIGN owner is skipped — that is the stranger-adoption bug.
+ * Adoption is proof of ownership, not proof of death. A dead owner says only
+ * that nobody is looking after the child; every pi process on the machine can
+ * read the same `/tmp` metas, so owner death alone made each session adopt the
+ * others' orphans — a tfd implementer's child showed up in a pi-config session's
+ * checkpoint summary and its worktree in that session's reap scan. The child
+ * carries the spawning session's id (`parentSessionId`), so:
+ *
+ * - `pid === selfPid`: our own previous session in this process (/reload, /new)
+ *   left the socket running. Adopt; the start-token check is pointless here,
+ *   because a recycled pid also means the original owner is gone.
+ * - recorded `parentSessionId` equals this session's: ours, owner process gone
+ *   (a restart, a resumed session). Adopt.
+ * - recorded `parentSessionId` names another session: skip. Our process may
+ *   legitimately be the same one it ran in.
+ * - no recorded `parentSessionId`, or no `selfSessionId` to compare with: skip.
+ *   Unknown provenance is not ours to adopt.
+ *
  * Exported for unit testing.
  */
 export function decideRecoveryAdoption(
 	meta: Record<string, any> | null | undefined,
-	opts: { selfPid?: number; probe?: OwnerProbe } = {},
+	opts: { selfPid?: number; selfSessionId?: string; probe?: OwnerProbe } = {},
 ): RecoveryAdoption {
 	const pid = meta?.ownerPid;
 	if (!Number.isInteger(pid) || pid <= 0) return "skip-legacy";
-	// pid === self: either our own previous session (adopt), or a recycled pid
-	// whose original owner process is gone (also adopt). Both are safe, so the
-	// start-token comparison is unnecessary for this branch.
 	if (pid === (opts.selfPid ?? process.pid)) return "adopt";
-	return isOwnerAlive(meta, opts.probe ?? defaultOwnerProbe) ? "skip-live-owner" : "adopt";
+	const parentSessionId = meta?.parentSessionId;
+	if (typeof parentSessionId !== "string" || parentSessionId.length === 0) return "skip-legacy";
+	if (opts.selfSessionId === undefined) return "skip-legacy";
+	if (parentSessionId === opts.selfSessionId) return "adopt";
+	if (isOwnerAlive(meta, opts.probe ?? defaultOwnerProbe)) return "skip-live-owner";
+	return "skip-foreign-session";
 }
 
 // ── Meta registry scan ─────────────────────────────────────────────────────
@@ -371,12 +386,19 @@ export function resumeCallFor(sid: string, meta: Record<string, any> | null): st
  * or orphaned. Completed and dead children are not in flight.
  */
 export function listInFlightSubagents(
-	opts: { dir?: string; selfPid?: number; probe?: OwnerProbe; now?: number } = {},
+	opts: { dir?: string; selfPid?: number; selfSessionId?: string; probe?: OwnerProbe; now?: number } = {},
 ): InFlightSubagent[] {
 	const dir = opts.dir ?? SUBAGENT_TMP_DIR;
 	const out: InFlightSubagent[] = [];
 	for (const { sid, meta } of listSubagentMetas(dir)) {
-		if (decideRecoveryAdoption(meta, { selfPid: opts.selfPid, probe: opts.probe }) !== "adopt") continue;
+		if (
+			decideRecoveryAdoption(meta, {
+				selfPid: opts.selfPid,
+				selfSessionId: opts.selfSessionId,
+				probe: opts.probe,
+			}) !== "adopt"
+		)
+			continue;
 		const reading = readSubagentState(
 			gatherSubagentDiskFacts(sid, { meta, dir, probe: opts.probe, now: opts.now }),
 		);

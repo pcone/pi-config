@@ -615,7 +615,10 @@ export default function (pi: ExtensionAPI) {
 
 			// R3-1: one composed summary serves both the archive and the restore
 			// path, so the in-flight record is in the context after compaction.
-			const inFlight = listInFlightSubagents({ dir: inflightScanDirOverride });
+			const inFlight = listInFlightSubagents({
+				dir: inflightScanDirOverride,
+				selfSessionId: ctx.sessionManager.getSessionId(),
+			});
 			const section = formatInFlightSection(inFlight);
 			const summary = composeSummary(renderSummary(summaryFields, next), section);
 
@@ -757,7 +760,10 @@ export default function (pi: ExtensionAPI) {
 
 			// R3-1: both the fork-source archive and the new session's summary
 			// carry the in-flight record.
-			const inFlight = listInFlightSubagents({ dir: inflightScanDirOverride });
+			const inFlight = listInFlightSubagents({
+				dir: inflightScanDirOverride,
+				selfSessionId: ctx.sessionManager.getSessionId(),
+			});
 			const section = formatInFlightSection(inFlight);
 			const summary = composeSummary(renderSummary(summaryFields, next), section);
 
