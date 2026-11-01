@@ -144,9 +144,9 @@ async function runCheckpoint(
 		.get("checkpoint")
 		.execute("tc", { summary: SUMMARY, ...params }, undefined, undefined, ctx);
 
-	// The compaction itself is triggered by the turn_end handler (the tool only
-	// stashes the request), so fire it before reading the instructions.
-	await handlers.get("turn_end")({}, ctx);
+	// The compaction itself is triggered by the agent_settled handler (the tool
+	// only stashes the request), so fire it before reading the instructions.
+	await handlers.get("agent_settled")({}, ctx);
 
 	// The archive meta is the other copy the tool stores.
 	const archiveDir = join(cwd, ".pi/checkpoints");
