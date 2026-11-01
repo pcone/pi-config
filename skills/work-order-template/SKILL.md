@@ -34,7 +34,8 @@ Your work order quality directly determines whether the implementer succeeds on 
 
 ### Premise
 
-<The one fact the specified mechanism depends on, and the probe that would falsify it.> If falsified:
+<The one fact the specified mechanism depends on, and the probe that would falsify it.> When the
+premise names a cause, the probe also tells it apart from the next likeliest cause. If falsified:
 stop, report `PREMISE FALSIFIED` with the evidence; nothing lands.
 
 ### Preparatory refactor
@@ -58,11 +59,17 @@ duplicate, and check the repo's refactor-needed register (`docs/investigations/s
 A closed area needs its refactor scheduled first, as this commit or as an earlier order. It never
 gets a note saying the debt will be folded later.
 
-### Rejected alternatives
+### Rulings
 
-Only alternatives the owner rejected, each citing its ruling (decision, registry row or brief with
-date). Never filled from the order author's own reasoning; omit the section when there are none.
-Landing a listed alternative is not this work order.
+Each owner ruling the order rests on, by its record (registry anchor or `(owner)` decision) and
+date, quoted. A choice the order's author made is labelled as the author's, never as the owner's.
+An open registry row is a question: an order resting on one waits for the answer.
+- <e.g., "[MM45](docs/reviews/memory-model.md#MM45) (owner 2026-10-31): \"exact fit first, then the most recent\"">
+- <e.g., "Author's choice: visitor pattern rather than match-based traversal">
+
+**Rejected alternatives**: only alternatives the owner rejected, each citing its ruling. Never
+filled from the author's own reasoning; omit when there are none. Landing a listed alternative is
+not this work order.
 
 ### Scope
 
@@ -81,6 +88,15 @@ file not named below when the invariants hold, and lists it under `unexpected_ch
 - `path/to/do_not_touch.rs` — <reason: e.g., "downstream pass depends on current IR shape">
 
 **Out of scope**: <anything adjacent that might tempt the implementer but is not part of this work order>
+
+### Prohibitions
+
+What this order forbids beyond the files Scope protects, each with the check that shows it holds
+at the tip: an `rg`, a row, or a diff fact. Breaking one is a departure. The completion report
+answers each with its check's output.
+
+- <e.g., "No cache beyond `_REVS` and `_MEASURED` — `rg -n '^_[A-Z_]+ = \{\}' scripts/`">
+- <e.g., "The spawn count is measured over a fresh process — the row's harness spawns the validator">
 
 ### Implementation Specification
 
@@ -111,13 +127,11 @@ the list goes in the acceptance rows as a lower bound.
 satisfy, organized as a non-overlapping matrix that the test reviewer
 can audit row by row. Cover at minimum:
 
-- For behavior-split surfaces (eager/lazy, two spellings, two registration
-  shapes), name which case is the NOVEL exposure — "pre-change this was
-  trivially right; now it isn't" — and pin BOTH shapes. Testing only the
-  historically-fragile half pins the half that didn't change. (Origin:
-  tfd-b WO-078 F2 — eager impls were the novel exposure under lazification
-  precisely because eager registration had made them trivially right.)
-
+- **Dimensions.** Name each dimension the rule ranges over (node kind,
+  type width, spelling, registration shape) and vary every one, including
+  the values the change is likeliest to get wrong. Where one value was
+  trivially right before the change and is not after, name it as the
+  novel exposure and pin it beside the old one.
 - Success paths the work order requests
 - Validation, malformed, empty, boundary, and failure paths
 - Retry, timeout, recovery, and partial-failure behavior (when relevant)
@@ -182,16 +196,9 @@ The implementer must verify all of the following before reporting completion.
 - <e.g., "`cargo test passes::constant_folding` — all tests pass">
 - <e.g., "Integration tests in `tests/end_to_end.rs` that exercise the new pass must pass">
 
-**Test surface requirements**:
-- <e.g., "Integration tests must call the actual `compile()` entry point, not internal pass functions directly">
-- <e.g., "Tests must exercise the error path, not just the happy path">
-- Tests must hit the **Required test boundary** declared above. If the
-  implementer only writes internal-helper tests for a public-API
-  change, the test reviewer will mark that INADEQUATE.
-- For pure deterministic transformers with a cheap stable public
-  boundary, end-to-end / oracle / golden tests are primary;
-  unit tests are supplemental. State this explicitly when it
-  applies.
+**Test surface requirements**: tests hit the **Required test boundary**
+declared above; internal-helper tests alone for a public-API change are
+INADEQUATE.
 
 **Build requirements**:
 - <e.g., "`cargo build` succeeds with no warnings related to this change">
@@ -199,7 +206,7 @@ The implementer must verify all of the following before reporting completion.
 
 ### Structural Risks
 
-Known risk patterns for this task type. The implementer must explicitly check for these.
+Risk patterns every order shares. The implementer checks each one.
 
 - [ ] **Route/path correctness**: Every endpoint, public function, or CLI command is at the path specified in the work order (not a variant or prefix of it)
 - [ ] **Input validation scope**: Validation accepts every input shape the spec allows — no over-constraining types or rejecting valid inputs
@@ -214,9 +221,7 @@ Known risk patterns for this task type. The implementer must explicitly check fo
 
 > Every risk that applies must be **exercised by a named row**, or the report must
 > say why it cannot be. A risk list with no row behind it is a review round waiting
-> to happen. (Origin: tfd WO-2026-143 — two separate reviewer findings hit the same
-> pattern: the order's claimed guards did not actually cover the changed path until
-> rows were written for them.)
+> to happen.
 
 ### Context
 
@@ -227,13 +232,9 @@ Known risk patterns for this task type. The implementer must explicitly check fo
 **Upcoming work orders** (so the implementer doesn't break future work):
 1. <WO-2026-008: Will add dead code elimination pass> — <implementer must not change the pass registration interface>
 
-**Relevant decisions from planning session**:
-- <e.g., "Decided to use visitor pattern rather than match-based traversal for all new passes">
-- <e.g., "Decided to defer SSA validation to a separate pass, not inline it here">
-
 ### Completion Report Format
 
-The implementer must produce a completion report in their final assistant message. All implementers use: status / invariant_exhaustiveness / files_modified / tests / structural_checks / deviations_from_spec / notes_for_orchestrator.
+The implementer must produce a completion report in their final assistant message. All implementers use: status / invariant_exhaustiveness / files_modified / tests (with each new row's red-turning revert) / structural_checks (each prohibition with its check's output, then the shared risks) / deviations_from_spec / notes_for_orchestrator.
 
 For code-changing work (`review_policy: required`), also include:
 - **assumptions_made** — invariants assumed, not explicit in work order

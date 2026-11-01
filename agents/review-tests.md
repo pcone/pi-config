@@ -107,7 +107,9 @@ test).
 Categories (adapt to what the work order actually asks for):
 
 1. **Requested feature behavior** — every behavior or success path
-   the work order specifies.
+   the work order specifies, across every value of each dimension the
+   rule ranges over. A rule tested on one shape is covered for that
+   shape only.
 2. **Validation and failure paths** — malformed input, empty
    input, out-of-range, type errors, missing required fields,
    permission errors. Whatever the spec calls out as failing
@@ -145,6 +147,11 @@ Categories (adapt to what the work order actually asks for):
 - Tests that duplicate the implementer's claim without reading
   the test code.
 - A single happy-path test for a multi-case spec.
+- A row with no shown revert or mutation that turns it red, or one
+  that would pass against the bug it targets: an expected value
+  computed with the code's own formula, an assertion that holds either
+  way, a count taken where earlier state can lower it. Run the revert
+  when the report does not show it.
 
 **Duplicate coverage** — a new test that pins the same input class
 and assertion as an existing one adds maintenance, not evidence. Name

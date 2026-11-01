@@ -265,7 +265,8 @@ X because Y.")
 
 **files_modified:** list of all files actually modified
 
-**tests:** command and result
+**tests:** command and result, and for each new row the revert or
+mutation that turns it red, with its output
 
 **deviations_from_spec:** none, or each process-only fact (APPEND_SYSTEM
 § Spec authority) prefixed with its class: `[commit-shape]`,
@@ -277,8 +278,9 @@ departure you could see before landing should have been a step-2
 **claims:** each structural claim in this report with its `rg` and
 count at your tip (APPEND_SYSTEM § Make a rule complete by structure).
 
-**structural_checks:** (one line per item from the work order's
-StructuralRisks) — entry point / input validation / test surface /
+**structural_checks:** one line per item of the work order's
+Prohibitions, with its check's output at your tip; then one line per
+Structural Risk — entry point / input validation / test surface /
 recovery logic / build passes / no unrequested changes — each pass/fail
 
 **plan_mismatches:** any from step 2 (what you found vs what was
