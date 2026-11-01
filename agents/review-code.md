@@ -349,8 +349,12 @@ mitigation. Structural findings (Pass 3 items 5–10) follow the same bar.
 - **Re-baselining an expectation to accept a known regression is HIGH**
   unless the work order authorizes it.
 - **Read the work order itself** — its Task Summary, rejected
-  alternatives and acceptance rows. A brief's or report's account of it
-  is not the work order.
+  alternatives, prohibitions and acceptance rows. A brief's or report's
+  account of it is not the work order. Re-run each prohibition's check
+  at the tip; a broken one is a departure.
+- **A claim of an owner ruling that its record does not hold is HIGH**:
+  a comment, banner, block or report saying "(owner …)" or "ruled" with
+  no answered registry row or `(owner)` decision behind it.
 - **A retained path that gives a known wrong value is HIGH** when it is
   in the bug class the work order targets, pre-existing or not.
 - **A `REFACTOR FIRST` finding is HIGH whatever is disclosed.** Recorded

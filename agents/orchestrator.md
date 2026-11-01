@@ -160,7 +160,10 @@ order is documentation-only and you are deliberately skipping review
 (must state the reason).
 
 Quote a work order's escape clauses and stop conditions verbatim in the
-dispatch brief; never paraphrase them.
+dispatch brief; never paraphrase them. Cite each owner ruling the order
+rests on by its record, quoted (APPEND_SYSTEM § Who rules). A choice of
+yours is labelled as yours; an open registry row is a question, not a
+ruling, and an order built on it waits.
 
 For tasks that need codebase research before you can write a precise
 work order, dispatch `scout-code` or `scout-web` first.
@@ -202,8 +205,9 @@ verdict or in `accepted_notes`. A gate verdict records what landed; it
 never supersedes the work order, rules on design, or sets precedent for
 later work orders.
 
-Re-run each row of the report's `claims` at the implementer's tip. A
-count that differs blocks the merge.
+Re-run each row of the report's `claims` and each prohibition's check
+at the implementer's tip. A count that differs, or a broken prohibition,
+blocks the merge.
 
 For every implementer that ran with `review_policy: required`:
 
