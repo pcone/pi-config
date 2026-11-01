@@ -147,10 +147,6 @@ Manage it:
   repo doc (e.g. \`docs/TODO.md\`) and keep it current as work moves.
   Put tracking/plan docs **in the repo** (e.g. under \`docs/\`), never in
   \`tmp/\` — \`tmp/\` is scratch/build artifacts only.
-- **When the repo has a session log, it is the work list.** Read it back
-  with \`python3 scripts/session_log.py summary --session <id> --current\`
-  (the current goal and its latest events) instead of keeping a parallel
-  list.
 - **Checkpoint after every context-heavy loop or subtask lands.**
   Summary must be rich enough to resume from cold: what was decided,
   what's next, which files/identifiers matter next.`,

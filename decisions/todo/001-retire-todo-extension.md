@@ -11,6 +11,8 @@ date: 2026-10-13
 
 **Amendment (2026-10-14):** tfd later added `session_log.py append` so agents append event lines directly (tfd `decisions/session-logs/005`); the ruling above is unchanged — it rejected a todo tool mirroring a second list, not a writer for the log itself.
 
+**Superseded (2026-11-01):** tfd's owner retired session logs (tfd `decisions/session-logs/015`, owner 2026-11-01), and its carrier landed: `scripts/session_log.py` and `docs/sessions/` are gone at tfd's mainline (deleted by `ddb2a10f6`, tfd WO-2026-443). The prompt text that pointed at the log's state query is removed from `extensions/modes.ts` and `agents/bug-triage.md`, which keep the repo plan doc as the place a session's work items are tracked. `extensions/session-log/`, `tests/session-log.test.ts`, `docs/design/session-log-hooks.md` and `decisions/external-tools/004-session-log-hooks.md` are deleted in this commit. The todo extension stays retired; no work-list extension replaces it.
+
 **Why:** the owner's ruling (2026-10-13): sessions wrote to the list but never read it back or kept it current. The session log already records goals, areas, questions and commits, and tfd answers "where is this session?" from it; a second work-list mechanism only drifts.
 
 **Refuting the obvious alternative:** "keep `todo.ts` as a fallback for repos without a session log." A list nothing reads back is the failure being removed, and a per-repo fallback doubles the instruction text again. The owner accepted no replacement where there is no log.
