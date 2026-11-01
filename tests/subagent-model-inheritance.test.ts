@@ -219,7 +219,11 @@ function createCtxStub(cwd: string, model: { provider: string; id: string }) {
 		cwd,
 		ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {}, clearStatus: () => {} },
 		getModel: () => model,
-		sessionManager: { getBranch: () => [], getEntries: () => [] },
+		sessionManager: {
+		getBranch: () => [],
+		getEntries: () => [],
+		getSessionId: () => "session-spawner",
+	},
 	};
 }
 

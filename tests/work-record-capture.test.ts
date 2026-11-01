@@ -267,7 +267,11 @@ const stubCtx = (cwd: string) => ({
 	cwd,
 	ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {}, clearStatus: () => {} },
 	getModel: () => undefined,
-	sessionManager: { getBranch: () => [], getEntries: () => [] },
+	sessionManager: {
+		getBranch: () => [],
+		getEntries: () => [],
+		getSessionId: () => "session-spawner",
+	},
 });
 
 /** A reviewer session file (JSONL) with one task and one final text. */
@@ -328,7 +332,11 @@ describe("recovery completes the record from the recovered session file", () => 
 
 		const { pi } = stubPi();
 		const sock = new FakeSock();
-		recoverOrphanedSubagents(pi, { cwd: root }, { dir, connect: () => sock as any, selfPid: process.pid });
+		recoverOrphanedSubagents(
+			pi,
+			{ cwd: root, sessionManager: { getSessionId: () => "session-under-test" } } as any,
+			{ dir, connect: () => sock as any, selfPid: process.pid },
+		);
 		sock.emit("connect");
 		sock.emit("close");
 

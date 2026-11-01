@@ -55,7 +55,11 @@ function createCtxStub(cwd: string) {
 		cwd,
 		ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {}, clearStatus: () => {} },
 		getModel: () => ({ provider: "openrouter", id: "xiaomi/mimo-v2.6-flash" }),
-		sessionManager: { getBranch: () => [], getEntries: () => [] },
+		sessionManager: {
+		getBranch: () => [],
+		getEntries: () => [],
+		getSessionId: () => "session-spawner",
+	},
 	};
 }
 
