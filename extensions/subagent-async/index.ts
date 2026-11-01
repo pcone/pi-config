@@ -19,6 +19,7 @@ import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
+import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
 import {
 	SUBAGENT_STALE_TURN_MS,
 	decideRecoveryAdoption,
@@ -883,12 +884,19 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 /** Create an isolated git worktree on a branch off the parent HEAD (or optional baseRef).
  *  Returns null if the cwd is not a git repo or worktree creation fails. */
-async function createWorktree(
+export async function createWorktree(
 	parentCwd: string,
 	sessionId: string,
 	baseRef?: string,
 	carryUncommitted: boolean = true,
-): Promise<{ worktreePath: string; branchName: string; parentHeadCommit: string; carried?: CarriedSnapshot } | null> {
+): Promise<{
+	worktreePath: string;
+	branchName: string;
+	parentHeadCommit: string;
+	/** Shared per-clone cargo target dir the child is spawned with. */
+	cargoTargetDir: string;
+	carried?: CarriedSnapshot;
+} | null> {
 	const t0 = PI_ASYNC_DEBUG ? Date.now() : 0;
 	try {
 		const baseCommitRef = baseRef || "HEAD";
@@ -912,7 +920,11 @@ async function createWorktree(
 
 		const suffix = sessionId.slice(-12);
 		const branchName = `pi-subagent-${suffix}`;
-		const worktreePath = path.join(os.tmpdir(), `pi-subagent-wt-${suffix}`);
+		// Never under os.tmpdir(): the daily cleaner and every reboot destroy
+		// trees that hold uncommitted work (decisions/subagents/0NN).
+		const repoName = path.basename(topLevel);
+		const worktreePath = subagentWorktreePath(repoName, suffix);
+		fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
 
 		// Remove stale leftovers from a previous run with the same session id.
 		// `sessionId` is a fresh randomUUID slice per spawn and createWorktree is
@@ -987,6 +999,7 @@ async function createWorktree(
 			worktreePath,
 			branchName,
 			parentHeadCommit,
+			cargoTargetDir: cargoTargetDirFor(repoName),
 			...(carried !== undefined ? { carried } : {}),
 		};
 	} catch {
@@ -1697,6 +1710,11 @@ export interface SubagentEnvConfig {
 	allowlist: string[] | undefined;
 	worktreePath: string | null;
 	parentCwdForCleanup: string;
+	/** Shared per-clone cargo target dir for this dispatch. Null when the child
+	 *  is not isolated: an unisolated child runs in the parent checkout, whose
+	 *  own `target/` is the right place for its artifacts, and pointing it
+	 *  elsewhere would build the tree a second time. */
+	cargoTargetDir: string | null;
 	depth: number;
 }
 
@@ -1724,7 +1742,7 @@ export function buildSubagentEnv(config: SubagentEnvConfig): Record<string, stri
 		// extension reads this and uses it to:
 		//   1. Allow writes inside this worktree (the "own worktree" anchor)
 		//   2. Block writes inside OTHER concurrent subagents' worktrees
-		//      (paths matching `/tmp/pi-subagent-wt-*` that are not this one)
+		//      (paths under `~/Developer/wt/subagents/` that are not this one)
 		// Empty string when no worktree isolation applies (`isolate: false`
 		// reviewers, or subagents dispatched without worktree support);
 		// the worktree-guard treats empty as a no-op for that guard.
@@ -1737,6 +1755,11 @@ export function buildSubagentEnv(config: SubagentEnvConfig): Record<string, stri
 		// block would block them from their own working directory. Empty
 		// in that case.
 		PI_SUBAGENT_PARENT_CWD: config.worktreePath ? (config.parentCwdForCleanup ?? "") : "",
+		// Decision 0NN: one target dir per clone, shared by its worktrees.
+		// Registry-crate artifacts are reused across worktrees, and cargo's
+		// target-dir lock serialises concurrent rustc runs — the memory peak
+		// that pushes an 8 GB box into swap when several lanes build at once.
+		...(config.cargoTargetDir ? { CARGO_TARGET_DIR: config.cargoTargetDir } : {}),
 		// peer-link identity: the subagent's peer name is its session id, so
 		// the same id steers it, resumes it, and addresses peer messages to
 		// it. Always set — an inherited PI_PEER_NAME would make sibling
@@ -1873,6 +1896,8 @@ async function spawnSubagent(
 	isolationBranch: string | null,
 	parentHeadCommit: string | null,
 	parentCwdForCleanup: string,
+	/** Shared per-clone cargo target dir; null for unisolated and resumed runs. */
+	cargoTargetDir: string | null,
 	// When set, the subprocess loads an existing session file instead of
 	// creating a new one. Used by subagent_resume.
 	resumeSessionFile?: string,
@@ -2074,6 +2099,7 @@ async function spawnSubagent(
 			allowlist: agent.allowedSubagents,
 			worktreePath,
 			parentCwdForCleanup,
+			cargoTargetDir,
 		}),
 	});
 
@@ -3825,6 +3851,7 @@ export default function (pi: ExtensionAPI) {
 			let isolationBranch: string | null = null;
 			let parentHeadCommit: string | null = null;
 			let carriedSnapshot: CarriedSnapshot | undefined;
+			let cargoTargetDir: string | null = null;
 			let isolationStatus = "";
 			let taskForAgent = params.task;
 
@@ -3844,6 +3871,7 @@ export default function (pi: ExtensionAPI) {
 					isolationBranch = wt.branchName;
 					parentHeadCommit = wt.parentHeadCommit;
 					carriedSnapshot = wt.carried;
+					cargoTargetDir = wt.cargoTargetDir;
 					isolationStatus = `\nIsolated in worktree \`${wt.branchName}\` (off \`${wt.parentHeadCommit.slice(0, 8)}\`)`;
 					taskForAgent =
 						`## Worktree isolation\n` +
@@ -3868,6 +3896,7 @@ export default function (pi: ExtensionAPI) {
 				isolationBranch,
 				parentHeadCommit,
 				cwd,
+				cargoTargetDir,
 				undefined, // resumeSessionFile
 				params.review_policy,
 				// Full delivery payload: worktree-isolation preamble + (possibly
@@ -4183,6 +4212,7 @@ export default function (pi: ExtensionAPI) {
 				null, // isolationBranch
 				null, // parentHeadCommit
 				cwd,
+				null, // cargoTargetDir — resumed runs are not isolated
 				resolvedMeta.sessionFile, // resumeSessionFile
 			);
 			// The resumed run completes the same work-order record (decisions/work-order-records/001).

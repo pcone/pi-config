@@ -156,7 +156,7 @@ via absolute paths), not by the worktree-handling code itself.
 
 **Plausible external mechanisms:**
 - MEDIUM — child reads sibling worktree via absolute path (21-minute
-  reviewer could enumerate `/tmp/pi-subagent-wt-*/`).
+  reviewer could enumerate `~/Developer/wt/subagents/*/`).
 - LOW — shared `git stash` survives worktree removal (no `stash clear`
   in `cleanupWorktree`).
 

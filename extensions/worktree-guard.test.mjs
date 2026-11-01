@@ -18,6 +18,7 @@ import { describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
+import { subagentWorktreeBase } from "./lib/subagent-worktree.ts";
 import {
 	isBlocked,
 	resolveAbsolute,
@@ -30,14 +31,16 @@ import {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-// The worktree-guard module computes WORKTREE_ROOT_PREFIX internally. We
-// recompute the same value here so tests use realistic production paths.
+// The worktree-guard module computes WORKTREE_ROOT_PREFIX internally from
+// extensions/lib/subagent-worktree.ts. We recompute it the same way here so
+// tests exercise realistic production paths — including the case where the
+// base does not exist yet (the first dispatch creates it).
 function productionPrefix() {
-	const base = tmpdir().replace(/\/+$/, "");
+	const base = subagentWorktreeBase().replace(/\/+$/, "");
 	try {
-		return realpathSync(base) + sep + "pi-subagent-wt-";
+		return realpathSync(base) + sep;
 	} catch {
-		return base + sep + "pi-subagent-wt-";
+		return base + sep;
 	}
 }
 
@@ -128,7 +131,7 @@ describe("isBlocked", () => {
 		// a symlink to /private/var/folders/dh/.../T. The ctx's myWorktree
 		// should also be resolved through realpathSync (via makeGuardContext),
 		// so both sides agree on /private/var/...
-		const realWt = realpathSync(tmpdir()) + sep + "pi-subagent-wt-mine";
+		const realWt = productionWorktree("mine");
 		const realCtx = makeGuardContext(realWt, "");
 
 		// Path inside own worktree, symlink-resolved
@@ -240,7 +243,7 @@ describe("resolveAbsolute", () => {
 		// Simulate the production flow: input is a raw path; resolveAbsolute
 		// resolves through symlinks; isBlocked then compares against the
 		// symlink-resolved myWorktree from ctx.
-		const realWt = realpathSync(tmpdir()) + sep + "pi-subagent-wt-mine";
+		const realWt = productionWorktree("mine");
 		const realCtx = makeGuardContext(realWt, "");
 
 		// Build a sibling path that, when resolved, looks like a sibling worktree
@@ -344,7 +347,7 @@ describe("makeGuardWrapper", () => {
 	}
 
 	test("delegates to original when path is inside own worktree", async () => {
-		const realWt = realpathSync(tmpdir()) + sep + "pi-subagent-wt-mine";
+		const realWt = productionWorktree("mine");
 		const ctx = makeGuardContext(realWt, "");
 		const original = makeMockOriginal();
 		const wrapped = makeGuardWrapper("read", original, ctx);
@@ -358,7 +361,7 @@ describe("makeGuardWrapper", () => {
 	});
 
 	test("throws when path is in a sibling worktree", async () => {
-		const realWt = realpathSync(tmpdir()) + sep + "pi-subagent-wt-mine";
+		const realWt = productionWorktree("mine");
 		const ctx = makeGuardContext(realWt, "");
 		const original = makeMockOriginal();
 		const wrapped = makeGuardWrapper("read", original, ctx);
@@ -389,7 +392,7 @@ describe("makeGuardWrapper", () => {
 	});
 
 	test("delegates for find with default cwd", async () => {
-		const realWt = realpathSync(tmpdir()) + sep + "pi-subagent-wt-mine";
+		const realWt = productionWorktree("mine");
 		const ctx = makeGuardContext(realWt, "");
 		const original = makeMockOriginal();
 		const wrapped = makeGuardWrapper("find", original, ctx);
@@ -403,7 +406,7 @@ describe("makeGuardWrapper", () => {
 	});
 
 	test("blocks find with root outside worktree", async () => {
-		const realWt = realpathSync(tmpdir()) + sep + "pi-subagent-wt-mine";
+		const realWt = productionWorktree("mine");
 		const ctx = makeGuardContext(realWt, "");
 		const original = makeMockOriginal();
 		const wrapped = makeGuardWrapper("find", original, ctx);
@@ -438,7 +441,7 @@ describe("makeGuardWrapper", () => {
 		// the own-worktree whitelist check fails because ctx.myWorktree was
 		// stored as the unresolved /var/... path. With resolveAnchor applied
 		// at construction time, both sides agree on /private/var/...
-		const realWt = realpathSync(tmpdir()) + sep + "pi-subagent-wt-mine";
+		const realWt = productionWorktree("mine");
 		const ctx = makeGuardContext(realWt, "");
 		const original = makeMockOriginal();
 		const wrapped = makeGuardWrapper("write", original, ctx);

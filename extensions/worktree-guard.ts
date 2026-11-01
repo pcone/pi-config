@@ -3,7 +3,7 @@
  *
  * Wraps `read`, `write`, `edit`, `find`, `grep` with a path check that blocks:
  *   1. Paths inside OTHER concurrent subagents' worktrees (paths under
- *      `<os.tmpdir()>/pi-subagent-wt-*` that are not this session's own
+ *      `~/Developer/wt/subagents/` that are not this session's own
  *      worktree). The session's own worktree (set via PI_SUBAGENT_WORKTREE)
  *      is always allowed.
  *   2. Paths inside the parent repo's checkout (set via PI_SUBAGENT_PARENT_CWD).
@@ -27,7 +27,7 @@
 import { realpathSync } from "node:fs";
 import { sep } from "node:path";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
-import { tmpdir } from "node:os";
+import { subagentWorktreeBase } from "./lib/subagent-worktree.ts";
 import {
 	createEditTool,
 	createFindTool,
@@ -38,25 +38,28 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 /**
- * Resolved prefix of all subagent worktrees on this system. Worktree paths
- * are created as `path.join(os.tmpdir(), "pi-subagent-wt-<suffix>")` by
- * subagent-async's createWorktree (see extensions/subagent-async/index.ts).
+ * Resolved prefix of every subagent worktree on this system. The path shape
+ * is owned by extensions/lib/subagent-worktree.ts — the same module
+ * subagent-async creates trees with, so the two cannot drift.
  *
- * Important: `tmpdir()` is platform-specific:
- *   - Linux:  typically "/tmp"
- *   - macOS:  the per-user TMPDIR, e.g. "/var/folders/dh/.../T"
+ * The base is `~/Developer/wt/subagents/`, deliberately not `os.tmpdir()`:
+ * the daily tmp cleaner and every reboot delete trees there, including the
+ * uncommitted work inside them (decisions/subagents/0NN). Subagent trees get
+ * their own namespace so blocking a sibling does not also block a hand-made
+ * worktree in `~/Developer/wt/`.
  *
  * We realpathSync the prefix at module load so the comparison is consistent
  * with the symlink-resolved absolute paths produced by {@link resolveAbsolute}.
  * On macOS this resolves `/var` to `/private/var`.
  */
 const WORKTREE_ROOT_PREFIX: string = (() => {
-	const base = tmpdir().replace(/\/+$/, "");
+	const base = subagentWorktreeBase().replace(/\/+$/, "");
 	try {
-		return realpathSync(base) + sep + "pi-subagent-wt-";
+		return realpathSync(base) + sep;
 	} catch {
-		// tmpdir() should always exist, but be defensive
-		return base + sep + "pi-subagent-wt-";
+		// The base is created lazily by the first dispatch; before that there is
+		// nothing to resolve and the literal path is already correct.
+		return base + sep;
 	}
 })();
 
@@ -153,7 +156,7 @@ export function isBlocked(
 	op: "read" | "write" = "read",
 ): BlockResult {
 	// 1. Block other concurrent subagents' worktrees.
-	//    Any path under the system worktree root (`<tmpdir>/pi-subagent-wt-`)
+	//    Any path under the subagent worktree root (`~/Developer/wt/subagents/`)
 	//    that is NOT inside `myWorktree` is forbidden. This includes the
 	//    root worktree directory itself, the other worktree's root, and
 	//    any path inside another worktree.
