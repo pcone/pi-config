@@ -62,7 +62,7 @@ Anything a decision settles that shapes the design must **also** land in the for
 - **Intent unclear, but a decision is needed** → stop and ask. Do not silently inherit whatever the code happens to do.
 - **Confirmed intended via docs/decisions** → keep it, and add a test if non-obvious.
 
-**A test pins a behaviour only if it fails without it.** For each new row, show the revert or mutation that turns it red. A row that recomputes its expected value with the code's own formula, or whose assertion holds either way, pins nothing.
+**A test pins a behaviour only if it fails without it.** For each new row, show the revert or mutation that turns it red, running that row alone, not the suite. A row that recomputes its expected value with the code's own formula, or whose assertion holds either way, pins nothing.
 
 **Changing existing tests to make them pass requires high certainty.** If you're unsure whether a change obsoleted a test or broke behavior, ask. Don't silently rewrite tests to match new behavior.
 
@@ -97,6 +97,8 @@ If there is more than one, funnel them into one path the type system enforces: p
 The tests vary every dimension the rule ranges over: node kind, type width, call shape, whatever the rule quantifies. A rule tested on one shape is tested for that shape only.
 
 A claim that a path is the only one ("one X", "zero residue", "no other site", "every path", "no new mechanism") carries its `rg` and the count at the tip it describes. Write that `rg` by behaviour, not by the names you already know. A claim with no `rg` shown is unverified. A count that differs on re-run blocks the landing.
+
+**Always-on work has a cost budget.** A check, hook or preflight that runs on every push or test run adds its cost to all of them, and the machine is shared. Measure wall time and process spawns before and after, and read what an existing pass already loads instead of adding a walk. Review the always-on set as a whole when adding to it: costs that are small one at a time add up.
 
 **New public surface needs an ask.** An API, CLI flag, config key, tool, or language syntax is user-facing surface. Don't add it on your own initiative. Discuss it first, or write a brief and wait for an answer. Internal-only code with no user-visible surface is exempt.
 

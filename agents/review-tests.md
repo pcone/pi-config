@@ -150,8 +150,8 @@ Categories (adapt to what the work order actually asks for):
 - A row with no shown revert or mutation that turns it red, or one
   that would pass against the bug it targets: an expected value
   computed with the code's own formula, an assertion that holds either
-  way, a count taken where earlier state can lower it. Run the revert
-  when the report does not show it.
+  way, a count taken where earlier state can lower it. When the report
+  does not show the revert, run it for that row only.
 
 **Duplicate coverage** — a new test that pins the same input class
 and assertion as an existing one adds maintenance, not evidence. Name
