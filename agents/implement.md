@@ -266,7 +266,7 @@ X because Y.")
 **files_modified:** list of all files actually modified
 
 **tests:** command and result, and for each new row the revert or
-mutation that turns it red, with its output
+mutation that turns it red, with its output (run that row alone)
 
 **deviations_from_spec:** none, or each process-only fact (APPEND_SYSTEM
 § Spec authority) prefixed with its class: `[commit-shape]`,
