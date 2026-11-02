@@ -139,7 +139,8 @@ const DEGRADATION_PROMPT =
 	"**Context note:** The conversation has reached **{{tokens}}** tokens " +
 	"({{percent}}% of {{contextWindow}}). Quality tends to degrade at higher " +
 	"context lengths. Finish the current subtask first, then run the **checkpoint** " +
-	"tool at that stopping point to archive progress and continue with fresh context.";
+	"tool at that stopping point to archive progress and continue with fresh context " +
+	"— or `continue: false` if the next step belongs to someone else.";
 
 /** Used when the model handles long context well (contextDegradation: false). */
 const NO_DEGRADATION_PROMPT =
@@ -148,7 +149,8 @@ const NO_DEGRADATION_PROMPT =
 	"well, but keeping context smaller reduces costs. Whenever you reach a " +
 	"clean break — finishing the current subtask or answering the current " +
 	"question — you can run the **checkpoint** tool to archive progress and " +
-	"continue with fresh context. There's no rush.";
+	"continue with fresh context, or with `continue: false` if the next step " +
+	"belongs to someone else. There's no rush.";
 
 const DEFAULT_CONFIG: AutoCheckpointConfig = {
 	defaultThreshold: 0.75,

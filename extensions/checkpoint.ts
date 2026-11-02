@@ -566,18 +566,26 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Archive the current session, clear context, and continue. " +
 			"Use at logical task boundaries when work for this turn is done but more remains. " +
+			"A checkpoint is not a pause: by default a fresh prompt starts the next turn. " +
+			"Pass `continue: false` when you are stopping to wait — see that parameter. " +
 			"Preserved reads are skipped automatically — only files the model hasn't seen in the preserved tail are injected.",
 		parameters: Type.Object({
 			summary: SUMMARY_SCHEMA,
 			nextSteps: Type.Optional(
 				Type.String({
 					description:
-						"What comes next. Used as the kickoff prompt if continue is true. Defaults to 'Continue work'.",
+						"What comes next. Used as the kickoff prompt if continue is true. Defaults to 'Continue work'. " +
+						"When you set continue false, name what you are waiting for.",
 				}),
 			),
 			continue: Type.Optional(
 				Type.Boolean({
-					description: "If true (default), follow up with a fresh prompt so work continues. Set false to stop.",
+					description:
+						"If true (default), a fresh prompt starts the next turn so work continues. " +
+						"Set false to stop and wait, when the next move belongs to someone else: the owner's ruling or a restart, " +
+						"a peer you wrote to for a reply, or a subagent you must gate first. " +
+						"The session then sits idle until a message arrives — the owner's, a peer's, or a finished subagent's — " +
+						"which is the only way a wait leaks: mail and subagent events still start turns.",
 				}),
 			),
 			relevantPaths: Type.Optional(
@@ -701,7 +709,9 @@ export default function (pi: ExtensionAPI) {
 			),
 			continue: Type.Optional(
 				Type.Boolean({
-					description: "If true (default), follow up with a fresh prompt so work continues after the switch.",
+					description:
+						"If true (default), a fresh prompt starts the next turn after the switch. Set false to stop and wait, " +
+						"as with `checkpoint`.",
 				}),
 			),
 			relevantPaths: Type.Optional(
@@ -900,7 +910,9 @@ export default function (pi: ExtensionAPI) {
 
 			const basePrompt =
 				"Run the checkpoint tool now. " + SUMMARY_FORMAT_HINT + " " +
-				"Let `continue` default to true so work continues automatically after compaction. " +
+				"Set `continue` for what happens after compaction: true when the work continues on your side, " +
+				"false when the next move is someone else's — an owner ruling or restart, a peer's reply, a subagent you must gate. " +
+				"If you stop, name the wait in `nextSteps`. " +
 				"If you need file context carried forward, include a `relevantPaths` list — only list files " +
 				"you will actually need after the checkpoint. " +
 				"Be conservative: include only files you're 100% certain you'll need in the next turn. " +
