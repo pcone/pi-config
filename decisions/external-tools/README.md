@@ -16,5 +16,6 @@ isn't re-litigated every time the tool trends on HN.
 | [001](001-rtk-rejected.md) | RTK (Rust Token Killer) — rejected, no expected savings | done |
 | [002](002-ponytail.md) | Ponytail — ladder adopted into system prompt, tool not installed | deferred |
 | [003](003-claude-code-external-peer.md) | Claude Code joins peer-link as an external peer; mail delivered only on the user's prompt | done |
+| [007](007-peer-link-channel.md) | peer-link mail through an official Claude Code channel, which may start the session's turn | accepted |
 | [005](005-owner-asks-statusline.md) | Owner asks on the pi status bar and Claude Code statusline, counted from the pushed registry; `/asks` lists new first and marks seen | done |
 | [006](006-opencode-go-usage-footer.md) | OpenCode Go usage in the footer via the aggregate `/zen/go/v1/usage` endpoint; per-model burn stays client-side | done |

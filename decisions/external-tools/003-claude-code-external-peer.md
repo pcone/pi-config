@@ -7,6 +7,8 @@ date: 2026-10-11
 
 # Claude Code joins peer-link as an external peer
 
+> **Superseded in part (owner 2026-11-02, [007](007-peer-link-channel.md)).** A Claude Code channel may deliver mail and start a turn. Every other turn-starting path below stays rejected.
+
 **What:** A Claude Code session joins the peer-link mailbox through its own hooks. `external.ts` registers `_peers/claude-<session_id>.json` on SessionStart, delivers pending mail as context on UserPromptSubmit, and unregisters on SessionEnd. Each Claude session has its own external mailbox. Design: `docs/design/peer-link-external.md`.
 
 **Why:** Mail reaches Claude only inside a hook that the user's prompt fired. Nothing starts a Claude turn. That keeps every Claude turn human-started, which is the only delivery shape that holds under Consumer Terms §3 item 7 (automated access) and the Claude Code legal page (ordinary individual use). Per-session mailboxes keep addressing exact when several Claude sessions run at once.
