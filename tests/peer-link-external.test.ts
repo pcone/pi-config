@@ -16,6 +16,7 @@ import {
 	deliveryDecision,
 	listPeers,
 	newEnvelope,
+	queuedStatus,
 	readIncoming,
 	sendEnvelope,
 	sweepStalePeers,
@@ -73,6 +74,15 @@ describe("external peers in the mailbox layer", () => {
 		expect(listPeers(dir)).toEqual([]);
 	});
 
+	it("tell a sender how external mail actually arrives", () => {
+		// The channel makes "read when its user next prompts" false, so the status
+		// names both paths; a regression to the prompt-only wording reds this.
+		const external = queuedStatus({ online: false, external: true });
+		expect(external).toContain("pushed by its channel server");
+		expect(external).toContain("next prompt");
+		expect(queuedStatus({ online: true, external: false })).toBe("online");
+	});
+
 	it("accept queued delivery, but fail requireOnline", () => {
 		const listed = [{ name: "ext", online: false, external: true }];
 		expect(deliveryDecision("ext", listed, false)).toEqual({ ok: true, online: false, external: true });
@@ -101,13 +111,16 @@ describe("external.ts CLI (as Claude Code hooks run it)", () => {
 		// A pi peer's send passes the delivery gate because the external is listed.
 		const d = deliveryDecision(SELF, listPeers(dir), false);
 		expect(d.ok).toBe(true);
-		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "issue #42 filed"));
+		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "issue #42 filed", true));
 
 		const prompt = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
 		expect(prompt.code).toBe(0);
 		const ctx = JSON.parse(prompt.out).hookSpecificOutput;
 		expect(ctx.hookEventName).toBe("UserPromptSubmit");
 		expect(ctx.additionalContext).toContain("[peer:bug-triage] issue #42 filed");
+		// The reply hint names the CLI, not whatever process argv[1] happens to be:
+		// the channel renders with `renderMail(self, envelopes, cli)` from its own file.
+		expect(ctx.additionalContext).toContain(`${CLI} send --from ${SELF} bug-triage`);
 		expect(readIncoming(dir, SELF)).toHaveLength(1); // inflight, NOT acked yet
 
 		expect(run(["hook", "stop"], hookJson("Stop")).code).toBe(0);
