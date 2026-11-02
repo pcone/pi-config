@@ -13,9 +13,11 @@
  * that match no listed peer.)
  *
  * External peers (a non-pi tool, e.g. a Claude Code session via
- * `external.ts`) register a heartbeat with `external: true` but never poll:
- * their inbox is read only when their user next prompts. They are listed but
- * never online, and age out after EXTERNAL_TTL_MS instead of the pi window.
+ * `external.ts`) register a heartbeat with `external: true` and never poll
+ * through pi: their inbox is pushed by their session's channel server
+ * (`channel.ts`) or read by the prompt hook when no channel runs. They are
+ * listed but never online, and age out after EXTERNAL_TTL_MS instead of the pi
+ * window. `mailDeliverer` names which of the two reads the inbox.
  * See docs/design/peer-link-external.md.
  */
 
@@ -50,6 +52,8 @@ export interface PeerInfo {
 	autoreply?: boolean;
 	/** Registered by a non-pi tool; reads its inbox only when its user prompts. */
 	external?: boolean;
+	/** The channel server delivering this external peer's mail; absent when the prompt hook delivers. */
+	channelPid?: number;
 	online?: boolean;
 }
 
@@ -247,6 +251,95 @@ export function removeHeartbeat(mailbox: string, name: string): void {
 	} catch {
 		// already gone
 	}
+}
+
+function readHeartbeat(mailbox: string, name: string): PeerInfo | undefined {
+	try {
+		return JSON.parse(
+			fs.readFileSync(path.join(peersDir(mailbox), `${sanitizePeerName(name)}.json`), "utf8"),
+		) as PeerInfo;
+	} catch {
+		return undefined; // never registered, or unreadable — no claim to honour
+	}
+}
+
+/** Does this pid exist? EPERM means it exists but belongs to another user. */
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/**
+ * Register or refresh an external peer's heartbeat.
+ *
+ * Two writers own disjoint fields — the prompt hook knows `cwd`, the channel
+ * knows its pid — so the write merges instead of replacing. `channelPid: null`
+ * hands delivery back to the hook. Omitting it keeps the pid on record while
+ * that process lives and drops it once it is gone, so a dead claim never
+ * silences the hook.
+ */
+export function registerExternalPeer(
+	mailbox: string,
+	name: string,
+	fields: { cwd?: string; channelPid?: number | null },
+): void {
+	const prev = readHeartbeat(mailbox, name);
+	// An explicit null clears the claim; an omissive refresh inherits and re-checks it.
+	const channelPid =
+		"channelPid" in fields ? (fields.channelPid ?? undefined) : prev?.channelPid;
+	const cwd = fields.cwd ?? prev?.cwd;
+	writeHeartbeat(mailbox, {
+		name,
+		ts: Date.now(),
+		external: true,
+		...(cwd === undefined ? {} : { cwd }),
+		...(channelPid !== undefined && pidAlive(channelPid) ? { channelPid } : {}),
+	});
+}
+
+/**
+ * Who delivers this external session's mail: the channel while the pid it
+ * registered is alive, otherwise the prompt hook. Both deliverers call this,
+ * and the hook emits nothing while a channel delivers, so an envelope arrives
+ * one way only (both deliverers at once would deliver everything twice).
+ */
+export function mailDeliverer(mailbox: string, name: string): "channel" | "prompt" {
+	const pid = readHeartbeat(mailbox, name)?.channelPid;
+	return pid !== undefined && pidAlive(pid) ? "channel" : "prompt";
+}
+
+/**
+ * Why the channel must not deliver from this mailbox, or undefined when it is
+ * user-private.
+ *
+ * The inbox is the transport, so a group- or world-accessible directory lets
+ * any local process put text in front of the session. The channel checks the
+ * inbox and `_peers` are owned by this user and mode 0700, and refuses to start
+ * otherwise. A sender allowlist would add nothing: `from` is self-asserted.
+ */
+export function mailboxPrivacyProblem(mailbox: string, name: string): string | undefined {
+	const uid = process.getuid?.();
+	for (const dir of [inboxDir(mailbox, name), peersDir(mailbox)]) {
+		let st: fs.Stats;
+		try {
+			st = fs.statSync(dir);
+		} catch {
+			return `${dir} does not exist (ensureMailbox creates it mode 0700)`;
+		}
+		if (!st.isDirectory()) return `${dir} is not a directory`;
+		if (uid !== undefined && st.uid !== uid) {
+			return `${dir} is owned by uid ${st.uid}, not ${uid}`;
+		}
+		const mode = st.mode & 0o777;
+		if (mode !== 0o700) {
+			return `${dir} is mode 0${mode.toString(8)}, not 0700 — another user could put mail in front of the session`;
+		}
+	}
+	return undefined;
 }
 
 export function listPeers(mailbox: string, now = Date.now()): PeerInfo[] {

@@ -36,8 +36,9 @@
  * (heartbeat present, online or stale) accept queued offline delivery.
  *
  * External peers (Claude Code sessions via `external.ts`) are listed but never
- * online: mail to them waits until their user next prompts. Nothing here ever
- * reads or injects into their inbox.
+ * online: mail to them is pushed by their channel server (`channel.ts`) when one
+ * runs, and otherwise read on their user's next prompt. Nothing here ever reads
+ * or injects into their inbox.
  */
 
 import { randomUUID } from "node:crypto";

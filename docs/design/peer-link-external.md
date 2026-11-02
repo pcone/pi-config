@@ -10,25 +10,33 @@ feature: peer-link
 
 A Claude Code session can join the peer-link mailbox as an **external peer**. Before this, Claude could send to pi peers by hand-writing envelope JSON but could never receive replies.
 
-Code: `extensions/peer-link/external.ts` (CLI, not a pi extension). Decision: `decisions/external-tools/003-claude-code-external-peer.md`.
+Code: `extensions/peer-link/external.ts` (CLI, not a pi extension) and `extensions/peer-link/channel.ts` (MCP stdio server). Decisions: `decisions/external-tools/003-claude-code-external-peer.md`, `decisions/external-tools/007-peer-link-channel.md`.
 
 ## Flow
 
+- **Channel** (`channel.ts`, spawned by Claude Code over stdio): watches the session's inbox and pushes the envelopes it has not pushed as one `notifications/claude/channel` event per scan, `renderMail` text plus `from` / `ids` / `expect_reply` attributes. A push starts the session's turn, which is the one path allowed to (`decisions/external-tools/007`); every path 003 rejected stays rejected. While it runs it owns delivery and the prompt hook stays silent.
 - **SessionStart** (`hook session-start`): registers `_peers/claude-<session_id>.json` with `external: true`; prints the session's identity and send usage as context.
-- **UserPromptSubmit** (`hook prompt`): refreshes the registration, prints pending envelopes as context on the user's prompt, records them as inflight (no ack).
+- **UserPromptSubmit** (`hook prompt`): refreshes the registration, then delivers pending envelopes as context on the user's prompt — unless a live channel holds the session, in which case it emits and acks nothing. Delivered envelopes are recorded inflight, not acked.
 - **Stop** (`hook stop`): acks exactly the envelopes the completed turn carried (inflight set). Bookkeeping only — deletes files, starts no turn.
 - **SessionEnd** (`hook session-end`): removes the registration. Un-acked mail stays in the inbox.
-
-Delivery is at-least-once: an aborted prompt (Escape, crash) acks nothing, so the next prompt re-emits the un-acked envelopes from the inbox (duplicates over loss — the mailbox contract in `extensions/peer-link/mailbox.ts`). Before 2026-10-18 the prompt hook acked at emit and an aborted prompt lost its mail (reported by the external Claude peer after an Escape-re-send dropped five envelopes); the Stop hook is the consumption confirmation Claude Code "gives no later" — it just needed the prompt hook to stop acking early.
-- **SessionEnd** (`hook session-end`): removes the registration.
 - **Send** (Claude's Bash tool): `external.ts send --from claude-<sid> [--reply] [--require-online] <to> <text | ->`. Same delivery gate as pi: unlisted targets fail loud. `external.ts list` lists peers.
 - **pi side:** external peers are listed, never "online", and age out after 24 h without refresh (`EXTERNAL_TTL_MS`) instead of pi's 2 min sweep window. pi's sends and auto-replies to them queue as "queued — external peer, read when its user next prompts"; `requireOnline` fails. pi never reads or injects into an external inbox.
 
-Mail reaches Claude only inside a hook that the user's prompt fired. Nothing starts a Claude turn.
+One deliverer per session: `mailbox.mailDeliverer` names it — the channel while the pid it registered in the heartbeat is alive, otherwise the prompt hook. Two live paths would deliver every envelope twice.
 
-## Hook setup
+Mail reaches Claude either as a channel event, which starts a turn, or inside a hook the user's prompt fired, which cannot. There is no third path.
 
-Merge into the `hooks` block of `~/.claude/settings.json`:
+The hook path is at-least-once: an aborted prompt (Escape, crash) acks nothing, so the next prompt re-emits the un-acked envelopes (duplicates over loss — the mailbox contract in `extensions/peer-link/mailbox.ts`). Before 2026-10-18 the prompt hook acked at emit and an aborted prompt lost its mail (reported by the external Claude peer after an Escape-re-send dropped five envelopes); the Stop hook is the consumption confirmation Claude Code "gives no later" — it just needed the prompt hook to stop acking early.
+
+### Channel delivery is not ready to enable: no ack yet
+
+Nothing acks an envelope the channel pushed. Mechanism 5 of `work-orders/WO-2026-063-peer-link-channel.md` waits on a probe of which hooks fire around a channel-started turn (a `UserPromptSubmit` that moves pushed envelopes to inflight, plus the existing Stop ack), so the server only pushes. A pushed envelope therefore stays in the inbox, and every channel restart re-pushes the whole un-acked backlog: a duplicate rather than a loss, but unbounded for a long session, since nothing ever removes a pushed envelope. Do not enable the channel until that wiring lands.
+
+## Setup
+
+Two independent deliveries. The hook block works today. The channel entry is **not ready to enable** (see the ack note above) and is text for the owner to apply once that lands.
+
+Hooks — merge into `~/.claude/settings.json`:
 
 ```json
 "hooks": {
@@ -41,6 +49,19 @@ Merge into the `hooks` block of `~/.claude/settings.json`:
 
 Without the Stop hook nothing acks: mail is re-emitted on every prompt (duplicates, no loss). Add it.
 
+Channel — once the ack wiring lands, add to the `mcpServers` block of `~/.claude.json`:
+
+```json
+"peer-link": {
+  "command": "bun",
+  "args": ["/Users/scott/Developer/pi-config/extensions/peer-link/channel.ts"]
+}
+```
+
+and launch the session with `--dangerously-load-development-channels server:peer-link`. A custom channel is off the research-preview allowlist, so that flag is the only way it loads, and it works only in an interactive session — `-p` and the Agent SDK ignore it. Leave the hook block installed: it registers and refreshes the peer, and hands delivery back to the prompt when the server exits.
+
+The server resolves its identity from `CLAUDE_CODE_SESSION_ID`, which Claude Code passes to the subprocesses it spawns. Unverified for MCP servers (probe P1, `work-orders/WO-2026-063-peer-link-channel.md`): if the variable does not reach it, the server exits naming it, so `/mcp` shows the failure instead of delivery silently going nowhere.
+
 ## Terms of Service compliance
 
 Sources, fetched 2026-10-11:
@@ -50,27 +71,34 @@ Sources, fetched 2026-10-11:
 
 Neither document mentions loops. §3.7 is the operative clause.
 
-**(a) Credentials.** The scripts read only `session_id` and `cwd` from hook stdin. They never read Claude Code's auth store, OAuth tokens, `transcript_path`, or `~/.claude`. They make no network calls and spawn no processes (`external.ts`, `mailbox.ts`). Claude Code is unmodified and is the only client that talks to Anthropic. pi never holds Claude credentials, and Claude never receives pi's. The only shared state is files in `~/.pi/peer-mail/`. Nothing collects, stores, or forwards Claude credentials or session tokens, and nothing routes requests through a subscription.
+**(a) Credentials.** The scripts read only `session_id` and `cwd` from hook stdin, and the channel reads `CLAUDE_CODE_SESSION_ID` and its own mailbox path. They never read Claude Code's auth store, OAuth tokens, `transcript_path`, or `~/.claude`. `external.ts`, `channel.ts` and `mailbox.ts` make no network calls and spawn no processes. Claude Code is unmodified and is the only client that talks to Anthropic. pi never holds Claude credentials, and Claude never receives pi's. The only shared state is files in `~/.pi/peer-mail/`. Nothing collects, stores, or forwards Claude credentials or session tokens, and nothing routes requests through a subscription.
 
-**(b) Automated access (§3.7).** Every Claude turn starts from a prompt the human types. Hooks are a Claude Code surface that Anthropic ships and documents. `UserPromptSubmit` runs inside the turn the human started and only appends text to that prompt. Claude's `send` is a Bash call inside that same turn. No code path runs without a human prompt.
+**(b) Automated access (§3.7).** Owner 2026-11-02: the channel is the one path that may start a Claude turn with no human prompt (`decisions/external-tools/007`). Channels are Anthropic's own surface for reacting to events happening outside the terminal, and the reference page documents a local server pushing events into a session. That is the "where we otherwise explicitly permit it" §3.7 reserves; a subscription-backed `claude -p` is not.
 
-Residual reading: §3.7 says "non-human means," and a hook is a local non-human process that adds input to a session. We read the access as the human's own interactive session, configured with a hook, and the hook makes no request to Anthropic. The same reading covers `CLAUDE.md`, `@`-imports, and MCP servers, which Anthropic ships and users rely on.
+Everything else keeps a human in the loop. `UserPromptSubmit` runs inside the turn the human started and only appends text to that prompt. Claude's `send` is a Bash call inside that same turn. Neither reaches Anthropic beyond the turns the human already paid for.
+
+Residual reading: §3.7 says "non-human means," and a channel server is a local non-human process whose event starts a turn. We read the access as Anthropic's shipped feature, used inside the human's own interactive session, with the server making no request to Anthropic: Claude Code stays the only client that talks to Anthropic. The same reading already covers `CLAUDE.md`, `@`-imports and MCP servers.
 
 Rejected designs, and why:
 
-- **Watcher or Monitor that wakes Claude on new mail.** Starts turns with no human. Direct §3.7 violation.
-- **pi spawning `claude -p` (or any headless Claude invocation) to answer mail.** Non-human access to the Services, and subscription OAuth outside interactive Claude Code use.
-- **Stop hook that forces continuation when mail is pending.** Starts a turn with no human prompt. Same as the watcher.
-- **Any agent-to-agent loop with no human in it** (pi replies to Claude, Claude replies to pi, ...). Automated access. pi's sends and auto-replies to an external peer only land in its inbox, which nothing reads until the human prompts, so pi cannot drive Claude turns.
+- **Watcher or Monitor that wakes Claude on new mail.** Starts turns with no Anthropic surface permitting it. The channel is that surface; a watcher is not.
+- **`claude -p` (or any headless Claude invocation) to answer mail.** Non-human access to the Services, and subscription OAuth outside interactive Claude Code use.
+- **Stop hook that forces continuation when mail is pending.** Starts a turn with no human prompt, through no channel. Same as the watcher.
+- **`/loop` polling.** Official, but it spends a turn on every tick with no mail; a channel spends one only when mail arrives.
+- **An agent-to-agent loop with no human in it.** Mail is not a trigger by itself: a channel push is, and anything that makes pi answer Claude so Claude starts another turn is a loop. Pi's sends land in an inbox a human's session must read.
 - **pi holding or forwarding Claude OAuth to reach Claude.** Credential intermediation, which the Claude Code legal page prohibits.
 
-**(c) Usage limits.** Volume is bounded by the human's prompt cadence. Each prompt adds one local file read, a few lines of context, and no extra model turns. This is ordinary individual use under the stated Pro/Max assumptions.
+**(c) Usage limits.** Each delivery batch costs one turn of subscription usage, and events that arrive mid-turn batch into the next one. Otherwise volume follows the human's prompt cadence, as before: one local file read and a few lines of context per prompt. This is ordinary individual use under the stated Pro/Max assumptions.
 
 **Invariants for future changes:**
 
-- Never add a path that starts a Claude turn: no watcher, no `claude -p`, no SDK call, no Stop hook that continues the turn. (A Stop hook that only acks delivered mail is bookkeeping, not continuation — it is the one Stop hook allowed here.)
+- Exactly one path starts a Claude turn with no human prompt: this channel. No watcher, no `claude -p`, no SDK query call, no continuing Stop hook. A Stop hook that only acks delivered mail is bookkeeping, not continuation.
 - Never read, copy, or forward Claude Code credentials, OAuth tokens, transcripts, or `~/.claude` state.
-- Keep `external.ts` free of network calls and child processes.
-- Nothing reads an external inbox except the `UserPromptSubmit` hook; pi never reads or injects into it.
+- `channel.ts` declares no permission relay: peer mail is not an authenticated human, so a relayed approval would let any peer approve tool calls.
+- `external.ts`, `channel.ts` and `mailbox.ts` stay free of network calls and child processes.
+- Sending has one path, `external.ts send`. The channel declares no `tools`.
+- One deliverer per session, named by `mailbox.mailDeliverer`; the prompt hook emits nothing while a channel delivers.
+- The inbox is the transport, so only user-private mailboxes are usable: the channel refuses to start unless the inbox and `_peers` are owned by the user and mode 0700. A sender allowlist adds nothing, since `from` is self-asserted.
+- Nothing reads an external inbox except `channel.ts` and the `UserPromptSubmit` hook; pi never reads or injects into one.
 
 Not legal advice. Checked against the sources above on 2026-10-11. Re-check if Anthropic's terms change.

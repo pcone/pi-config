@@ -122,3 +122,28 @@ if [ ! -e "$ROOT_MODULES/typebox" ]; then
 else
   echo "Already linked: typebox"
 fi
+
+# The MCP SDK is an extensions/ dependency (peer-link/channel.ts), but
+# tests/peer-link-channel.test.ts imports the SDK's Client directly and bun
+# resolves a test file's bare specifiers from the repo root. Same link rule as
+# typebox: resolve, never leave a dangling link behind.
+SDK_TARGET="$EXTENSIONS_DIR/node_modules/@modelcontextprotocol/sdk"
+if [ ! -e "$SDK_TARGET" ]; then
+  echo "ERROR: cannot find @modelcontextprotocol/sdk at $SDK_TARGET" >&2
+  exit 1
+fi
+mkdir -p "$ROOT_MODULES/@modelcontextprotocol"
+if [ -L "$ROOT_MODULES/@modelcontextprotocol/sdk" ] && [ ! -e "$ROOT_MODULES/@modelcontextprotocol/sdk" ]; then
+  rm -f "$ROOT_MODULES/@modelcontextprotocol/sdk"
+fi
+if [ ! -e "$ROOT_MODULES/@modelcontextprotocol/sdk" ]; then
+  ln -s "$SDK_TARGET" "$ROOT_MODULES/@modelcontextprotocol/sdk"
+  if [ ! -e "$ROOT_MODULES/@modelcontextprotocol/sdk" ]; then
+    rm -f "$ROOT_MODULES/@modelcontextprotocol/sdk"
+    echo "ERROR: $ROOT_MODULES/@modelcontextprotocol/sdk does not resolve to $SDK_TARGET" >&2
+    exit 1
+  fi
+  echo "Linked @modelcontextprotocol/sdk -> $SDK_TARGET"
+else
+  echo "Already linked: @modelcontextprotocol/sdk"
+fi

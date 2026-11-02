@@ -14,6 +14,10 @@
  *
  * Mail is read only inside a hook the user's prompt fired, so nothing here
  * starts a Claude turn. Why that matters: docs/design/peer-link-external.md.
+ * When a channel server (`channel.ts`) is delivering this session's mail, the
+ * prompt hook emits and acks nothing: `mailbox.mailDeliverer` names exactly one
+ * deliverer per session.
+ *
  * Delivery is at-least-once: envelopes are acked only by the Stop hook, after
  * a turn that carried them completed; an aborted prompt leaves them in the
  * inbox and the next prompt re-emits them (duplicates over loss).
@@ -25,18 +29,18 @@ import {
 	type Envelope,
 	ackEnvelope,
 	deliveryDecision,
-	ensureMailbox,
 	listPeers,
+	mailDeliverer,
 	mailboxRoot,
 	newEnvelope,
 	peerStatus,
 	queuedStatus,
 	readIncoming,
+	registerExternalPeer,
 	removeHeartbeat,
 	resolvePeerAddressAmong,
 	sanitizePeerName,
 	sendEnvelope,
-	writeHeartbeat,
 } from "./mailbox.ts";
 
 const SELF = process.argv[1];
@@ -63,24 +67,26 @@ export function externalName(sessionId: string): string {
 	return sanitizePeerName(`claude-${sessionId}`);
 }
 
-function register(mailbox: string, name: string, cwd: string | undefined): void {
-	ensureMailbox(mailbox, name);
-	writeHeartbeat(mailbox, { name, cwd, ts: Date.now(), external: true });
-}
-
 function emitContext(event: string, text: string): void {
 	process.stdout.write(
 		JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } }),
 	);
 }
 
-/** Render pending envelopes as prompt context. Exported for tests. */
-export function renderMail(self: string, envelopes: Envelope[]): string {
+/**
+ * Render pending envelopes as prompt context. Exported for tests.
+ *
+ * `cli` is the `external.ts` path the reply hint names. It defaults to this
+ * script, which is right when a hook renders; the channel renders from another
+ * file, so it passes its sibling's path rather than suggesting a command that
+ * runs the server itself.
+ */
+export function renderMail(self: string, envelopes: Envelope[], cli = SELF): string {
 	const blocks = envelopes
 		.sort((a, b) => a.sentAt - b.sentAt)
 		.map((e) => {
 			const reply = e.expectReply
-				? `\n(${e.from} asked for a reply: send one with \`${sendUsage(self, e.from)}\`)`
+				? `\n(${e.from} asked for a reply: send one with \`${sendUsage(cli, self, e.from)}\`)`
 				: "";
 			const re = e.inReplyTo ? ` (reply to ${e.inReplyTo})` : "";
 			return `[peer:${e.from}]${re} ${e.text}${reply}`;
@@ -88,8 +94,8 @@ export function renderMail(self: string, envelopes: Envelope[]): string {
 	return `peer-link mail for ${self} (${envelopes.length}):\n\n${blocks.join("\n\n")}`;
 }
 
-function sendUsage(self: string, to = "<peer>"): string {
-	return `bun ${SELF} send --from ${self} ${to} '<text>'`;
+function sendUsage(cli: string, self: string, to = "<peer>"): string {
+	return `bun ${cli} send --from ${self} ${to} '<text>'`;
 }
 
 // ── inflight state ─────────────────────────────────────────────────────────
@@ -132,18 +138,23 @@ function hook(event: string): void {
 	const self = externalName(input.session_id);
 	switch (event) {
 		case "session-start":
-			register(mailbox, self, input.cwd);
+			registerExternalPeer(mailbox, self, { cwd: input.cwd });
 			emitContext(
 				"SessionStart",
 				`peer-link: this session is external peer \`${self}\`. pi peers can message it; ` +
-					"their mail is added to the user's next prompt. " +
-					`Send: \`${sendUsage(self)}\` (text \`-\` reads stdin; \`--reply\` asks for an answer; ` +
+					"their mail arrives as a channel event when a channel server delivers this session, " +
+					"otherwise as context on the user's next prompt. " +
+					`Send: \`${sendUsage(SELF, self)}\` (text \`-\` reads stdin; \`--reply\` asks for an answer; ` +
 					"`--require-online` fails instead of queueing). " +
 					`List peers: \`bun ${SELF} list\`.`,
 			);
 			return;
 		case "prompt": {
-			register(mailbox, self, input.cwd);
+			registerExternalPeer(mailbox, self, { cwd: input.cwd });
+			// One deliverer per session: while a live channel pushes this inbox, the
+			// hook emits nothing and acks nothing — duplicates over fidelity is the
+			// mailbox contract, but two live paths for one envelope is neither.
+			if (mailDeliverer(mailbox, self) === "channel") return;
 			const envelopes = readIncoming(mailbox, self);
 			if (envelopes.length === 0) return;
 			emitContext("UserPromptSubmit", renderMail(self, envelopes));
