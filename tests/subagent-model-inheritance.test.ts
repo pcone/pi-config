@@ -31,9 +31,9 @@
 import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readFileSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import subagentFactory, {
 	metaPath,
 	readMetaJson,
@@ -193,18 +193,52 @@ function resolvePiEntry(): string {
  * which reads as a model-inheritance failure. Production never sees this because
  * argv[1] is already pi's JS entry there.
  */
-function followToJsEntry(entry: string): string {
+export function followToJsEntry(entry: string, maxHops = 5): string {
 	let current = entry;
-	for (let depth = 0; depth < 5; depth++) {
+	for (let hop = 0; hop < maxHops; hop++) {
 		const source = readFileSync(current, "utf8");
 		const shebang = source.split("\n", 1)[0] ?? "";
 		if (!/^#!\s*\/bin\/(ba)?sh\b/.test(shebang)) return current;
 		const exec = /^\s*exec\s+"?([^"\s]+)"?/m.exec(source);
-		if (!exec) return current;
+		// A wrapper whose exec target is unreadable would otherwise be returned as
+		// argv[1], and bun would die parsing a shell script as JS with no message
+		// pointing here (the failure that cost three rows: pi-config#11 thread).
+		if (!exec) throw new Error(`pi wrapper ${current} has no exec line to follow`);
 		current = realpathSync(exec[1].startsWith("/") ? exec[1] : join(dirname(current), exec[1]));
 	}
-	return current;
+	throw new Error(`pi wrapper chain from ${entry} is still a shell script after ${maxHops} hops`);
 }
+
+describe("resolvePiEntry follows the PATH pi to a JS entry", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+	});
+
+	function chain(hops: number): string {
+		const dir = mkdtempSync(join(tmpdir(), "pi-wrapper-"));
+		dirs.push(dir);
+		const js = join(dir, "entry.js");
+		writeFileSync(js, "process.exit(0);\n");
+		let target = js;
+		for (let i = hops; i > 0; i--) {
+			const wrapper = join(dir, `wrap-${i}`);
+			writeFileSync(wrapper, `#!/bin/sh\nexec ${target} "$@"\n`);
+			target = wrapper;
+		}
+		return target;
+	}
+
+	it("follows a shell wrapper to the JS entry the harness can re-invoke", () => {
+		expect(followToJsEntry(chain(2))).toEndWith("entry.js");
+	});
+
+	it("fails loud on a wrapper chain it cannot finish", () => {
+		// Silent here means argv[1] stays a `#!/bin/sh` script, and bun dies parsing
+		// it as JS with no message naming this helper.
+		expect(() => followToJsEntry(chain(4), 2)).toThrow(/still a shell script after 2 hops/);
+	});
+});
 
 let savedArgv1: string | undefined;
 // The rows spawn `orchestrator`/`implement` through the tool gate, whose
