@@ -585,10 +585,11 @@ describe("derived: peer reply", () => {
 		expect(injected).toHaveLength(1);
 		expect(injected[0]).toContain("unrelated question while you wait");
 
-		// Run the turn the mail started through the checkpoint extension's own
-		// start handlers, so a "clear the wait on any message" implementation is
-		// reachable here. Revert: append an empty snapshot at the top of the
-		// before_agent_start announcement → the wait is gone and this reds.
+		// Fire the checkpoint extension's own start handlers, so a "clear the wait
+		// on any message" implementation is reachable here (a real mid-session
+		// wake-up fires before_agent_start; session_start is fired too so a clear
+		// placed there is caught as well). Revert: append an empty snapshot at the
+		// top of the before_agent_start announcement → the wait is gone and this reds.
 		await h.emit("session_start");
 		await h.emit("before_agent_start");
 
@@ -659,6 +660,36 @@ describe("durability", () => {
 		const { text } = await h2.checkpoint({});
 		expect(sentKickoff(h2)).toBe(false);
 		expect(text).toContain("→ not continuing");
+	}, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// A cleared wait stays cleared across a restart
+// ---------------------------------------------------------------------------
+
+describe("durability of a clear", () => {
+	it("a cleared wait does not come back when the session is reopened", async () => {
+		const cwd = await tmp("wo064-cleared-");
+		const sessionDir = await tmp("wo064-cleared-session-");
+		const sm = SessionManager.create(cwd, sessionDir);
+		seedConversation(sm);
+		const h = makeHarness(sm, cwd);
+
+		await h.waitFor({ reason: "the owner's ruling on the retry policy", kind: "owner" });
+		await h.waitFor({ clear: true });
+		const file = sm.getSessionFile()!;
+
+		// A new process reads the branch: the last snapshot is the empty one.
+		// Revert: drop the persist from clearManualWaits → the wait resurrects
+		// here, the announcement fires, and the checkpoint stops.
+		const reopened = SessionManager.open(file);
+		const h2 = makeHarness(reopened, cwd);
+		await h2.emit("session_start");
+		const [injected] = await h2.emit("before_agent_start");
+		expect(injected).toBeUndefined();
+
+		const { text } = await h2.checkpoint({});
+		expect(text).toContain("No wait pending → continuing");
 	}, 30_000);
 });
 

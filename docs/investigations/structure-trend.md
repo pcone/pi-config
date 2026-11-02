@@ -24,7 +24,7 @@ refactor lands.
 finding was that the `wait_for` tool and the restart announcement are not
 checkpoint-specific. Extraction done inside the landing, not deferred:
 `registerWaitSurface(pi)` in `extensions/lib/waits.ts` owns the tool and both
-handlers, so the file ends at 980 (+45 for the feature, all of it the
+handlers, so the file ends at 981 (+46 for the feature, all of it the
 `PendingCheckpoint` wiring and the two `describePending` result lines). New
 module `extensions/lib/waits.ts` (424 lines) carries the store, the sources
 registry, the rule, the rendering and the surface. No strike.
