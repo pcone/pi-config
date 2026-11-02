@@ -1,10 +1,10 @@
-# WO-peer-link-channel — deliver peer-link mail to a Claude Code session through a channel
+# WO-2026-063 — deliver peer-link mail to a Claude Code session through a channel
 
-**Status: DRAFT, dispatchable.** Numbered at dispatch (`rules/work-order-numbering.md`).
+**Status: DISPATCHED 2026-11-02.**
 
 ### Metadata
 
-- **work_order_id**: assigned at dispatch (slug: peer-link-channel)
+- **work_order_id**: WO-2026-063
 - **parent_plan_id**: [decision external-tools/007](../decisions/external-tools/007-peer-link-channel.md)
 - **routed_to**: implement
 - **invariant_exhaustiveness**: explicit
