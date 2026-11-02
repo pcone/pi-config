@@ -122,18 +122,21 @@ async function main(): Promise<void> {
 	}
 
 	registerExternalPeer(mailbox, self, { cwd: process.cwd(), channelPid: process.pid });
-	// One deliverer per session: the line above just claimed this inbox with a
-	// live pid, so a heartbeat that still names the hook means the claim did not
-	// land — and mail would then duplicate or stall.
-	if (mailDeliverer(mailbox, self) !== "channel") {
-		throw new Error(`channel registration for ${self} did not take effect`);
+	// One deliverer per session: the claim must now be this process. A live pid
+	// that is not ours means a second channel server for this session won the
+	// write, and both pushing would deliver every envelope twice; no live claim
+	// at all means the registration did not land, and mail would stall.
+	const claim = mailDeliverer(mailbox, self);
+	if (claim.via !== "channel" || claim.pid !== process.pid) {
+		const held = claim.via === "channel" ? `channel pid ${claim.pid}` : "no live channel";
+		throw new Error(`refusing to deliver ${self} twice: the claim is held by ${held}`);
 	}
 
 	let inboxWatch: InboxWatch | undefined;
 	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 	let stopped = false;
 
-	function shutdown(): void {
+	function shutdown(exitCode?: number): void {
 		if (stopped) return;
 		stopped = true;
 		inboxWatch?.close();
@@ -141,11 +144,14 @@ async function main(): Promise<void> {
 		// Hand delivery back to the prompt hook, keeping the registration so
 		// senders still see the peer listed.
 		registerExternalPeer(mailbox, self, { channelPid: null });
+		// A signal handler suppresses the default termination, so a signalled
+		// shutdown exits itself once delivery is handed back.
+		if (exitCode !== undefined) process.exit(exitCode);
 	}
 
-	mcp.onclose = shutdown;
-	process.on("SIGINT", shutdown);
-	process.on("SIGTERM", shutdown);
+	mcp.onclose = () => shutdown();
+	process.on("SIGINT", () => shutdown(0));
+	process.on("SIGTERM", () => shutdown(0));
 
 	await mcp.connect(new StdioServerTransport());
 	await scan(); // mail that arrived before this process started

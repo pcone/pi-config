@@ -76,12 +76,11 @@ function emitContext(event: string, text: string): void {
 /**
  * Render pending envelopes as prompt context. Exported for tests.
  *
- * `cli` is the `external.ts` path the reply hint names. It defaults to this
- * script, which is right when a hook renders; the channel renders from another
- * file, so it passes its sibling's path rather than suggesting a command that
- * runs the server itself.
+ * `cli` is the `external.ts` path the reply hint names, required because the
+ * renderer runs from two files: a default derived from `process.argv[1]` would
+ * tell Claude to run `channel.ts` as a send command.
  */
-export function renderMail(self: string, envelopes: Envelope[], cli = SELF): string {
+export function renderMail(self: string, envelopes: Envelope[], cli: string): string {
 	const blocks = envelopes
 		.sort((a, b) => a.sentAt - b.sentAt)
 		.map((e) => {
@@ -154,10 +153,10 @@ function hook(event: string): void {
 			// One deliverer per session: while a live channel pushes this inbox, the
 			// hook emits nothing and acks nothing — duplicates over fidelity is the
 			// mailbox contract, but two live paths for one envelope is neither.
-			if (mailDeliverer(mailbox, self) === "channel") return;
+			if (mailDeliverer(mailbox, self).via === "channel") return;
 			const envelopes = readIncoming(mailbox, self);
 			if (envelopes.length === 0) return;
-			emitContext("UserPromptSubmit", renderMail(self, envelopes));
+			emitContext("UserPromptSubmit", renderMail(self, envelopes, SELF));
 			// At-least-once: no ack here — the prompt can be aborted before the turn
 			// consumes this context (mail loss bug, 2026-10-18). The Stop hook acks
 			// what a completed turn carried; un-acked mail is re-emitted next prompt.

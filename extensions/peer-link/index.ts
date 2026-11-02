@@ -314,7 +314,7 @@ export default function (pi: ExtensionAPI) {
 		name: "peer_send",
 		label: "Peer Send",
 		description:
-			"Send a message to another pi session (peer) or an external peer (a Claude Code session; it reads mail only when its user next prompts, so do not wait on its reply). A pi peer's message is injected into the peer's session as a user message, triggering its agent. Use peer_list to discover peers. Set expectReply to true to have the peer's response sent back to this session automatically. Use to: \"*\" to broadcast to all online peers. Keep the message information-dense — lead with the ask, skip filler.",
+			"Send a message to another pi session (peer) or an external peer (a Claude Code session; it reads mail when a channel server pushes it or when its user next prompts, so do not wait on its reply). A pi peer's message is injected into the peer's session as a user message, triggering its agent. Use peer_list to discover peers. Set expectReply to true to have the peer's response sent back to this session automatically. Use to: \"*\" to broadcast to all online peers. Keep the message information-dense — lead with the ask, skip filler.",
 		promptSnippet: "Send a message to another pi session and optionally await its reply",
 		promptGuidelines: [
 			"Use peer_send when the user asks to coordinate with another pi session or another agent.",

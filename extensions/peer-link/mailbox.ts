@@ -301,15 +301,23 @@ export function registerExternalPeer(
 	});
 }
 
+export type MailDeliverer = { via: "channel"; pid: number } | { via: "prompt" };
+
 /**
  * Who delivers this external session's mail: the channel while the pid it
  * registered is alive, otherwise the prompt hook. Both deliverers call this,
  * and the hook emits nothing while a channel delivers, so an envelope arrives
  * one way only (both deliverers at once would deliver everything twice).
+ *
+ * The pid is the claim's identity, not just liveness, so a channel can tell its
+ * own claim from another server's. Liveness is all either side can test: a pid
+ * recycled by an unrelated process would hold the claim until SessionEnd, and
+ * mail would stall rather than be lost. Neither writer can check freshness,
+ * because both refresh `ts`.
  */
-export function mailDeliverer(mailbox: string, name: string): "channel" | "prompt" {
+export function mailDeliverer(mailbox: string, name: string): MailDeliverer {
 	const pid = readHeartbeat(mailbox, name)?.channelPid;
-	return pid !== undefined && pidAlive(pid) ? "channel" : "prompt";
+	return pid !== undefined && pidAlive(pid) ? { via: "channel", pid } : { via: "prompt" };
 }
 
 /**
@@ -323,6 +331,9 @@ export function mailDeliverer(mailbox: string, name: string): "channel" | "promp
  */
 export function mailboxPrivacyProblem(mailbox: string, name: string): string | undefined {
 	const uid = process.getuid?.();
+	if (uid === undefined) {
+		return "cannot verify mailbox ownership on this platform (no process.getuid)";
+	}
 	for (const dir of [inboxDir(mailbox, name), peersDir(mailbox)]) {
 		let st: fs.Stats;
 		try {
@@ -331,9 +342,7 @@ export function mailboxPrivacyProblem(mailbox: string, name: string): string | u
 			return `${dir} does not exist (ensureMailbox creates it mode 0700)`;
 		}
 		if (!st.isDirectory()) return `${dir} is not a directory`;
-		if (uid !== undefined && st.uid !== uid) {
-			return `${dir} is owned by uid ${st.uid}, not ${uid}`;
-		}
+		if (st.uid !== uid) return `${dir} is owned by uid ${st.uid}, not ${uid}`;
 		const mode = st.mode & 0o777;
 		if (mode !== 0o700) {
 			return `${dir} is mode 0${mode.toString(8)}, not 0700 — another user could put mail in front of the session`;
@@ -458,7 +467,7 @@ export function peerStatus(p: { online?: boolean; external?: boolean }): string 
 /** What a sender is told about where its message went. */
 export function queuedStatus(d: { online: boolean; external: boolean }): string {
 	if (d.online) return "online";
-	if (d.external) return "queued — external peer, read when its user next prompts";
+	if (d.external) return "queued — external peer, pushed by its channel server if one runs, else read on its user's next prompt";
 	return "queued for when it is online";
 }
 

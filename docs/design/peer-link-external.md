@@ -20,9 +20,9 @@ Code: `extensions/peer-link/external.ts` (CLI, not a pi extension) and `extensio
 - **Stop** (`hook stop`): acks exactly the envelopes the completed turn carried (inflight set). Bookkeeping only — deletes files, starts no turn.
 - **SessionEnd** (`hook session-end`): removes the registration. Un-acked mail stays in the inbox.
 - **Send** (Claude's Bash tool): `external.ts send --from claude-<sid> [--reply] [--require-online] <to> <text | ->`. Same delivery gate as pi: unlisted targets fail loud. `external.ts list` lists peers.
-- **pi side:** external peers are listed, never "online", and age out after 24 h without refresh (`EXTERNAL_TTL_MS`) instead of pi's 2 min sweep window. pi's sends and auto-replies to them queue as "queued — external peer, read when its user next prompts"; `requireOnline` fails. pi never reads or injects into an external inbox.
+- **pi side:** external peers are listed, never "online", and age out after 24 h without refresh (`EXTERNAL_TTL_MS`) instead of pi's 2 min sweep window. pi's sends and auto-replies to them queue as "queued — external peer, pushed by its channel server if one runs, else read on its user's next prompt"; `requireOnline` fails. pi never reads or injects into an external inbox.
 
-One deliverer per session: `mailbox.mailDeliverer` names it — the channel while the pid it registered in the heartbeat is alive, otherwise the prompt hook. Two live paths would deliver every envelope twice.
+One deliverer per session: `mailbox.mailDeliverer` names it — the channel while the pid it registered in the heartbeat is alive, otherwise the prompt hook. Two live paths would deliver every envelope twice. A channel server checks that the claim is its own pid before pushing, so a second server for one session refuses to start. What no side can check is freshness: both writers refresh the heartbeat's `ts`, so a pid recycled by an unrelated process would hold delivery until the session ends — mail then stalls (it is not lost) until a prompt or a restart clears the claim.
 
 Mail reaches Claude either as a channel event, which starts a turn, or inside a hook the user's prompt fired, which cannot. There is no third path.
 

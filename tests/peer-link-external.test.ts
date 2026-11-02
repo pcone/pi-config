@@ -84,7 +84,7 @@ describe("external peers in the mailbox layer", () => {
 	it("renders mail oldest first, with a reply prompt when asked", () => {
 		const a = { ...newEnvelope("bob", SELF, "second", true), sentAt: 2 };
 		const b = { ...newEnvelope("bob", SELF, "first"), sentAt: 1 };
-		const text = renderMail(SELF, [a, b]);
+		const text = renderMail(SELF, [a, b], CLI);
 		expect(text.indexOf("first")).toBeLessThan(text.indexOf("second"));
 		expect(text).toContain(`send --from ${SELF} bob`);
 	});

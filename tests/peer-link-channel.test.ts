@@ -20,8 +20,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { renderMail } from "../extensions/peer-link/external";
 import {
 	type Envelope,
+	SCAN_MS,
 	inboxDir,
 	listPeers,
+	mailboxPrivacyProblem,
 	newEnvelope,
 	readIncoming,
 	sendEnvelope,
@@ -64,6 +66,7 @@ interface RunningChannel {
 	events: Array<{ method: string; params: { content: string; meta: Record<string, string> } }>;
 	pid: number;
 	capabilities: Record<string, unknown>;
+	instructions: string | undefined;
 	close: () => Promise<void>;
 }
 
@@ -93,6 +96,7 @@ async function startChannel(env: Record<string, string | undefined> = {}): Promi
 		events,
 		pid,
 		capabilities: (client.getServerCapabilities() ?? {}) as Record<string, unknown>,
+		instructions: client.getInstructions(),
 		close: () => client.close(),
 	};
 	running.push(ch);
@@ -166,9 +170,18 @@ describe("channel notifications", () => {
 		sendEnvelope(dir, env);
 		await waitForNotifications(ch, 1);
 
+		// Mechanism 4's other half: the instructions are the only text telling the
+		// model how to reply, and they are negotiated at connect time.
+		const instructions = ch.instructions ?? "";
+		expect(instructions).toContain('<channel source="peer-link"');
+		expect(instructions).toContain(`${CLI} send --from ${SELF}`);
+
 		const [note] = ch.events;
 		expect(note.method).toBe("notifications/claude/channel");
 		expect(note.params.content).toBe(renderMail(SELF, [env], CLI));
+		// Literals, so the row does not accept whatever renderMail happens to do.
+		expect(note.params.content).toContain(`peer-link mail for ${SELF} (1):`);
+		expect(note.params.content).toContain("[peer:bug-triage] issue #42 filed");
 		// The reply hint has to name external.ts: rendered from channel.ts, a hint
 		// built from process.argv[1] would tell Claude to run the channel as a CLI.
 		expect(note.params.content).toContain(`${CLI} send --from ${SELF}`);
@@ -195,7 +208,9 @@ describe("channel notifications", () => {
 
 		const ch = await startChannel();
 		await waitForNotifications(ch, 1);
-		await sleep(500); // a second notification for the same batch would land here
+		// A second push of the same batch can only land on a later scan, so the
+		// settle window has to outlast one poll.
+		await sleep(SCAN_MS + 1_000);
 		expect(ch.events).toHaveLength(1);
 
 		const [note] = ch.events;
@@ -203,6 +218,24 @@ describe("channel notifications", () => {
 		expect(note.params.meta.from).toBe("bug-triage,review-code");
 		expect(new Set(note.params.meta.ids.split(","))).toEqual(new Set(batch.map((e) => e.id)));
 		expect(note.params.meta.expect_reply).toBe("false");
+	}, 120_000);
+
+	it("pushes an envelope once per process: later scans do not push it again", async () => {
+		const ch = await startChannel();
+		const env = newEnvelope("bug-triage", SELF, "pushed exactly once");
+		sendEnvelope(dir, env);
+		await waitForNotifications(ch, 1);
+		// Two more polls, and two more arrivals that must each get their own push:
+		// the pushed set has to suppress only what it already pushed.
+		await sleep(SCAN_MS * 2 + 500);
+		expect(ch.events).toHaveLength(1);
+
+		const second = newEnvelope("review-code", SELF, "a later arrival");
+		sendEnvelope(dir, second);
+		await waitForNotifications(ch, 2);
+		await sleep(SCAN_MS + 500);
+		expect(ch.events).toHaveLength(2);
+		expect(ch.events.map((e) => e.params.meta.ids)).toEqual([env.id, second.id]);
 	}, 120_000);
 
 	it("re-pushes an un-acked envelope after a server restart (duplicate, never a loss)", async () => {
@@ -260,12 +293,14 @@ describe("one deliverer per session", () => {
 
 describe("refusals", () => {
 	it("exits non-zero when CLAUDE_CODE_SESSION_ID is unset, naming it", () => {
+		// Exactly 1: the server's own refusal, not the 15 s timeout kill (which
+		// reports a null code) standing in for it.
 		const missing = spawnChannelRaw({ CLAUDE_CODE_SESSION_ID: undefined });
-		expect(missing.code).not.toBe(0);
+		expect(missing.code).toBe(1);
 		expect(missing.err).toContain("CLAUDE_CODE_SESSION_ID");
 
 		const blank = spawnChannelRaw({ CLAUDE_CODE_SESSION_ID: "   " });
-		expect(blank.code).not.toBe(0);
+		expect(blank.code).toBe(1);
 		expect(blank.err).toContain("CLAUDE_CODE_SESSION_ID");
 	}, 120_000);
 
@@ -276,16 +311,50 @@ describe("refusals", () => {
 
 		chmodSync(inbox, 0o770); // group-writable
 		const groupWritable = spawnChannelRaw({});
-		expect(groupWritable.code).not.toBe(0);
+		expect(groupWritable.code).toBe(1);
 		expect(groupWritable.err).toContain("0770");
 
 		chmodSync(inbox, 0o707); // world-writable
 		const worldWritable = spawnChannelRaw({});
-		expect(worldWritable.code).not.toBe(0);
+		expect(worldWritable.code).toBe(1);
 		expect(worldWritable.err).toContain("0707");
 
 		chmodSync(inbox, 0o700);
-		await startChannel(); // the same inbox starts once it is private again
+		// The other half of the check: `_peers` is writable, the inbox is not.
+		const peers = join(dir, "_peers");
+		chmodSync(peers, 0o770);
+		const peersWritable = spawnChannelRaw({});
+		expect(peersWritable.code).toBe(1);
+		expect(peersWritable.err).toContain("_peers");
+		expect(peersWritable.err).toContain("0770");
+
+		chmodSync(peers, 0o707);
+		const peersWorldWritable = spawnChannelRaw({});
+		expect(peersWorldWritable.code).toBe(1);
+		expect(peersWorldWritable.err).toContain("_peers");
+		expect(peersWorldWritable.err).toContain("0707");
+
+		chmodSync(peers, 0o700);
+		await startChannel(); // the same mailbox starts once it is private again
+	}, 120_000);
+
+	it("refuses to verify ownership where the platform reports no uid", () => {
+		const inbox = inboxDir(dir, SELF);
+		mkdirSync(inbox, { recursive: true, mode: 0o700 });
+		mkdirSync(join(dir, "_peers"), { recursive: true, mode: 0o700 });
+		expect(mailboxPrivacyProblem(dir, SELF)).toBeUndefined();
+
+		// The only way to reach the arm: the platform itself has no getuid. Stubbing
+		// the global capability, not an internal seam — the arm exists for exactly
+		// this environment, and the doc claims the refusal unconditionally.
+		const getuid = process.getuid;
+		Object.defineProperty(process, "getuid", { value: undefined, configurable: true });
+		try {
+			expect(mailboxPrivacyProblem(dir, SELF)).toContain("cannot verify mailbox ownership");
+		} finally {
+			Object.defineProperty(process, "getuid", { value: getuid, configurable: true });
+		}
+		expect(mailboxPrivacyProblem(dir, SELF)).toBeUndefined();
 	}, 120_000);
 });
 
@@ -296,18 +365,21 @@ describe("mailbox.watchInbox (the loop pi and the channel share)", () => {
 		const watch = watchInbox(dir, SELF, () => {
 			scans++;
 		});
-		await sleep(2_500); // the poll itself fires with nothing new
+		await sleep(SCAN_MS + 1_500); // the poll itself fires with nothing new
 		expect(scans).toBeGreaterThan(0);
 
 		const before = scans;
 		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "arrives by poll"));
 		const start = Date.now();
-		while (scans === before && Date.now() - start < 5_000) await sleep(25);
+		while (scans === before && Date.now() - start < SCAN_MS + 3_000) await sleep(25);
 		expect(scans).toBeGreaterThan(before);
 
 		watch.close();
 		const closedAt = scans;
-		await sleep(2_500);
+		// An arrival after close must reach nobody: this is what reds a leaked
+		// fs.watch callback as well as a leaked interval.
+		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "arrives after close"));
+		await sleep(SCAN_MS + 1_500);
 		expect(scans).toBe(closedAt);
 	}, 120_000);
 });
