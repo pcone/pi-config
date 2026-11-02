@@ -28,7 +28,7 @@ Wording alone was the defect this replaces. A seat replied RESTARTABLE, checkpoi
 A wait is `{ id, kind, reason, since, source }`. `kind` is one of `owner`, `peer`, `restart`, `subagent`, `other`.
 
 - A **running child** is a `subagent` wait. Derived from the subagent meta registry, so a restart still sees a child that outlived its parent process. A child that ends stops being a wait without anyone clearing it. An orphaned child is not a wait: its owner is gone, nothing will deliver its result, and resuming it is work rather than waiting.
-- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the envelope is sent; dropped when an inbound envelope carrying that `inReplyTo` arrives in the delivery scan. External peers are never recorded — they read mail only on their user's next prompt and never auto-reply.
+- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the envelope is sent; dropped when an inbound envelope carrying that `inReplyTo` arrives in the delivery scan.
 
 ## Where a manual wait is stored
 
