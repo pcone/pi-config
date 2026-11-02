@@ -25,6 +25,7 @@ import subagentFactory, {
 	resolveRunningSession,
 } from "../extensions/subagent-async/index.ts";
 import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
 type RunningSubagent = NonNullable<ReturnType<typeof resolveRunningSession>>;
 
@@ -94,7 +95,7 @@ beforeAll(() => {
 	restoreSubagentEnv = scrubSubagentEnv();
 	fixtureRoot = mkdtempSync(join(tmpdir(), "pi-owner-asks-"));
 	const fakePi = join(fixtureRoot, "stand-in-pi.mjs");
-	writeFileSync(fakePi, STANDIN_SOURCE);
+	writeFileSync(fakePi, STANDIN_SOURCE + STANDIN_EPILOGUE);
 	argv1Before = process.argv[1];
 	process.argv[1] = fakePi;
 

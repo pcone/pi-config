@@ -31,7 +31,7 @@
 import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, readFileSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, {
@@ -180,9 +180,30 @@ describe("resolveChildModel — every other seat keeps the existing rule", () =>
 function resolvePiEntry(): string {
 	for (const dir of (process.env.PATH ?? "").split(":").filter(Boolean)) {
 		const candidate = join(dir, "pi");
-		if (existsSync(candidate)) return realpathSync(candidate);
+		if (existsSync(candidate)) return followToJsEntry(realpathSync(candidate));
 	}
 	throw new Error("pi is not on PATH — the spawn tests need pi's entry to re-invoke it");
+}
+
+/**
+ * The PATH `pi` may be a shell wrapper that sets NODE_OPTIONS and execs the real
+ * binary (`~/bin/pi` does). The harness re-invokes `process.argv[1]` with the
+ * current interpreter, so argv[1] must be a JS entry: handed a `#!/bin/sh`
+ * script, bun parses it as JS and dies with "Syntax Error" before a single turn,
+ * which reads as a model-inheritance failure. Production never sees this because
+ * argv[1] is already pi's JS entry there.
+ */
+function followToJsEntry(entry: string): string {
+	let current = entry;
+	for (let depth = 0; depth < 5; depth++) {
+		const source = readFileSync(current, "utf8");
+		const shebang = source.split("\n", 1)[0] ?? "";
+		if (!/^#!\s*\/bin\/(ba)?sh\b/.test(shebang)) return current;
+		const exec = /^\s*exec\s+"?([^"\s]+)"?/m.exec(source);
+		if (!exec) return current;
+		current = realpathSync(exec[1].startsWith("/") ? exec[1] : join(dirname(current), exec[1]));
+	}
+	return current;
 }
 
 let savedArgv1: string | undefined;

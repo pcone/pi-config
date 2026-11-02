@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, { metaPath, resolveRunningSession } from "../extensions/subagent-async/index.ts";
 import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
 // The record type is internal to the extension; derive it from the accessor.
 type RunningSubagent = NonNullable<ReturnType<typeof resolveRunningSession>>;
@@ -81,7 +82,8 @@ beforeAll(() => {
 		fakePi,
 		"// Test stand-in: hold the RPC pipe open, never speak the protocol.\n" +
 			"process.stdin.resume();\n" +
-			"setInterval(() => {}, 1 << 30);\n",
+			"setInterval(() => {}, 1 << 30);\n" +
+			STANDIN_EPILOGUE,
 	);
 	argv1Before = process.argv[1];
 	process.argv[1] = fakePi;

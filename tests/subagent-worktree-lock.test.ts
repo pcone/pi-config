@@ -28,6 +28,7 @@ import subagentFactory, {
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
 // ── Real git helpers ───────────────────────────────────────────────────────
 
@@ -109,7 +110,7 @@ setInterval(() => {
 	}
 }, 200);
 setInterval(() => {}, 1 << 30);
-`,
+` + STANDIN_EPILOGUE,
 	);
 	argv1Before = process.argv[1];
 	process.argv[1] = fakePi;
