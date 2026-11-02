@@ -26,7 +26,14 @@ date: 2026-11-02
 **Rejected: holding mail while waiting.** The wake-up was not the defect. A waiting seat must still answer questions and take "resume" or "restart now", and held mail would leave a message that clears the wait unread. The defect was the checkpoint resuming work.
 
 **Rejected: wording only.** `edfffd6` fixes the wording on every surface the model reads. It still relies on the model writing the wait into `nextSteps`, which is the step that failed.
-
 **Rejected: not recording external sends.** It drops the wait the owner's first ruling counts, for every Claude Code peer.
 
 **Rejected: `external.ts` stamping `inReplyTo`.** It adds surface to a non-pi CLI to fix a match that the sender's identity already answers.
+
+**Outcome (2026-11-02).** Landed as `3e56a97` then `36e4342`, with WO-2026-064. `3e56a97` is the preparatory refactor: `checkpoint` and `checkpoint_fork` each resolved `continue` and assembled the kickoff their own way; both now call one `resolveContinuation` and one `sendKickoff` in `extensions/lib/waits.ts`, with the row-level test results unchanged.
+
+The choice left open — a `wait` tool or a `wait: true` checkpoint flag — landed as the tool, named `wait_for` because pi ships a `wait` tool that collects subagent results. A wait has to exist before the checkpoint that carries it: a seat told to hold has not necessarily checkpointed yet, and the flag alone would cover only a wait that already survived to a checkpoint.
+
+Manual waits are a full snapshot entry on the session branch (`pi.appendEntry("checkpoint-wait")`), which is invisible to the model and survives both compaction and a restart. Derived waits are computed by the extension that owns the state: `subagent-async` (a running child, from the meta registry) and `peer-link` (an unanswered outbound `expectReply`, dropped when the envelope carrying its `inReplyTo` arrives in the delivery scan that already delivers mail). Neither holds mail.
+
+Design: `docs/design/checkpoint-waits.md`. Tests: `tests/checkpoint-waits.test.ts`.
