@@ -38,6 +38,12 @@
  * External peers (Claude Code sessions via `external.ts`) are listed but never
  * online: mail to them waits until their user next prompts. Nothing here ever
  * reads or injects into their inbox.
+ *
+ * Waits (decision checkpoint/003): an unanswered `expectReply` send is a
+ * derived wait, so a checkpoint does not continue the seat that is holding for
+ * the answer, and the reply's arrival ends it. Delivery itself is untouched —
+ * mail is not held while a seat waits; it still starts a turn, and the seat
+ * answers and goes back to waiting. See docs/design/checkpoint-waits.md.
  */
 
 import { randomUUID } from "node:crypto";
@@ -69,10 +75,17 @@ import {
 	sweepStalePeers,
 	writeHeartbeat,
 } from "./mailbox.ts";
+import { registerWaitSource } from "../lib/waits.ts";
 
 const PENDING_TTL_MS = 10 * 60 * 1000; // drop queued-but-never-delivered auto-replies
 
 export { deliveryDecision } from "./mailbox.ts";
+
+/** A wait reason is one line: the first line of the message, clipped. */
+function firstLine(text: string): string {
+	const line = text.split("\n", 1)[0].trim();
+	return line.length > 60 ? `${line.slice(0, 57)}…` : line;
+}
 
 function peerGlyph(p: PeerInfo): string {
 	if (p.external) return "◇";
@@ -89,6 +102,25 @@ export default function (pi: ExtensionAPI) {
 		cwd: "",
 		autoreply: true,
 	};
+
+	// Outbound expectReply sends with no reply yet: one derived wait each
+	// (decision checkpoint/003). Recorded when the envelope is sent, dropped
+	// when an inbound envelope carries its `inReplyTo` — the delivery scan does
+	// the matching, so nothing new watches the mailbox. Derived, so a restart
+	// forgets them; the manual `wait_for` wait is the durable kind.
+	const awaitingReply = new Map<string, { to: string; text: string; sentAt: number }>();
+
+	registerWaitSource({
+		id: "peer-link",
+		collect: () =>
+			[...awaitingReply.entries()].map(([envId, sent]) => ({
+				id: `peer:${envId}`,
+				kind: "peer" as const,
+				reason: `reply from ${sent.to} "${firstLine(sent.text)}"`,
+				since: sent.sentAt,
+				source: "derived" as const,
+			})),
+	});
 
 	// Envelope ids consumed this process (belt-and-braces beyond file deletion).
 	const seen = new Set<string>();
@@ -194,6 +226,22 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// ── outbound ────────────────────────────────────────────────────────────
+
+	/**
+	 * The one outbound path: every envelope in this extension is sent here, so
+	 * the expectReply wait cannot be missed by a new call site.
+	 *
+	 * An external peer is never recorded: a Claude Code session reads mail only
+	 * when its user next prompts and never auto-replies, so a wait on one would
+	 * never end.
+	 */
+	function sendTracked(envelope: Envelope, external: boolean): void {
+		sendEnvelope(state.mailbox, envelope);
+		if (!envelope.expectReply || external) return;
+		awaitingReply.set(envelope.id, { to: envelope.to, text: envelope.text, sentAt: envelope.sentAt });
+	}
+
 	// ── inbound ─────────────────────────────────────────────────────────────
 
 	function consumeInbox(): void {
@@ -201,6 +249,9 @@ export default function (pi: ExtensionAPI) {
 		for (const env of readIncoming(state.mailbox, state.peerName)) {
 			if (seen.has(env.id) || replied.has(env.id)) continue;
 			seen.add(env.id);
+			// The reply that ends an outbound wait. Dropped on arrival, before
+			// injection: the wait is over whether or not delivery succeeds.
+			if (env.inReplyTo) awaitingReply.delete(env.inReplyTo);
 			const text = `[peer:${env.from}] ${env.text}`;
 			if (env.expectReply) {
 				pendingReplies.set(env.id, { env, text, queuedAt: Date.now() });
@@ -261,7 +312,8 @@ export default function (pi: ExtensionAPI) {
 				);
 				continue;
 			}
-			sendEnvelope(state.mailbox, newEnvelope(state.peerName, to, replyText, false, env.id));
+			const target = listed.find((p) => p.name === to);
+			sendTracked(newEnvelope(state.peerName, to, replyText, false, env.id), target?.external === true);
 		}
 	});
 
@@ -374,7 +426,10 @@ export default function (pi: ExtensionAPI) {
 					throw new Error("peer_send: no online peers to broadcast to (requireOnline set) — not queued");
 				}
 				for (const t of targets) {
-					sendEnvelope(state.mailbox, newEnvelope(state.peerName, t.name, params.message, expectReply, undefined, deliverAs));
+					sendTracked(
+						newEnvelope(state.peerName, t.name, params.message, expectReply, undefined, deliverAs),
+						t.external === true,
+					);
 				}
 				return {
 					content: [
@@ -393,7 +448,10 @@ export default function (pi: ExtensionAPI) {
 			to = resolvePeerAddressAmong(listed, to);
 			const decision = deliveryDecision(to, listed, params.requireOnline ?? false);
 			if (!decision.ok) throw new Error(`peer_send: ${decision.reason}`);
-			sendEnvelope(state.mailbox, newEnvelope(state.peerName, to, params.message, expectReply, undefined, deliverAs));
+			sendTracked(
+				newEnvelope(state.peerName, to, params.message, expectReply, undefined, deliverAs),
+				decision.external,
+			);
 			return {
 				content: [
 					{
@@ -469,7 +527,10 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(decision.reason, "error");
 				return;
 			}
-			sendEnvelope(state.mailbox, newEnvelope(state.peerName, to, match[2].trim(), expectReply, undefined, deliverAs));
+			sendTracked(
+				newEnvelope(state.peerName, to, match[2].trim(), expectReply, undefined, deliverAs),
+				decision.external,
+			);
 			ctx.ui.notify(`Sent to ${to} (${queuedStatus(decision)})${expectReply ? " (reply)" : ""}${followUp ? " (follow-up)" : ""}`, "info");
 		},
 	});

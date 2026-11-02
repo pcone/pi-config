@@ -26,15 +26,20 @@ import { childEnv } from "./helpers/subagent-env.ts";
 function createPiStub() {
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, any>();
+	/** Custom entries appended by the real extension (the wait snapshot). */
+	const appended: Array<{ customType: string; data: any }> = [];
 	const pi: any = {
 		events: { emit: () => {} },
 		registerTool: (def: any) => tools.set(def.name, def),
 		registerCommand: () => {},
 		on: (name: string, fn: any) => handlers.set(name, fn),
 		sendUserMessage: () => {},
+		appendEntry: (customType: string, data: any) => {
+			appended.push({ customType, data });
+		},
 		ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {}, clearStatus: () => {} },
 	};
-	return { pi, tools, handlers };
+	return { pi, tools, handlers, appended };
 }
 
 function createCtxStub(cwd: string) {
@@ -56,6 +61,7 @@ function createCtxStub(cwd: string) {
 			getModel: () => ({ provider: "openrouter", id: "xiaomi/mimo-v2.6-flash" }),
 			sessionManager: {
 				getEntries: () => [],
+				getBranch: () => [],
 				getSessionId: () => "sess-test",
 				getCwd: () => cwd,
 			},

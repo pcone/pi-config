@@ -467,6 +467,7 @@ function makeCheckpointHarness() {
 		sendUserMessage: (text: string, options?: unknown) => {
 			sent.push({ text, options });
 		},
+		appendEntry: (_customType: string, _data?: unknown) => {},
 	} as unknown as Parameters<typeof checkpointExtension>[0];
 	checkpointExtension(api);
 
@@ -483,6 +484,7 @@ function makeCheckpointHarness() {
 		},
 		sessionManager: {
 			getEntries: () => opts.entries ?? [],
+			getBranch: () => opts.entries ?? [],
 			getSessionId: () => "test-session",
 			getCwd: () => cwd,
 		},

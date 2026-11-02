@@ -18,6 +18,7 @@ import { CustomEditor, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
+import { registerWaitSource } from "../lib/waits.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
 import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
 import {
@@ -27,6 +28,7 @@ import {
 	gatherSubagentDiskFacts,
 	hasTerminalFooter,
 	isOwnerAlive,
+	listInFlightSubagents,
 	listSubagentMetas,
 	processStartToken,
 	readSubagentState,
@@ -3494,6 +3496,26 @@ export async function reapFinishedWorktrees(
 // ── Extension entry point ──────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	// A running child is a wait: the parent has a result it must gate before it
+	// starts anything else (decision checkpoint/003). Derived, never persisted —
+	// the registry already records the child, and a child that ends stops being
+	// a wait without anyone clearing it. An orphaned child is not a wait: its
+	// owner is gone, so nothing will deliver its result; it is resumable work
+	// the checkpoint already names, and acting on it is work, not waiting.
+	registerWaitSource({
+		id: "subagent-async",
+		collect: ({ sessionId }) =>
+			listInFlightSubagents({ selfSessionId: sessionId })
+				.filter((child) => child.state === "running")
+				.map((child) => ({
+					id: `subagent:${child.sid}`,
+					kind: "subagent" as const,
+					reason: `${child.agentName ?? "subagent"} ${child.sid.slice(-8)} is still running`,
+					since: child.startedAt,
+					source: "derived" as const,
+				})),
+	});
+
 	// ── Session lifecycle ──────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
