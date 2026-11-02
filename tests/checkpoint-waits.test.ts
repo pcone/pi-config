@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import checkpointFactory, { _testSetInflightScanDir } from "../extensions/checkpoint.ts";
+import { takePendingGo } from "../extensions/go.ts";
 import peerLink from "../extensions/peer-link/index.ts";
 import subagentAsyncFactory from "../extensions/subagent-async/index.ts";
 import { readIncoming, sendEnvelope, writeHeartbeat } from "../extensions/peer-link/mailbox.ts";
@@ -222,6 +223,43 @@ function sentKickoff(h: Harness): boolean {
 	return h.sent.some((s) => s.text.includes("NEXT-STEP"));
 }
 
+/**
+ * Run the action `/go` would run after `checkpoint_fork` (session switching is
+ * command-only in pi), capturing what the new session is sent. Same seam the
+ * recoverability rows use; here the new session's sender is the observable.
+ */
+async function runFork(h: Harness): Promise<string[]> {
+	const action = takePendingGo();
+	if (!action) throw new Error("/go has no pending action");
+	const sentToNewSession: string[] = [];
+	const cmdCtx = {
+		cwd: h.ctx.cwd,
+		ui: { notify: () => {} },
+		sessionManager: {
+			getEntries: () => h.ctx.sessionManager.getEntries(),
+			getSessionId: () => h.ctx.sessionManager.getSessionId(),
+			getCwd: () => h.ctx.cwd,
+		},
+		switchSession: async (_file: string, opts?: { withSession?: (n: any) => Promise<void> }) => {
+			await opts?.withSession?.({
+				sendUserMessage: async (text: string) => {
+					sentToNewSession.push(text);
+				},
+			});
+		},
+	};
+	await action.run(cmdCtx as any);
+	return sentToNewSession;
+}
+
+/** Drive `checkpoint_fork` through its tool, then through `/go`. */
+async function fork(h: Harness, newCwd: string, args: Record<string, unknown> = {}): Promise<{ text: string; sent: string[] }> {
+	const res = await h.tools
+		.get("checkpoint_fork")
+		.execute("call-f", { newCwd, summary: SUMMARY, nextSteps: "NEXT-STEP", ...args }, undefined, undefined, h.ctx);
+	return { text: String(res.content[0].text), sent: await runFork(h) };
+}
+
 // ---------------------------------------------------------------------------
 // Row 1 — wait_for records a manual wait, and says so
 // ---------------------------------------------------------------------------
@@ -272,6 +310,22 @@ describe("wait_for", () => {
 		expect(Value.Check(schema, { reason: "x", kind: "someday" })).toBe(false);
 	}, 30_000);
 
+	it("clears one manual wait by id and leaves the other", async () => {
+		const { h } = await freshHarness();
+		const first = await h.waitFor({ reason: "the owner's ruling on the retry policy", kind: "owner" });
+		const id = /\[id ([^\]]+)\]/.exec(first.text)?.[1];
+		expect(id).toBeTruthy();
+		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
+
+		// Revert: invert the filter in clearManualWaits → it keeps the cleared wait
+		// and drops the other one, so both assertions below flip.
+		const after = await h.waitFor({ clear: true, id });
+		expect(after.text).toContain("1 wait pending");
+		expect(after.text).toContain("restart — restart to pick up the new extension");
+		expect(after.text).not.toContain("the owner's ruling on the retry policy");
+		expect(h.waits().map((w) => w.kind)).toEqual(["restart"]);
+	}, 30_000);
+
 	it("refuses a wait with no reason, and an unknown id to clear", async () => {
 		const { h } = await freshHarness();
 
@@ -317,15 +371,54 @@ describe("continuation", () => {
 		expect(kickoff).toContain("NEXT-STEP");
 	}, 30_000);
 
+	it("continue: false stops with and without a wait, and the result says which arm", async () => {
+		const bare = await freshHarness();
+		// Revert: return `true` from the explicit arm → both of these send a kickoff.
+		const stopped = await bare.h.checkpoint({ continue: false });
+		expect(sentKickoff(bare.h)).toBe(false);
+		expect(stopped.text).toContain("No wait pending → not continuing (continue: false)");
+
+		const waiting = await freshHarness();
+		await waiting.h.waitFor({ reason: "the owner's ruling on the retry policy", kind: "owner" });
+		const overridden = await waiting.h.checkpoint({ continue: false });
+		expect(sentKickoff(waiting.h)).toBe(false);
+		expect(overridden.text).toContain("not continuing (continue: false)");
+	}, 40_000);
+
+	it("never infers a wait from prose", async () => {
+		const { h } = await freshHarness();
+		// The incident's shape: prose that names a hold while the state holds none.
+		// Revert: sniff `nextSteps` for "hold"/"restart" → no kickoff, and a
+		// WAITING ON block appears.
+		const { text, kickoff } = await h.checkpoint({ nextSteps: "hold for the restart — start nothing else" });
+		expect(text).toContain("No wait pending → continuing");
+		expect(kickoff).not.toBeNull();
+		expect(kickoff).toContain("hold for the restart");
+		expect(kickoff).not.toContain("WAITING ON");
+	}, 30_000);
+
+	it("refuses to read a malformed snapshot as 'nothing pending'", async () => {
+		const { h, sm } = await freshHarness();
+		sm.appendCustomEntry(WAIT_ENTRY_TYPE, {
+			waits: [{ id: "x", kind: "someday", reason: "r", since: null, source: "manual" }],
+		});
+		// Revert: `return []` on a bad snapshot → the checkpoint continues and
+		// reports "No wait pending", the one answer that starts work.
+		await expect(
+			h.tools.get("checkpoint").execute("call-1", { summary: SUMMARY }, undefined, undefined, h.ctx),
+		).rejects.toThrow(/Malformed checkpoint-wait snapshot/);
+	}, 30_000);
+
 	it("row 4: with no wait, an unset continue still continues", async () => {
 		const { h } = await freshHarness();
 
 		// The pre-existing default, pinned so the derivation cannot silently
 		// flip it. Revert: make the no-wait arm return doContinue: false.
 		const { text, kickoff } = await h.checkpoint({});
+		expect(text).toContain("No wait pending → continuing");
+		expect(kickoff).not.toBeNull();
 		expect(kickoff).toContain("NEXT-STEP");
 		expect(kickoff).not.toContain("WAITING ON");
-		expect(text).toContain("No wait pending → continuing");
 	}, 30_000);
 });
 
@@ -492,12 +585,45 @@ describe("derived: peer reply", () => {
 		expect(injected).toHaveLength(1);
 		expect(injected[0]).toContain("unrelated question while you wait");
 
+		// Run the turn the mail started through the checkpoint extension's own
+		// start handlers, so a "clear the wait on any message" implementation is
+		// reachable here. Revert: append an empty snapshot at the top of the
+		// before_agent_start announcement → the wait is gone and this reds.
+		await h.emit("session_start");
+		await h.emit("before_agent_start");
+
 		// Revert: clear manual waits when any message arrives → this continues.
 		expect(h.waits().map((w) => w.kind)).toEqual(["owner"]);
 		const { text } = await h.checkpoint({});
 		expect(sentKickoff(h)).toBe(false);
 		expect(text).toContain("owner — the owner's ruling on the retry policy");
 		expect(text).toContain("not continuing");
+	}, 40_000);
+});
+
+// ---------------------------------------------------------------------------
+// checkpoint_fork — the same rule, and the kickoff carries the wait
+// ---------------------------------------------------------------------------
+
+describe("fork", () => {
+	it("resolves the same rule, and its kickoff names the wait it carries", async () => {
+		const { h } = await freshHarness();
+		const target = await tmp("wo064-fork-");
+		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
+
+		// (i) continue unset with a wait pending: nothing is sent into the new session.
+		// Revert: force the explicit-continue arm at the fork's resolution → a kickoff appears.
+		const stopped = await fork(h, target);
+		expect(stopped.text).toContain("1 wait pending");
+		expect(stopped.text).toContain("not continuing");
+		expect(stopped.sent).toEqual([]);
+
+		// (ii) continue true: the new session's first prompt names the wait.
+		// Revert: pass an empty wait list to the fork's kickoff → no WAITING ON line.
+		const continued = await fork(h, target, { continue: true });
+		expect(continued.sent).toHaveLength(1);
+		expect(continued.sent[0].startsWith("WAITING ON: restart — restart to pick up the new extension")).toBe(true);
+		expect(continued.sent[0]).toContain("NEXT-STEP");
 	}, 40_000);
 });
 
@@ -566,5 +692,10 @@ describe("the tool result", () => {
 		expect(text).toContain(
 			"2 waits pending: owner — the owner's ruling; restart — restart to pick up the new extension → not continuing",
 		);
+
+		// The kickoff arm for more than one wait, which the single-wait rows miss.
+		const overridden = await h.checkpoint({ continue: true });
+		expect(overridden.kickoff!.startsWith("WAITING ON: owner — the owner's ruling")).toBe(true);
+		expect(overridden.kickoff).toContain("ALSO WAITING ON: restart — restart to pick up the new extension");
 	}, 30_000);
 });
