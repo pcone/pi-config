@@ -260,6 +260,22 @@ describe("channel notifications", () => {
 });
 
 describe("one deliverer per session", () => {
+	it("refuses to start when another live channel already holds the session", async () => {
+		const first = await startChannel();
+
+		// Same mailbox, same session id, first server alive: the second must exit
+		// naming the holder rather than become a second deliverer.
+		const second = spawnChannelRaw({});
+		expect(second.code).toBe(1);
+		expect(second.err).toContain(`channel pid ${first.pid} holds the claim`);
+
+		// The refusal left the first server's claim intact and still delivering.
+		expect(listPeers(dir).find((p) => p.name === SELF)?.channelPid).toBe(first.pid);
+		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "still delivered by the first"));
+		await waitForNotifications(first, 1);
+		expect(first.events[0].params.content).toContain("still delivered by the first");
+	}, 120_000);
+
 	it("keeps the prompt hook silent and non-acking while the channel lives, and delivers once its pid is dead", async () => {
 		const ch = await startChannel();
 		const registered = listPeers(dir).find((p) => p.name === SELF);
@@ -339,17 +355,19 @@ describe("refusals", () => {
 	}, 120_000);
 
 	it("refuses to verify ownership where the platform reports no uid", () => {
-		const inbox = inboxDir(dir, SELF);
-		mkdirSync(inbox, { recursive: true, mode: 0o700 });
-		mkdirSync(join(dir, "_peers"), { recursive: true, mode: 0o700 });
-		expect(mailboxPrivacyProblem(dir, SELF)).toBeUndefined();
-
 		// The only way to reach the arm: the platform itself has no getuid. Stubbing
 		// the global capability, not an internal seam — the arm exists for exactly
-		// this environment, and the doc claims the refusal unconditionally.
+		// this environment, and the doc claims the refusal unconditionally. The
+		// whole body is inside the finally so a setup throw cannot leak the stub
+		// into the rest of this file.
 		const getuid = process.getuid;
-		Object.defineProperty(process, "getuid", { value: undefined, configurable: true });
 		try {
+			const inbox = inboxDir(dir, SELF);
+			mkdirSync(inbox, { recursive: true, mode: 0o700 });
+			mkdirSync(join(dir, "_peers"), { recursive: true, mode: 0o700 });
+			expect(mailboxPrivacyProblem(dir, SELF)).toBeUndefined();
+
+			Object.defineProperty(process, "getuid", { value: undefined, configurable: true });
 			expect(mailboxPrivacyProblem(dir, SELF)).toContain("cannot verify mailbox ownership");
 		} finally {
 			Object.defineProperty(process, "getuid", { value: getuid, configurable: true });

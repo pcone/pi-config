@@ -121,31 +121,32 @@ async function main(): Promise<void> {
 		}
 	}
 
-	registerExternalPeer(mailbox, self, { cwd: process.cwd(), channelPid: process.pid });
-	// One deliverer per session: the claim must now be this process. A live pid
-	// that is not ours means a second channel server for this session won the
-	// write, and both pushing would deliver every envelope twice; no live claim
-	// at all means the registration did not land, and mail would stall.
+	// One deliverer per session. Checked before the write, because a claim is
+	// only another server's if it was there first: a second server starting while
+	// one is live would double every envelope, so it refuses instead. Two servers
+	// starting at the same instant are not arbitrated — both push, which
+	// duplicates (never loses) an envelope until one exits.
 	const claim = mailDeliverer(mailbox, self);
-	if (claim.via !== "channel" || claim.pid !== process.pid) {
-		const held = claim.via === "channel" ? `channel pid ${claim.pid}` : "no live channel";
-		throw new Error(`refusing to deliver ${self} twice: the claim is held by ${held}`);
+	if (claim.via === "channel" && claim.pid !== process.pid) {
+		throw new Error(`refusing to deliver ${self} twice: channel pid ${claim.pid} holds the claim`);
 	}
+	registerExternalPeer(mailbox, self, { cwd: process.cwd(), channelPid: process.pid });
 
 	let inboxWatch: InboxWatch | undefined;
 	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 	let stopped = false;
 
 	function shutdown(exitCode?: number): void {
-		if (stopped) return;
-		stopped = true;
-		inboxWatch?.close();
-		if (heartbeatTimer) clearInterval(heartbeatTimer);
-		// Hand delivery back to the prompt hook, keeping the registration so
-		// senders still see the peer listed.
-		registerExternalPeer(mailbox, self, { channelPid: null });
+		if (!stopped) {
+			stopped = true;
+			inboxWatch?.close();
+			if (heartbeatTimer) clearInterval(heartbeatTimer);
+			// Hand delivery back to the prompt hook, keeping the registration so
+			// senders still see the peer listed.
+			registerExternalPeer(mailbox, self, { channelPid: null });
+		}
 		// A signal handler suppresses the default termination, so a signalled
-		// shutdown exits itself once delivery is handed back.
+		// shutdown exits itself even when the cleanup already ran.
 		if (exitCode !== undefined) process.exit(exitCode);
 	}
 
