@@ -28,6 +28,7 @@ import {
 	selectFreshRegions,
 } from "./lib/read-tracking.ts";
 import { listInFlightSubagents, type InFlightSubagent } from "./lib/subagent-state.ts";
+import { resolveContinuation, sendKickoff, type Continuation } from "./lib/waits.ts";
 
 const CHECKPOINT_DIR = ".pi/checkpoints";
 const MARKER = "[CHECKPOINT]";
@@ -136,7 +137,7 @@ interface PendingCheckpoint {
 	/** `composeSummary` output — the text the fresh window receives verbatim. */
 	summary: string;
 	next: string;
-	doContinue: boolean;
+	continuation: Continuation;
 	tokens: CheckpointTokens;
 	archivePath?: string;
 	relevantPaths: RelevantPathEntry[];
@@ -471,12 +472,15 @@ export default function (pi: ExtensionAPI) {
 						`Checkpoint complete — context cleared.${renderTokenDelta(tokens)}${archiveLine}`,
 						"info",
 					);
-					if (pending?.doContinue) {
-						const parts = [pending.next];
-						if (inj?.text) parts.unshift(inj.text);
-						if (pending.archivePath) parts.push(`Archive: ${pending.archivePath}`);
-						const followUp = parts.join("\n\n");
-						pi.sendUserMessage(followUp, { deliverAs: "followUp" });
+					if (pending?.continuation.doContinue) {
+						await sendKickoff({
+							parts: {
+								context: inj?.text,
+								next: pending.next,
+								trailing: pending.archivePath ? [`Archive: ${pending.archivePath}`] : [],
+							},
+							send: (text) => pi.sendUserMessage(text, { deliverAs: "followUp" }),
+						});
 					}
 				} catch (err) {
 					safeNotify(
@@ -611,7 +615,7 @@ export default function (pi: ExtensionAPI) {
 			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
 
 			const next = params.nextSteps ?? "Continue work";
-			const doContinue = params.continue !== false;
+			const continuation = resolveContinuation(params.continue);
 			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
 			const contextWindow = ctx.model?.contextWindow ?? 200_000;
 			const summaryFields: SummaryFields = params.summary;
@@ -655,7 +659,7 @@ export default function (pi: ExtensionAPI) {
 			pendingCheckpoint = {
 				summary,
 				next,
-				doContinue,
+				continuation,
 				tokens,
 				archivePath,
 				relevantPaths,
@@ -678,7 +682,7 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				responseLines.push(`Archive failed — session data is preserved in the session file.`);
 			}
-			responseLines.push(`Next: ${next}${doContinue ? "" : " (no auto-continue)"}`);
+			responseLines.push(`Next: ${next}${continuation.doContinue ? "" : " (no auto-continue)"}`);
 
 			return {
 				content: [{ type: "text", text: responseLines.join("\n\n") }],
@@ -756,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
 
 			const next = params.nextSteps ?? "Continue work";
-			const doContinue = params.continue !== false;
+			const continuation = resolveContinuation(params.continue);
 			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
 			const oldSessionId = ctx.sessionManager.getSessionId();
 			const oldCwd = ctx.sessionManager.getCwd();
@@ -826,11 +830,11 @@ export default function (pi: ExtensionAPI) {
 					});
 					await cmdCtx.switchSession(newSession.getSessionFile()!, {
 						withSession: async (n) => {
-							if (doContinue) {
-								const parts = [next];
-								if (injection.text) parts.unshift(injection.text);
-								await n.sendUserMessage(parts.join("\n\n"));
-							}
+							if (!continuation.doContinue) return;
+							await sendKickoff({
+								parts: { context: injection.text, next },
+								send: (text) => n.sendUserMessage(text),
+							});
 						},
 					});
 				},
