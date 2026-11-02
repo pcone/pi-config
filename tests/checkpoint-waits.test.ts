@@ -233,7 +233,7 @@ describe("wait_for", () => {
 		const res = await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
 		expect(res.isError).toBeUndefined();
 		expect(res.text).toContain("1 wait pending");
-		expect(res.text).toContain("restart: restart to pick up the new extension");
+		expect(res.text).toContain("restart — restart to pick up the new extension");
 		expect(res.text).toContain("(manual");
 
 		// Persisted as a snapshot on the branch, not held in process memory.
@@ -301,7 +301,7 @@ describe("continuation", () => {
 		// passes [] → a kickoff is sent and the seat starts new work.
 		const { text } = await h.checkpoint({});
 		expect(sentKickoff(h)).toBe(false);
-		expect(text).toContain("1 wait pending — restart: restart to pick up the new extension → not continuing");
+		expect(text).toContain("1 wait pending: restart — restart to pick up the new extension → not continuing");
 	}, 30_000);
 
 	it("row 3: continue: true is sent anyway, and the kickoff names the wait", async () => {
@@ -312,7 +312,7 @@ describe("continuation", () => {
 		// kickoff is sent without WAITING ON.
 		const { kickoff } = await h.checkpoint({ continue: true });
 		expect(kickoff).not.toBeNull();
-		expect(kickoff!.startsWith("WAITING ON: restart: restart to pick up the new extension")).toBe(true);
+		expect(kickoff!.startsWith("WAITING ON: restart — restart to pick up the new extension")).toBe(true);
 		expect(kickoff).toContain("Answer what arrives and start nothing else.");
 		expect(kickoff).toContain("NEXT-STEP");
 	}, 30_000);
@@ -354,7 +354,7 @@ describe("derived: subagent", () => {
 		// first checkpoint sends a kickoff over a live child.
 		const first = await h.checkpoint({});
 		expect(sentKickoff(h)).toBe(false);
-		expect(first.text).toContain("subagent: implement 55556666 is still running");
+		expect(first.text).toContain("subagent — implement 55556666 is still running");
 		expect(first.text).toContain("→ not continuing");
 
 		// The child finishes: its log ends with the completion footer, so the
@@ -447,7 +447,7 @@ describe("derived: peer reply", () => {
 		// while the seat is still holding for the answer.
 		const before = await h.checkpoint({});
 		expect(sentKickoff(h)).toBe(false);
-		expect(before.text).toContain('peer: reply from bob "which branch is main?"');
+		expect(before.text).toContain('peer — reply from bob "which branch is main?"');
 
 		// The reply carries `inReplyTo`; the delivery scan matches it.
 		sendEnvelope(mailbox, {
@@ -496,7 +496,7 @@ describe("derived: peer reply", () => {
 		expect(h.waits().map((w) => w.kind)).toEqual(["owner"]);
 		const { text } = await h.checkpoint({});
 		expect(sentKickoff(h)).toBe(false);
-		expect(text).toContain("owner: the owner's ruling on the retry policy");
+		expect(text).toContain("owner — the owner's ruling on the retry policy");
 		expect(text).toContain("not continuing");
 	}, 40_000);
 });
@@ -526,7 +526,7 @@ describe("durability", () => {
 		// Revert: read manual waits from a module-level cache instead of the
 		// branch → this process sees nothing.
 		const content = String((injectedMessage as any)?.message?.content ?? "");
-		expect(content.startsWith("WAITING ON: restart: restart to pick up the new extension")).toBe(true);
+		expect(content.startsWith("WAITING ON: restart — restart to pick up the new extension")).toBe(true);
 		expect(content).toContain("Answer what arrives and start nothing else.");
 
 		// And the replayed state decides: unset continue stops.
@@ -549,7 +549,7 @@ describe("the tool result", () => {
 		// forgot the wait learns nothing.
 		const stopped = await h.checkpoint({});
 		expect(stopped.text).toContain(
-			"1 wait pending — restart: restart to pick up the new extension → not continuing",
+			"1 wait pending: restart — restart to pick up the new extension → not continuing",
 		);
 
 		const overridden = await h.checkpoint({ continue: true });
@@ -564,7 +564,7 @@ describe("the tool result", () => {
 
 		const { text } = await h.checkpoint({});
 		expect(text).toContain(
-			"2 waits pending — owner: the owner's ruling; restart: restart to pick up the new extension → not continuing",
+			"2 waits pending: owner — the owner's ruling; restart — restart to pick up the new extension → not continuing",
 		);
 	}, 30_000);
 });

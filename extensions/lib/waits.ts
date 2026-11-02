@@ -23,6 +23,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type, type TSchema } from "typebox";
 
 /** What a session is holding for. */
 export type WaitKind = "owner" | "peer" | "restart" | "subagent" | "other";
@@ -211,9 +213,9 @@ export function resolveContinuation(requested: boolean | undefined, waits: reado
 // Rendering
 // ---------------------------------------------------------------------------
 
-/** `kind: reason`, the shape every surface uses. */
+/** `kind — reason`, the shape every surface uses. */
 export function waitLine(wait: Wait): string {
-	return `${wait.kind}: ${wait.reason}`;
+	return `${wait.kind} — ${wait.reason}`;
 }
 
 /** The resolved outcome, as the checkpoint tool result states it. */
@@ -230,11 +232,11 @@ export function outcomeLabel(continuation: Continuation, hasWaits: boolean): str
 	}
 }
 
-/** `1 wait pending — peer: reply from bug-triage → not continuing`. */
+/** `1 wait pending: peer — reply from bug-triage → not continuing`. */
 export function describePending(waits: readonly Wait[], continuation: Continuation): string {
 	const count = waits.length;
 	const head = count === 0 ? "No wait pending" : count === 1 ? "1 wait pending" : `${count} waits pending`;
-	const list = count === 0 ? "" : ` — ${waits.map(waitLine).join("; ")}`;
+	const list = count === 0 ? "" : `: ${waits.map(waitLine).join("; ")}`;
 	return `${head}${list} → ${outcomeLabel(continuation, count > 0)}`;
 }
 
@@ -270,6 +272,119 @@ export function waitKickoff(waits: readonly Wait[]): string {
 			"A manual wait clears only through wait_for({ clear: true }); a derived wait clears when its source ends.",
 	);
 	return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Surface
+// ---------------------------------------------------------------------------
+
+/** The wait store's host: this session's branch, written as an invisible snapshot entry. */
+export function waitHost(pi: ExtensionAPI, ctx: ExtensionContext): WaitHost {
+	return {
+		branch: () => ctx.sessionManager.getBranch(),
+		persist: (waits) => pi.appendEntry(WAIT_ENTRY_TYPE, { waits }),
+	};
+}
+
+/** What the sources need to scope their answer to this session. */
+export function waitCollection(ctx: ExtensionContext): WaitCollection {
+	return { sessionId: ctx.sessionManager.getSessionId() };
+}
+
+/** Waits to announce at the first agent start of this session. */
+let kickoffPending: Wait[] | null = null;
+
+/**
+ * The `wait_for` kind enum, derived from the one list of kinds so the schema
+ * and the snapshot validator cannot drift apart.
+ */
+const KIND_SCHEMA = Type.Union(
+	WAIT_KINDS.map((kind) => Type.Literal(kind)) as TSchema[],
+	{ description: "Who or what the wait is on. Default: other." },
+);
+
+/**
+ * Register the wait surface: the `wait_for` tool, and the announcement a
+ * restart owes a seat that is still holding.
+ *
+ * The tool rather than a `wait: true` checkpoint flag (decision checkpoint/003)
+ * because a wait has to exist before the checkpoint that carries it: a seat
+ * told "hold, I'll restart you" has not necessarily checkpointed yet.
+ *
+ * `wait_for` rather than `wait`: pi already ships a `wait` tool that collects
+ * subagent results, and two tools with one name is a trap for the model.
+ */
+export function registerWaitSurface(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: "wait_for",
+		label: "Wait For",
+		description:
+			"Record what this session is waiting for. A recorded wait stops the next checkpoint from continuing on its own " +
+			"(`continue` left unset there); an explicit `continue: true` still overrides it. " +
+			"Running subagents and unanswered expectReply sends are already waits, so record what nothing else can see: " +
+			"the owner's ruling, a restart, a handoff. " +
+			"Clear it with `{ clear: true }` once the thing you waited for has happened — an inbound message does not clear it, " +
+			"so answer what arrives and go back to waiting.",
+		parameters: Type.Object({
+			reason: Type.Optional(
+				Type.String({
+					description:
+						"What the session is waiting for, in one line: \"the owner's ruling on the retry policy\", " +
+						"\"restart to pick up the new extension\", \"reply from bug-triage\".",
+				}),
+			),
+			kind: Type.Optional(KIND_SCHEMA),
+			clear: Type.Optional(
+				Type.Boolean({
+					description:
+						"Drop manual waits instead of adding one. Clearing is the only way a manual wait ends; mail does not.",
+				}),
+			),
+			id: Type.Optional(
+				Type.String({
+					description: "With clear: drop only the manual wait with this id. Omit to drop all of them.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const host = waitHost(pi, ctx);
+			try {
+				if (params.clear) clearManualWaits(host, params.id);
+				else addManualWait(host, { reason: params.reason ?? "", kind: params.kind as WaitKind | undefined });
+			} catch (err) {
+				return {
+					content: [
+						{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` },
+					],
+					isError: true,
+				};
+			}
+			return {
+				content: [
+					{ type: "text" as const, text: renderWaitList(pendingWaits(host, waitCollection(ctx))) },
+				],
+			};
+		},
+	});
+
+	// A restart or /resume starts with no memory of what this seat held for, and
+	// compaction is not the only thing that discards that. The snapshot comes
+	// back from the branch, and the first turn of the session opens with it, so
+	// the seat learns it is holding before it works.
+	pi.on("session_start", (_event, ctx) => {
+		const waits = pendingWaits(waitHost(pi, ctx), waitCollection(ctx));
+		kickoffPending = waits.length > 0 ? waits : null;
+	});
+
+	// Injected before the first turn's model call as a hidden custom message:
+	// nothing here starts a turn of its own (mail is not held; decision
+	// checkpoint/003, owner 2026-11-02).
+	pi.on("before_agent_start", () => {
+		if (!kickoffPending) return;
+		const content = waitKickoff(kickoffPending);
+		kickoffPending = null;
+		return { message: { customType: WAIT_ENTRY_TYPE, content, display: false } };
+	});
 }
 
 // ---------------------------------------------------------------------------

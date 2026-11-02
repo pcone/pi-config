@@ -230,15 +230,14 @@ export default function (pi: ExtensionAPI) {
 
 	/**
 	 * The one outbound path: every envelope in this extension is sent here, so
-	 * the expectReply wait cannot be missed by a new call site.
-	 *
-	 * An external peer is never recorded: a Claude Code session reads mail only
-	 * when its user next prompts and never auto-replies, so a wait on one would
-	 * never end.
+	 * the expectReply wait cannot be missed by a new call site. Every
+	 * `expectReply` send is recorded, external peers included: the wait ends on
+	 * a reply carrying its `inReplyTo`, which `external.ts` never sets — see
+	 * docs/design/checkpoint-waits.md § Limits.
 	 */
-	function sendTracked(envelope: Envelope, external: boolean): void {
+	function sendTracked(envelope: Envelope): void {
 		sendEnvelope(state.mailbox, envelope);
-		if (!envelope.expectReply || external) return;
+		if (!envelope.expectReply) return;
 		awaitingReply.set(envelope.id, { to: envelope.to, text: envelope.text, sentAt: envelope.sentAt });
 	}
 
@@ -312,8 +311,7 @@ export default function (pi: ExtensionAPI) {
 				);
 				continue;
 			}
-			const target = listed.find((p) => p.name === to);
-			sendTracked(newEnvelope(state.peerName, to, replyText, false, env.id), target?.external === true);
+			sendTracked(newEnvelope(state.peerName, to, replyText, false, env.id));
 		}
 	});
 
@@ -426,10 +424,7 @@ export default function (pi: ExtensionAPI) {
 					throw new Error("peer_send: no online peers to broadcast to (requireOnline set) — not queued");
 				}
 				for (const t of targets) {
-					sendTracked(
-						newEnvelope(state.peerName, t.name, params.message, expectReply, undefined, deliverAs),
-						t.external === true,
-					);
+					sendTracked(newEnvelope(state.peerName, t.name, params.message, expectReply, undefined, deliverAs));
 				}
 				return {
 					content: [
@@ -448,10 +443,7 @@ export default function (pi: ExtensionAPI) {
 			to = resolvePeerAddressAmong(listed, to);
 			const decision = deliveryDecision(to, listed, params.requireOnline ?? false);
 			if (!decision.ok) throw new Error(`peer_send: ${decision.reason}`);
-			sendTracked(
-				newEnvelope(state.peerName, to, params.message, expectReply, undefined, deliverAs),
-				decision.external,
-			);
+			sendTracked(newEnvelope(state.peerName, to, params.message, expectReply, undefined, deliverAs));
 			return {
 				content: [
 					{
@@ -527,10 +519,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(decision.reason, "error");
 				return;
 			}
-			sendTracked(
-				newEnvelope(state.peerName, to, match[2].trim(), expectReply, undefined, deliverAs),
-				decision.external,
-			);
+			sendTracked(newEnvelope(state.peerName, to, match[2].trim(), expectReply, undefined, deliverAs));
 			ctx.ui.notify(`Sent to ${to} (${queuedStatus(decision)})${expectReply ? " (reply)" : ""}${followUp ? " (follow-up)" : ""}`, "info");
 		},
 	});

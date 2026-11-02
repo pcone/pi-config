@@ -19,7 +19,6 @@ import {
 	SessionManager,
 	type CompactionResult,
 	type ExtensionAPI,
-	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { setPendingGo } from "./go.ts";
@@ -44,20 +43,15 @@ import {
 } from "./lib/read-tracking.ts";
 import { listInFlightSubagents, type InFlightSubagent } from "./lib/subagent-state.ts";
 import {
-	WAIT_ENTRY_TYPE,
-	WAIT_KINDS,
-	addManualWait,
-	clearManualWaits,
 	describePending,
 	pendingWaits,
-	renderWaitList,
+	registerWaitSurface,
 	resolveContinuation,
 	sendKickoff,
-	waitKickoff,
+	waitCollection,
+	waitHost,
 	type Continuation,
 	type Wait,
-	type WaitHost,
-	type WaitKind,
 } from "./lib/waits.ts";
 
 const CHECKPOINT_DIR = ".pi/checkpoints";
@@ -117,15 +111,6 @@ const SUMMARY_SCHEMA = Type.Object(
 );
 
 const NONE = "none";
-
-/**
- * The `wait_for` kind enum, derived from the one list of kinds so the schema
- * and the snapshot validator cannot drift apart.
- */
-const KIND_SCHEMA = Type.Union(
-	WAIT_KINDS.map((kind) => Type.Literal(kind)) as TSchema[],
-	{ description: "Who or what the wait is on. Default: other." },
-);
 
 /** `"none"`/`["none"]`/`[]` all mean "nothing to report". */
 function isNone(items: string[]): boolean {
@@ -206,22 +191,6 @@ let pendingCheckpoint: PendingCheckpoint | null = null;
  * call in the same turn replaces the data but only one compaction fires.
  */
 let compactRequested = false;
-
-/** Waits to announce at the first agent start of this session (see session_start). */
-let pendingWaitKickoff: Wait[] | null = null;
-
-/** The wait store's host: this session's branch, written as an invisible snapshot entry. */
-function waitHost(pi: ExtensionAPI, ctx: ExtensionContext): WaitHost {
-	return {
-		branch: () => ctx.sessionManager.getBranch(),
-		persist: (waits) => pi.appendEntry(WAIT_ENTRY_TYPE, { waits }),
-	};
-}
-
-/** What the wait sources need to scope their answer to this session. */
-function waitCollection(ctx: ExtensionContext): { sessionId: string | undefined } {
-	return { sessionId: ctx.sessionManager.getSessionId() };
-}
 
 // ---------------------------------------------------------------------------
 // In-flight subagent record (R3-1)
@@ -473,28 +442,15 @@ async function archiveSession(
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+	// The wait surface (`wait_for`, the restart announcement) lives with the
+	// store it writes; this file owns only what a checkpoint does with a wait.
+	registerWaitSurface(pi);
+
 	// -- Read tracking ---------------------------------------------------
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", () => {
 		reads.clear();
 		pendingCheckpoint = null;
 		compactRequested = false;
-		// A restart or /resume starts with no memory of what this seat held for,
-		// and compaction is not the only thing that discards that. The snapshot
-		// comes back from the branch, and the first turn of the session opens
-		// with it (below) so the seat learns it is holding before it works.
-		const waits = pendingWaits(waitHost(pi, ctx), waitCollection(ctx));
-		pendingWaitKickoff = waits.length > 0 ? waits : null;
-	});
-
-	// -- Wait survival across a restart -----------------------------------
-	// Injected before the first turn's model call, as a hidden custom message:
-	// nothing here starts a turn of its own (mail is not held; decision
-	// checkpoint/003, owner 2026-11-02).
-	pi.on("before_agent_start", () => {
-		if (!pendingWaitKickoff) return;
-		const content = waitKickoff(pendingWaitKickoff);
-		pendingWaitKickoff = null;
-		return { message: { customType: WAIT_ENTRY_TYPE, content, display: false } };
 	});
 
 	// Finalized read args arrive here, on `input`. `tool_execution_end` carries
@@ -791,7 +747,8 @@ export default function (pi: ExtensionAPI) {
 			nextSteps: Type.Optional(
 				Type.String({
 					description:
-						"What comes next. Used as the kickoff prompt if continue is true. Default: 'Continue work'.",
+						"What comes next. Used as the kickoff prompt when the checkpoint continues. Default: 'Continue work'. " +
+						"A wait you are holding for is carried into that prompt; record it with `wait_for` when nothing else can see it.",
 				}),
 			),
 			continue: Type.Optional(
@@ -949,65 +906,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// -- wait_for tool ---------------------------------------------------
-	// The surface for a wait nothing else can see. A seat told "hold, I'll
-	// restart you" has not necessarily checkpointed yet, so a checkpoint flag
-	// alone would cover only the wait that already survived to a checkpoint.
-	// Running subagents and unanswered expectReply sends are derived by their
-	// own extensions; this records the rest and is the only way a manual wait
-	// ends (decision checkpoint/003: mail does not clear it).
-	pi.registerTool({
-		name: "wait_for",
-		label: "Wait For",
-		description:
-			"Record what this session is waiting for. A recorded wait stops the next checkpoint from continuing on its own " +
-			"(`continue` left unset there); an explicit `continue: true` still overrides it. " +
-			"Running subagents and unanswered expectReply sends are already waits, so record what nothing else can see: " +
-			"the owner's ruling, a restart, a handoff. " +
-			"Clear it with `{ clear: true }` once the thing you waited for has happened — an inbound message does not clear it, " +
-			"so answer what arrives and go back to waiting.",
-		parameters: Type.Object({
-			reason: Type.Optional(
-				Type.String({
-					description:
-						"What the session is waiting for, in one line: \"the owner's ruling on the retry policy\", " +
-						"\"restart to pick up the new extension\", \"reply from bug-triage\".",
-				}),
-			),
-			kind: Type.Optional(KIND_SCHEMA),
-			clear: Type.Optional(
-				Type.Boolean({
-					description:
-						"Drop manual waits instead of adding one. Clearing is the only way a manual wait ends; mail does not.",
-				}),
-			),
-			id: Type.Optional(
-				Type.String({
-					description: "With clear: drop only the manual wait with this id. Omit to drop all of them.",
-				}),
-			),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const host = waitHost(pi, ctx);
-			try {
-				if (params.clear) clearManualWaits(host, params.id);
-				else addManualWait(host, { reason: params.reason ?? "", kind: params.kind as WaitKind | undefined });
-			} catch (err) {
-				return {
-					content: [
-						{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` },
-					],
-					isError: true,
-				};
-			}
-			return {
-				content: [
-					{ type: "text" as const, text: renderWaitList(pendingWaits(host, waitCollection(ctx))) },
-				],
-			};
-		},
-	});
-
 	// -- /checkpoints command --------------------------------------------
 	pi.registerCommand("checkpoints", {
 		description: "List archived session checkpoints.",
@@ -1058,9 +956,10 @@ export default function (pi: ExtensionAPI) {
 
 			const basePrompt =
 				"Run the checkpoint tool now. " + SUMMARY_FORMAT_HINT + " " +
-				"Set `continue` for what happens after compaction: true when the work continues on your side, " +
-				"false when the next move is someone else's — an owner ruling or restart, a peer's reply, a subagent you must gate. " +
-				"If you stop, name the wait in `nextSteps`. " +
+				"Leave `continue` unset: it continues only when no wait is pending. " +
+				"When the next move is someone else's — an owner ruling or restart, a peer's reply, a subagent you must gate — " +
+				"record the wait that nothing else can see with the `wait_for` tool; a running subagent and an unanswered " +
+				"expectReply send are already waits. " +
 				"If you need file context carried forward, include a `relevantPaths` list — only list files " +
 				"you will actually need after the checkpoint. " +
 				"Be conservative: include only files you're 100% certain you'll need in the next turn. " +

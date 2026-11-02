@@ -50,13 +50,14 @@ A **derived** wait clears when its source ends: the child finishes, the reply ar
 ## What the model sees
 
 - **`wait_for` result.** Every pending wait, with the ids that clear it.
-- **Checkpoint tool result.** `describePending`: `1 wait pending — peer: reply from bug-triage → not continuing`, and `… → continuing anyway (continue: true overrides the wait)` when the model overrode it. A model that forgot the wait learns the session is holding.
-- **Kickoff prompt.** The post-compaction follow-up and a restart's injected context both open with `WAITING ON: <kind>: <reason>`, then the rule: answer what arrives, start nothing else. A restarted seat learns at kickoff that a wait is still pending.
+- **Checkpoint tool result.** `describePending`: `1 wait pending: peer — reply from bug-triage → not continuing`, and `… → continuing anyway (continue: true overrides the wait)` when the model overrode it. A model that forgot the wait learns the session is holding.
+- **Kickoff prompt.** The post-compaction follow-up and a restart's injected context both open with `WAITING ON: <kind> — <reason>`, then the rule: answer what arrives, start nothing else. A restarted seat learns at kickoff that a wait is still pending.
 - **`session_start`.** The snapshot is read from the branch and injected before the first turn's model call, as a hidden custom message. Nothing there starts a turn of its own.
 
 The waits are resolved once, at the checkpoint call, so the tool result and the kickoff state the same thing even if a source ends while compaction runs.
 
 ## Limits
 
-- Derived peer waits are in-process. A restart forgets an unanswered `expectReply`; the durable kind is the manual wait.
-- A `checkpoint_fork` resolves against the source session's waits and names them in the new session's kickoff, but does not copy the snapshot into the new session.
+- A derived peer wait is in-process, and it ends only on a reply carrying its `inReplyTo`. A restart forgets an unanswered `expectReply`; the durable kind is the manual wait.
+- `external.ts` never sets `inReplyTo` on the mail it sends, so an `expectReply` sent to a Claude Code peer stays pending until the seat is told to continue or the process restarts. Every `expectReply` send is recorded (decision checkpoint/003 gives no external carve-out); whether one should be is an open question.
+- `checkpoint_fork` resolves against the source session's waits and names them in the new session's kickoff, but does not copy the snapshot. With `continue` unset, the new session starts with no record of the hold.
