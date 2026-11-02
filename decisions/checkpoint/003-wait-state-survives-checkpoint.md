@@ -30,7 +30,7 @@ date: 2026-11-02
 
 **Rejected: `external.ts` stamping `inReplyTo`.** It adds surface to a non-pi CLI to fix a match that the sender's identity already answers.
 
-**Outcome (2026-11-02).** Landed as `3e56a97` then `36e4342`, with WO-2026-064. `3e56a97` is the preparatory refactor: `checkpoint` and `checkpoint_fork` each resolved `continue` and assembled the kickoff their own way; both now call one `resolveContinuation` and one `sendKickoff` in `extensions/lib/waits.ts`, with the row-level test results unchanged.
+**Outcome (2026-11-02).** Landed as `3e56a97`, `36e4342`, then `fbb78f2` (review rework: the surface moved beside the store), with WO-2026-064. `3e56a97` is the preparatory refactor: `checkpoint` and `checkpoint_fork` each resolved `continue` and assembled the kickoff their own way; both now call one `resolveContinuation` and one `sendKickoff` in `extensions/lib/waits.ts`, with the row-level test results unchanged.
 
 The choice left open — a `wait` tool or a `wait: true` checkpoint flag — landed as the tool, named `wait_for` because pi ships a `wait` tool that collects subagent results. A wait has to exist before the checkpoint that carries it: a seat told to hold has not necessarily checkpointed yet, and the flag alone would cover only a wait that already survived to a checkpoint.
 
