@@ -201,6 +201,39 @@ export function ackEnvelope(mailbox: string, name: string, env: Envelope): void 
 	}
 }
 
+export interface InboxWatch {
+	close(): void;
+}
+
+/**
+ * Report a peer's inbox arrivals to `onEvent`: an `fs.watch` accelerator plus a
+ * `SCAN_MS` poll. The poll is the delivery guarantee (`fs.watch` is unavailable
+ * on some platforms and coalesces rapid writes); the watch only shortens
+ * latency. `onEvent` may fire more often than once per arrival, so callers do
+ * their own dedup — that is what makes at-least-once delivery safe.
+ */
+export function watchInbox(mailbox: string, name: string, onEvent: () => void): InboxWatch {
+	const timer = setInterval(onEvent, SCAN_MS);
+	timer.unref?.();
+	let watcher: fs.FSWatcher | undefined;
+	try {
+		watcher = fs.watch(inboxDir(mailbox, name), { persistent: false }, () => onEvent());
+	} catch {
+		// polling covers platforms/dirs where fs.watch is unavailable
+	}
+	return {
+		close() {
+			clearInterval(timer);
+			try {
+				watcher?.close();
+			} catch {
+				// already closed
+			}
+			watcher = undefined;
+		},
+	};
+}
+
 export function writeHeartbeat(mailbox: string, info: PeerInfo): void {
 	const dir = peersDir(mailbox);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

@@ -41,19 +41,17 @@
  */
 
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	HEARTBEAT_MS,
-	SCAN_MS,
 	type Envelope,
+	type InboxWatch,
 	type PeerInfo,
 	ackEnvelope,
 	deliveryDecision,
 	deliveryModeFor,
 	ensureMailbox,
-	inboxDir,
 	listPeers,
 	mailboxRoot,
 	newEnvelope,
@@ -67,6 +65,7 @@ import {
 	sanitizePeerName,
 	sendEnvelope,
 	sweepStalePeers,
+	watchInbox,
 	writeHeartbeat,
 } from "./mailbox.ts";
 
@@ -97,8 +96,7 @@ export default function (pi: ExtensionAPI) {
 	// Envelope ids already replied to (at-most-once even if re-consumed).
 	const replied = new Set<string>();
 
-	let watcher: fs.FSWatcher | undefined;
-	let scanTimer: ReturnType<typeof setInterval> | undefined;
+	let inboxWatch: InboxWatch | undefined;
 	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
 	// ── lifecycle ──────────────────────────────────────────────────────────
@@ -144,33 +142,19 @@ export default function (pi: ExtensionAPI) {
 		stopRuntime();
 		publishHeartbeat();
 		consumeInbox();
-		scanTimer = setInterval(() => consumeInbox(), SCAN_MS);
+		inboxWatch = watchInbox(state.mailbox, state.peerName, () => consumeInbox());
 		heartbeatTimer = setInterval(() => {
 			publishHeartbeat();
 			sweepStalePeers(state.mailbox);
 		}, HEARTBEAT_MS);
-		scanTimer.unref?.();
 		heartbeatTimer.unref?.();
-		try {
-			watcher = fs.watch(inboxDir(state.mailbox, state.peerName), { persistent: false }, () =>
-				consumeInbox(),
-			);
-		} catch {
-			// polling covers platforms/dirs where fs.watch is unavailable
-		}
 	}
 
 	function stopRuntime(): void {
-		if (scanTimer) clearInterval(scanTimer);
+		inboxWatch?.close();
+		inboxWatch = undefined;
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
-		scanTimer = undefined;
 		heartbeatTimer = undefined;
-		try {
-			watcher?.close();
-		} catch {
-			// already closed
-		}
-		watcher = undefined;
 		if (state.mailbox && state.peerName) removeHeartbeat(state.mailbox, state.peerName);
 	}
 
