@@ -1,6 +1,6 @@
 # WO-2026-063 — deliver peer-link mail to a Claude Code session through a channel
 
-**Status: DISPATCHED 2026-11-02.**
+**Status: BLOCKED 2026-11-02 — P3 falsified on this account.** Rows 1–6, the preparatory refactor and the docs are done and reviewed on branch `wo-2026-063-peer-link-channel` (`4bf573d`), held unmerged on purpose. Row 7 and the Mechanism 5 ack wiring are unstarted. Condition: the account cannot load any channel yet, so P1 and P2 cannot be measured.
 
 ### Metadata
 
@@ -79,3 +79,17 @@ Cost: report wall time and process spawns of one idle minute of the server, and 
 - No path that starts a Claude turn other than the channel: no watcher, no `claude -p`, no SDK query call, no continuing Stop hook.
 - Never read Claude credentials, transcripts (`transcript_path` included) or `~/.claude` state.
 - Do not edit `~/.claude.json`, `~/.claude/settings.json` or any launch script.
+
+### Landing record (2026-11-02)
+
+**Blocked on channel availability, not on this server.** The owner ran the probe in an interactive 2.1.296 session. Claude Code printed **"Channels are not currently available"** at startup, before any server is named, so P3 is false and P1/P2 could not be measured.
+
+Cause, read from the 2.1.296 binary: the notice prints when `Oyt()` is true, `Oyt()` = `!flag("tengu_harbor") || verdict("allow_channels") ∈ {latched, org_denied}`, and it takes no argument naming a server. The cached GrowthBook flag `tengu_harbor` is true, so the block is the account's server-side `allow_channels` verdict. The channels page says preview availability "is rolling out gradually", and it applies to every channel, official plugins included.
+
+**What stands.** Branch `wo-2026-063-peer-link-channel` at `4bf573d`, five commits above `07a940c`: refactor `ed0f738`, feature `49a95bc`, rework `13677d0`, `1c2ef5d`, `4bf573d`. Rows 1–6, the preparatory refactor and the docs; every row red under its own revert. Reviewed: `review-code` APPROVED (3 rounds), `review-tests` APPROVED_WITH_NOTES (2 rounds, all notes accepted as LOW). Gate re-ran the rows at the tip: 20 pass / 0 fail; the refactor commit alone 33 pass / 2 fail, the two live `peer-link` rows also red at base. Unmerged, unpushed to `main`, nothing registered, nothing enabled — `### Channel delivery is not ready to enable: no ack yet` is in the design doc, and the Setup text is for the owner to apply.
+
+**What is not done.** Row 7 and the ack wiring. No ack work was started and none should be: without P2 there is no honest ack point, and acking at push loses events. No workaround either — no `/loop`, no watcher.
+
+**Gate reading, for the record.** Rows 4 and 5 drive the server with `Bun.spawnSync` rather than the SDK `Client` + `StdioClientTransport` the Acceptance preamble names. The gate reads that as in-scope: a server that refuses to start never reaches `initialize`, so a transport that must negotiate cannot observe the exit code and stderr the rows assert. Rows 1–3, 6 and 7 use the SDK client. The assertions are unchanged.
+
+**Probe kept.** `~/Developer/probe-peer-link-channel/` (`RUN.md`, `server.mjs`, `hooks.mjs`, `.mcp.json`, `.claude/settings.json`). Re-run step 1 after a Claude Code update; P1 and P2 resume from there, and the answers land in Mechanism 5 before row 7 is written.
