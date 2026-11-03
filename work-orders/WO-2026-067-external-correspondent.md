@@ -79,3 +79,33 @@ Rows 1–5 drive the wired extension over `SessionManager.inMemory`, writing hea
 The standard schema. Additionally: the row-by-row mutation for each of the seven rows, run on that row alone; the `git diff` proving the broadcast arm is byte-identical; and confirmation that the three rows named in WO-2026-066's landing (rows 2, 3, 5 of that order) still pass unchanged.
 
 `review_cap_reached` is hard: **3 rounds maximum**. A fourth round is refused and escalated to the orchestrator, not entered.
+
+---
+
+### Landing stamp (2026-11-03, merged 22ebe0c)
+
+Landed as `a68653a` (the arm), `40015b2` and `8f8571c` (docs). One review round, both
+APPROVED_WITH_NOTES, LOW only. Production delta: `22 9` in `model-error-mail.ts` and
+nothing else; the broadcast return line is byte-identical to base.
+
+Two spec defects, kept as written:
+
+- **Row 2's red-without was under-powered.** "Make the arm unconditional on liveness"
+  leaves row 2 green; WO-2026-066's row 3 reds under it and still passes unchanged. The
+  row's real gate is the online term. This is the same defect class as WO-2026-066's row 1:
+  a row whose fixture makes the mutation invisible.
+- **Row 6's state is synthetic.** A session cannot be both external and self; the row
+  builds it by overwriting this session's heartbeat file with `external: true`. It pins the
+  guard, not a reachable state.
+
+Two consequences worth keeping:
+
+- **Self exclusion now has two homes** — `recorded !== self` in `recipients()` and
+  `onlineExcept`'s own term in `mailbox.ts`. The arm reads `deps.peers()` (which includes
+  this session's heartbeat) rather than `onlineExcept`'s output, so it cannot inherit the
+  exclusion. The order mandated the guard; a future `mailbox.ts` change should give both
+  sites one `reachableExcept`-style home. Recorded as a supersession note in decision 008.
+- **The empty-case warn text still says "no peer is online now"** while the condition is
+  now "no peer online and no named external correspondent". Left unchanged deliberately:
+  the order says the empty result keeps today's behaviour. The design doc states the
+  precise condition.
