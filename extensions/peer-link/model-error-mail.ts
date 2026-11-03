@@ -143,7 +143,7 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 	 * has aged out (a subagent that has exited) queues in an inbox nobody reads —
 	 * the silence this mail exists to break (decision external-tools/008).
 	 *
-	 * Self is excluded on both paths: a session that mailed itself would
+	 * Self is excluded once, by `onlineExcept`: a session that mailed itself would
 	 * otherwise become its own correspondent, and the mail would come back as an
 	 * injected user message — the one thing the mail path must never cause.
 	 */
@@ -151,7 +151,7 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 		const self = deps.peerName();
 		const recorded = correspondent ?? readLastCorrespondent(deps.mailbox(), self);
 		const online = onlineExcept(deps.peers(), self);
-		if (recorded && recorded !== self) {
+		if (recorded) {
 			correspondent = recorded;
 			if (online.some((peer) => peer.name === recorded)) return [recorded];
 		}

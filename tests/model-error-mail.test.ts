@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	ensureMailbox,
+	listPeers,
 	readIncoming,
 	sendEnvelope,
 	writeHeartbeat,
@@ -393,86 +394,106 @@ describe("recipient rule", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The wired extension over a real mailbox
+//
+// `peerLink(api)` over `SessionManager.inMemory`, the real handlers, real
+// heartbeat and inbox files (`peers` is `() => listPeers(state.mailbox)` at the
+// wiring site), and the session's own `sendUserMessage` depositing a user entry
+// on the branch. One stub for the recipient rows and the branch rows: they must
+// see the same wiring, so a second copy would only drift against the
+// ExtensionAPI surface.
+// ---------------------------------------------------------------------------
+
+async function wiredExtension(options: {
+	peerName: string;
+	cwd: string;
+	/** A persisted correspondent record, written before the session starts. */
+	record?: string;
+	/** An envelope in this session's inbox before the session starts. */
+	inbound?: Envelope;
+}) {
+	const { peerName, cwd } = options;
+	const mailbox = await mkdtemp(join(tmpdir(), "model-error-wired-"));
+	ensureMailbox(mailbox, peerName);
+	if (options.record) writeLastCorrespondent(mailbox, peerName, options.record);
+	if (options.inbound) sendEnvelope(mailbox, options.inbound);
+	const previous = { name: process.env.PI_PEER_NAME, mailbox: process.env.PI_PEER_MAILBOX };
+	process.env.PI_PEER_NAME = peerName;
+	process.env.PI_PEER_MAILBOX = mailbox;
+
+	const sessions = SessionManager.inMemory(cwd);
+	const notifies: Array<{ message: string; level?: string }> = [];
+	const injected: string[] = [];
+	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		registerTool: () => {},
+		registerCommand: () => {},
+		sendUserMessage: (text: string) => {
+			injected.push(text);
+			sessions.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+		},
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		cwd,
+		ui: { notify: (message: string, level?: string) => notifies.push({ message, level }) },
+		sessionManager: sessions,
+	};
+	peerLink(api);
+	const emit = async (event: string, payload: unknown) => {
+		for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
+	};
+	await emit("session_start", { type: "session_start" });
+	const emitMessageEnd = (message: unknown) =>
+		emit("message_end", { type: "message_end", message });
+	return {
+		mailbox,
+		sessions,
+		notifies,
+		injected,
+		/** A peer's heartbeat, published the way its own runtime publishes it. */
+		heartbeat: (name: string, ageMs = 0) =>
+			writeHeartbeat(mailbox, { name, ts: Date.now() - ageMs }),
+		emitMessageEnd,
+		/** One qualifying failure, as a completed assistant message. */
+		error: (errorMessage = E_429) =>
+			emitMessageEnd({
+				role: "assistant",
+				content: [],
+				api: "openai-completions",
+				provider: "opencode-go",
+				model: "deepseek-v4.1-flash",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+				stopReason: "error",
+				errorMessage,
+				timestamp: Date.now(),
+			}),
+		inbox: (peer: string) => readIncoming(mailbox, peer),
+		cleanup: async () => {
+			await emit("session_shutdown", { type: "session_shutdown" });
+			if (previous.name === undefined) delete process.env.PI_PEER_NAME;
+			else process.env.PI_PEER_NAME = previous.name;
+			if (previous.mailbox === undefined) delete process.env.PI_PEER_MAILBOX;
+			else process.env.PI_PEER_MAILBOX = previous.mailbox;
+			await rm(mailbox, { recursive: true, force: true });
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Acceptance rows 1–6 (WO-2026-066): a dead correspondent is not a recipient
 //
-// The wired extension over an in-memory session, with real heartbeat and inbox
-// files. Every row asserts which inboxes hold an envelope — never an internal
-// list — and the heartbeats it writes are the ones `listPeers` reads.
+// Every row asserts which inboxes hold an envelope — never an internal list —
+// and the heartbeats it writes are the ones `listPeers` reads.
 // ---------------------------------------------------------------------------
 
 describe("recipient liveness", () => {
-	type Handler = (event: unknown, ctx: unknown) => unknown;
-
 	const ME = "live-seat";
 
-	async function wired(options: { record?: string; inbound?: Envelope } = {}) {
-		const mailbox = await mkdtemp(join(tmpdir(), "model-error-live-"));
-		ensureMailbox(mailbox, ME);
-		// The persisted record: whoever mailed this session before a restart.
-		if (options.record) writeLastCorrespondent(mailbox, ME, options.record);
-		if (options.inbound) sendEnvelope(mailbox, options.inbound);
-		const previous = { name: process.env.PI_PEER_NAME, mailbox: process.env.PI_PEER_MAILBOX };
-		process.env.PI_PEER_NAME = ME;
-		process.env.PI_PEER_MAILBOX = mailbox;
-
-		const sessions = SessionManager.inMemory("/work/live");
-		const notifies: Array<{ message: string; level?: string }> = [];
-		const injected: string[] = [];
-		const handlers = new Map<string, Handler[]>();
-		const api = {
-			on: (event: string, handler: Handler) => {
-				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-			},
-			registerTool: () => {},
-			registerCommand: () => {},
-			sendUserMessage: (text: string) => {
-				injected.push(text);
-				sessions.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-			},
-		} as unknown as ExtensionAPI;
-		const ctx = {
-			cwd: "/work/live",
-			ui: { notify: (message: string, level?: string) => notifies.push({ message, level }) },
-			sessionManager: sessions,
-		};
-		peerLink(api);
-		const emit = async (event: string, payload: unknown) => {
-			for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
-		};
-		await emit("session_start", { type: "session_start" });
-		return {
-			mailbox,
-			notifies,
-			injected,
-			/** A peer's heartbeat, published the way its own runtime publishes it. */
-			heartbeat: (name: string, ageMs = 0) =>
-				writeHeartbeat(mailbox, { name, ts: Date.now() - ageMs }),
-			error: (errorMessage = E_429) =>
-				emit("message_end", {
-					type: "message_end",
-					message: {
-						role: "assistant",
-						content: [],
-						api: "openai-completions",
-						provider: "opencode-go",
-						model: "deepseek-v4.1-flash",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
-						stopReason: "error",
-						errorMessage,
-						timestamp: Date.now(),
-					},
-				}),
-			inbox: (peer: string) => readIncoming(mailbox, peer),
-			cleanup: async () => {
-				await emit("session_shutdown", { type: "session_shutdown" });
-				if (previous.name === undefined) delete process.env.PI_PEER_NAME;
-				else process.env.PI_PEER_NAME = previous.name;
-				if (previous.mailbox === undefined) delete process.env.PI_PEER_MAILBOX;
-				else process.env.PI_PEER_MAILBOX = previous.mailbox;
-				await rm(mailbox, { recursive: true, force: true });
-			},
-		};
-	}
+	const wired = (options: { record?: string; inbound?: Envelope } = {}) =>
+		wiredExtension({ peerName: ME, cwd: "/work/live", ...options });
 
 	it("row 1: the correspondent recorded this process receives it, and only it", async () => {
 		const w = await wired({
@@ -487,7 +508,9 @@ describe("recipient liveness", () => {
 		});
 		try {
 			// The scan delivered the envelope at session_start, so it recorded
-			// this session's correspondent in process memory.
+			// this session's correspondent. This fixture's persisted record holds the
+			// same name (the delivery writes both), so the row pins the correspondent
+			// arm; the precedence row below pins which source wins.
 			expect(w.injected).toHaveLength(1);
 			w.heartbeat("corr-seat");
 			w.heartbeat("bystander");
@@ -523,6 +546,7 @@ describe("recipient liveness", () => {
 			// whose inbox nobody reads.
 			w.heartbeat("dead-seat", 60_000);
 			w.heartbeat("live-peer");
+			expect(listPeers(w.mailbox).find((p) => p.name === "dead-seat")?.online).toBe(false);
 
 			await w.error();
 
@@ -604,67 +628,19 @@ describe("recipient liveness", () => {
 // ---------------------------------------------------------------------------
 
 describe("the mail never enters this session's branch", () => {
-	type Handler = (event: unknown, ctx: unknown) => unknown;
-
-	async function wiredBranch(options: { correspondent?: string; inbound?: Envelope } = {}) {
-		const mailbox = await mkdtemp(join(tmpdir(), "model-error-branch-"));
-		ensureMailbox(mailbox, "branch-seat");
-		if (options.correspondent) writeLastCorrespondent(mailbox, "branch-seat", options.correspondent);
-		// A correspondent has to be online to receive: the mail's first arm is
-		// gated on the heartbeat (WO-2026-066).
-		if (options.correspondent)
-			writeHeartbeat(mailbox, { name: options.correspondent, ts: Date.now() });
-		// Placed before the session starts, so the extension's first inbox scan
-		// delivers it and records the sender as the last correspondent.
-		if (options.inbound) {
-			writeHeartbeat(mailbox, { name: options.inbound.from, ts: Date.now() });
-			sendEnvelope(mailbox, options.inbound);
-		}
-		const previous = { name: process.env.PI_PEER_NAME, mailbox: process.env.PI_PEER_MAILBOX };
-		process.env.PI_PEER_NAME = "branch-seat";
-		process.env.PI_PEER_MAILBOX = mailbox;
-
-		const sessions = SessionManager.inMemory("/work/branch");
-		const handlers = new Map<string, Handler[]>();
-		const api = {
-			on: (event: string, handler: Handler) => {
-				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-			},
-			registerTool: () => {},
-			registerCommand: () => {},
-			// What pi does with a user message: a user entry on the branch.
-			sendUserMessage: (text: string) => {
-				sessions.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-			},
-		} as unknown as ExtensionAPI;
-		const ctx = {
+	const wiredBranch = (options: { correspondent?: string; inbound?: Envelope } = {}) =>
+		wiredExtension({
+			peerName: "branch-seat",
 			cwd: "/work/branch",
-			ui: { notify: () => {} },
-			sessionManager: sessions,
-		};
-		peerLink(api);
-		const emit = async (event: string, payload: unknown) => {
-			for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
-		};
-		await emit("session_start", { type: "session_start" });
-		return {
-			sessions,
-			mailbox,
-			emitMessageEnd: (message: unknown) => emit("message_end", { type: "message_end", message }),
-			cleanup: async () => {
-				await emit("session_shutdown", { type: "session_shutdown" });
-				if (previous.name === undefined) delete process.env.PI_PEER_NAME;
-				else process.env.PI_PEER_NAME = previous.name;
-				if (previous.mailbox === undefined) delete process.env.PI_PEER_MAILBOX;
-				else process.env.PI_PEER_MAILBOX = previous.mailbox;
-				await rm(mailbox, { recursive: true, force: true });
-			},
-		};
-	}
+			record: options.correspondent,
+			inbound: options.inbound,
+		});
 
 	it("mails a 429 without adding an entry to the branch", async () => {
 		const wired = await wiredBranch({ correspondent: "oracle-seat" });
 		try {
+			// The correspondent arm is gated on the heartbeat (WO-2026-066).
+			wired.heartbeat("oracle-seat");
 			wired.sessions.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
 			// A finished assistant turn too, so the "no tool call" check below has
 			// an assistant entry to look at rather than matching nothing.
@@ -727,6 +703,7 @@ describe("the mail never enters this session's branch", () => {
 			},
 		});
 		try {
+			wired.heartbeat("oracle-seat");
 			await wired.emitMessageEnd({
 				role: "assistant",
 				content: [],
