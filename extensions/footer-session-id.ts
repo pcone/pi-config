@@ -40,6 +40,13 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	fetchQuotaSnapshot,
+	quotaDescriptorFor,
+	renderQuotaSnapshot,
+	resetQuotaWarnings,
+	type QuotaSnapshot,
+} from "./lib/quota.ts";
 
 // ---------------------------------------------------------------------------
 // Word lists — 64 entries each. Fantasy and sci-fi mixed throughout.
@@ -358,637 +365,66 @@ type FooterFactoryCtx = {
 };
 
 // ---------------------------------------------------------------------------
-// Z.ai coding-plan quota — undocumented endpoint consumed by community tools.
-// https://api.z.ai/api/monitor/usage/quota/limit
+// Provider quota/usage — the footer's row-3 slot.
+//
+// The mechanism (descriptors, fetch, render) is `extensions/lib/quota.ts`; this
+// block is the footer's side of it: one cache slot for the active provider and
+// the 60s cycle that fills or clears it (see the footer factory below).
 // ---------------------------------------------------------------------------
 
-/** Cached quota data, written by the poll interval and read by render(). */
-let cachedQuota: QuotaData | undefined;
+/** Cached snapshot for the active provider, rendered at draw time. */
+let cachedQuota: QuotaSnapshot | undefined;
 
-/** Set to true after the first fetch failure to suppress repeated console.warn. */
-let quotaWarnedOnce = false;
+/** Resolved API keys per provider; an empty string means "resolved, no key". */
+const quotaKeys = new Map<string, string>();
 
-/** Resolved z.ai API key (cached after first resolution), or undefined if unavailable. */
-let resolvedZaiKey: string | undefined;
-
-/** True once the API key has been resolved (even if null — prevents re-resolution). */
-let zaiKeyResolved = false;
-
-/** Set to true after the first MiniMax fetch failure to suppress repeated console.warn. */
-let minimaxWarnedOnce = false;
-
-/** Resolved MiniMax API key (cached per-provider after first resolution). */
-let cachedMinimaxKey: { provider: string; key: string } | undefined;
-
-/** Per-provider quota endpoint. Documented in platform.minimax.io Token Plan FAQ. */
-const MINIMAX_ENDPOINTS: Record<string, string> = {
-	"minimax":    "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
-	"minimax-cn": "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
-};
-
-interface QuotaLimitItem {
-	type: string;
-	unit: number;
-	percentage: number;
-	usage: number;
-	currentValue: number;
-	nextResetTime?: number;
-}
-
-interface QuotaData {
-	level: string;
-	limits: QuotaLimitItem[];
-}
-
-/**
- * Fetch z.ai coding-plan quota from the undocumented endpoint.
- * No Authorization header prefix — bare key.
- */
-async function fetchQuota(apiKey: string): Promise<QuotaData | undefined> {
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 5000);
+/** Resolve and memoize a provider's key. The endpoint's response is the
+ * authority on whether the key carries a coding plan, never a key prefix. */
+async function quotaKey(fc: FooterFactoryCtx, provider: string): Promise<string | undefined> {
+	const memo = quotaKeys.get(provider);
+	if (memo !== undefined) return memo || undefined;
 	try {
-		const res = await fetch(
-			"https://api.z.ai/api/monitor/usage/quota/limit",
-			{
-				headers: { Authorization: apiKey },
-				signal: controller.signal,
-			},
-		);
-		if (!res.ok) {
-			if (!quotaWarnedOnce) {
-				console.warn(`[footer-session-id] quota fetch failed: HTTP ${res.status}`);
-				quotaWarnedOnce = true;
-			}
-			return undefined;
-		}
-		const json = await res.json() as {
-			code?: number;
-			data?: { level?: string; limits?: QuotaLimitItem[] };
-			success?: boolean;
-		};
-		if (!json.data?.limits || json.success === false) {
-			if (!quotaWarnedOnce) {
-				console.warn("[footer-session-id] quota response missing limits field");
-				quotaWarnedOnce = true;
-			}
-			return undefined;
-		}
-		return {
-			level: json.data.level ?? "unknown",
-			limits: json.data.limits,
-		};
-	} catch (err: unknown) {
-		if (!quotaWarnedOnce) {
-			console.warn(
-				"[footer-session-id] quota fetch error:",
-				err instanceof Error ? err.message : String(err),
-			);
-			quotaWarnedOnce = true;
-		}
-		return undefined;
-	} finally {
-		clearTimeout(timeoutId);
-	}
-}
-
-/**
- * Resolve and cache the z.ai API key. Returns true if any key is configured.
- *
- * Do NOT gate on a key-prefix heuristic: the endpoint response is the authority
- * on whether this is a coding-plan key. Real coding-plan keys do not
- * consistently start with `sk-sp-` (verified against a live Pro subscription
- * whose key had a hex prefix). A standard pay-as-you-go key simply returns no
- * `data.limits`, which renderQuotaSegment already treats as "render nothing".
- */
-async function ensureZaiKey(ctx: FooterFactoryCtx): Promise<boolean> {
-	if (zaiKeyResolved) return !!resolvedZaiKey;
-	zaiKeyResolved = true;
-	try {
-		const key = await ctx.modelRegistry?.getApiKeyForProvider?.("zai");
-		if (key) {
-			resolvedZaiKey = key;
-			return true;
-		}
-		resolvedZaiKey = undefined;
-		return false;
+		const key = await fc.modelRegistry?.getApiKeyForProvider?.(provider);
+		quotaKeys.set(provider, key ?? "");
+		return key || undefined;
 	} catch {
-		resolvedZaiKey = undefined;
-		return false;
-	}
-}
-
-/**
- * Fetch MiniMax (minimaxi.com / minimax.io) Token Plan quota. Documented in
- * platform.minimax.io/docs/token-plan/faq ("Method 2: Use the API Endpoint").
- *
- * Returns the same QuotaData shape as fetchQuota, normalized so that
- * renderQuotaSegment can consume it without knowing the provider. Selects
- * the "general" bucket (text-model quota); falls back to the first bucket.
- *
- * No key-prefix check — endpoint response is the authority (same rationale
- * as ensureZaiKey: a pay-as-you-go key returns base_resp.status_code != 0
- * and renderQuotaSegment naturally treats that as "render nothing").
- */
-async function fetchMinimaxQuota(apiKey: string, provider: string): Promise<QuotaData | undefined> {
-	const url = MINIMAX_ENDPOINTS[provider];
-	if (!url) return undefined;
-
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 5000);
-	try {
-		const res = await fetch(url, {
-			headers: { Authorization: `Bearer ${apiKey}` },
-			signal: controller.signal,
-		});
-		if (!res.ok) {
-			if (!minimaxWarnedOnce) {
-				console.warn(`[footer-session-id] MiniMax quota fetch failed: HTTP ${res.status}`);
-				minimaxWarnedOnce = true;
-			}
-			return undefined;
-		}
-		const json = await res.json() as {
-			model_remains?: Array<{
-				model_name?: string;
-				current_interval_remaining_percent?: number;
-				current_weekly_remaining_percent?: number;
-				remains_time?: number;
-				weekly_remains_time?: number;
-				current_interval_status?: number;
-			}>;
-			base_resp?: { status_code?: number; status_msg?: string };
-		};
-
-		if (json.base_resp?.status_code !== 0) {
-			if (!minimaxWarnedOnce) {
-				console.warn(
-					`[footer-session-id] MiniMax quota API error: ${json.base_resp?.status_code} ${json.base_resp?.status_msg ?? ""}`,
-				);
-				minimaxWarnedOnce = true;
-			}
-			return undefined;
-		}
-
-		const buckets = json.model_remains;
-		if (!buckets || buckets.length === 0) {
-			if (!minimaxWarnedOnce) {
-				console.warn("[footer-session-id] MiniMax quota response has no model_remains");
-				minimaxWarnedOnce = true;
-			}
-			return undefined;
-		}
-
-		// Prefer "general" (text-model quota); fall back to the first bucket.
-		const bucket = buckets.find((b) => b.model_name === "general") ?? buckets[0];
-		if (!bucket) return undefined;
-
-		const fivePct = bucket.current_interval_remaining_percent;
-		const weeklyPct = bucket.current_weekly_remaining_percent;
-		if (typeof fivePct !== "number" || typeof weeklyPct !== "number") {
-			if (!minimaxWarnedOnce) {
-				console.warn("[footer-session-id] MiniMax quota response missing percentage fields");
-				minimaxWarnedOnce = true;
-			}
-			return undefined;
-		}
-
-		const now = Date.now();
-		const status = bucket.current_interval_status;
-
-		// Status: 1 = normal (limited), 2 = exhausted, 3 = unlimited.
-		// Use `level` to surface notable states only; normal status leaves it
-		// blank so the healthy display stays clean (no `· ok` clutter).
-		let level = "";
-		if (status === 2) level = "exhausted";
-		else if (status === 3) level = "unlimited";
-
-		return {
-			level,
-			limits: [
-				{
-					type: "TOKENS_LIMIT",
-					unit: 3,
-					percentage: Math.max(0, Math.min(100, 100 - fivePct)),  // used %
-					nextResetTime:
-						typeof bucket.remains_time === "number" ? now + bucket.remains_time : undefined,
-				},
-				{
-					type: "TOKENS_LIMIT",
-					unit: 6,
-					percentage: Math.max(0, Math.min(100, 100 - weeklyPct)),
-					nextResetTime:
-						typeof bucket.weekly_remains_time === "number"
-							? now + bucket.weekly_remains_time
-							: undefined,
-				},
-			],
-		};
-	} catch (err: unknown) {
-		if (!minimaxWarnedOnce) {
-			console.warn(
-				"[footer-session-id] MiniMax quota fetch error:",
-				err instanceof Error ? err.message : String(err),
-			);
-			minimaxWarnedOnce = true;
-		}
-		return undefined;
-	} finally {
-		clearTimeout(timeoutId);
-	}
-}
-
-/**
- * Resolve and cache the MiniMax API key. Cached per-provider so a session
- * that switches between minimax and minimax-cn re-resolves on the second
- * provider. No key-prefix check, same rationale as ensureZaiKey.
- */
-async function ensureMinimaxKey(
-	ctx: FooterFactoryCtx,
-	provider: string,
-): Promise<string | undefined> {
-	if (cachedMinimaxKey && cachedMinimaxKey.provider === provider) {
-		return cachedMinimaxKey.key;
-	}
-	try {
-		const key = await ctx.modelRegistry?.getApiKeyForProvider?.(provider);
-		if (key) {
-			cachedMinimaxKey = { provider, key };
-			return key;
-		}
-		cachedMinimaxKey = undefined;
-		return undefined;
-	} catch {
-		cachedMinimaxKey = undefined;
+		quotaKeys.set(provider, "");
 		return undefined;
 	}
 }
 
 /**
- * Run one quota cycle: clear stale data on switch-away from zai, fetch on
- * switch-to-zai. Triggers a render whenever cachedQuota is mutated, so the
- * footer reflects the new state without waiting for the 60s polling tick.
+ * Run one quota cycle for the active model provider: fetch on a supported
+ * provider, drop the cached snapshot on any other. A failed fetch keeps the
+ * last good snapshot (the renderer still gates it to its own provider).
  *
- * Fire-and-forget at call sites — render() reads cachedQuota at draw time,
- * so the awaiter doesn't need to block on the network round-trip.
+ * Fire-and-forget at the call sites — render() reads `cachedQuota` at draw
+ * time, so the awaiter never blocks on the network round-trip.
  */
 async function refreshQuotaNow(
 	fc: FooterFactoryCtx,
 	requestRender: (() => void) | null | undefined,
 ): Promise<void> {
 	const provider = fc.model?.provider;
-
-	if (provider === "zai") {
-		const hasKey = await ensureZaiKey(fc);
-		if (!hasKey || !resolvedZaiKey) {
-			cachedQuota = undefined;
-			return;
-		}
-		const quota = await fetchQuota(resolvedZaiKey);
-		if (quota) {
-			cachedQuota = quota;
-			requestRender?.();
-		}
+	const descriptor = quotaDescriptorFor(provider);
+	if (!descriptor) {
+		// Switch-away, or a provider with no quota source: drop the snapshot so
+		// another provider's numbers cannot sit under this model.
+		if (cachedQuota) requestRender?.();
+		cachedQuota = undefined;
 		return;
 	}
-
-	if (provider === "minimax" || provider === "minimax-cn") {
-		const key = await ensureMinimaxKey(fc, provider);
-		if (!key) {
-			cachedQuota = undefined;
-			return;
-		}
-		const quota = await fetchMinimaxQuota(key, provider);
-		if (quota) {
-			cachedQuota = quota;
-			requestRender?.();
-		}
+	const key = await quotaKey(fc, descriptor.provider);
+	if (!key) {
+		cachedQuota = undefined;
 		return;
 	}
-
-	if (provider === "opencode-go") {
-		const hasKey = await ensureGoKey(fc);
-		if (!hasKey || !resolvedGoKey) {
-			cachedGoUsage = undefined;
-			return;
-		}
-		const usage = await fetchOpenCodeUsage(resolvedGoKey);
-		if (usage) {
-			cachedGoUsage = usage;
-			requestRender?.();
-		}
-		return;
-	}
-
-	// Switch-away (or never-supported): drop any stale quota so it can't
-	// show up under a model that doesn't have a quota fetcher.
-	cachedQuota = undefined;
-	cachedGoUsage = undefined;
-	requestRender?.();
-}
-
-/** Unit → display label mapping for quota windows. */
-const QUOTA_LABELS: Record<number, string> = {
-	3: "5h",   // TOKENS_LIMIT, 5-hour rolling window
-	6: "7d",   // TOKENS_LIMIT, weekly
-	5: "MCP",  // TIME_LIMIT, monthly MCP cap (web search / reader / Zread)
-};
-
-/**
- * Format a compact duration-until-reset from a Unix-ms timestamp.
- * Returns "" when the timestamp is missing or already in the past (the next
- * poll tick refreshes with a fresh reset time — never render a stale/reset one).
- *   <1h → "47m",   <1d → "4.9h",   ≥1d → "6.5d"
- */
-function formatResetDuration(nextResetTime: number | undefined, now: number): string {
-	if (!nextResetTime) return "";
-	const deltaMs = nextResetTime - now;
-	if (deltaMs <= 0) return "";
-	const mins = deltaMs / 60000;
-	if (mins < 60) return `${Math.round(mins)}m`;
-	const hrs = mins / 60;
-	if (hrs < 24) return `${hrs.toFixed(1)}h`;
-	return `${(hrs / 24).toFixed(1)}d`;
-}
-
-/**
- * Determine the z.ai peak/off-peak quota multiplier for the given model.
- * Returns undefined when the model is not subject to peak pricing.
- * Peak hours: 14:00–18:00 Beijing time (Asia/Shanghai, UTC+8).
- * Off-peak: 2× (1× promo through 2026-09-30; hard-code 2× until then).
- */
-function getZaiMultiplier(
-	modelId: string | undefined,
-	now?: Date,
-): 3 | 2 | undefined {
-	if (!modelId) return undefined;
-	const lower = modelId.toLowerCase();
-	if (!lower.includes("glm-5.2") && !lower.includes("glm-5-turbo")) return undefined;
-
-	const beijing = new Date(
-		(now ?? new Date()).toLocaleString("en-US", { timeZone: "Asia/Shanghai" }),
-	);
-	const hour = beijing.getHours();
-
-	if (hour >= 14 && hour < 18) return 3;
-	return 2;
-}
-
-/** Quota percentage with the shared pressure-color thresholds (≥85 error,
- * ≥60 warning, else success). */
-function colorUsedPct(
-	theme: { fg: (color: string, text: string) => string },
-	usedPct: number,
-): string {
-	const pct = `${usedPct}%`;
-	if (usedPct >= 85) return theme.fg("error", pct);
-	if (usedPct >= 60) return theme.fg("warning", pct);
-	return theme.fg("success", pct);
-}
-
-/**
- * Build the quota segment string for the footer top line.
- * Returns empty string when no quota data is available or model is not zai.
- */
-function renderQuotaSegment(
-	quota: QuotaData | undefined,
-	modelProvider: string | undefined,
-	modelId: string | undefined,
-	width: number,
-	theme: { fg: (color: string, text: string) => string },
-	now?: Date,
-): string {
-	if (
-		modelProvider !== "zai" &&
-		modelProvider !== "minimax" &&
-		modelProvider !== "minimax-cn"
-	) return "";
-	if (!quota || !quota.limits.length) return "";
-
-	const parts: string[] = [];
-
-	// Unit 3 = 5h window, unit 6 = 7d window (always show when available)
-	for (const u of [3, 6] as const) {
-		const entry = quota.limits.find((l) => l.unit === u);
-		if (!entry) continue;
-		const usedPct = entry.percentage;
-		const label = QUOTA_LABELS[u] ?? `u${u}`;
-		const coloredPct = colorUsedPct(theme, usedPct);
-		let part = `${label}:${coloredPct}`;
-		// Append compact duration until reset (always shown) for both token
-		// windows — the "when do I get capacity back" signal. Monthly MCP
-		// (unit 5) reset stays off; it's too far out and MCP only renders
-		// when in use anyway.
-		if (u === 3 || u === 6) {
-			const reset = formatResetDuration(entry.nextResetTime, Date.now());
-			if (reset) part += ` ${theme.fg("dim", reset)}`;
-		}
-		parts.push(part);
-	}
-
-	// MCP (unit 5) — only if non-zero usage
-	const mcpEntry = quota.limits.find((l) => l.unit === 5);
-	if (mcpEntry && mcpEntry.currentValue > 0) {
-		const usedPct = mcpEntry.percentage;
-		const coloredPct = colorUsedPct(theme, usedPct);
-		parts.push(`MCP:${coloredPct}`);
-	}
-
-	// Z.ai peak/off-peak multiplier prefix — prepended when a subject model
-	// (GLM-5.2 or GLM-5-Turbo) is active. The 1× off-peak promo runs through
-	// 2026-09-30; hard-code 2× until then.
-	if (modelProvider === "zai") {
-		const mult = getZaiMultiplier(modelId, now);
-		if (mult === 3) parts.unshift(theme.fg("warning", "3\u00d7"));
-		else if (mult === 2) parts.unshift(theme.fg("dim", "2\u00d7"));
-	}
-
-	if (parts.length === 0) return "";
-
-	// Plan tier at the end, dimmed (omitted when empty — MiniMax normal
-	// status leaves `level` blank to keep the healthy display clean).
-	const tier = quota.level.toLowerCase();
-	if (tier) parts.push(`${theme.fg("dim", `· ${tier}`)}`);
-
-	const segment = parts.join(" ");
-
-	// Width-budget check: drop MCP first, then tier, if too wide
-	const segWidth = visibleWidth(segment);
-	if (segWidth <= width) return segment;
-
-	// Try dropping MCP
-	const noMcpParts = parts.filter((elem) => !elem.startsWith("MCP:"));
-	if (noMcpParts.length >= 2) {
-		const noMcp = noMcpParts.join(" ");
-		if (visibleWidth(noMcp) <= width) return noMcp;
-		// Drop tier too
-		const noTierParts = noMcpParts.filter((_, i) => {
-			// tier is the last entry (starts with dim "· ")
-			return i < noMcpParts.length - 1;
-		});
-		if (noTierParts.length >= 1) {
-			const noTier = noTierParts.join(" ");
-			if (visibleWidth(noTier) <= width) return noTier;
-			// Drastic: just show the first entry
-			return parts[0]!;
-		}
-	}
-	// Fallback: just return the first entry
-	return parts[0]!;
-}
-
-// ---------------------------------------------------------------------------
-// OpenCode Go plan usage — GET /zen/go/v1/usage (the only usage endpoint the
-// public proxy exposes; per-model detail is server-side only — see
-// opencode issues #31084/#43983).
-//
-// Display (owner spec, model-tiers/004 monthly-cap-only cost metric):
-//   rolling: percent + time left              `5h:1% 4.6h`
-//   weekly:  percent + %-through + days left  `7d:17% thru86% 1.0d`
-//   monthly: percent + %-through + days left  `mo:8% thru6% 29.3d`
-// The window start is not in the payload: weekly = resetsAt − 7d (exact),
-// monthly = resetsAt − 1 calendar month (billing anniversary — resetsAt keeps
-// the wall-clock time of day, e.g. 21:19:11, so the anchor is stable).
-// ---------------------------------------------------------------------------
-
-export type GoUsageWindow = { percent: number; resetsAtMs: number };
-export type GoUsage = {
-	rolling?: GoUsageWindow;
-	weekly?: GoUsageWindow;
-	monthly?: GoUsageWindow;
-};
-
-/** Cached Go usage, written by the poll cycle and read by render(). */
-let cachedGoUsage: GoUsage | undefined;
-
-/** Suppress repeated console.warn after the first Go fetch failure. */
-let goWarnedOnce = false;
-
-/** Resolved OpenCode Go API key (cached), undefined when unavailable. */
-let resolvedGoKey: string | undefined;
-
-/** True once the Go key has been resolved (even if null). */
-let goKeyResolved = false;
-
-/** Normalize the /zen/go/v1/usage payload. Windows missing percent or a
- * parseable resetsAt are skipped; nothing usable → undefined. */
-export function normalizeGoUsage(json: unknown): GoUsage | undefined {
-	const root = (json as { usage?: Record<string, unknown> })?.usage;
-	if (!root || typeof root !== "object") return undefined;
-	const out: GoUsage = {};
-	for (const key of ["rolling", "weekly", "monthly"] as const) {
-		const w = root[key] as { percent?: unknown; resetsAt?: unknown } | undefined;
-		if (!w || typeof w.percent !== "number" || typeof w.resetsAt !== "string") continue;
-		const ms = Date.parse(w.resetsAt);
-		if (!Number.isFinite(ms)) continue;
-		out[key] = { percent: Math.round(w.percent), resetsAtMs: ms };
-	}
-	return out.rolling || out.weekly || out.monthly ? out : undefined;
-}
-
-async function fetchOpenCodeUsage(apiKey: string): Promise<GoUsage | undefined> {
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 5000);
-	try {
-		const res = await fetch("https://opencode.ai/zen/go/v1/usage", {
-			headers: { Authorization: `Bearer ${apiKey}` },
-			signal: controller.signal,
-		});
-		if (!res.ok) {
-			if (!goWarnedOnce) {
-				console.warn(`[footer-session-id] opencode-go usage fetch failed: HTTP ${res.status}`);
-				goWarnedOnce = true;
-			}
-			return undefined;
-		}
-		const usage = normalizeGoUsage(await res.json());
-		if (!usage && !goWarnedOnce) {
-			console.warn("[footer-session-id] opencode-go usage response missing windows");
-			goWarnedOnce = true;
-		}
-		return usage;
-	} catch (err: unknown) {
-		if (!goWarnedOnce) {
-			console.warn(
-				"[footer-session-id] opencode-go usage fetch error:",
-				err instanceof Error ? err.message : String(err),
-			);
-			goWarnedOnce = true;
-		}
-		return undefined;
-	} finally {
-		clearTimeout(timeoutId);
+	const snapshot = await fetchQuotaSnapshot(descriptor, key);
+	if (snapshot) {
+		cachedQuota = snapshot;
+		requestRender?.();
 	}
 }
-
-/** Resolve and cache the OpenCode Go API key (`oc_sk_…` in auth.json under
- * the `opencode-go` provider). */
-async function ensureGoKey(ctx: FooterFactoryCtx): Promise<boolean> {
-	if (goKeyResolved) return !!resolvedGoKey;
-	goKeyResolved = true;
-	try {
-		const key = await ctx.modelRegistry?.getApiKeyForProvider?.("opencode-go");
-		resolvedGoKey = key || undefined;
-		return !!resolvedGoKey;
-	} catch {
-		resolvedGoKey = undefined;
-		return false;
-	}
-}
-
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** %-through the current 7d window (start = resetsAt − 7d). Clamped to 0..100. */
-export function weeklyThroughPercent(now: number, resetsAtMs: number): number {
-	const start = resetsAtMs - WEEK_MS;
-	return Math.max(0, Math.min(100, ((now - start) / WEEK_MS) * 100));
-}
-
-/** %-through the current billing-month window (start = resetsAt minus one
- * calendar month). Clamped to 0..100. */
-export function monthlyThroughPercent(now: number, resetsAtMs: number): number {
-	const start = new Date(resetsAtMs);
-	start.setMonth(start.getMonth() - 1);
-	const startMs = start.getTime();
-	const len = resetsAtMs - startMs;
-	if (!(len > 0)) return 0;
-	return Math.max(0, Math.min(100, ((now - startMs) / len) * 100));
-}
-
-/** Go usage segment for the footer's quota slot. Empty string when the
- * provider is not opencode-go or no usage is cached. */
-export function renderGoUsageSegment(
-	usage: GoUsage | undefined,
-	modelProvider: string | undefined,
-	width: number,
-	theme: { fg: (color: string, text: string) => string },
-	now?: number,
-): string {
-	if (modelProvider !== "opencode-go" || !usage) return "";
-	const t = now ?? Date.now();
-
-	const part = (label: string, w: GoUsageWindow, withThrough: boolean, throughOf: (n: number, r: number) => number): string => {
-		const bits = [`${label}:${colorUsedPct(theme, w.percent)}`];
-		if (withThrough) bits.push(theme.fg("dim", `thru${Math.round(throughOf(t, w.resetsAtMs))}%`));
-		const reset = formatResetDuration(w.resetsAtMs, t);
-		if (reset) bits.push(theme.fg("dim", reset));
-		return bits.join(" ");
-	};
-
-	const parts: string[] = [];
-	if (usage.rolling) parts.push(part("5h", usage.rolling, false, weeklyThroughPercent));
-	if (usage.weekly) parts.push(part("7d", usage.weekly, true, weeklyThroughPercent));
-	if (usage.monthly) parts.push(part("mo", usage.monthly, true, monthlyThroughPercent));
-	if (parts.length === 0) return "";
-
-	// Width ladder: all windows → drop monthly (furthest out) → rolling only.
-	for (let keep = parts.length; keep >= 1; keep--) {
-		const candidate = parts.slice(0, keep).join(" ");
-		if (visibleWidth(candidate) <= width) return candidate;
-	}
-	return truncateToWidth(parts[0]!, width, theme.fg("dim", "..."));
-}
-
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -1247,11 +683,36 @@ export function renderTimelineRow(
 	return out;
 }
 
-/** Export for testing — pure function mapping quota data to footer segment string. */
+/**
+ * Quota surface, re-exported from `extensions/lib/quota.ts`.
+ *
+ * The two pre-refactor entry points (`renderQuotaSegment`,
+ * `renderGoUsageSegment`) stay importable here for their existing callers and
+ * tests; both delegate to the one renderer, so their bytes are its bytes.
+ */
 export {
 	getZaiMultiplier,
 	renderQuotaSegment,
-};
+	renderGoUsageSegment,
+	formatResetDuration,
+	normalizeGoUsage,
+	renderQuotaSnapshot,
+	quotaDescriptorFor,
+	fetchQuotaSnapshot,
+	resetQuotaWarnings,
+	weeklyThroughPercent,
+	monthlyThroughPercent,
+	QUOTA_DESCRIPTORS,
+	QUOTA_TIMEOUT_MS,
+} from "./lib/quota.ts";
+export type {
+	GoUsage,
+	GoUsageWindow,
+	QuotaDescriptor,
+	QuotaPart,
+	QuotaSnapshot,
+	QuotaTheme,
+} from "./lib/quota.ts";
 
 // ---------------------------------------------------------------------------
 // Session block — greyed-out full UUID + staleness glyph + three-word name.
@@ -1395,15 +856,8 @@ export default function (pi: ExtensionAPI) {
 					if (quotaInterval) clearInterval(quotaInterval);
 					// Reset module-level state so a future re-install starts fresh.
 					cachedQuota = undefined;
-					quotaWarnedOnce = false;
-					zaiKeyResolved = false;
-					resolvedZaiKey = undefined;
-					minimaxWarnedOnce = false;
-					cachedMinimaxKey = undefined;
-					cachedGoUsage = undefined;
-					goWarnedOnce = false;
-					goKeyResolved = false;
-					resolvedGoKey = undefined;
+					quotaKeys.clear();
+					resetQuotaWarnings();
 					cachedBgRgb = undefined;
 					bgQueryStarted = false;
 				},
@@ -1564,15 +1018,10 @@ export default function (pi: ExtensionAPI) {
 					//   row 2: stats                                  model
 					//   row 3: [orchestrate] subagents: ...           5h:9% 1.3h ...
 					// When only one exists, it uses the appropriate alignment alone.
-					const quotaStr = renderQuotaSegment(
+					const quotaStr = renderQuotaSnapshot(
 						cachedQuota,
 						model?.provider,
 						model?.id,
-						Math.max(30, width),
-						theme,
-					) || renderGoUsageSegment(
-						cachedGoUsage,
-						model?.provider,
 						Math.max(30, width),
 						theme,
 					);
