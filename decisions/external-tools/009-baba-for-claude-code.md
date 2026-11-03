@@ -16,3 +16,5 @@ date: 2026-11-03
 **Rejected: an instruction line with the env incantation.** Every query reloads the embedder on an 8 GB box.
 
 **Constraint.** The CLI reuses the extension's daemon client, not a copy of it. The recorder reads the skill as living in `pi-config/skills/` and symlinked into `~/.claude/skills/`, as `refactor` is.
+
+**Ruling (owner, 2026-11-03, in Claude session 8f90746f), the landing repo.** WO-2026-068 stopped `PLAN MISMATCH`: `extensions/baba` is a symlink to the separate repo `~/Developer/baba-pi` (`pcone/baba-pi`), so the client extract and the CLI cannot be committed in pi-config. Asked where the work lands, he picked "baba-pi owns code+tests (Recommended)": the extract, the CLI and their tests land in baba-pi, with its own bun test harness, and pi-config carries the skill and docs only. The answer approves pushing to `pcone/baba-pi`. Rejected with it: tests in pi-config reaching baba-pi's live checkout through the symlink, and moving baba-pi's source into pi-config.
