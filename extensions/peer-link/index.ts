@@ -168,7 +168,12 @@ export default function (pi: ExtensionAPI) {
 			restoreAutoreply();
 			startRuntime();
 		} catch (err) {
-			ctx.ui.notify(`peer-link init failed: ${(err as Error).message}`, "error");
+			// A wiring failure is not a state to run on: notify the human, then fail
+			// the emit. Swallowing it left a session with no heartbeat and no scan,
+			// silently unreachable, while the test that caused it passed.
+			const message = err instanceof Error ? err.message : String(err);
+			ctx.ui.notify(`peer-link init failed: ${message}`, "error");
+			throw new Error(`peer-link init failed: ${message}`, { cause: err });
 		}
 	});
 

@@ -22,7 +22,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, mkdir, rm, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +44,7 @@ import {
 	mailboxRoot,
 	ownPeerName,
 	peerIdentityFrom,
+	peersDir,
 	readIncoming,
 	removeHeartbeat,
 	resolvePeerAddressAmong,
@@ -473,6 +474,121 @@ describe("peer_send broadcast", () => {
 			),
 		).rejects.toThrow(/no online peers to broadcast/);
 		expect(readIncoming(mailbox, "alice")).toHaveLength(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Init failure is loud (WO-2026-066 half 2)
+//
+// `session_start` notifies and rethrows, and a failed init starts nothing. The
+// ctx is the row-6-era peerCtx shape: a full SessionManager stub whose
+// `getSessionId` is the wiring step that fails (a stub that omitted it once
+// turned five peer-wait rows red with no error text).
+// ---------------------------------------------------------------------------
+
+describe("peer-link init failure", () => {
+	let mailbox: string;
+	let env: { name?: string; mailbox?: string };
+
+	beforeEach(async () => {
+		mailbox = await mkdtemp(join(tmpdir(), "peer-init-"));
+		env = { name: process.env.PI_PEER_NAME, mailbox: process.env.PI_PEER_MAILBOX };
+		process.env.PI_PEER_NAME = "alice";
+		process.env.PI_PEER_MAILBOX = mailbox;
+	});
+
+	afterEach(async () => {
+		if (env.name === undefined) delete process.env.PI_PEER_NAME;
+		else process.env.PI_PEER_NAME = env.name;
+		if (env.mailbox === undefined) delete process.env.PI_PEER_MAILBOX;
+		else process.env.PI_PEER_MAILBOX = env.mailbox;
+		await rm(mailbox, { recursive: true, force: true });
+	});
+
+	/** The peerCtx shape with the session-id read as the failing wiring step. */
+	function throwingCtx(notify: (message: string, level?: string) => void = () => {}) {
+		const ctx = fakeExtensionCtx(mailbox, notify);
+		return {
+			...ctx,
+			sessionManager: {
+				...ctx.sessionManager,
+				getSessionId: () => {
+					throw new TypeError("sessionManager.getSessionId is not a function");
+				},
+			},
+		};
+	}
+
+	function pendingEnvelope(): Envelope {
+		return {
+			id: "env-before-init",
+			from: "bob",
+			to: "alice",
+			text: "queued before a failed init",
+			expectReply: false,
+			sentAt: Date.now(),
+		};
+	}
+
+	it("row 7: a throwing getSessionId rejects session_start, naming peer-link init", async () => {
+		const notifies: Array<{ message: string; level?: string }> = [];
+		const fake = makeFakePi(() => {});
+		peerLink(fake.api);
+
+		await expect(
+			fake.sessionStart(throwingCtx((message, level) => notifies.push({ message, level }))),
+		).rejects.toThrow(/peer-link init failed.*getSessionId/);
+
+		// The human still gets the notify; the throw is in addition, not instead.
+		expect(notifies).toHaveLength(1);
+		expect(notifies[0]!.message).toContain("peer-link init failed");
+		expect(notifies[0]!.level).toBe("error");
+	});
+
+	it("row 8: a failed init starts no runtime and delivers nothing", async () => {
+		sendEnvelope(mailbox, pendingEnvelope());
+		const injected: string[] = [];
+		const fake = makeFakePi((text) => injected.push(text));
+		peerLink(fake.api);
+
+		// A scan interval is the runtime's only timers; none may be registered.
+		const intervals: number[] = [];
+		const realSetInterval = globalThis.setInterval;
+		globalThis.setInterval = ((handler: () => void, ms?: number) => {
+			intervals.push(ms ?? 0);
+			return realSetInterval(handler, ms);
+		}) as typeof setInterval;
+		try {
+			await expect(fake.sessionStart(throwingCtx())).rejects.toThrow(/peer-link init failed/);
+		} finally {
+			globalThis.setInterval = realSetInterval;
+			await fake.sessionShutdown();
+		}
+
+		expect(intervals).toEqual([]);
+		expect(existsSync(join(peersDir(mailbox), "alice.json"))).toBe(false);
+		expect(listPeers(mailbox).map((p) => p.name)).not.toContain("alice");
+		expect(injected).toEqual([]);
+
+		// Still on disk a scan interval later: no scan is running either.
+		await new Promise((resolve) => setTimeout(resolve, 2_500));
+		expect(readIncoming(mailbox, "alice").map((env) => env.id)).toEqual(["env-before-init"]);
+	}, 15_000);
+
+	it("row 9: an ordinary session_start still starts the runtime and delivers", async () => {
+		sendEnvelope(mailbox, pendingEnvelope());
+		const injected: string[] = [];
+		const fake = makeFakePi((text) => injected.push(text));
+		peerLink(fake.api);
+		try {
+			await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+			expect(injected).toEqual(["[peer:bob] queued before a failed init"]);
+			expect(readIncoming(mailbox, "alice")).toHaveLength(0); // acked after delivery
+			expect(existsSync(join(peersDir(mailbox), "alice.json"))).toBe(true);
+		} finally {
+			await fake.sessionShutdown();
+		}
 	});
 });
 
