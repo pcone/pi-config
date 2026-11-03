@@ -18,3 +18,29 @@ date: 2026-11-03
 **Constraint.** The CLI reuses the extension's daemon client, not a copy of it. The recorder reads the skill as living in `pi-config/skills/` and symlinked into `~/.claude/skills/`, as `refactor` is.
 
 **Ruling (owner, 2026-11-03, in Claude session 8f90746f), the landing repo.** WO-2026-068 stopped `PLAN MISMATCH`: `extensions/baba` is a symlink to the separate repo `~/Developer/baba-pi` (`pcone/baba-pi`), so the client extract and the CLI cannot be committed in pi-config. Asked where the work lands, he picked "baba-pi owns code+tests (Recommended)": the extract, the CLI and their tests land in baba-pi, with its own bun test harness, and pi-config carries the skill and docs only. The answer approves pushing to `pcone/baba-pi`. Rejected with it: tests in pi-config reaching baba-pi's live checkout through the symlink, and moving baba-pi's source into pi-config.
+
+## Outcome
+
+WO-2026-068 committed in two repos, in this order.
+
+**baba-pi**: pushed to `origin/main` at `46bb86d`. `27d9902` extracts the daemon client into
+`src/client.ts` (repo resolution, spawn, socket protocol, formatting) and adds the bun
+harness; `58495b5` adds `bin/baba-search.ts`; `ced1513` covers its failure paths; `46bb86d`
+names the two follow-ups the extract carries. `src/index.ts` keeps one export,
+`babaExtension`. The client is the seam: the CLI imports it, so there is one implementation of
+the protocol.
+
+**pi-config** (this record's commit): `skills/baba-search/SKILL.md`, symlinked into
+`~/.claude/skills/baba-search` as `refactor` is, plus the README note that `extensions/baba`
+is a tracked symlink into `pcone/baba-pi` rather than a directory. The symlink resolves once
+this branch is on `main`.
+
+CLI: `/Users/scott/Developer/baba-pi/bin/baba-search.ts "<query>" [-k N]`. Exit 0 results,
+1 no repo, no daemon or a daemon error, 2 usage; results on stdout, diagnostics on stderr.
+It needs a pull in `~/Developer/baba-pi` before that path exists there.
+
+Cost, measured on this box against the live daemon: warm query 0.38–0.58 s wall end to end
+(bun start, `git rev-parse`, socket round trip 0.16–0.18 s); one query after the daemon had
+been idle 27 minutes took 13.9 s — a single observation, not a distribution. The CLI spawns
+no python: the embedder stays the daemon's one long-lived child (pid unchanged across five
+runs), and the CLI's source names neither `BABA_EMBEDDER` nor `server.py`.

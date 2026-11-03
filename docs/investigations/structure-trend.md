@@ -19,6 +19,23 @@ refactor lands.
 | `extensions/checkpoint.ts` growth | 1 (2026-10-21) | **resolved 2026-10-21 by WO-2026-057** — the named extraction landed (901 → 818 lines; git/token helpers now in `extensions/lib/checkpoint-meta.ts`) | done |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
 
+## 2026-11-03 — chunk: WO-2026-068 baba-search CLI
+
+**growth.** The client extract lands in `pcone/baba-pi`, not here: `extensions/baba` is a
+tracked symlink (mode `120000`), so its growth is that repo's register, not this one. For the
+record, `baba-pi/src/index.ts` 681 → 146 lines and the new `src/client.ts` 570 — the split is
+a move, not an addition, and no line of the client was rewritten beyond the
+`findMainRoot`/`resolveMainRoot` split that gives the CLI a "not a repo" answer. New
+`baba-pi/bin/baba-search.ts` (119), `test/client.test.ts` (343), `test/cli.test.ts` (442).
+pi-config side is 55 lines of skill, two README bullets, a 26-line Outcome in decision 009 and
+this entry — no production code.
+
+**unification.** One implementation of the socket protocol with two entry points: the
+extension and the CLI both import `src/client.ts`, and the socket path is constructed once
+(`rg -n '"\\.baba", "daemon\\.sock"' baba-pi/src baba-pi/bin` → 1, `src/client.ts:277`). No
+new mechanism here: the CLI adds argv parsing and two exit codes over a client it does not
+own. No strike, and the register above is unchanged.
+
 ## 2026-11-02 — chunk: WO-2026-064 checkpoint wait state
 
 **Growth:** `extensions/checkpoint.ts` 935 → 1083 lines mid-landing; the review's
