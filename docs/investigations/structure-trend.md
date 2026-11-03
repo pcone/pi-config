@@ -674,3 +674,25 @@ functions and they removed duplication rather than adding it, so no strike and t
 is unchanged: the overflow row in `extensions/lib/quota.ts` remains the only open one, and
 this order's own residue (the duplicate predicate) closes. The seam stays on the watch list
 for a fourth landing that adds mechanism there.
+
+## Snapshot 2026-11-03 — WO-2026-067 (external correspondent, one reachability predicate)
+
+**growth.** Production +22/−9 in one file (`git diff --numstat 0130a0c..HEAD -- extensions/`):
+`extensions/peer-link/model-error-mail.ts` 237 → 250 (`recipients()` gains a `peers` binding, the
+one reachability boolean and its four-line comment; the doc block above it restates the two ways a
+peer is reachable). `mailbox.ts` and `index.ts` are byte-identical to the base — the predicate the
+arm needed (`onlineExcept`) already lived in the shared module, so nothing moved. Tests +132/−0 in
+one file (`tests/model-error-mail.test.ts` 774 → 906): six wired rows plus a `registerExternal`
+helper and an `inboxesHoldingMail` sweep. No extraction candidate: `recipients()` is still one
+function, two arms, and the arm is one boolean.
+
+**unification.** No new mechanism. The mail's correspondent arm evaluates `online || external` over
+`deps.peers()`, the list it already read, so the external case adds a term rather than a source:
+`rg -n 'external === true' extensions/peer-link/*.ts` → 1 (this arm). The other external-aware
+sites read the flag for display or the send gate (`peerStatus`, `deliveryDecision`,
+`listPeers`'s `online` derivation), none of them a recipient rule, so there is no second "who can
+receive" predicate to unify — and the register's open item stays the one it was.
+
+**watch.** `extensions/peer-link/index.ts` untouched this landing: the fourth-touch question the
+last snapshot raised is not answered either way. `recipients()` is now the file's only conditional
+over peer identity, which is where a third reachability kind lands.

@@ -39,6 +39,10 @@ it (Recommended)": a registered `external: true` correspondent is deliverable in
 arm, and its mail queues for that session's next prompt (003). The broadcast arm still reaches only
 online pi peers.
 
+Implemented by WO-2026-067 (`a68653a`): the correspondent arm is one reachability predicate,
+online now or registered external; the broadcast arm is unchanged and online-only. Design:
+`docs/design/model-error-mail.md` § Recipient.
+
 ## Outcome (landed 2026-11-03, order WO-2026-065)
 
 Both halves landed, on four commits:
@@ -128,3 +132,20 @@ has one home, `onlineExcept` in `extensions/peer-link/mailbox.ts`, which
 Design: `docs/design/model-error-mail.md` § Recipient. The init-side behaviour
 is stated in `README.md`'s peer-link entry; no `docs/design/peer-link.md`
 existed to update.
+
+## Outcome — the external correspondent (landed 2026-11-03, order WO-2026-067)
+
+`recipients()` in `extensions/peer-link/model-error-mail.ts` mails the recorded correspondent when
+it is online now **or** when it is a registered `external: true` peer. One reachability predicate
+over the peer it names, so a later third kind of reachability has one home. The broadcast arm is
+`onlineExcept` only, unchanged, so an external peer is reached when named and never when swept;
+the empty case still warns once and leaves the throttle window shut.
+
+- `a68653a` — the arm and six rows driven through the wired extension over heartbeat and inbox
+  files, each asserting which inboxes hold an envelope. The self term is explicit in the arm now:
+  it reads `peers`, not `onlineExcept`'s output, so the 066 deletion of the in-function guard no
+  longer covers it.
+- Docs: this record, `docs/design/model-error-mail.md` § Recipient and § Throttle, `README.md`,
+  `docs/investigations/structure-trend.md`.
+
+Merge: recorded on the order's landing stamp (`work-orders/WO-2026-067-external-correspondent.md`).
