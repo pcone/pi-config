@@ -696,6 +696,7 @@ export {
 	renderGoUsageSegment,
 	formatResetDuration,
 	normalizeGoUsage,
+	normalizeKimiUsage,
 	renderQuotaSnapshot,
 	quotaDescriptorFor,
 	fetchQuotaSnapshot,
@@ -708,6 +709,8 @@ export {
 export type {
 	GoUsage,
 	GoUsageWindow,
+	KimiUsage,
+	KimiUsageWindow,
 	QuotaDescriptor,
 	QuotaPart,
 	QuotaSnapshot,

@@ -8,16 +8,18 @@
  * Adding a provider is a descriptor, not a second fetcher and not a second
  * renderer.
  *
- * Endpoints — undocumented except MiniMax's:
+ * Endpoints — undocumented except MiniMax's; `kimi-coding` probed 2026-11-03
+ * (docs/design/quota-footer.md records the response shape):
  *   zai          GET https://api.z.ai/api/monitor/usage/quota/limit            (bare key)
  *   minimax      GET https://api.minimax.io/v1/api/openplatform/coding_plan/remains
  *   minimax-cn   GET https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
  *   opencode-go  GET https://opencode.ai/zen/go/v1/usage
+ *   kimi-coding  GET https://api.kimi.com/coding/v1/usages
  *
  * Display: used percentage per window with the shared pressure colours (≥85
  * error, ≥60 warning, else success), plus time to reset, plus %-through the
- * window where its length is knowable (owner display spec:
- * decisions/external-tools/006 for Go).
+ * window where its length is knowable (owner display specs:
+ * decisions/external-tools/006 for Go, 008 for Kimi).
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -417,6 +419,66 @@ function goParts(usage: GoUsage): QuotaPart[] {
 }
 
 // ---------------------------------------------------------------------------
+// Kimi Code shape: 5h and monthly coding-plan windows with used ratios
+// ---------------------------------------------------------------------------
+
+export type KimiUsageWindow = { usedPct: number; resetsAtMs: number };
+export type KimiUsage = {
+	rolling?: KimiUsageWindow;
+	monthly?: KimiUsageWindow;
+};
+
+/**
+ * Normalize GET /coding/v1/usages. The payload's `usages` block carries a
+ * used ratio plus an absolute reset instant per window; the ratio is the
+ * precise series (the `limits` array beside it holds rounded strings for the
+ * same 5h window). `limit_month_code` is the coding plan's monthly series.
+ */
+export function normalizeKimiUsage(json: unknown): KimiUsage | undefined {
+	const usages = (json as { usages?: Record<string, unknown> })?.usages;
+	if (!usages || typeof usages !== "object") return undefined;
+	const read = (key: string): KimiUsageWindow | undefined => {
+		const w = usages[key] as { used_ratio?: unknown; reset_time?: unknown } | undefined;
+		if (!w || typeof w.used_ratio !== "number" || typeof w.reset_time !== "string") return undefined;
+		const ms = Date.parse(w.reset_time);
+		if (!Number.isFinite(ms)) return undefined;
+		return { usedPct: Math.round(Math.max(0, Math.min(1, w.used_ratio)) * 100), resetsAtMs: ms };
+	};
+	const out: KimiUsage = {};
+	const rolling = read("limit_5h");
+	if (rolling) out.rolling = rolling;
+	const monthly = read("limit_month_code");
+	if (monthly) out.monthly = monthly;
+	return out.rolling || out.monthly ? out : undefined;
+}
+
+/** Kimi's windows as segments — the Go display shape: rolling percent + time
+ * left; monthly percent + %-through + time left (decisions/external-tools/008). */
+function kimiParts(usage: KimiUsage): QuotaPart[] {
+	const parts: QuotaPart[] = [];
+	if (usage.rolling) {
+		parts.push({
+			kind: "window",
+			label: "5h",
+			usedPct: usage.rolling.usedPct,
+			resetAtMs: usage.rolling.resetsAtMs,
+			dropOrder: 0,
+		});
+	}
+	if (usage.monthly) {
+		parts.push({
+			kind: "window",
+			label: "mo",
+			usedPct: usage.monthly.usedPct,
+			resetAtMs: usage.monthly.resetsAtMs,
+			throughOf: monthlyThroughPercent,
+			dropOrder: 1,
+		});
+	}
+	return parts;
+}
+
+// ---------------------------------------------------------------------------
 // The descriptor table
 // ---------------------------------------------------------------------------
 
@@ -507,11 +569,28 @@ const goDescriptor: QuotaDescriptor = {
 	overflow: "truncate",
 };
 
+const kimiDescriptor: QuotaDescriptor = {
+	provider: "kimi-coding",
+	endpoint: "https://api.kimi.com/coding/v1/usages",
+	auth: bearer,
+	parse: (json, { warn }) => {
+		const usage = normalizeKimiUsage(json);
+		if (!usage) {
+			warn("response missing usages.limit_5h / usages.limit_month_code");
+			return undefined;
+		}
+		return kimiParts(usage);
+	},
+	render: renderQuotaSnapshot,
+	overflow: "truncate",
+};
+
 export const QUOTA_DESCRIPTORS: readonly QuotaDescriptor[] = [
 	tokenWindowDescriptor("zai", "https://api.z.ai/api/monitor/usage/quota/limit", bare, zaiParts, zaiPrefix),
 	tokenWindowDescriptor("minimax", MINIMAX_ENDPOINTS.minimax!, bearer, minimaxParts),
 	tokenWindowDescriptor("minimax-cn", MINIMAX_ENDPOINTS["minimax-cn"]!, bearer, minimaxParts),
 	goDescriptor,
+	kimiDescriptor,
 ];
 
 const BY_PROVIDER = new Map(QUOTA_DESCRIPTORS.map((d) => [d.provider, d]));
