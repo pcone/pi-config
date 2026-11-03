@@ -39,6 +39,10 @@ Both halves landed, on four commits:
   broadcast to the online peers), one mail per 30 minutes carrying the suppressed count.
   No tool call, no user message, no model involvement, no timer.
 - `de5efef` — `kimi-coding` joins the descriptor table (one entry).
+- Review rounds, same landing: `b3487b9` (per-descriptor wiring and the Kimi source
+  choices pinned), `fd052a1` (no safe defaults on the mail body, self-correspondent guard,
+  doc corrections), `89d18f5` (throttle as one value, the footer's live render goes through
+  the descriptor, a clip golden for each MiniMax host). Branch tip at hand-off: `89d18f5`.
 
 **Kimi probe (premise P2, held).** `GET https://api.kimi.com/coding/v1/usages` with the
 configured OAuth subscription token answers 200 with a used ratio and an absolute reset
