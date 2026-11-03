@@ -38,6 +38,11 @@
  * External peers (Claude Code sessions via `external.ts`) are listed but never
  * online: mail to them waits until their user next prompts. Nothing here ever
  * reads or injects into their inbox.
+ *
+ * Model errors: a `message_end` assistant message that failed with an HTTP
+ * 4XX/5XX writes an envelope to the last correspondent (else a broadcast to the
+ * online peers), throttled to one mail per 30 minutes. No tool call, no user
+ * message, no model involvement. Design: docs/design/model-error-mail.md.
  */
 
 import { randomUUID } from "node:crypto";
@@ -69,6 +74,7 @@ import {
 	sweepStalePeers,
 	writeHeartbeat,
 } from "./mailbox.ts";
+import { createModelErrorMail } from "./model-error-mail.ts";
 
 const PENDING_TTL_MS = 10 * 60 * 1000; // drop queued-but-never-delivered auto-replies
 
@@ -86,9 +92,23 @@ export default function (pi: ExtensionAPI) {
 		mailbox: "",
 		peerName: "",
 		sessionFile: undefined as string | undefined,
+		sessionId: "",
 		cwd: "",
 		autoreply: true,
 	};
+
+	// Where a model-error mail warning goes. Replaced at every session_start so
+	// a reloaded session's context is the one notified, not a dead one.
+	let mailWarn: (message: string) => void = (message) => console.warn(message);
+
+	const modelErrorMail = createModelErrorMail({
+		mailbox: () => state.mailbox,
+		peerName: () => state.peerName,
+		sessionId: () => state.sessionId,
+		cwd: () => state.cwd,
+		peers: () => listPeers(state.mailbox),
+		warn: (message) => mailWarn(message),
+	});
 
 	// Envelope ids consumed this process (belt-and-braces beyond file deletion).
 	const seen = new Set<string>();
@@ -108,7 +128,9 @@ export default function (pi: ExtensionAPI) {
 			state.mailbox = mailboxRoot();
 			state.peerName = resolvePeerName(ctx);
 			state.sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
+			state.sessionId = ctx.sessionManager.getSessionId();
 			state.cwd = ctx.cwd;
+			mailWarn = (message) => ctx.ui.notify(message, "warning");
 			ensureMailbox(state.mailbox, state.peerName);
 			restoreAutoreply();
 			startRuntime();
@@ -135,6 +157,7 @@ export default function (pi: ExtensionAPI) {
 		state.mailbox = mailboxRoot();
 		state.peerName = ctx ? resolvePeerName(ctx) : ownPeerName();
 		state.sessionFile = ctx?.sessionManager.getSessionFile() ?? undefined;
+		state.sessionId = ctx?.sessionManager.getSessionId() ?? "";
 		state.cwd = ctx?.cwd ?? process.cwd();
 		ensureMailbox(state.mailbox, state.peerName);
 		startRuntime();
@@ -210,6 +233,9 @@ export default function (pi: ExtensionAPI) {
 				// Ack only after injection succeeds: a throw leaves the envelope on
 				// disk so the next scan retries (at-least-once, duplicates over loss).
 				ackEnvelope(state.mailbox, state.peerName, env);
+				// The newest delivered envelope's sender is where a model-error
+				// mail goes (decision external-tools/008).
+				modelErrorMail.recordCorrespondent(env.from);
 			} catch {
 				seen.delete(env.id);
 				pendingReplies.delete(env.id);
@@ -220,6 +246,17 @@ export default function (pi: ExtensionAPI) {
 			if (now - p.queuedAt > PENDING_TTL_MS) pendingReplies.delete(id);
 		}
 	}
+
+	// ── model errors ────────────────────────────────────────────────────────
+
+	// The one trigger: a completed assistant message. One stop-reason test per
+	// message, no timer, no polling (docs/design/model-error-mail.md).
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message;
+		if (message.role !== "assistant") return;
+		ensureReady(ctx);
+		modelErrorMail.onAssistantMessage(message);
+	});
 
 	// ── automatic replies ───────────────────────────────────────────────────
 
