@@ -146,3 +146,51 @@ mutation table: 6 mutations, each reddening its own row) at
 `~/Developer/wt/wo068-drafts/`, outside any repo. Cold start measured at 77 s on a drifted
 index; warm queries 116–210 ms against the live daemon; one long-lived embedder child, no
 per-query load. CLI and skill rows are specified but unwritten.
+
+---
+
+### AMENDMENT 2026-11-03 — the landing repo is ruled; this section supersedes the paths above
+
+**Ruling (owner, 2026-11-03, recorded in `decisions/external-tools/009`, commit `9d217f7`):
+baba-pi owns code and tests.** The client extract, the `baba-search` CLI and their
+characterization/acceptance rows land in `pcone/baba-pi`, which gains a bun test harness;
+pi-config carries the skill and docs only. Rejected with it: rows in pi-config reaching
+baba-pi's live checkout through the symlink, and moving baba-pi's source into pi-config.
+Pushing to `pcone/baba-pi` is approved by that ruling.
+
+Everything below that names `extensions/baba/...` or a pi-config test path is superseded.
+
+**Work location.** A baba-pi worktree at `~/Developer/wt/baba-pi-wo068`, branched off
+`origin/main` (`202cd0c`). **`~/Developer/baba-pi` is read-only for this order** — no
+writes, no `git checkout`, no `git stash`, nothing. It holds another session's
+uncommitted work (` M src/index.ts`, two `_onUpdate` progress messages, 11 insertions);
+the previous dispatch destroyed and restored those lines once already. Verify untouched at
+the end:
+
+```
+git -C ~/Developer/baba-pi status --short     # exactly: " M src/index.ts" and "?? .DS_Store"
+git -C ~/Developer/baba-pi diff --stat        # exactly: 1 file changed, 11 insertions(+)
+```
+
+**Files.** baba-pi: `src/client.ts` (new — `resolveMainRoot`, `findBabaHome`,
+`resolveCoreBin`, `embedderCmd`, `ensureDaemon`, the socket client and its request queue,
+`formatResults`), `src/index.ts` (keeps the factory, imports the client; still **one**
+export), `bin/baba-search.ts`, `test/client.test.ts`, `test/cli.test.ts`, and
+`package.json` gaining only `"scripts": { "test": "bun test" }`. pi-config:
+`skills/baba-search/SKILL.md`, the `~/.claude/skills/baba-search` symlink, and a docs
+note recording the tracked-symlink arrangement.
+
+**Q2 dissolved by the ruling, not answered.** Tests import the client through the new
+module boundary the extract creates — that is the seam, not a widened public surface.
+`src/index.ts` still exports nothing but `babaExtension`. No test-only shim.
+
+**Two landings, in this order.** (1) baba-pi: commit and push to `origin/main`, `bun test`
+green there. (2) pi-config: skill + docs, one commit, pushed. Name both shas in the
+completion report; "committed at `<sha>`", never "landed".
+
+**Prohibitions, with probes that can actually fail.** `rg` skips symlinks, so every path
+claim is checked with `git ls-files -s`/`git ls-tree` and every content claim in
+pi-config's `extensions/` with `rg -nL`. Specifically: no write of any kind under
+`~/Developer/baba-pi`; no edit to `~/.claude.json`, `~/.claude/settings.json` or any
+launch command (the ruling approves the skills symlink only); no daemon spawn from the
+CLI path other than through `ensureDaemon`; no second copy of the socket protocol.
