@@ -28,7 +28,7 @@ Wording alone was the defect this replaces. A seat replied RESTARTABLE, checkpoi
 A wait is `{ id, kind, reason, since, source }`. `kind` is one of `owner`, `peer`, `restart`, `subagent`, `other`.
 
 - A **running child** is a `subagent` wait. Derived from the subagent meta registry, so a restart still sees a child that outlived its parent process. A child that ends stops being a wait without anyone clearing it. An orphaned child is not a wait: its owner is gone, nothing will deliver its result, and resuming it is work rather than waiting.
-- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the envelope is sent. It ends when an inbound envelope carrying its `inReplyTo` arrives in the delivery scan — the fast path — or, for a peer that sends no `inReplyTo` (a Claude Code peer never does), when any envelope from that peer arrives.
+- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the envelope is sent. It ends on any envelope from that peer arriving in the delivery scan: the sender's identity is answer enough, which is what makes a Claude Code peer's reply — it stamps no `inReplyTo` — end its wait. A matching `inReplyTo` is the fast path and also covers a reply relayed through a third peer.
 
 ## Where a manual wait is stored
 
@@ -45,7 +45,7 @@ Full snapshots rather than deltas: replay takes the last one, so an overwritten 
 
 A **manual** wait clears only through `wait_for({ clear: true })` (one by `id`, or all). No inbound message clears it — a waiting seat answers mail and goes back to waiting. That is the owner's ruling: holding mail would leave the very message that ends the wait unread.
 
-A **derived** wait clears when its source ends: the child finishes; a peer's reply arrives, matched by `inReplyTo` or by the sender when the peer sends none.
+A **derived** wait clears when its source ends: the child finishes; an envelope from the peer arrives, matched by `inReplyTo` (fast path, and the only way a relayed reply is seen) or by the sender.
 
 ## What the model sees
 

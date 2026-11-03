@@ -515,6 +515,17 @@ describe("derived: peer reply", () => {
 		for (const handler of peerPiHandlers.get(event) ?? []) await handler({ type: event }, peerCtx);
 	}
 
+	/** Send one `expectReply` through the real tool, as the model would. */
+	async function sendExpectReply(to: string, message: string): Promise<void> {
+		await peerTools.get("peer_send").execute(
+			"call-p",
+			{ to, message, expectReply: true },
+			undefined,
+			undefined,
+			peerCtx,
+		);
+	}
+
 	/** Wait for the 2 s delivery scan to inject an envelope (fs.watch accelerates it). */
 	async function waitForInjected(needle: string): Promise<void> {
 		const deadline = Date.now() + 15_000;
@@ -554,13 +565,7 @@ describe("derived: peer reply", () => {
 	it("row 6: an unanswered expectReply stops an unset continue; the reply ends the wait", async () => {
 		const { h } = await freshHarness();
 
-		await peerTools.get("peer_send").execute(
-			"call-p",
-			{ to: "bob", message: "which branch is main?", expectReply: true },
-			undefined,
-			undefined,
-			peerCtx,
-		);
+		await sendExpectReply("bob", "which branch is main?");
 		const [outbound] = readIncoming(mailbox, "bob");
 		expect(outbound.expectReply).toBe(true);
 
@@ -595,13 +600,7 @@ describe("derived: peer reply", () => {
 		// A Claude Code peer: listed, never online, and its replies carry no `inReplyTo`.
 		writeHeartbeat(mailbox, { name: "claude-abc", external: true, ts: Date.now() });
 
-		await peerTools.get("peer_send").execute(
-			"call-e",
-			{ to: "claude-abc", message: "which branch is main?", expectReply: true },
-			undefined,
-			undefined,
-			peerCtx,
-		);
+		await sendExpectReply("claude-abc", "which branch is main?");
 
 		// It is a wait, even though no `inReplyTo` will ever come back.
 		// Revert: carve external sends out of the record → this checkpoint continues.
@@ -638,6 +637,57 @@ describe("derived: peer reply", () => {
 		const after = await h.checkpoint({});
 		expect(after.kickoff).toContain("NEXT-STEP");
 		expect(after.text).toContain("No wait pending → continuing");
+	}, 40_000);
+
+	it("any envelope from the peer ends every wait for it, stamped reply included", async () => {
+		const { h } = await freshHarness();
+		await sendExpectReply("bob", "first question");
+		await sendExpectReply("bob", "second question");
+		const [first, second] = readIncoming(mailbox, "bob");
+		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(2);
+
+		// A stamped reply to the first send. Revert: scope the sender rule behind
+		// `else` → only the named wait ends and the second one blocks.
+		sendEnvelope(mailbox, {
+			id: "reply-first",
+			from: "bob",
+			to: "alice",
+			text: "answer to the first",
+			expectReply: false,
+			inReplyTo: first.id,
+			sentAt: Date.now(),
+		});
+		await waitForInjected("answer to the first");
+		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
+
+		const after = await h.checkpoint({});
+		expect(after.kickoff).toContain("NEXT-STEP");
+		expect(second.id).toBeTruthy();
+	}, 40_000);
+
+	it("a relayed reply from a third peer ends the wait it names (the fast path)", async () => {
+		const { h } = await freshHarness();
+		await sendExpectReply("bob", "route this through carol");
+		const [outbound] = readIncoming(mailbox, "bob");
+
+		// carol relays bob's answer; only the `inReplyTo` identifies it.
+		// Revert: delete the fast-path `awaitingReply.delete(env.inReplyTo)` → the
+		// wait survives (carol holds nothing) and the checkpoint stops.
+		writeHeartbeat(mailbox, { name: "carol", ts: Date.now() });
+		sendEnvelope(mailbox, {
+			id: "relay-1",
+			from: "carol",
+			to: "alice",
+			text: "bob says: main",
+			expectReply: false,
+			inReplyTo: outbound.id,
+			sentAt: Date.now(),
+		});
+		await waitForInjected("bob says: main");
+		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
+
+		const after = await h.checkpoint({});
+		expect(after.kickoff).toContain("NEXT-STEP");
 	}, 40_000);
 
 	it("row 9: mail starts a turn, does not clear a manual wait, and the next checkpoint still stops", async () => {
@@ -705,6 +755,41 @@ describe("fork", () => {
 		expect(continued.sent).toHaveLength(1);
 		expect(continued.sent[0].startsWith("WAITING ON: restart — restart to pick up the new extension")).toBe(true);
 		expect(continued.sent[0]).toContain("NEXT-STEP");
+	}, 40_000);
+
+	it("row 12: the continuing fork's prompt names the copied waits, not the source's derived ones", async () => {
+		const { h } = await freshHarness();
+		const target = await tmp("wo064-fork-kickoff-");
+		const registry = await tmp("wo064-fork-registry-");
+		_testSetInflightScanDir(registry);
+		registerSubagentSource();
+		await runningChild(registry, "5c4d3e2f-1111-2222-3333-444455556666");
+		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
+
+		// Revert: hand the kickoff the unfiltered `waits` → it also announces the
+		// subagent wait, which the new session can never clear.
+		const forked = await fork(h, target, { continue: true });
+		expect(forked.sent).toHaveLength(1);
+		expect(forked.sent[0]).toContain("WAITING ON: restart — restart to pick up the new extension");
+		expect(forked.sent[0]).not.toContain("subagent");
+	}, 40_000);
+
+	it("row 12: the copied wait stops the new session's first checkpoint", async () => {
+		const { h } = await freshHarness();
+		const target = await tmp("wo064-fork-new-");
+		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
+		const stopped = await fork(h, target);
+
+		// A store over the new session's branch, started the way a resumed
+		// session starts: the copied wait is what decides its first checkpoint.
+		// Revert: drop the appendCustomEntry → the new session continues.
+		const newSession = SessionManager.open(stopped.file!);
+		const fresh = makeHarness(newSession, target);
+		await fresh.emit("session_start");
+		const { text } = await fresh.checkpoint({});
+		expect(sentKickoff(fresh)).toBe(false);
+		expect(text).toContain("restart — restart to pick up the new extension");
+		expect(text).toContain("not continuing");
 	}, 40_000);
 
 	it("row 12: only manual waits travel with the fork", async () => {

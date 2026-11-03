@@ -880,9 +880,13 @@ export default function (pi: ExtensionAPI) {
 					await cmdCtx.switchSession(newSession.getSessionFile()!, {
 						withSession: async (n) => {
 							if (!continuation.doContinue) return;
+							// The kickoff names the waits the new session actually
+							// holds — the copied manual ones. A derived wait belongs to
+							// the source's process and source, so announcing it here
+							// would name a hold the new session could never clear.
 							await sendKickoff({
 								parts: { context: injection.text, next },
-								waits,
+								waits: carried,
 								send: (text) => n.sendUserMessage(text),
 							});
 						},

@@ -242,9 +242,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
-	 * End every wait this session holds for `peer`. The ruling's fallback for a
-	 * reply that carries no `inReplyTo` — an external peer's never does — where
-	 * the sender's identity is answer enough (decision checkpoint/003, ruling 3).
+	 * End every wait this session holds for `peer`: any envelope from the peer
+	 * waited on ends that peer's waits (decision checkpoint/003, ruling 3). The
+	 * sender's identity is answer enough, which is what makes a Claude Code
+	 * peer's reply — it stamps no `inReplyTo` — end its wait.
 	 */
 	function dropWaitsForPeer(peer: string): void {
 		for (const [envId, sent] of awaitingReply) {
@@ -261,11 +262,12 @@ export default function (pi: ExtensionAPI) {
 			seen.add(env.id);
 			// The reply that ends an outbound wait. Dropped on arrival, before
 			// injection: the wait is over whether or not delivery succeeds.
-			// Fast path first — the envelope names the send it answers — then any
-			// envelope from the peer waited on, which is all an external peer's
-			// reply can offer (decision checkpoint/003, ruling 3).
+			// Fast path first — the envelope names the send it answers, which also
+			// covers a relayed reply from a third peer — then any envelope from the
+			// peer waited on (decision checkpoint/003, ruling 3: "any envelope from
+			// the peer a wait names ends that peer's waits").
 			if (env.inReplyTo) awaitingReply.delete(env.inReplyTo);
-			else dropWaitsForPeer(env.from);
+			dropWaitsForPeer(env.from);
 			const text = `[peer:${env.from}] ${env.text}`;
 			if (env.expectReply) {
 				pendingReplies.set(env.id, { env, text, queuedAt: Date.now() });
