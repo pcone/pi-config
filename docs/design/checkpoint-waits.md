@@ -28,7 +28,7 @@ Wording alone was the defect this replaces. A seat replied RESTARTABLE, checkpoi
 A wait is `{ id, kind, reason, since, source }`. `kind` is one of `owner`, `peer`, `restart`, `subagent`, `other`.
 
 - A **running child** is a `subagent` wait. Derived from the subagent meta registry, so a restart still sees a child that outlived its parent process. A child that ends stops being a wait without anyone clearing it. An orphaned child is not a wait: its owner is gone, nothing will deliver its result, and resuming it is work rather than waiting.
-- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the envelope is sent; dropped when an inbound envelope carrying that `inReplyTo` arrives in the delivery scan.
+- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the envelope is sent. It ends when an inbound envelope carrying its `inReplyTo` arrives in the delivery scan — the fast path — or, for a peer that sends no `inReplyTo` (a Claude Code peer never does), when any envelope from that peer arrives.
 
 ## Where a manual wait is stored
 
@@ -45,7 +45,7 @@ Full snapshots rather than deltas: replay takes the last one, so an overwritten 
 
 A **manual** wait clears only through `wait_for({ clear: true })` (one by `id`, or all). No inbound message clears it — a waiting seat answers mail and goes back to waiting. That is the owner's ruling: holding mail would leave the very message that ends the wait unread.
 
-A **derived** wait clears when its source ends: the child finishes, the reply arrives.
+A **derived** wait clears when its source ends: the child finishes; a peer's reply arrives, matched by `inReplyTo` or by the sender when the peer sends none.
 
 ## What the model sees
 
@@ -58,6 +58,6 @@ The waits are resolved once, at the checkpoint call, so the tool result and the 
 
 ## Limits
 
-- A derived peer wait is in-process, and it ends only on a reply carrying its `inReplyTo`. A restart forgets an unanswered `expectReply`; the durable kind is the manual wait.
-- `external.ts` never sets `inReplyTo` on the mail it sends, so an `expectReply` sent to a Claude Code peer stays pending until the seat is told to continue or the process restarts. Every `expectReply` send is recorded (decision checkpoint/003 gives no external carve-out); whether one should be is an open question.
-- `checkpoint_fork` resolves against the source session's waits and names them in the new session's kickoff, but does not copy the snapshot. With `continue` unset, the new session starts with no record of the hold.
+- A derived peer wait lives in the sending process. A restart forgets an unanswered `expectReply`; the durable kind is the manual wait.
+- An `expectReply` sent to a Claude Code peer is a wait like any other, and `external.ts` is untouched: its replies carry no `inReplyTo`. Such a wait ends on any envelope from that peer (ruling 3), so a peer that answers at all ends it, and one that never answers leaves it pending until the seat is told to continue or the process restarts.
+- `checkpoint_fork` copies the source session's **manual** waits into the new session, as a real `checkpoint-wait` entry on the new branch (ruling 4), so a store over that branch replays them. Derived waits do not travel: each belongs to a process and a source, and the new session has neither.

@@ -26,6 +26,7 @@ import {
 	WAIT_ENTRY_TYPE,
 	WAIT_KINDS,
 	_testClearWaitSources,
+	manualWaits,
 	pendingWaits,
 	type Wait,
 } from "../extensions/lib/waits.ts";
@@ -228,10 +229,11 @@ function sentKickoff(h: Harness): boolean {
  * command-only in pi), capturing what the new session is sent. Same seam the
  * recoverability rows use; here the new session's sender is the observable.
  */
-async function runFork(h: Harness): Promise<string[]> {
+async function runFork(h: Harness): Promise<{ sent: string[]; file: string | null }> {
 	const action = takePendingGo();
 	if (!action) throw new Error("/go has no pending action");
 	const sentToNewSession: string[] = [];
+	let newSessionFile: string | null = null;
 	const cmdCtx = {
 		cwd: h.ctx.cwd,
 		ui: { notify: () => {} },
@@ -240,7 +242,8 @@ async function runFork(h: Harness): Promise<string[]> {
 			getSessionId: () => h.ctx.sessionManager.getSessionId(),
 			getCwd: () => h.ctx.cwd,
 		},
-		switchSession: async (_file: string, opts?: { withSession?: (n: any) => Promise<void> }) => {
+		switchSession: async (file: string, opts?: { withSession?: (n: any) => Promise<void> }) => {
+			newSessionFile = file;
 			await opts?.withSession?.({
 				sendUserMessage: async (text: string) => {
 					sentToNewSession.push(text);
@@ -249,15 +252,40 @@ async function runFork(h: Harness): Promise<string[]> {
 		},
 	};
 	await action.run(cmdCtx as any);
-	return sentToNewSession;
+	return { sent: sentToNewSession, file: newSessionFile };
+}
+
+/** A child the meta registry reports as running: same-process owner, fresh log. */
+async function runningChild(registry: string, sid: string): Promise<void> {
+	await writeFile(
+		join(registry, `pi-subagent-${sid}.meta.json`),
+		JSON.stringify({ ownerPid: process.pid, agentName: "implement", task: "do the thing", startedAt: 1000 }),
+	);
+	await writeFile(join(registry, `pi-subagent-${sid}.log`), "── Turn 1 ──\nworking…\n");
+}
+
+/** Register the subagent wait source; its own handlers are not driven here. */
+function registerSubagentSource(): void {
+	subagentAsyncFactory({
+		on: () => {},
+		registerTool: () => {},
+		registerCommand: () => {},
+		events: { emit: () => {} },
+		ui: {},
+	} as any);
 }
 
 /** Drive `checkpoint_fork` through its tool, then through `/go`. */
-async function fork(h: Harness, newCwd: string, args: Record<string, unknown> = {}): Promise<{ text: string; sent: string[] }> {
+async function fork(
+	h: Harness,
+	newCwd: string,
+	args: Record<string, unknown> = {},
+): Promise<{ text: string; sent: string[]; file: string | null }> {
 	const res = await h.tools
 		.get("checkpoint_fork")
 		.execute("call-f", { newCwd, summary: SUMMARY, nextSteps: "NEXT-STEP", ...args }, undefined, undefined, h.ctx);
-	return { text: String(res.content[0].text), sent: await runFork(h) };
+	const { sent, file } = await runFork(h);
+	return { text: String(res.content[0].text), sent, file };
 }
 
 // ---------------------------------------------------------------------------
@@ -431,17 +459,9 @@ describe("derived: subagent", () => {
 		const { h } = await freshHarness();
 		const registry = await tmp("wo064-registry-");
 		_testSetInflightScanDir(registry);
-
-		// The real extension registers the source; the factory's own handlers are
-		// not driven here (its session_start scans /tmp and adopts sockets).
-		subagentAsyncFactory({ on: () => {}, registerTool: () => {}, registerCommand: () => {}, events: { emit: () => {} }, ui: {} } as any);
-
+		registerSubagentSource();
 		const sid = "3f2a11cd-1111-2222-3333-444455556666";
-		await writeFile(
-			join(registry, `pi-subagent-${sid}.meta.json`),
-			JSON.stringify({ ownerPid: process.pid, agentName: "implement", task: "do the thing", startedAt: 1000 }),
-		);
-		await writeFile(join(registry, `pi-subagent-${sid}.log`), "── Turn 1 ──\nworking…\n");
+		await runningChild(registry, sid);
 
 		// Revert: filter the source to nothing (or drop registerWaitSource) → the
 		// first checkpoint sends a kickoff over a live child.
@@ -493,6 +513,14 @@ describe("derived: peer reply", () => {
 
 	async function emitPeer(event: string): Promise<void> {
 		for (const handler of peerPiHandlers.get(event) ?? []) await handler({ type: event }, peerCtx);
+	}
+
+	/** Wait for the 2 s delivery scan to inject an envelope (fs.watch accelerates it). */
+	async function waitForInjected(needle: string): Promise<void> {
+		const deadline = Date.now() + 15_000;
+		while (!injected.some((text) => text.includes(needle)) && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
 	}
 
 	beforeEach(async () => {
@@ -552,14 +580,61 @@ describe("derived: peer reply", () => {
 			inReplyTo: outbound.id,
 			sentAt: Date.now(),
 		});
-		const deadline = Date.now() + 15_000;
-		while (injected.length === 0 && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
+		await waitForInjected("main, and here is why");
 		expect(injected.join("\n")).toContain("main, and here is why");
 
 		// Revert (other half): never delete on inReplyTo → the wait outlives its
 		// reply and this checkpoint still stops.
+		const after = await h.checkpoint({});
+		expect(after.kickoff).toContain("NEXT-STEP");
+		expect(after.text).toContain("No wait pending → continuing");
+	}, 40_000);
+
+	it("row 11: an external peer's wait ends on any envelope from it, and not on another peer's", async () => {
+		const { h } = await freshHarness();
+		// A Claude Code peer: listed, never online, and its replies carry no `inReplyTo`.
+		writeHeartbeat(mailbox, { name: "claude-abc", external: true, ts: Date.now() });
+
+		await peerTools.get("peer_send").execute(
+			"call-e",
+			{ to: "claude-abc", message: "which branch is main?", expectReply: true },
+			undefined,
+			undefined,
+			peerCtx,
+		);
+
+		// It is a wait, even though no `inReplyTo` will ever come back.
+		// Revert: carve external sends out of the record → this checkpoint continues.
+		const before = await h.checkpoint({});
+		expect(sentKickoff(h)).toBe(false);
+		expect(before.text).toContain('peer — reply from claude-abc "which branch is main?"');
+
+		// An envelope from a different peer does not end it.
+		// Revert: drop every wait on any inbound envelope → this assertion flips.
+		sendEnvelope(mailbox, {
+			id: "mail-other",
+			from: "bob",
+			to: "alice",
+			text: "unrelated question",
+			expectReply: false,
+			sentAt: Date.now(),
+		});
+		await waitForInjected("unrelated question");
+		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(1);
+
+		// An envelope from that peer, with no `inReplyTo`, ends it (ruling 3).
+		// Revert: drop the per-peer fallback → the wait survives and this stops.
+		sendEnvelope(mailbox, {
+			id: "mail-claude",
+			from: "claude-abc",
+			to: "alice",
+			text: "main, per the release notes",
+			expectReply: false,
+			sentAt: Date.now(),
+		});
+		await waitForInjected("main, per the release notes");
+		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
+
 		const after = await h.checkpoint({});
 		expect(after.kickoff).toContain("NEXT-STEP");
 		expect(after.text).toContain("No wait pending → continuing");
@@ -577,10 +652,7 @@ describe("derived: peer reply", () => {
 			expectReply: false,
 			sentAt: Date.now(),
 		});
-		const deadline = Date.now() + 15_000;
-		while (injected.length === 0 && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
+		await waitForInjected("unrelated question while you wait");
 		// The wake-up is not the defect: mail still starts a turn.
 		expect(injected).toHaveLength(1);
 		expect(injected[0]).toContain("unrelated question while you wait");
@@ -612,12 +684,20 @@ describe("fork", () => {
 		const target = await tmp("wo064-fork-");
 		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
 
-		// (i) continue unset with a wait pending: nothing is sent into the new session.
+		// (i) continue unset with a wait pending: nothing is sent into the new
+		// session, and the new session's branch carries the snapshot.
 		// Revert: force the explicit-continue arm at the fork's resolution → a kickoff appears.
 		const stopped = await fork(h, target);
 		expect(stopped.text).toContain("1 wait pending");
 		expect(stopped.text).toContain("not continuing");
 		expect(stopped.sent).toEqual([]);
+
+		// Row 12 (decision checkpoint/003, ruling 4): the copy is a real
+		// `checkpoint-wait` entry on the new branch, so a store over that branch
+		// replays it. Revert: drop the appendCustomEntry → nothing replays.
+		const copied = manualWaits(SessionManager.open(stopped.file!).getBranch());
+		expect(copied.map((w) => w.kind)).toEqual(["restart"]);
+		expect(copied[0].reason).toBe("restart to pick up the new extension");
 
 		// (ii) continue true: the new session's first prompt names the wait.
 		// Revert: pass an empty wait list to the fork's kickoff → no WAITING ON line.
@@ -625,6 +705,25 @@ describe("fork", () => {
 		expect(continued.sent).toHaveLength(1);
 		expect(continued.sent[0].startsWith("WAITING ON: restart — restart to pick up the new extension")).toBe(true);
 		expect(continued.sent[0]).toContain("NEXT-STEP");
+	}, 40_000);
+
+	it("row 12: only manual waits travel with the fork", async () => {
+		const { h } = await freshHarness();
+		const target = await tmp("wo064-fork-manual-");
+		const registry = await tmp("wo064-fork-registry-");
+		_testSetInflightScanDir(registry);
+		registerSubagentSource();
+		await runningChild(registry, "9a8b7c6d-1111-2222-3333-444455556666");
+		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
+
+		// The source session is holding for two things: a manual wait and a
+		// running child. Revert: copy `waits` instead of its manual subset → the
+		// subagent wait lands in the new session's snapshot.
+		expect(h.waits().map((w) => w.source).sort()).toEqual(["derived", "manual"]);
+		const forked = await fork(h, target);
+		const copied = manualWaits(SessionManager.open(forked.file!).getBranch());
+		expect(copied.map((w) => w.source)).toEqual(["manual"]);
+		expect(copied.map((w) => w.kind)).toEqual(["restart"]);
 	}, 40_000);
 });
 

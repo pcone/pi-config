@@ -241,6 +241,17 @@ export default function (pi: ExtensionAPI) {
 		awaitingReply.set(envelope.id, { to: envelope.to, text: envelope.text, sentAt: envelope.sentAt });
 	}
 
+	/**
+	 * End every wait this session holds for `peer`. The ruling's fallback for a
+	 * reply that carries no `inReplyTo` — an external peer's never does — where
+	 * the sender's identity is answer enough (decision checkpoint/003, ruling 3).
+	 */
+	function dropWaitsForPeer(peer: string): void {
+		for (const [envId, sent] of awaitingReply) {
+			if (sent.to === peer) awaitingReply.delete(envId);
+		}
+	}
+
 	// ── inbound ─────────────────────────────────────────────────────────────
 
 	function consumeInbox(): void {
@@ -250,7 +261,11 @@ export default function (pi: ExtensionAPI) {
 			seen.add(env.id);
 			// The reply that ends an outbound wait. Dropped on arrival, before
 			// injection: the wait is over whether or not delivery succeeds.
+			// Fast path first — the envelope names the send it answers — then any
+			// envelope from the peer waited on, which is all an external peer's
+			// reply can offer (decision checkpoint/003, ruling 3).
 			if (env.inReplyTo) awaitingReply.delete(env.inReplyTo);
+			else dropWaitsForPeer(env.from);
 			const text = `[peer:${env.from}] ${env.text}`;
 			if (env.expectReply) {
 				pendingReplies.set(env.id, { env, text, queuedAt: Date.now() });

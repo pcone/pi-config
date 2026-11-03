@@ -43,6 +43,7 @@ import {
 } from "./lib/read-tracking.ts";
 import { listInFlightSubagents, type InFlightSubagent } from "./lib/subagent-state.ts";
 import {
+	WAIT_ENTRY_TYPE,
 	describePending,
 	pendingWaits,
 	registerWaitSurface,
@@ -868,6 +869,14 @@ export default function (pi: ExtensionAPI) {
 						stopReason: "end",
 						timestamp: Date.now(),
 					});
+					// The fork inherits the source's manual-wait snapshot as a real
+					// entry on its own branch, so a store over that branch replays it
+					// (decision checkpoint/003, ruling 4). Derived waits do not
+					// travel: each belongs to a process and a source, and the new
+					// session has neither.
+					const carried = waits.filter((wait) => wait.source === "manual");
+					if (carried.length > 0) newSession.appendCustomEntry(WAIT_ENTRY_TYPE, { waits: carried });
+
 					await cmdCtx.switchSession(newSession.getSessionFile()!, {
 						withSession: async (n) => {
 							if (!continuation.doContinue) return;
