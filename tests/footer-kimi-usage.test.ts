@@ -55,17 +55,26 @@ const FIXTURE = {
 /** Render instant: 2026-11-03T04:28:45Z, the probe's clock. */
 const NOW = Date.parse("2026-11-03T04:28:45Z");
 
-function snapshotFromFixture() {
-	const usage = normalizeKimiUsage(FIXTURE);
-	expect(usage).toBeDefined();
-	// Parse through the descriptor so the row tests the registered provider,
-	// not a hand-built snapshot.
-	const descriptor = quotaDescriptorFor("kimi-coding");
-	expect(descriptor).toBeDefined();
-	const parts = descriptor!.parse(FIXTURE, { now: NOW, warn: () => {} });
-	expect(parts).toBeDefined();
-	return { provider: descriptor!.provider, parts: parts!, overflow: descriptor!.overflow };
+/**
+ * The snapshot the footer would hold: built by the real fetch path, so the
+ * descriptor's provider tag and overflow policy are the ones under test rather
+ * than values the test repeats.
+ */
+async function snapshotFrom(payload: unknown) {
+	expect(normalizeKimiUsage(FIXTURE)).toBeDefined();
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async () =>
+		new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+	try {
+		const snapshot = await fetchQuotaSnapshot(quotaDescriptorFor("kimi-coding")!, "token-abc", NOW);
+		expect(snapshot).toBeDefined();
+		return snapshot!;
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 }
+
+const snapshotFromFixture = () => snapshotFrom(FIXTURE);
 
 const at = { now: new Date(NOW), resetNow: new Date(NOW) };
 
@@ -127,6 +136,30 @@ describe("normalizeKimiUsage", () => {
 		expect(normalizeKimiUsage(null)).toBeUndefined();
 		expect(normalizeKimiUsage({ usages: {} })).toBeUndefined();
 	});
+
+	it("does not fall back to the account-wide monthly series", () => {
+		// limit_month_total is a different quantity: rendering it under the
+		// coding plan's `mo:` label would read as the coding cap.
+		expect(
+			normalizeKimiUsage({ usages: { limit_month_total: FIXTURE.usages.limit_month_total } }),
+		).toBeUndefined();
+	});
+
+	it("reads the ratios, not the rounded strings in the limits array", () => {
+		// The probe response carries both for the 5h window: a used_ratio of
+		// 0.1792 and detail.used "18" of limit "100". A payload where they
+		// disagree resolves from the ratio.
+		const divergent = {
+			limits: [
+				{
+					window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+					detail: { limit: "100", used: "90", remaining: "10", resetTime: "2026-11-03T04:57:54Z" },
+				},
+			],
+			usages: { limit_5h: { used_ratio: 0.5, reset_time: "2026-11-03T04:57:54Z" } },
+		};
+		expect(normalizeKimiUsage(divergent)?.rolling?.usedPct).toBe(50);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -134,20 +167,20 @@ describe("normalizeKimiUsage", () => {
 // ---------------------------------------------------------------------------
 
 describe("renderQuotaSnapshot for kimi-coding", () => {
-	it("renders used percent, time to reset, and monthly pace", () => {
-		expect(renderQuotaSnapshot(snapshotFromFixture(), "kimi-coding", "k3", 200, marked, at)).toBe(
+	it("renders used percent, time to reset, and monthly pace", async () => {
+		expect(renderQuotaSnapshot(await snapshotFromFixture(), "kimi-coding", "k3", 200, marked, at)).toBe(
 			"5h:[success:18%] [dim:29m] mo:[success:11%] [dim:thru7%] [dim:27.8d]",
 		);
 	});
 
-	it("is plain percent, %-through and duration without colour", () => {
-		expect(renderQuotaSnapshot(snapshotFromFixture(), "kimi-coding", "k3", 200, plain, at)).toBe(
+	it("is plain percent, %-through and duration without colour", async () => {
+		expect(renderQuotaSnapshot(await snapshotFromFixture(), "kimi-coding", "k3", 200, plain, at)).toBe(
 			"5h:18% 29m mo:11% thru7% 27.8d",
 		);
 	});
 
-	it("renders nothing for every other provider", () => {
-		const snapshot = snapshotFromFixture();
+	it("renders nothing for every other provider", async () => {
+		const snapshot = await snapshotFromFixture();
 		for (const provider of ["zai", "minimax", "minimax-cn", "opencode-go", "openrouter", undefined]) {
 			expect(renderQuotaSnapshot(snapshot, provider, "k3", 200, marked, at)).toBe("");
 		}
@@ -157,9 +190,30 @@ describe("renderQuotaSnapshot for kimi-coding", () => {
 		expect(renderQuotaSnapshot(undefined, "kimi-coding", "k3", 200, marked, at)).toBe("");
 	});
 
-	it("drops the monthly window first when the budget is tight", () => {
-		const snapshot = snapshotFromFixture();
+	it("drops the monthly window first when the budget is tight", async () => {
+		const snapshot = await snapshotFromFixture();
 		expect(renderQuotaSnapshot(snapshot, "kimi-coding", "k3", 20, plain, at)).toBe("5h:18% 29m");
+	});
+
+	it("ellipsises the first window when even it overflows", async () => {
+		// Kimi's last-resort policy is Go's (truncate), not z.ai's (clip).
+		const snapshot = await snapshotFromFixture();
+		expect(renderQuotaSnapshot(snapshot, "kimi-coding", "k3", 6, plain, at)).toBe(
+			"5h:\u001b[0m...\u001b[0m",
+		);
+	});
+
+	it("uses the shared pressure colours", async () => {
+		const hot = {
+			usages: {
+				limit_5h: { used_ratio: 0.86, reset_time: "2026-11-03T04:57:54Z" },
+				limit_month_code: { used_ratio: 0.7, reset_time: "2026-12-01T00:00:00Z" },
+			},
+		};
+		const snapshot = await snapshotFrom(hot);
+		expect(renderQuotaSnapshot(snapshot, "kimi-coding", "k3", 200, marked, at)).toBe(
+			"5h:[error:86%] [dim:29m] mo:[warning:70%] [dim:thru7%] [dim:27.8d]",
+		);
 	});
 });
 
@@ -219,10 +273,18 @@ describe("a failed Kimi fetch", () => {
 	it("renders nothing when the payload carries no quota", async () => {
 		globalThis.fetch = (async () =>
 			new Response(JSON.stringify({ ok: true }), { status: 200 })) as unknown as typeof fetch;
+		const realWarn = console.warn;
+		const warns: string[] = [];
+		console.warn = (...args: unknown[]) => {
+			warns.push(args.join(" "));
+		};
 		try {
 			expect(await fetchQuotaSnapshot(quotaDescriptorFor("kimi-coding")!, "token-abc", NOW)).toBeUndefined();
 			expect(renderQuotaSnapshot(undefined, "kimi-coding", "k3", 200, marked, at)).toBe("");
+			expect(warns).toHaveLength(1);
+			expect(warns[0]).toContain("response missing");
 		} finally {
+			console.warn = realWarn;
 			globalThis.fetch = realFetch;
 		}
 	});

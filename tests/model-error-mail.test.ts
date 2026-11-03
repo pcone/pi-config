@@ -202,8 +202,10 @@ describe("a 429 mails the last correspondent", () => {
 
 		const text = h.inbox(CORRESPONDENT)[0]!.text;
 		const errorLine = text.split("\n").find((line) => line.startsWith("error: "))!;
-		expect(errorLine.slice("error: ".length)).toBe(long.slice(0, MAIL_ERROR_CHARS));
-		expect(errorLine.length).toBe("error: ".length + MAIL_ERROR_CHARS);
+		// The order names the bound literally; the constant is what the code reads.
+		expect(MAIL_ERROR_CHARS).toBe(200);
+		expect(errorLine.slice("error: ".length)).toBe(long.slice(0, 200));
+		expect(errorLine.length).toBe("error: ".length + 200);
 	});
 
 	it("carries no prompt text and no summary", async () => {
@@ -443,6 +445,18 @@ describe("the mail never enters this session's branch", () => {
 		const wired = await wiredBranch({ correspondent: "oracle-seat" });
 		try {
 			wired.sessions.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+			// A finished assistant turn too, so the "no tool call" check below has
+			// an assistant entry to look at rather than matching nothing.
+			wired.sessions.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: "ready" }],
+				api: "openai-completions",
+				provider: "opencode-go",
+				model: "deepseek-v4.1-flash",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+				stopReason: "stop",
+				timestamp: Date.now(),
+			});
 			const before = wired.sessions.getBranch().map((entry) => entry.id);
 
 			await wired.emitMessageEnd({
@@ -462,12 +476,15 @@ describe("the mail never enters this session's branch", () => {
 			expect(
 				after.filter((entry) => entry.type === "message" && entry.message.role === "user"),
 			).toHaveLength(1);
+			const assistantEntries = after.filter(
+				(entry) => entry.type === "message" && entry.message.role === "assistant",
+			);
+			expect(assistantEntries.length).toBeGreaterThan(0);
 			expect(
-				after.some(
-					(entry) =>
-						entry.type === "message" &&
-						entry.message.role === "assistant" &&
-						entry.message.content.some((block) => block.type === "toolCall"),
+				assistantEntries.some((entry) =>
+					(entry as { message: { content: Array<{ type: string }> } }).message.content.some(
+						(block) => block.type === "toolCall",
+					),
 				),
 			).toBe(false);
 			// The mail did go out, so the branch assertion is not vacuous.

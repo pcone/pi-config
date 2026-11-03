@@ -17,8 +17,10 @@
  */
 import { describe, expect, it } from "bun:test";
 import {
+	quotaDescriptorFor,
 	renderGoUsageSegment,
 	renderQuotaSegment,
+	renderQuotaSnapshot,
 } from "../extensions/footer-session-id";
 
 /** Theme stub that wraps text in markers, so colour choices are part of the golden. */
@@ -168,9 +170,36 @@ const GOLDEN: ReadonlyArray<{
 		expected: "5h:[error:100%] [dim:12m] 7d:[success:8%] [dim:6.5d]",
 	},
 	{
-		name: "MiniMax: no multiplier even for a multiplier subject model id",
+		name: "MiniMax: an unknown provider id renders nothing",
 		render: () => renderQuotaSegment(MINIMAX, "minimaxcn" as string, "glm-5.2", 200, marked, beijing(15)),
 		expected: "",
+	},
+	{
+		// minimax-cn is its own descriptor entry on its own host; without a row of
+		// its own a dropped or mis-parsed entry renders "" and no suite notices.
+		name: "minimax-cn: the same payload renders under the second MiniMax host",
+		render: () => renderQuotaSegment(MINIMAX, "minimax-cn", "minimax-m3", 200, marked, beijing(15)),
+		expected: "5h:[error:100%] [dim:12m] 7d:[success:8%] [dim:6.5d] [dim:· exhausted]",
+	},
+	{
+		name: "minimax-cn: uncoloured",
+		render: () => renderQuotaSegment(MINIMAX, "minimax-cn", "minimax-m3", 200, plain, beijing(15)),
+		expected: "5h:100% 12m 7d:8% 6.5d · exhausted",
+	},
+	{
+		name: "minimax-cn: the ladder runs for this descriptor too (tier dropped)",
+		render: () => renderQuotaSegment(MINIMAX, "minimax-cn", "minimax-m3", 60, marked, beijing(15)),
+		expected: "5h:[error:100%] [dim:12m] 7d:[success:8%] [dim:6.5d]",
+	},
+	{
+		name: "minimax-cn: last resort is the first part, clipped",
+		render: () => renderQuotaSegment(MINIMAX, "minimax-cn", "minimax-m3", 20, plain, beijing(15)),
+		expected: "5h:100% 12m",
+	},
+	{
+		name: "z.ai: a multiplier subject model id does not leak a prefix onto MiniMax",
+		render: () => renderQuotaSegment(MINIMAX, "minimax-cn", "glm-5.2", 200, marked, beijing(15)),
+		expected: "5h:[error:100%] [dim:12m] 7d:[success:8%] [dim:6.5d] [dim:· exhausted]",
 	},
 	{
 		name: "Go: all three windows",
@@ -245,4 +274,80 @@ describe("quota segment characterisation (pre-refactor goldens)", () => {
 			expect(row.render()).toBe(row.expected);
 		});
 	}
+});
+
+// ---------------------------------------------------------------------------
+// Descriptor-table wiring
+//
+// The goldens above drive `fromQuotaData`, the pre-refactor shape. These rows
+// go through each descriptor's own `parse` and provider tag, so a descriptor
+// entry that is dropped, mis-parsed or tagged with another provider reds here
+// even though the render goldens would still pass.
+// ---------------------------------------------------------------------------
+
+/** A MiniMax payload in the documented shape. */
+const MINIMAX_PAYLOAD = {
+	base_resp: { status_code: 0 },
+	model_remains: [
+		{
+			model_name: "general",
+			current_interval_remaining_percent: 0,
+			current_weekly_remaining_percent: 92,
+			remains_time: 12 * MIN,
+			weekly_remains_time: 6.5 * DAY,
+			current_interval_status: 2,
+		},
+	],
+};
+
+/** A z.ai payload in the documented shape. */
+const ZAI_PAYLOAD = {
+	code: 0,
+	success: true,
+	data: {
+		level: "standard",
+		limits: [
+			{ type: "TOKENS_LIMIT", unit: 3, percentage: 15, currentValue: 1, usage: 1, nextResetTime: BASE + 47 * MIN },
+			{ type: "TOKENS_LIMIT", unit: 6, percentage: 30, currentValue: 1, usage: 1, nextResetTime: BASE + 4.9 * HOUR },
+			{ type: "TIME_LIMIT", unit: 5, percentage: 42, currentValue: 3, usage: 3 },
+		],
+	},
+};
+
+describe("descriptor table wiring", () => {
+	const parse = (provider: string, payload: unknown) => {
+		const descriptor = quotaDescriptorFor(provider);
+		expect(descriptor).toBeDefined();
+		const parts = descriptor!.parse(payload, { now: BASE, warn: () => {} });
+		expect(parts).not.toBeUndefined();
+		return renderQuotaSnapshot(
+			{ provider: descriptor!.provider, parts: parts!, overflow: descriptor!.overflow },
+			provider,
+			undefined,
+			200,
+			plain,
+		);
+	};
+
+	it("z.ai parses its own payload", () => {
+		expect(parse("zai", ZAI_PAYLOAD)).toBe("5h:15% 47m 7d:30% 4.9h MCP:42% · standard");
+	});
+
+	it("minimax parses its own payload", () => {
+		expect(parse("minimax", MINIMAX_PAYLOAD)).toBe("5h:100% 12m 7d:8% 6.5d · exhausted");
+	});
+
+	it("minimax-cn parses the same payload under its own entry", () => {
+		expect(parse("minimax-cn", MINIMAX_PAYLOAD)).toBe("5h:100% 12m 7d:8% 6.5d · exhausted");
+	});
+
+	it("a payload from another provider yields no parts", () => {
+		for (const [provider, payload] of [
+			["zai", MINIMAX_PAYLOAD],
+			["minimax", ZAI_PAYLOAD],
+			["minimax-cn", ZAI_PAYLOAD],
+		] as const) {
+			expect(quotaDescriptorFor(provider)!.parse(payload, { now: BASE, warn: () => {} })).toBeUndefined();
+		}
+	});
 });
