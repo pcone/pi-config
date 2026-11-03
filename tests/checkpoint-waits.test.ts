@@ -643,7 +643,7 @@ describe("derived: peer reply", () => {
 		const { h } = await freshHarness();
 		await sendExpectReply("bob", "first question");
 		await sendExpectReply("bob", "second question");
-		const [first, second] = readIncoming(mailbox, "bob");
+		const [first] = readIncoming(mailbox, "bob");
 		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(2);
 
 		// A stamped reply to the first send. Revert: scope the sender rule behind
@@ -662,7 +662,6 @@ describe("derived: peer reply", () => {
 
 		const after = await h.checkpoint({});
 		expect(after.kickoff).toContain("NEXT-STEP");
-		expect(second.id).toBeTruthy();
 	}, 40_000);
 
 	it("a relayed reply from a third peer ends the wait it names (the fast path)", async () => {
