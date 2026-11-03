@@ -20,4 +20,4 @@ isn't re-litigated every time the tool trends on HN.
 | [005](005-owner-asks-statusline.md) | Owner asks on the pi status bar and Claude Code statusline, counted from the pushed registry; `/asks` lists new first and marks seen | done |
 | [006](006-opencode-go-usage-footer.md) | OpenCode Go usage in the footer via the aggregate `/zen/go/v1/usage` endpoint; per-model burn stays client-side | done |
 | [008](008-model-error-mail.md) | A model request's HTTP 4XX/5XX mails a peer, throttled; Kimi usage joins the footer | done |
-| [009](009-baba-for-claude-code.md) | Claude Code reaches baba through a daemon-client CLI and a skill; MCP replaces the skill (superseded in part) | accepted |
+| [009](009-baba-for-claude-code.md) | Claude Code reaches baba through a daemon-client CLI, and through an MCP server that replaced the skill (superseded in part) | accepted |

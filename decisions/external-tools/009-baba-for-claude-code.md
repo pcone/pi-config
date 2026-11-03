@@ -60,3 +60,28 @@ Carrier: [WO-2026-069](../../work-orders/WO-2026-069-baba-mcp.md).
 **Ruled (owner, 2026-11-03, same session), cold-start progress.** WO-2026-069 stopped `PREMISE FALSIFIED`: during the cold start the daemon has no socket, and the spawn discards its stderr, so the client had nothing to forward. Scott picked "Tail daemon log (Recommended)": the spawn writes the daemon's stderr to `<repo>/.baba/daemon.log`, and `ensureDaemon` reports new lines through a status callback while it polls; the CLI prints them to stderr, the MCP server sends them as progress. Rejected: elapsed-time ticks (say nothing of what the daemon does); progress only after the socket binds (leaves the cold start silent).
 
 **Ruled (owner, 2026-11-03, same session), the server's repo root.** Claude Code's MCP docs do not state a stdio server's cwd; they document `CLAUDE_PROJECT_DIR` and `roots/list`. Scott picked "CLAUDE_PROJECT_DIR (Recommended)": the server resolves the repo from `CLAUDE_PROJECT_DIR` when set, else its cwd. Rejected: `roots/list` per call (a round trip per call and more code).
+
+## Outcome — WO-2026-069 (2026-11-04)
+
+**baba-pi** `origin/main` = `8fd39cc`. `6f63d92` puts one `search()` behind both entry points;
+`f834c43` sends the daemon's stderr to `<repo>/.baba/daemon.log` and has `ensureDaemon` report
+its new lines through a status callback; `fb8d026` adds `bin/baba-mcp.ts`, a stdio server with
+one `search` tool on the SDK's low-level `Server` (no zod); `381947e` decodes a status line to
+its `msg` and passes other lines through; `5e98346` treats a live pid as starting only when it
+runs `baba`; `8fd39cc` makes the CLI test's kill bound a parameter so the daemon-spawning row
+is not racing a 4 s wall under load. One dependency, `@modelcontextprotocol/sdk@1.32.2`, pinned
+with `bun.lock` committed.
+
+Registered once: `claude mcp add --scope user baba -- /Users/scott/Developer/baba-pi/bin/baba-mcp.ts`.
+The CLI stays. The skill and its `~/.claude/skills` symlink are deleted, so Claude has one way
+to search.
+
+The repo is `CLAUDE_PROJECT_DIR` when set and non-empty, else the server's cwd; both go through
+`findMainRoot`, so a value naming a worktree resolves to that worktree's main checkout.
+
+Cost, measured on this box against the live daemon: a warm query through the MCP server takes
+0.20–0.26 s end to end; the first call after the tree changed re-indexes and took 13.3 s once
+and 30.8 s on a second drift. The server's idle RSS is 74.5 MB, measured after `tools/list` and
+before any call — the standing cost of the MCP integration is one such process per Claude
+session, not per query. Cold-start progress reaches the client as `notifications/progress`: 8
+notifications on the 91.3 s re-index observed at registration.

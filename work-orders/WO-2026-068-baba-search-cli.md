@@ -89,6 +89,10 @@ Rows 4, 5, 7, 8 need P2's live daemon; if it is not live, spawn it once at the s
 ### Prohibitions
 
 - No copy of the client: after the extract, `rg -n 'daemon.sock' extensions/ skills/` hits `client.ts` and any doc, never a second implementation.
+  **Superseded 2026-11-04:** this probe cannot fail — `rg` skips symlinks, so it exits 1
+  whatever the code does, as the BLOCKED stamp at the foot of this order notes. The honest
+  form, after WO-2026-069 moved the construction to `resolve(babaDir, "daemon.sock")`:
+  `rg -n 'daemon\.sock' src bin` in baba-pi → 2 hits, a doc comment and `client.ts:413`.
 - No MCP server, no `~/.claude.json` or `~/.claude/settings.json` edit, no launch-command change: `git diff --stat` on the repo shows no such file, and the only filesystem change outside the repo is the one symlink.
 - No new dependency and no `package.json` change.
 - The pi tool's behaviour is unchanged: `semantic_search`-equivalent calls return the same shape and the same default `top_k`; its schema and prompt guidance are untouched.

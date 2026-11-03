@@ -134,3 +134,43 @@ The existing 25 rows pass unchanged.
 
 Commits (repo, hash, subject); the Preparatory refactor result; each row with its mutation; each
 prohibition's check; the cost figures; departures, if any, as owner questions.
+
+---
+
+### Landing stamp (2026-11-04, baba-pi `8fd39cc`)
+
+Ten commits `46bb86d..83693b7` plus `8fd39cc`, pushed by the planning seat, and registered
+once at user scope: `claude mcp add --scope user baba -- /Users/scott/Developer/baba-pi/bin/baba-mcp.ts`.
+Gated before the push, re-run by me rather than read from the completion report.
+
+**Suite at the tip:** the seat's worktree 45 pass / 0 fail, and 45/0 again in my own clone at
+`8fd39cc`. CLI file 15/0 twice. Both bins `100755` in the tree; `bun.lock` committed with one
+pinned dependency, `@modelcontextprotocol/sdk@1.32.2`.
+
+**Four mutants of mine, each reddening a named row** — the part I trust over any table:
+`logMessage` decode disabled → `forwards a status line as its msg, not as JSON`;
+`isBabaDaemon` forced true → `treats a pid file naming a live non-baba process as stale and
+spawns`; the joiner's tail started at byte 0 instead of end-of-file → `a caller that finds a
+starting daemon tails from the end of the log and spawns none`; the MCP server passing
+`() => {}` for `onStatus` → `row 5` and `row 10`.
+
+**Live, driven over stdio rather than trusted:** `initialize` in 74 ms, one tool `search` with
+`required: ["query"]`, idle RSS **74.5 MB** after `tools/list` before any call, warm calls
+198–256 ms, first call after a tree change 13.3 s and 30.8 s on two separate drifts, progress
+notifications delivered. The registration is present in `~/.claude.json` under `mcpServers`.
+
+**Two corrections to this window's record.** The CLI test's 4 s kill bound was one number for
+two kinds of row; the row that spawns a daemon took 1.31 s alone, a 3× margin on a box running
+several agents. `8fd39cc` makes it a parameter — 4 s default kept for fast-failure rows, 20 s
+and a matching 25 s bun timeout for the spawning row. And the probe I used at 068's gate,
+`rg -n '"\\.baba", "daemon\\.sock"' src bin` → 1, is now vacuous: the host refactored to
+`resolve(babaDir, "daemon.sock")`, so that pattern returns **0 hits whatever the code does**.
+The honest form, giving 2 hits (a doc comment and `client.ts:413`):
+`rg -n 'daemon\.sock' src bin`.
+
+**Accepted gap, on the record:** no row covers a live `baba` pid whose socket never appears —
+the caller waits the full 120 s and then recovers by spawning. A row would add two minutes to
+every suite run. If the join-wait ever bites, make the timeout injectable and add the row then.
+
+**pi-config side (this commit):** README's baba bullet and the `skills/baba-search` entry,
+009's Outcome, the `skills/baba-search` directory and its `~/.claude/skills` symlink deleted.
