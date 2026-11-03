@@ -1,3 +1,17 @@
+/**
+ * checkpoint — archive the session, compact it, and continue (or hold).
+ *
+ * A session can be waiting on someone: the owner's ruling, a restart, a peer's
+ * reply, a subagent it must gate. That wait is session state, not prompt text
+ * (decision checkpoint/003): it is recorded through the `wait_for` tool or
+ * derived by the feature that owns it, and `continue` left unset continues only
+ * when no wait is pending. An explicit `true` or `false` overrides. Nothing
+ * here infers a wait from `nextSteps` or any other prose — a seat that forgot
+ * its wait is told about it in the tool result and again in the kickoff prompt.
+ *
+ * Design: docs/design/checkpoint-waits.md, extensions/lib/waits.ts.
+ */
+
 import { mkdir, readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import type { AgentMessage, AssistantMessage } from "@earendil-works/pi-agent-core";
@@ -6,7 +20,7 @@ import {
 	type CompactionResult,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { setPendingGo } from "./go.ts";
 import {
 	captureGitBinding,
@@ -28,6 +42,18 @@ import {
 	selectFreshRegions,
 } from "./lib/read-tracking.ts";
 import { listInFlightSubagents, type InFlightSubagent } from "./lib/subagent-state.ts";
+import {
+	WAIT_ENTRY_TYPE,
+	describePending,
+	pendingWaits,
+	registerWaitSurface,
+	resolveContinuation,
+	sendKickoff,
+	waitCollection,
+	waitHost,
+	type Continuation,
+	type Wait,
+} from "./lib/waits.ts";
 
 const CHECKPOINT_DIR = ".pi/checkpoints";
 const MARKER = "[CHECKPOINT]";
@@ -136,7 +162,12 @@ interface PendingCheckpoint {
 	/** `composeSummary` output — the text the fresh window receives verbatim. */
 	summary: string;
 	next: string;
-	doContinue: boolean;
+	continuation: Continuation;
+	/**
+	 * The waits pending when the tool ran, resolved once. The tool result and the
+	 * kickoff then tell one story even if a source ends mid-compaction.
+	 */
+	waits: Wait[];
 	tokens: CheckpointTokens;
 	archivePath?: string;
 	relevantPaths: RelevantPathEntry[];
@@ -211,11 +242,11 @@ function checkOwnerState(
 	};
 }
 
-/** Test hook: scan this directory for the meta registry instead of /tmp. */
-let inflightScanDirOverride: string | undefined;
-export function _testSetInflightScanDir(dir: string | undefined): void {
-	inflightScanDirOverride = dir;
-}
+/**
+ * Test hook: point the meta-registry scan at `dir` instead of /tmp. Owned by
+ * the registry module — the subagent wait source reads the same override.
+ */
+export { _testSetInflightScanDir } from "./lib/subagent-state.ts";
 
 // ---------------------------------------------------------------------------
 // File injection
@@ -412,6 +443,10 @@ async function archiveSession(
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+	// The wait surface (`wait_for`, the restart announcement) lives with the
+	// store it writes; this file owns only what a checkpoint does with a wait.
+	registerWaitSurface(pi);
+
 	// -- Read tracking ---------------------------------------------------
 	pi.on("session_start", () => {
 		reads.clear();
@@ -471,12 +506,16 @@ export default function (pi: ExtensionAPI) {
 						`Checkpoint complete — context cleared.${renderTokenDelta(tokens)}${archiveLine}`,
 						"info",
 					);
-					if (pending?.doContinue) {
-						const parts = [pending.next];
-						if (inj?.text) parts.unshift(inj.text);
-						if (pending.archivePath) parts.push(`Archive: ${pending.archivePath}`);
-						const followUp = parts.join("\n\n");
-						pi.sendUserMessage(followUp, { deliverAs: "followUp" });
+					if (pending?.continuation.doContinue) {
+						await sendKickoff({
+							parts: {
+								context: inj?.text,
+								next: pending.next,
+								trailing: pending.archivePath ? [`Archive: ${pending.archivePath}`] : [],
+							},
+							waits: pending.waits,
+							send: (text) => pi.sendUserMessage(text, { deliverAs: "followUp" }),
+						});
 					}
 				} catch (err) {
 					safeNotify(
@@ -566,24 +605,25 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Archive the current session, clear context, and continue. " +
 			"Use at logical task boundaries when work for this turn is done but more remains. " +
-			"A checkpoint is not a pause: by default a fresh prompt starts the next turn. " +
-			"Pass `continue: false` when you are stopping to wait — see that parameter. " +
+			"A checkpoint is not a pause: a fresh prompt starts the next turn unless a wait is pending. " +
+			"Pass `continue: false` when you are stopping to wait, and record the wait with `wait_for` — see those parameters. " +
 			"Preserved reads are skipped automatically — only files the model hasn't seen in the preserved tail are injected.",
 		parameters: Type.Object({
 			summary: SUMMARY_SCHEMA,
 			nextSteps: Type.Optional(
 				Type.String({
 					description:
-						"What comes next. Used as the kickoff prompt if continue is true. Defaults to 'Continue work'. " +
-						"When you set continue false, name what you are waiting for.",
+						"What comes next. Used as the kickoff prompt when the checkpoint continues. Defaults to 'Continue work'. " +
+						"A wait you are holding for is carried into that prompt; record it with `wait_for` when nothing else can see it.",
 				}),
 			),
 			continue: Type.Optional(
 				Type.Boolean({
 					description:
-						"If true (default), a fresh prompt starts the next turn so work continues. " +
-						"Set false to stop and wait, when the next move belongs to someone else: the owner's ruling or a restart, " +
-						"a peer you wrote to for a reply, or a subagent you must gate first. " +
+						"Unset continues only when no wait is pending; true always continues, false always stops. " +
+						"A wait is a `wait_for` record, a running subagent, or an unanswered expectReply send. " +
+						"Set false — or leave unset with a wait pending — when the next move belongs to someone else: " +
+						"the owner's ruling or a restart, a peer you wrote to for a reply, or a subagent you must gate first. " +
 						"The session then sits idle until a message arrives — the owner's, a peer's, or a finished subagent's — " +
 						"which is the only way a wait leaks: mail and subagent events still start turns.",
 				}),
@@ -611,7 +651,8 @@ export default function (pi: ExtensionAPI) {
 			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
 
 			const next = params.nextSteps ?? "Continue work";
-			const doContinue = params.continue !== false;
+			const waits = pendingWaits(waitHost(pi, ctx), waitCollection(ctx));
+			const continuation = resolveContinuation(params.continue, waits);
 			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
 			const contextWindow = ctx.model?.contextWindow ?? 200_000;
 			const summaryFields: SummaryFields = params.summary;
@@ -624,7 +665,6 @@ export default function (pi: ExtensionAPI) {
 			// R3-1: one composed summary serves both the archive and the restore
 			// path, so the in-flight record is in the context after compaction.
 			const inFlight = listInFlightSubagents({
-				dir: inflightScanDirOverride,
 				selfSessionId: ctx.sessionManager.getSessionId(),
 			});
 			const section = formatInFlightSection(inFlight);
@@ -655,7 +695,8 @@ export default function (pi: ExtensionAPI) {
 			pendingCheckpoint = {
 				summary,
 				next,
-				doContinue,
+				continuation,
+				waits,
 				tokens,
 				archivePath,
 				relevantPaths,
@@ -678,7 +719,10 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				responseLines.push(`Archive failed — session data is preserved in the session file.`);
 			}
-			responseLines.push(`Next: ${next}${doContinue ? "" : " (no auto-continue)"}`);
+			responseLines.push(`Next: ${next}${continuation.doContinue ? "" : " (no auto-continue)"}`);
+			// The model may have forgotten the wait it is holding. State it here,
+			// with the resolved outcome, so a checkpoint cannot quietly start work.
+			responseLines.push(describePending(waits, continuation));
 
 			return {
 				content: [{ type: "text", text: responseLines.join("\n\n") }],
@@ -704,13 +748,14 @@ export default function (pi: ExtensionAPI) {
 			nextSteps: Type.Optional(
 				Type.String({
 					description:
-						"What comes next. Used as the kickoff prompt if continue is true. Default: 'Continue work'.",
+						"What comes next. Used as the kickoff prompt when the checkpoint continues. Default: 'Continue work'. " +
+						"A wait you are holding for is carried into that prompt; record it with `wait_for` when nothing else can see it.",
 				}),
 			),
 			continue: Type.Optional(
 				Type.Boolean({
 					description:
-						"If true (default), a fresh prompt starts the next turn after the switch. Set false to stop and wait, " +
+						"Unset continues only when no wait is pending; true always continues, false always stops — " +
 						"as with `checkpoint`.",
 				}),
 			),
@@ -756,7 +801,8 @@ export default function (pi: ExtensionAPI) {
 			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
 
 			const next = params.nextSteps ?? "Continue work";
-			const doContinue = params.continue !== false;
+			const waits = pendingWaits(waitHost(pi, ctx), waitCollection(ctx));
+			const continuation = resolveContinuation(params.continue, waits);
 			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
 			const oldSessionId = ctx.sessionManager.getSessionId();
 			const oldCwd = ctx.sessionManager.getCwd();
@@ -771,7 +817,6 @@ export default function (pi: ExtensionAPI) {
 			// R3-1: both the fork-source archive and the new session's summary
 			// carry the in-flight record.
 			const inFlight = listInFlightSubagents({
-				dir: inflightScanDirOverride,
 				selfSessionId: ctx.sessionManager.getSessionId(),
 			});
 			const section = formatInFlightSection(inFlight);
@@ -824,13 +869,26 @@ export default function (pi: ExtensionAPI) {
 						stopReason: "end",
 						timestamp: Date.now(),
 					});
+					// The fork inherits the source's manual-wait snapshot as a real
+					// entry on its own branch, so a store over that branch replays it
+					// (decision checkpoint/003, ruling 4). Derived waits do not
+					// travel: each belongs to a process and a source, and the new
+					// session has neither.
+					const carried = waits.filter((wait) => wait.source === "manual");
+					if (carried.length > 0) newSession.appendCustomEntry(WAIT_ENTRY_TYPE, { waits: carried });
+
 					await cmdCtx.switchSession(newSession.getSessionFile()!, {
 						withSession: async (n) => {
-							if (doContinue) {
-								const parts = [next];
-								if (injection.text) parts.unshift(injection.text);
-								await n.sendUserMessage(parts.join("\n\n"));
-							}
+							if (!continuation.doContinue) return;
+							// The kickoff names the waits the new session actually
+							// holds — the copied manual ones. A derived wait belongs to
+							// the source's process and source, so announcing it here
+							// would name a hold the new session could never clear.
+							await sendKickoff({
+								parts: { context: injection.text, next },
+								waits: carried,
+								send: (text) => n.sendUserMessage(text),
+							});
 						},
 					});
 				},
@@ -843,6 +901,7 @@ export default function (pi: ExtensionAPI) {
 			if (inFlight.length > 0) {
 				responseLines.push(`In-flight subagents recorded in the summary: ${inFlight.length}.`);
 			}
+			responseLines.push(describePending(waits, continuation));
 			if (relevantPaths.length > 0) {
 				const notes: string[] = [];
 				notes.push(
@@ -910,9 +969,10 @@ export default function (pi: ExtensionAPI) {
 
 			const basePrompt =
 				"Run the checkpoint tool now. " + SUMMARY_FORMAT_HINT + " " +
-				"Set `continue` for what happens after compaction: true when the work continues on your side, " +
-				"false when the next move is someone else's — an owner ruling or restart, a peer's reply, a subagent you must gate. " +
-				"If you stop, name the wait in `nextSteps`. " +
+				"Leave `continue` unset: it continues only when no wait is pending. " +
+				"When the next move is someone else's — an owner ruling or restart, a peer's reply, a subagent you must gate — " +
+				"record the wait that nothing else can see with the `wait_for` tool; a running subagent and an unanswered " +
+				"expectReply send are already waits. " +
 				"If you need file context carried forward, include a `relevantPaths` list — only list files " +
 				"you will actually need after the checkpoint. " +
 				"Be conservative: include only files you're 100% certain you'll need in the next turn. " +

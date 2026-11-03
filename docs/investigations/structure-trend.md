@@ -18,6 +18,24 @@ refactor lands.
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
 | `extensions/checkpoint.ts` growth | 1 (2026-10-21) | **resolved 2026-10-21 by WO-2026-057** — the named extraction landed (901 → 818 lines; git/token helpers now in `extensions/lib/checkpoint-meta.ts`) | done |
 
+## 2026-11-02 — chunk: WO-2026-064 checkpoint wait state
+
+**Growth:** `extensions/checkpoint.ts` 935 → 1083 lines mid-landing; the review's
+finding was that the `wait_for` tool and the restart announcement are not
+checkpoint-specific. Extraction done inside the landing, not deferred:
+`registerWaitSurface(pi)` in `extensions/lib/waits.ts` owns the tool and both
+handlers, so the file ends at 994 (+59 for the feature, all of it the
+`PendingCheckpoint` wiring and the two `describePending` result lines). New
+module `extensions/lib/waits.ts` (424 lines) carries the store, the sources
+registry, the rule, the rendering and the surface. No strike.
+
+**Unification:** the continuation rule and the kickoff prompt each have one home
+(`resolveContinuation` two call sites, `composeKickoff` one); `sendTracked` is
+the single outbound path in `peer-link` (1 `sendEnvelope` call site). Files
+touched by the landing: `checkpoint.ts`, `waits.ts`, `subagent-state.ts`,
+`peer-link/index.ts`, `subagent-async/index.ts` — three of those only to register
+a derived source or move a test hook, which is the shape the order asked for.
+
 ## 2026-10-22 — chunk: seat-config ruling batch (3bf7b2f, ff7a78f, 9833b88, 28f10c2, 2bbcae3)
 
 **Growth:** production delta small — `extensions/lib/fleet-model.ts` (one join exported),

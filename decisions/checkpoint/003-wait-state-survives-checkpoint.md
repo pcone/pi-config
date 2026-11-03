@@ -30,3 +30,13 @@ date: 2026-11-02
 **Rejected: not recording external sends.** It drops the wait the owner's first ruling counts, for every Claude Code peer.
 
 **Rejected: `external.ts` stamping `inReplyTo`.** It adds surface to a non-pi CLI to fix a match that the sender's identity already answers.
+
+**Outcome (2026-11-02).** Landed as `3e56a97`, `36e4342`, `fbb78f2` (review rework: the surface moved beside the store) and `f12fb2c` for rulings 3 and 4 (the sender rule is the rule, not a fallback; the fork copies the manual snapshot and its kickoff names only what travels), with WO-2026-064. `3e56a97` is the preparatory refactor: `checkpoint` and `checkpoint_fork` each resolved `continue` and assembled the kickoff their own way; both now call one `resolveContinuation` and one `sendKickoff` in `extensions/lib/waits.ts`, with the row-level test results unchanged.
+
+The choice left open — a `wait` tool or a `wait: true` checkpoint flag — landed as the tool, named `wait_for` because pi ships a `wait` tool that collects subagent results. A wait has to exist before the checkpoint that carries it: a seat told to hold has not necessarily checkpointed yet, and the flag alone would cover only a wait that already survived to a checkpoint.
+
+Manual waits are a full snapshot entry on the session branch (`pi.appendEntry("checkpoint-wait")`), which is invisible to the model and survives both compaction and a restart. Derived waits are computed by the extension that owns the state: `subagent-async` (a running child, from the meta registry) and `peer-link` (an unanswered outbound `expectReply`). Neither holds mail.
+
+Rulings 3 and 4 changed two things. A peer wait now ends on any envelope from that peer, with a matching `inReplyTo` as the fast path, so an external peer's reply ends it without `external.ts` stamping anything (ruling 3). And `checkpoint_fork` copies the source's manual-wait snapshot into the new session as a real entry on its branch, so a store over that branch replays it (ruling 4); derived waits do not travel.
+
+Design: `docs/design/checkpoint-waits.md`. Tests: `tests/checkpoint-waits.test.ts`.

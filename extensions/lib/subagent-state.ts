@@ -359,6 +359,17 @@ export function gatherSubagentDiskFacts(
 
 // ── In-flight listing (R3-1) ───────────────────────────────────────────────
 
+/**
+ * @internal test hook — the registry directory the in-flight scan reads
+ * (default /tmp). One override for every reader, so a test that fabricates
+ * children cannot have one reader see the fabricated set and another see the
+ * real registry.
+ */
+let inflightScanDirOverride: string | undefined;
+export function _testSetInflightScanDir(dir: string | undefined): void {
+	inflightScanDirOverride = dir;
+}
+
 export interface InFlightSubagent {
 	sid: string;
 	agentName: string | null;
@@ -368,6 +379,8 @@ export interface InFlightSubagent {
 	evidence: string;
 	/** Present for orphaned children: the call that resumes the session. */
 	resumeCall: string | null;
+	/** Spawn time recorded in the meta, or null when the meta carries none. */
+	startedAt: number | null;
 }
 
 /** `subagent_resume({ session_id: "<sid>", task: "<what it was doing>" })`. */
@@ -388,7 +401,7 @@ export function resumeCallFor(sid: string, meta: Record<string, any> | null): st
 export function listInFlightSubagents(
 	opts: { dir?: string; selfPid?: number; selfSessionId?: string; probe?: OwnerProbe; now?: number } = {},
 ): InFlightSubagent[] {
-	const dir = opts.dir ?? SUBAGENT_TMP_DIR;
+	const dir = opts.dir ?? inflightScanDirOverride ?? SUBAGENT_TMP_DIR;
 	const out: InFlightSubagent[] = [];
 	for (const { sid, meta } of listSubagentMetas(dir)) {
 		if (
@@ -411,6 +424,7 @@ export function listInFlightSubagents(
 			state: reading.state,
 			evidence: reading.evidence,
 			resumeCall: reading.state === "orphaned" ? resumeCallFor(sid, meta) : null,
+			startedAt: typeof meta.startedAt === "number" ? meta.startedAt : null,
 		});
 	}
 	return out;
