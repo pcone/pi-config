@@ -104,3 +104,35 @@ The standard schema. Additionally:
 - The `git diff` for the extracted predicate showing exactly two callers changed.
 - Confirmation that the four named characterization rows passed **unchanged** at the refactor commit, and that commit's id.
 - `review_cap_reached` is hard: **3 rounds maximum**. A fourth round is refused and escalated to the orchestrator, not entered.
+
+---
+
+### Landing stamp (2026-11-03, merged 5dd9728)
+
+Landed as `b675a0d` (broadcast characterization rows) · `33d7cd4` (predicate extract) ·
+`e53b120` (liveness gate) · `bc50721` (loud init) · `4584999`, `ac4e877`, `0e3293a`,
+`a9df7a3` (docs and rework). Three review rounds, both APPROVED_WITH_NOTES, LOW only.
+
+Three defects in the spec above, kept as written so the gap stays on the record:
+
+- **Premise P2 was stale at dispatch.** It claimed the `checkpoint-waits` `peerCtx` omits
+  `getSessionId` and that five rows were red. That fixture was fixed in the WO-2026-065
+  merge, so at base `e133b31` the rows were green and P2 described a state that no longer
+  existed. The implementer probed it and reported the premise false rather than
+  manufacturing the red. Rule for later orders: premise a red against the tree you
+  dispatch from, not the tree you were reading when the idea formed.
+- **The broadcast characterization rows did not exist.** The refactor section named three
+  `peer_send` broadcast rows that must pass unchanged; `git show e133b31:tests/peer-link.test.ts`
+  had none. They were written first (`b675a0d`), which is the only shape that lets a row be
+  "unchanged at the refactor commit".
+- **The `sendUserMessage` prohibition was imprecise.** `rg -n 'sendUserMessage'` matches a
+  pre-existing doc comment stating the rule. The check is `rg -n 'sendUserMessage\s*\('`.
+
+Row 1's red-without was under-powered: it stays green under "hardcode the old
+last-correspondent arm", because its fixture has the record and the heartbeat agreeing.
+It reds under deleting the correspondent arm, and row 3 is the gate's row.
+
+The landed code is better than the spec in one place: the self-guard inside `recipients()`
+was deleted rather than kept, because the arm requires membership in `onlineExcept`'s
+output, which already excludes self — unreachable by construction instead of by a second
+check.
