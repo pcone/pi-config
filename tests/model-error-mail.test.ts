@@ -456,6 +456,9 @@ async function wiredExtension(options: {
 		/** A peer's heartbeat, published the way its own runtime publishes it. */
 		heartbeat: (name: string, ageMs = 0) =>
 			writeHeartbeat(mailbox, { name, ts: Date.now() - ageMs }),
+		/** An external peer's registration, as `external.ts register()` writes it. */
+		registerExternal: (name: string) =>
+			writeHeartbeat(mailbox, { name, ts: Date.now(), external: true }),
 		emitMessageEnd,
 		/** One qualifying failure, as a completed assistant message. */
 		error: (errorMessage = E_429) =>
@@ -480,6 +483,17 @@ async function wiredExtension(options: {
 			await rm(mailbox, { recursive: true, force: true });
 		},
 	};
+}
+
+/** Every inbox in the mailbox holding an envelope, with its count. */
+async function inboxesHoldingMail(mailbox: string): Promise<Record<string, number>> {
+	const held: Record<string, number> = {};
+	for (const entry of await readdir(mailbox)) {
+		if (entry.startsWith("_") || entry === "inflight") continue;
+		const count = readIncoming(mailbox, entry).length;
+		if (count > 0) held[entry] = count;
+	}
+	return held;
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +630,124 @@ describe("recipient liveness", () => {
 			expect(alone.inbox(ME)).toHaveLength(0);
 		} finally {
 			await alone.cleanup();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Acceptance rows 1–6 (WO-2026-067, owner 2026-11-03): a registered external
+// correspondent is deliverable when named, and is never swept
+//
+// Same shape as the rows above: the wired extension over a real mailbox, a
+// registration written the way `external.ts` writes it (never online), and
+// assertions on which inboxes hold an envelope.
+// ---------------------------------------------------------------------------
+
+describe("external correspondent", () => {
+	const ME = "mailer-seat";
+	const CLAUDE = "claude-8f90";
+
+	const wired = (options: { record?: string } = {}) =>
+		wiredExtension({ peerName: ME, cwd: "/work/external", ...options });
+
+	it("row 1: the recorded external correspondent receives it, and nobody else does", async () => {
+		const w = await wired({ record: CLAUDE });
+		try {
+			w.registerExternal(CLAUDE);
+			w.heartbeat("bystander");
+			// The registration is listed, and never online: the arm must not need it.
+			expect(listPeers(w.mailbox).find((p) => p.name === CLAUDE)).toMatchObject({
+				external: true,
+				online: false,
+			});
+
+			await w.error();
+
+			expect(await inboxesHoldingMail(w.mailbox)).toEqual({ [CLAUDE]: 1 });
+		} finally {
+			await w.cleanup();
+		}
+	});
+
+	it("row 2: an online pi correspondent is still the only recipient", async () => {
+		const w = await wired({ record: "pi-peer" });
+		try {
+			w.heartbeat("pi-peer");
+			w.heartbeat("bystander");
+
+			await w.error();
+
+			expect(await inboxesHoldingMail(w.mailbox)).toEqual({ "pi-peer": 1 });
+		} finally {
+			await w.cleanup();
+		}
+	});
+
+	it("row 3: an external correspondent and an online pi peer — the external peer alone", async () => {
+		const w = await wired({ record: CLAUDE });
+		try {
+			w.registerExternal(CLAUDE);
+			w.heartbeat("pi-peer");
+
+			await w.error();
+
+			expect(await inboxesHoldingMail(w.mailbox)).toEqual({ [CLAUDE]: 1 });
+			expect(w.inbox(CLAUDE)[0]!.to).toBe(CLAUDE);
+		} finally {
+			await w.cleanup();
+		}
+	});
+
+	it("row 4: no correspondent, an external peer only — nothing mailed, one warn, window shut", async () => {
+		const w = await wired();
+		try {
+			w.registerExternal(CLAUDE);
+
+			await w.error();
+
+			expect(await inboxesHoldingMail(w.mailbox)).toEqual({});
+			const warnings = w.notifies.filter((n) => n.level === "warning");
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]!.message).toContain("no recipient");
+
+			// The window never opened, so a peer appearing now mails at once.
+			w.heartbeat("late-peer");
+			await w.error();
+			expect(await inboxesHoldingMail(w.mailbox)).toEqual({ "late-peer": 1 });
+		} finally {
+			await w.cleanup();
+		}
+	});
+
+	it("row 5: no correspondent, one online pi peer and one external peer — the pi peer only", async () => {
+		const w = await wired();
+		try {
+			w.heartbeat("pi-peer");
+			w.registerExternal(CLAUDE);
+
+			await w.error();
+
+			expect(await inboxesHoldingMail(w.mailbox)).toEqual({ "pi-peer": 1 });
+		} finally {
+			await w.cleanup();
+		}
+	});
+
+	it("row 6: a record naming this session is never a recipient, even registered external", async () => {
+		const w = await wired({ record: ME });
+		try {
+			// A session cannot be external and self, so no real state produces this;
+			// the arm reads `peers` now, so the guard needs a row that builds it.
+			w.registerExternal(ME);
+			w.heartbeat("pi-peer");
+
+			await w.error();
+
+			expect(await inboxesHoldingMail(w.mailbox)).toEqual({ "pi-peer": 1 });
+			// Survives the scan acking an envelope out of this session's inbox.
+			expect(w.injected.filter((text) => text.includes("[model-error]"))).toHaveLength(0);
+		} finally {
+			await w.cleanup();
 		}
 	});
 });

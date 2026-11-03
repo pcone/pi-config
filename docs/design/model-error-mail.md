@@ -8,7 +8,8 @@ Code: `extensions/peer-link/model-error-mail.ts` (classifier, throttle,
 recipient, envelope text), wired in `extensions/peer-link/index.ts`.
 Rulings: `decisions/external-tools/008-model-error-mail.md`. Order:
 `work-orders/WO-2026-065-model-error-mail.md`; liveness gate and loud init:
-`work-orders/WO-2026-066-recipient-liveness.md`.
+`work-orders/WO-2026-066-recipient-liveness.md`; the external correspondent:
+`work-orders/WO-2026-067-external-correspondent.md`.
 
 ## Trigger
 
@@ -64,32 +65,39 @@ One mail per session per 30 minutes.
   when the dropped window opened. It then resets.
 - A non-error assistant message ends the stall: the window and the counter
   clear, so a new stall after a good turn mails immediately.
-- No peer is online now, a recorded correspondent with a dead heartbeat
-  included: one warn, nothing mailed. The window does not open, so the next
-  failure after a peer comes online still mails.
+- No deliverable recipient — no peer online now and no registered external
+  correspondent named — one warn, nothing mailed. The window does not open, so
+  the next failure after a peer becomes reachable still mails.
 
 State is in-process. A window in progress does not survive a restart; the
 recipient does (below).
 
-## Recipient — the last correspondent, while it is online
+## Recipient — the last correspondent, while it is reachable
 
 The peer that most recently sent this session an envelope: the `from` of the
 newest delivered envelope, written to `_state/<peer>.json` in the mailbox so a
-restart keeps it. The mail goes to that peer when its heartbeat says it is
-online, and otherwise to every peer online now. With no peer online, nothing is
-sent. No config key, no environment variable, no hardcoded id.
+restart keeps it. The mail goes to that peer when it is reachable, and otherwise
+to every peer online now. With no reachable peer, nothing is sent. No config
+key, no environment variable, no hardcoded id.
 
-The gate is the ruling (owner 2026-11-03, decision external-tools/008: "online,
-else broadcast"). The correspondent can be gone by the next failure — a subagent
-heartbeats as a real peer, and its heartbeat ages out when it exits — and mail
-to a dead peer queues in an inbox nobody reads: the silence this feature exists
-to break, one peer over. Liveness is the same read the send gate uses,
-`listPeers(...).online` over the heartbeat files. `recipients()` in
-`extensions/peer-link/model-error-mail.ts` is the rule.
+Reachable means one of two things, one predicate over the named peer:
 
-An external peer (a Claude Code seat) is never online — its inbox is read only
-when its user prompts (`docs/design/peer-link-external.md`) — so it is never a
-recipient: both arms list `online` peers only.
+- **Online now** — its heartbeat is inside the liveness window. This is the
+gate the owner's "online, else broadcast" ruling asked for (owner 2026-11-03,
+decision external-tools/008); a pi correspondent can be gone by the next
+failure, because a subagent heartbeats as a real peer and its heartbeat ages
+out when it exits, and mail to a dead peer queues in an inbox nobody reads —
+the silence this feature exists to break, one peer over. Liveness is the same
+read the send gate uses, `listPeers(...).online` over the heartbeat files.
+- **A registered external peer** — `external: true` in its registration. It is
+never online: a Claude Code seat reads its inbox only when its user prompts
+(`docs/design/peer-link-external.md`), so it is reachable *when named* and not
+when swept. That is why the broadcast arm stays online-only even when the
+external peer is the only other peer: sweeping it would queue mail into an
+inbox nobody has promised to read, while naming it delivers on the next prompt
+(owner 2026-11-03, decision 008; decision 003 for prompt-driven delivery).
+
+`recipients()` in `extensions/peer-link/model-error-mail.ts` is the rule.
 
 Recording is unchanged by the gate: the sender of a delivered envelope is
 recorded whether or not it is online, because the record says who wrote last,
@@ -98,8 +106,8 @@ not who can receive.
 This session is never a recipient, even when the record names it: a session
 that mailed itself would otherwise become its own correspondent, and the model
 error would come back as an injected user message — the one thing the mail path
-must never cause. `onlineExcept` in `mailbox.ts` owns the self exclusion for
-both recipient paths.
+must never cause. The correspondent arm carries the self term itself; the
+broadcast arm gets it from `onlineExcept` in `mailbox.ts`.
 
 "Delivered" means the extension's inbox scan injected it and acked it — an
 envelope read but not delivered is retried, not recorded. Two envelopes landing
