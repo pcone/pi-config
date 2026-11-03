@@ -19,6 +19,7 @@
 
 import {
 	newEnvelope,
+	onlineExcept,
 	readLastCorrespondent,
 	sendEnvelope,
 	writeLastCorrespondent,
@@ -55,7 +56,8 @@ export interface ModelErrorMailDeps {
 	/** Identity of this session and its working directory, for the mail body. */
 	sessionId: () => string;
 	cwd: () => string;
-	/** Peers listed in the mailbox now — the broadcast fallback. */
+	/** Peers listed in the mailbox now: the recipient rule's liveness source and
+	 *  its fallback. */
 	peers: () => readonly PeerInfo[];
 	/** Surface a problem once without throwing into the turn. */
 	warn: (message: string) => void;
@@ -134,22 +136,26 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 	}
 
 	/**
-	 * The recorded correspondent, else the peers online now.
+	 * The recorded correspondent when it is online now, else every peer online
+	 * now.
 	 *
-	 * Self is excluded on both paths: a session that mailed itself would
+	 * A dead correspondent is not a recipient: a mail to a peer whose heartbeat
+	 * has aged out (a subagent that has exited) queues in an inbox nobody reads —
+	 * the silence this mail exists to break (decision external-tools/008).
+	 *
+	 * Self is excluded once, by `onlineExcept`: a session that mailed itself would
 	 * otherwise become its own correspondent, and the mail would come back as an
 	 * injected user message — the one thing the mail path must never cause.
 	 */
 	function recipients(): string[] {
 		const self = deps.peerName();
 		const recorded = correspondent ?? readLastCorrespondent(deps.mailbox(), self);
-		if (recorded && recorded !== self) {
+		const online = onlineExcept(deps.peers(), self);
+		if (recorded) {
 			correspondent = recorded;
-			return [recorded];
+			if (online.some((peer) => peer.name === recorded)) return [recorded];
 		}
-		return deps.peers()
-			.filter((peer) => peer.online && peer.name !== self)
-			.map((peer) => peer.name);
+		return online.map((peer) => peer.name);
 	}
 
 	/** Write the envelope to every recipient. False when nothing was sent. */
@@ -157,8 +163,7 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 		const to = recipients();
 		if (to.length === 0) {
 			warnOnce(
-				"model-error-mail: no recipient for a model HTTP error — no peer has ever mailed " +
-					"this session and no peer is online",
+				"model-error-mail: no recipient for a model HTTP error — no peer is online now",
 			);
 			return false;
 		}

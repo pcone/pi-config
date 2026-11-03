@@ -24,6 +24,15 @@ Not ruled, for the order to settle or raise as owner questions: the throttle's s
 
 **Constraint.** Delivery to a Claude Code peer stays prompt-driven (003): the mail queues for that session's next human prompt and starts no Claude turn.
 
+**Superseded in part (owner 2026-11-03, the dead-correspondent ruling above — the
+consequence is recorded here, not ruled here).** A model-error mail no longer reaches a
+Claude Code correspondent. External peers register `external: true` and are never online
+(`extensions/peer-link/mailbox.ts:233`), so the liveness gate excludes a Claude
+correspondent from both arms: the mail goes to the pi peers online now, or nowhere. The
+"starts no Claude turn" clause holds vacuously. Whether a Claude correspondent should
+still receive the mail is open, raised for an owner ruling through the planning seat
+(WO-2026-066 follow-up); it is not settled by this record.
+
 ## Outcome (landed 2026-11-03, order WO-2026-065)
 
 Both halves landed, on four commits:
@@ -86,3 +95,30 @@ interval, as before); a `kimi-coding` session adds one request per interval, mea
 
 **Rollback:** the mail half is one file plus a handler registration; the quota half is a
 descriptor entry per provider, and the refactor commit is byte-identical by test.
+
+## Outcome — the dead correspondent and the silent init (landed 2026-11-03, order WO-2026-066)
+
+The "online, else broadcast" ruling is now the code. `recipients()` in
+`extensions/peer-link/model-error-mail.ts` mails the recorded correspondent only
+while `listPeers(...).online` lists it, else every peer online now, else nothing;
+recording is unchanged (who wrote last, not who can receive). The self exclusion
+has one home, `onlineExcept` in `extensions/peer-link/mailbox.ts`, which
+`peer_send`'s broadcast calls too.
+
+- `b675a0d` — the three `peer_send` broadcast characterization rows the order
+  named. They did not exist; they pin the predicate before it moves.
+- `33d7cd4` — the preparatory refactor: `onlineExcept(peers, self)` extracted,
+  both callers changed, no behaviour change (the four named characterization rows
+  passed unchanged).
+- `e53b120` — the gate, with six rows driven through the wired extension over
+  heartbeat and inbox files, each asserting which inboxes hold an envelope.
+- `bc50721` — the loud init: `session_start` notifies, then throws
+  `peer-link init failed: …` with the original error as `cause`. Row 7 asserts the
+  handler's rejection, row 8 that nothing starts before it, row 9 that an ordinary
+  `session_start` still starts the runtime and delivers. pi's runner still catches a
+  handler throw into its extension-error channel, so the session continues and the
+  failure now reaches that channel instead of only the notify the test discarded.
+
+Design: `docs/design/model-error-mail.md` § Recipient. The init-side behaviour
+is stated in `README.md`'s peer-link entry; no `docs/design/peer-link.md`
+existed to update.

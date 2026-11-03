@@ -68,6 +68,7 @@ import {
 	listPeers,
 	mailboxRoot,
 	newEnvelope,
+	onlineExcept,
 	ownPeerName,
 	peerIdentityFrom,
 	peerStatus,
@@ -167,7 +168,12 @@ export default function (pi: ExtensionAPI) {
 			restoreAutoreply();
 			startRuntime();
 		} catch (err) {
-			ctx.ui.notify(`peer-link init failed: ${(err as Error).message}`, "error");
+			// A wiring failure is not a state to run on: notify the human, then fail
+			// the emit. Swallowing it left a session with no heartbeat and no scan,
+			// silently unreachable, while the test that caused it passed.
+			const message = err instanceof Error ? err.message : String(err);
+			ctx.ui.notify(`peer-link init failed: ${message}`, "error");
+			throw new Error(`peer-link init failed: ${message}`, { cause: err });
 		}
 	});
 
@@ -471,9 +477,7 @@ export default function (pi: ExtensionAPI) {
 			const expectReply = params.expectReply ?? false;
 			const deliverAs = params.followUp ? "followUp" : "steer";
 			if (params.to === "*") {
-				const targets = listPeers(state.mailbox).filter(
-					(p) => p.online && p.name !== state.peerName,
-				);
+				const targets = onlineExcept(listPeers(state.mailbox), state.peerName);
 				if (params.requireOnline && targets.length === 0) {
 					throw new Error("peer_send: no online peers to broadcast to (requireOnline set) — not queued");
 				}

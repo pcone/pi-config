@@ -240,6 +240,18 @@ export function listPeers(mailbox: string, now = Date.now()): PeerInfo[] {
 }
 
 /**
+ * The peers online now, excluding this session: the broadcast target list.
+ *
+ * Both callers mean exactly this — `peer_send`'s `to: "*"` arm and the
+ * model-error mail's recipient fallback — and the self exclusion is the part
+ * worth having one home: a session addressed as its own recipient gets its
+ * own message back as an injected user message.
+ */
+export function onlineExcept(peers: readonly PeerInfo[], self: string): PeerInfo[] {
+	return peers.filter((peer) => peer.online && peer.name !== self);
+}
+
+/**
  * Resolve a `to` address to a listed peer's canonical announced name.
  *
  * Peer names are the full session-filename identity (e.g.

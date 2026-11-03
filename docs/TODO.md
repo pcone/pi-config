@@ -283,11 +283,13 @@ update (038's supersession note landed at `2bbcae3`).
 
 ---
 
-# WO-2026-065 residues — 2026-11-03 (scheduled with the order; two follow-ups carry)
+# WO-2026-065 residues — 2026-11-03 (scheduled with the order; one follow-up carries)
 
-Two known residues from WO-2026-065's quota-mechanism refactor
-(`extensions/lib/quota.ts`). Both are behaviour-preserving cleanups, deferred because each
-touches a site this order fenced off or changes a byte this order had to hold still.
+One known residue from WO-2026-065's quota-mechanism refactor
+(`extensions/lib/quota.ts`), a behaviour-preserving cleanup deferred because it moves a
+rendered byte this order had to hold still. The landing's other residue — the "online
+peers other than self" predicate written twice in peer-link — closed in WO-2026-066
+(`onlineExcept` in `extensions/peer-link/mailbox.ts`, both callers).
 
 - **Overflow unification.** `QuotaSnapshot.overflow` keeps z.ai/MiniMax *clipping* the
   first part while Go and Kimi *ellipsise* it — each provider's pre-refactor behaviour,
@@ -296,6 +298,3 @@ touches a site this order fenced off or changes a byte this order had to hold st
   [refactor-needed register](../docs/investigations/structure-trend.md#refactor-needed-register)
   row for `extensions/lib/quota.ts` overflow policy — no order is scheduled, so the row
   holds it.
-- **Broadcast predicate — closed by WO-2026-066.** "online peers other than self" was
-  written twice, in `peer_send`'s broadcast and in `model-error-mail.ts`'s `recipients()`;
-  the order extracts it into `mailbox.ts` as one predicate both call.
