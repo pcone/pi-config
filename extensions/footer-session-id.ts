@@ -1021,13 +1021,16 @@ export default function (pi: ExtensionAPI) {
 					//   row 2: stats                                  model
 					//   row 3: [orchestrate] subagents: ...           5h:9% 1.3h ...
 					// When only one exists, it uses the appropriate alignment alone.
-					const quotaStr = renderQuotaSnapshot(
-						cachedQuota,
-						model?.provider,
-						model?.id,
-						Math.max(30, width),
-						theme,
-					);
+					// Through the descriptor, so the one renderer the descriptor
+					// names is the one this path calls.
+					const quotaStr =
+						quotaDescriptorFor(model?.provider)?.render(
+							cachedQuota,
+							model?.provider,
+							model?.id,
+							Math.max(30, width),
+							theme,
+						) ?? "";
 
 					let statusesStr = "";
 					const extensionStatuses = footerData.getExtensionStatuses();

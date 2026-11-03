@@ -601,9 +601,8 @@ per-provider quota blocks are gone. `extensions/lib/quota.ts` is new at 696 line
 holding what moved (three fetchers, three parsers, three render segments, one warn-once
 and one key memo) plus the descriptor table and the Kimi parser. Production net: +1072/−624
 across five files, of which the mail half is +220 and the quota mechanism +696 — a fourth
-provider now costs ~70 lines in the table instead of a fourth copy. No new extraction
-candidate the refactor left un-extracted beyond two named residues, both carried in
-`docs/TODO.md` § WO-2026-065: `QuotaSnapshot.overflow` per provider (unifying it moves
+provider now costs ~70 lines in the table instead of a fourth copy. The refactor left
+two residues un-extracted, both carried in `docs/TODO.md` § WO-2026-065: `QuotaSnapshot.overflow` per provider (unifying it moves
 rendered bytes this order had to hold) and the "online peers other than self" predicate
 written twice in peer-link (extracting it edits the send path this order fences off). The
 pre-refactor entry points (`renderQuotaSegment`, `renderGoUsageSegment`) stay: 8-line

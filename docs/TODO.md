@@ -283,10 +283,10 @@ update (038's supersession note landed at `2bbcae3`).
 
 ---
 
-# WO-2026-065 residues — 2026-11-03 (landed; two follow-ups carry)
+# WO-2026-065 residues — 2026-11-03 (scheduled with the order; two follow-ups carry)
 
-Two known residues from the quota-mechanism refactor (`extensions/lib/quota.ts`,
-merge of WO-2026-065). Both are behaviour-preserving cleanups, deferred because each
+Two known residues from WO-2026-065's quota-mechanism refactor
+(`extensions/lib/quota.ts`). Both are behaviour-preserving cleanups, deferred because each
 touches a site this order fenced off or changes a byte this order had to hold still.
 
 - **Overflow unification.** `QuotaSnapshot.overflow` keeps z.ai/MiniMax *clipping* the

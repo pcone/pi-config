@@ -84,7 +84,9 @@ export interface ModelErrorMailBody {
 	provider: string;
 	model: string;
 	status: number;
-	errorMessage?: string;
+	/** The provider's error text. Required: only a message that matched the
+	 *  classifier composes a body, and matching means this text exists. */
+	errorMessage: string;
 	/** What the throttle dropped before this mail: null when it dropped nothing. */
 	suppressed: { count: number; since: number } | null;
 }
@@ -95,7 +97,7 @@ export function composeModelErrorMail(body: ModelErrorMailBody): string {
 		`[model-error] ${body.provider}/${body.model} returned HTTP ${body.status}`,
 		`session: ${body.peerName} (${body.sessionId})`,
 		`cwd: ${body.cwd}`,
-		`error: ${(body.errorMessage ?? "").slice(0, MAIL_ERROR_CHARS).replace(/\r?\n/g, " ")}`,
+		`error: ${body.errorMessage.slice(0, MAIL_ERROR_CHARS).replace(/\r?\n/g, " ")}`,
 	];
 	if (body.suppressed) {
 		const { count, since } = body.suppressed;
@@ -115,8 +117,12 @@ export function composeModelErrorMail(body: ModelErrorMailBody): string {
  */
 export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 	const clock = deps.now ?? Date.now;
-	let windowStart: number | undefined;
-	let suppressed = 0;
+	/**
+	 * The open throttle window: when it started and how many qualifying
+	 * failures it has dropped. One value, so "a count with no window" cannot be
+	 * represented — the counter only exists inside a window.
+	 */
+	let throttle: { start: number; suppressed: number } | undefined;
 	/** Newest envelope sender this process delivered; the persisted copy covers a restart. */
 	let correspondent: string | undefined;
 	const warned = new Set<string>();
@@ -147,7 +153,7 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 	}
 
 	/** Write the envelope to every recipient. False when nothing was sent. */
-	function mail(status: number, message: Parameters<ModelErrorMail["onAssistantMessage"]>[0]): boolean {
+	function mail(status: number, errorMessage: string, message: { provider: string; model: string }): boolean {
 		const to = recipients();
 		if (to.length === 0) {
 			warnOnce(
@@ -163,11 +169,11 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 			provider: message.provider,
 			model: message.model,
 			status,
-			errorMessage: message.errorMessage,
-			// `windowStart` is set iff a window is open, and only a dropped
-			// window leaves a count, so the two travel together.
+			errorMessage,
 			suppressed:
-				suppressed > 0 && windowStart !== undefined ? { count: suppressed, since: windowStart } : null,
+				throttle && throttle.suppressed > 0
+					? { count: throttle.suppressed, since: throttle.start }
+					: null,
 		});
 		const from = deps.peerName();
 		try {
@@ -188,23 +194,21 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 			try {
 				if (message.stopReason !== "error") {
 					// A good turn ends the stall: the next failure mails immediately.
-					windowStart = undefined;
-					suppressed = 0;
+					throttle = undefined;
 					return;
 				}
 				const status = modelHttpStatus(message.errorMessage);
-				if (status === undefined) return;
+				if (status === undefined || message.errorMessage === undefined) return;
 				const now = clock();
-				if (windowStart !== undefined && now - windowStart < MAIL_THROTTLE_MS) {
-					suppressed += 1;
+				if (throttle && now - throttle.start < MAIL_THROTTLE_MS) {
+					throttle.suppressed += 1;
 					return;
 				}
 				// The window opens only for a mail that went out: an unsendable
 				// recipient warns once, and the next failure after a recipient
 				// appears still mails.
-				if (!mail(status, message)) return;
-				windowStart = now;
-				suppressed = 0;
+				if (!mail(status, message.errorMessage, message)) return;
+				throttle = { start: now, suppressed: 0 };
 			} catch (err) {
 				warnOnce(
 					`model-error-mail: ${err instanceof Error ? err.message : String(err)}`,

@@ -78,6 +78,11 @@ restart keeps it. When no peer has ever mailed this session, the mail is
 broadcast to the peers online now. No config key, no environment variable, no
 hardcoded id.
 
+This session is never a recipient, even when the record names it: a session
+that mailed itself would otherwise become its own correspondent, and the model
+error would come back as an injected user message — the one thing the mail path
+must never cause.
+
 "Delivered" means the extension's inbox scan injected it and acked it — an
 envelope read but not delivered is retried, not recorded. Two envelopes landing
 in the same scan window resolve in directory-read order, not by `sentAt`.

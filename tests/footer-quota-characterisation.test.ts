@@ -197,8 +197,15 @@ const GOLDEN: ReadonlyArray<{
 		expected: "5h:[error:100%] [dim:12m] 7d:[success:8%] [dim:6.5d]",
 	},
 	{
-		name: "minimax-cn: last resort is the first part, clipped",
-		render: () => renderQuotaSegment(MINIMAX, "minimax-cn", "minimax-m3", 20, plain, beijing(15)),
+		// At width 10 the first window alone overflows, so this is the row that
+		// pins `clip` for the MiniMax entries: a per-entry "truncate" reds here.
+		name: "MiniMax: last resort is the first part, clipped",
+		render: () => renderQuotaSegment(MINIMAX, "minimax", "minimax-m3", 10, plain, beijing(15)),
+		expected: "5h:100% 12m",
+	},
+	{
+		name: "minimax-cn: last resort is the first part, clipped at the same width",
+		render: () => renderQuotaSegment(MINIMAX, "minimax-cn", "minimax-m3", 10, plain, beijing(15)),
 		expected: "5h:100% 12m",
 	},
 	{
@@ -320,6 +327,8 @@ const ZAI_PAYLOAD = {
 };
 
 describe("descriptor table wiring", () => {
+	// The snapshot literal mirrors `snapshotFor` (not exported). The real
+	// assembly is covered by the Kimi rows, which go through fetchQuotaSnapshot.
 	const parse = (provider: string, payload: unknown) => {
 		const descriptor = quotaDescriptorFor(provider);
 		expect(descriptor).toBeDefined();
