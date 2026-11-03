@@ -44,3 +44,15 @@ Cost, measured on this box against the live daemon: warm query 0.38–0.58 s wal
 been idle 27 minutes took 13.9 s — a single observation, not a distribution. The CLI spawns
 no python: the embedder stays the daemon's one long-lived child (pid unchanged across five
 runs), and the CLI's source names neither `BABA_EMBEDDER` nor `server.py`.
+
+## Superseded in part (owner, 2026-11-03, in Claude session 8f90746f): MCP replaces the skill
+
+Asked whether the skill was the best integration or only the easiest, the recorder answered that the MCP rejection above rested on effort alone, and its premise was wrong: an MCP server needs no engine work, being a thin stdio layer over `baba-pi/src/client.ts`. On the merits MCP wins: a typed tool rather than a shell command, its own permission entry rather than Bash, and listed for every agent including subagents, which a skill reaches only when loaded. Its cost is one idle bun process per Claude session. Scott answered "yeah can we do this - rework baba pi so that it also includes the mcp integration".
+
+What it settles, in the recorder's reading of the recommendation he accepted:
+- baba-pi gains a stdio MCP server with one `search` tool, built on `src/client.ts`; one daemon client stays.
+- It is registered once at user scope (`claude mcp add --scope user`). The answer approves that change to Claude's user config.
+- The CLI stays, for pi seats and scripts.
+- The skill and its `~/.claude/skills` symlink are deleted once the server is registered and answers, so Claude has one way to search.
+
+Carrier: [WO-2026-069](../../work-orders/WO-2026-069-baba-mcp.md).
