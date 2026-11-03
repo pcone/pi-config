@@ -136,24 +136,37 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 	}
 
 	/**
-	 * The recorded correspondent when it is online now, else every peer online
+	 * The recorded correspondent when it is reachable, else every peer online
 	 * now.
 	 *
-	 * A dead correspondent is not a recipient: a mail to a peer whose heartbeat
-	 * has aged out (a subagent that has exited) queues in an inbox nobody reads —
-	 * the silence this mail exists to break (decision external-tools/008).
+	 * A dead pi correspondent is not a recipient: a mail to a peer whose
+	 * heartbeat has aged out (a subagent that has exited) queues in an inbox
+	 * nobody reads — the silence this mail exists to break (decision
+	 * external-tools/008). A registered external peer is reachable while named
+	 * even though it is never online: its inbox is read on its user's next
+	 * prompt, so naming it delivers where sweeping for it would not (decision
+	 * external-tools/003). The sweep stays online-only.
 	 *
-	 * Self is excluded once, by `onlineExcept`: a session that mailed itself would
-	 * otherwise become its own correspondent, and the mail would come back as an
-	 * injected user message — the one thing the mail path must never cause.
+	 * Self is never a recipient: a session that mailed itself would otherwise
+	 * become its own correspondent, and the mail would come back as an injected
+	 * user message — the one thing the mail path must never cause.
 	 */
 	function recipients(): string[] {
 		const self = deps.peerName();
 		const recorded = correspondent ?? readLastCorrespondent(deps.mailbox(), self);
-		const online = onlineExcept(deps.peers(), self);
+		const peers = deps.peers();
+		const online = onlineExcept(peers, self);
 		if (recorded) {
 			correspondent = recorded;
-			if (online.some((peer) => peer.name === recorded)) return [recorded];
+			// One reachability predicate, so a later third kind has one home. The
+			// self term is explicit here because this arm reads `peers`, not
+			// `onlineExcept`'s output.
+			const reachable =
+				recorded !== self &&
+				peers.some(
+					(peer) => peer.name === recorded && (peer.online || peer.external === true),
+				);
+			if (reachable) return [recorded];
 		}
 		return online.map((peer) => peer.name);
 	}
