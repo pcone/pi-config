@@ -115,6 +115,12 @@ recording is unchanged (who wrote last, not who can receive). The self exclusion
 has one home, `onlineExcept` in `extensions/peer-link/mailbox.ts`, which
 `peer_send`'s broadcast calls too.
 
+**Superseded in part (owner 2026-11-03, the Claude Code correspondent ruling above — the
+consequence is recorded here, not ruled here).** The self exclusion has a second home from
+WO-2026-067: the correspondent arm tests `recorded !== self` itself, because that arm now reads
+`peers` rather than `onlineExcept`'s output. `onlineExcept` still owns the broadcast arm's
+exclusion.
+
 - `b675a0d` — the three `peer_send` broadcast characterization rows the order
   named. They did not exist; they pin the predicate before it moves.
 - `33d7cd4` — the preparatory refactor: `onlineExcept(peers, self)` extracted,
@@ -145,7 +151,7 @@ the empty case still warns once and leaves the throttle window shut.
   files, each asserting which inboxes hold an envelope. The self term is explicit in the arm now:
   it reads `peers`, not `onlineExcept`'s output, so the 066 deletion of the in-function guard no
   longer covers it.
-- Docs: this record, `docs/design/model-error-mail.md` § Recipient and § Throttle, `README.md`,
-  `docs/investigations/structure-trend.md`.
+- `40015b2` — the docs: this record, `docs/design/model-error-mail.md` § Recipient and
+  § Throttle, `README.md`, `docs/investigations/structure-trend.md`.
 
 Merge: recorded on the order's landing stamp (`work-orders/WO-2026-067-external-correspondent.md`).
