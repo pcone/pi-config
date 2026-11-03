@@ -18,6 +18,8 @@ Not ruled, for the order to settle or raise as owner questions: the throttle's s
 
 **Ruling (owner, 2026-11-03, in Claude session 8f90746f), the recipient.** Asked who receives the mail, he picked "Last correspondent (Recommended)": the peer that most recently sent this session an envelope; when no peer ever has, a broadcast to the online peers. No config key.
 
+**Ruling (owner, 2026-11-03, in Claude session 8f90746f), a dead correspondent.** After WO-2026-065 landed, the last correspondent could be a peer that has since exited (a subagent), so the mail queued unread. He picked "Online, else broadcast (Recommended)": mail the last correspondent when its heartbeat says it is online, else broadcast to the online peers.
+
 **Why.** A seat on a capped plan stops silently. The supervising seat learns of it only by reading the session log, and only when it is prompted to look.
 
 **Constraint.** Delivery to a Claude Code peer stays prompt-driven (003): the mail queues for that session's next human prompt and starts no Claude turn.
