@@ -21,7 +21,7 @@
  *   bun test tests/peer-link.test.ts
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { readdirSync } from "node:fs";
 import { mkdtemp, mkdir, rm, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -271,15 +271,21 @@ describe("peer-link identity chain (peerIdentityFrom)", () => {
  * is the injected transport — tests make it throw to exercise the ack path in
  * the extension's real consumeInbox, not a reimplementation.
  */
-function makeFakePi(sendUserMessage: (text: string, options?: { deliverAs?: string }) => void) {
+function makeFakePi(
+	sendUserMessage: (text: string, options?: { deliverAs?: string }) => void,
+	notify: (message: string, level?: string) => void = () => {},
+) {
 	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+	const tools = new Map<string, { name: string; execute: (...args: any[]) => Promise<any> }>();
 	const api = {
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 			const list = handlers.get(event) ?? [];
 			list.push(handler);
 			handlers.set(event, list);
 		},
-		registerTool: () => {},
+		registerTool: (def: { name: string }) => {
+			tools.set(def.name, def as { name: string; execute: (...args: any[]) => Promise<any> });
+		},
 		registerCommand: () => {},
 		sendUserMessage,
 	} as unknown as ExtensionAPI;
@@ -288,15 +294,16 @@ function makeFakePi(sendUserMessage: (text: string, options?: { deliverAs?: stri
 	};
 	return {
 		api,
+		tools,
 		sessionStart: (ctx: unknown) => emit("session_start", ctx),
 		sessionShutdown: () => emit("session_shutdown"),
 	};
 }
 
-function fakeExtensionCtx(cwd: string) {
+function fakeExtensionCtx(cwd: string, notify: (message: string, level?: string) => void = () => {}) {
 	return {
 		cwd,
-		ui: { notify: () => {} },
+		ui: { notify },
 		sessionManager: {
 			getSessionFile: () => undefined,
 			getSessionName: () => undefined,
@@ -305,6 +312,18 @@ function fakeExtensionCtx(cwd: string) {
 			getSessionId: () => "peer-link-test-session",
 		},
 	};
+}
+
+/** Run a registered tool the way the model would. */
+function callTool(
+	fake: ReturnType<typeof makeFakePi>,
+	name: string,
+	params: Record<string, unknown>,
+	ctx: unknown,
+): Promise<any> {
+	const tool = fake.tools.get(name);
+	if (!tool) throw new Error(`tool ${name} not registered`);
+	return tool.execute("call-test", params, undefined, undefined, ctx);
 }
 
 describe("peer-link consumeInbox acks after delivery", () => {
@@ -384,6 +403,77 @@ describe("peer-link consumeInbox acks after delivery", () => {
 			await rm(mailbox, { recursive: true, force: true });
 		}
 	}, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// peer_send broadcast — the "online peers other than self" target list
+//
+// Characterization rows for WO-2026-066's extraction: `peer_send`'s broadcast
+// and the model-error mail's recipient fallback are one predicate. These pin the
+// broadcast's behaviour and pass unchanged before and after the extraction.
+// ---------------------------------------------------------------------------
+
+describe("peer_send broadcast", () => {
+	let mailbox: string;
+	let fake: ReturnType<typeof makeFakePi>;
+	let env: { name?: string; mailbox?: string };
+
+	beforeEach(async () => {
+		mailbox = await mkdtemp(join(tmpdir(), "peer-broadcast-"));
+		env = { name: process.env.PI_PEER_NAME, mailbox: process.env.PI_PEER_MAILBOX };
+		process.env.PI_PEER_NAME = "alice";
+		process.env.PI_PEER_MAILBOX = mailbox;
+		fake = makeFakePi(() => {});
+		peerLink(fake.api);
+	});
+
+	afterEach(async () => {
+		await fake.sessionShutdown();
+		if (env.name === undefined) delete process.env.PI_PEER_NAME;
+		else process.env.PI_PEER_NAME = env.name;
+		if (env.mailbox === undefined) delete process.env.PI_PEER_MAILBOX;
+		else process.env.PI_PEER_MAILBOX = env.mailbox;
+		await rm(mailbox, { recursive: true, force: true });
+	});
+
+	it("reaches every online peer and skips the offline one", async () => {
+		writeHeartbeat(mailbox, { name: "bob", ts: Date.now() });
+		writeHeartbeat(mailbox, { name: "carol", ts: Date.now() });
+		writeHeartbeat(mailbox, { name: "gone", ts: Date.now() - 5 * 60_000 });
+		await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+		const result = await callTool(fake, "peer_send", { to: "*", message: "status?" }, fakeExtensionCtx(mailbox));
+
+		expect(result.details.recipients.sort()).toEqual(["bob", "carol"]);
+		expect(readIncoming(mailbox, "bob")).toHaveLength(1);
+		expect(readIncoming(mailbox, "carol")).toHaveLength(1);
+		expect(readIncoming(mailbox, "gone")).toHaveLength(0);
+	});
+
+	it("never addresses this session, even though its own heartbeat is online", async () => {
+		await fake.sessionStart(fakeExtensionCtx(mailbox));
+		// The session_start runtime published alice's heartbeat: she is online.
+		expect(listPeers(mailbox).find((p) => p.name === "alice")?.online).toBe(true);
+
+		const result = await callTool(fake, "peer_send", { to: "*", message: "status?" }, fakeExtensionCtx(mailbox));
+
+		expect(result.details.recipients).toEqual([]);
+		expect(readIncoming(mailbox, "alice")).toHaveLength(0);
+	});
+
+	it("fails a requireOnline broadcast when no other peer is online", async () => {
+		await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+		await expect(
+			callTool(
+				fake,
+				"peer_send",
+				{ to: "*", message: "status?", requireOnline: true },
+				fakeExtensionCtx(mailbox),
+			),
+		).rejects.toThrow(/no online peers to broadcast/);
+		expect(readIncoming(mailbox, "alice")).toHaveLength(0);
+	});
 });
 
 // ---------------------------------------------------------------------------
