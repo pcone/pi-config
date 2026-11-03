@@ -547,6 +547,10 @@ describe("derived: peer reply", () => {
 			sessionManager: {
 				getSessionFile: () => undefined,
 				getSessionName: () => undefined,
+				// peer-link records the session id for the model-error mail body, so
+				// session_start throws without it and the peer runtime never starts —
+				// the delivery these rows depend on.
+				getSessionId: () => "session-under-test",
 			},
 		};
 		// "bob" is a listed, online peer: the send gate refuses unlisted names.

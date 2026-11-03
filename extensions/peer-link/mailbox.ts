@@ -365,3 +365,46 @@ export function deliveryModeFor(env: Envelope): "steer" | "followUp" {
 	if (env.expectReply) return "followUp";
 	return env.deliverAs === "followUp" ? "followUp" : "steer";
 }
+
+// ---------------------------------------------------------------------------
+// Per-peer bookkeeping that is not mail
+//
+// `_state/` holds one small file per peer identity. Nothing here is ever read
+// as an envelope: the inbox scan reads the peer's own directory, the registry
+// reads `_peers/`. Keeping the state out of the inbox is what stops it being
+// scanned 30× a minute and skipped.
+// ---------------------------------------------------------------------------
+
+/** Directory for per-peer non-mail state. Created on first write. */
+export function stateDir(mailbox: string): string {
+	return path.join(mailbox, "_state");
+}
+
+function stateFile(mailbox: string, name: string): string {
+	return path.join(stateDir(mailbox), `${sanitizePeerName(name)}.json`);
+}
+
+/**
+ * The sender of the newest envelope this session delivered, or undefined.
+ *
+ * Persisted so a restart keeps the address the next model-error mail goes to
+ * (decision external-tools/008: the recipient is the last correspondent).
+ * An unreadable or malformed record reads as "no correspondent".
+ */
+export function readLastCorrespondent(mailbox: string, name: string): string | undefined {
+	try {
+		const parsed = JSON.parse(fs.readFileSync(stateFile(mailbox, name), "utf8")) as {
+			from?: unknown;
+		};
+		return typeof parsed.from === "string" && parsed.from ? parsed.from : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Record the newest delivered envelope's sender. Throws only on a bad peer name. */
+export function writeLastCorrespondent(mailbox: string, name: string, from: string): void {
+	const file = stateFile(mailbox, name);
+	fs.mkdirSync(stateDir(mailbox), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(file, JSON.stringify({ from, at: Date.now() }, null, 2), { mode: 0o600 });
+}

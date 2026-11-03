@@ -300,6 +300,9 @@ function fakeExtensionCtx(cwd: string) {
 		sessionManager: {
 			getSessionFile: () => undefined,
 			getSessionName: () => undefined,
+			// The model-error mail names the session it came from; every real
+			// SessionManager has this, the stub completes against the same API.
+			getSessionId: () => "peer-link-test-session",
 		},
 	};
 }
