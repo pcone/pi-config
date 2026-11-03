@@ -68,6 +68,7 @@ import {
 	listPeers,
 	mailboxRoot,
 	newEnvelope,
+	onlineExcept,
 	ownPeerName,
 	peerIdentityFrom,
 	peerStatus,
@@ -471,9 +472,7 @@ export default function (pi: ExtensionAPI) {
 			const expectReply = params.expectReply ?? false;
 			const deliverAs = params.followUp ? "followUp" : "steer";
 			if (params.to === "*") {
-				const targets = listPeers(state.mailbox).filter(
-					(p) => p.online && p.name !== state.peerName,
-				);
+				const targets = onlineExcept(listPeers(state.mailbox), state.peerName);
 				if (params.requireOnline && targets.length === 0) {
 					throw new Error("peer_send: no online peers to broadcast to (requireOnline set) — not queued");
 				}

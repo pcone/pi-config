@@ -19,6 +19,7 @@
 
 import {
 	newEnvelope,
+	onlineExcept,
 	readLastCorrespondent,
 	sendEnvelope,
 	writeLastCorrespondent,
@@ -147,9 +148,7 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 			correspondent = recorded;
 			return [recorded];
 		}
-		return deps.peers()
-			.filter((peer) => peer.online && peer.name !== self)
-			.map((peer) => peer.name);
+		return onlineExcept(deps.peers(), self).map((peer) => peer.name);
 	}
 
 	/** Write the envelope to every recipient. False when nothing was sent. */
