@@ -58,8 +58,9 @@ Supersedes the Mechanism's progress source and P2.
   `CLAUDE_PROJECT_DIR` set to a repo and cwd outside any repo finds the repo; (9) the server source
   imports its daemon functions from `src/client.ts` by name and neither imports `net`/`node:net`
   nor builds a `.baba`/`daemon.sock` path.
-- **Price.** The tool description and baba-pi README state the measured cost: warm 0.53–0.66 s on
-  a ~700-file index; a first query after the tree changes re-indexes for 77–95 s.
+- **Price** (recorder's, not part of the rulings). The tool description and baba-pi README state
+  measured cost: warm ≈0.2–0.7 s on pi-config's index; a first query after the tree changes
+  re-embeds what changed, seconds up to ~95 s.
 
 ### Preparatory refactor
 
