@@ -194,3 +194,44 @@ pi-config's `extensions/` with `rg -nL`. Specifically: no write of any kind unde
 `~/Developer/baba-pi`; no edit to `~/.claude.json`, `~/.claude/settings.json` or any
 launch command (the ruling approves the skills symlink only); no daemon spawn from the
 CLI path other than through `ensureDaemon`; no second copy of the socket protocol.
+
+---
+
+### Landing stamp (2026-11-03)
+
+**baba-pi** `origin/main` = `46bb86d`, four commits: `27d9902` (extract the client into
+`src/client.ts`, rows following in the same commit), `58495b5` (the CLI), `ced1513` (failure
+paths and direct execution), `46bb86d` (two named follow-ups). `src/index.ts` 681 → 146
+lines and one export; `src/client.ts` 570; `bin/baba-search.ts` 119 at mode `100755`;
+`test/client.test.ts` 343 and `test/cli.test.ts` 442; `package.json` gains only
+`"scripts": {"test": "bun test"}`.
+
+**pi-config** `c620e7d`: the skill, two README bullets, decision 009's Outcome, the
+structure-trend snapshot.
+
+**Gate, re-run by me at the merged tip.** baba-pi `bun test` → 25 pass / 0 fail, clean tree,
+and 25/0 again in the live checkout with the neighbour's 11 pending lines applied. My own
+mutations, independent of the implementer's table: `findMainRoot` returning `cwd` instead of
+`null` reds `findMainRoot > returns null outside any repo`; `DEFAULT_TOP_K = 3` reds
+`prints ranked results on stdout and nothing else`. CLI run from outside a repo exits 1 in
+0.53 s with the message naming the cause; from the main checkout, results on stdout and
+diagnostics on stderr, exit 0. `~/.claude/skills/baba-search` → `pi-config/skills/baba-search`.
+pi-config's suite is unchanged by this landing: since `22ebe0c` the only changed files are
+`.md`, so no row can reach it.
+
+**Spec defects, kept as written.** (a) The order placed tests in pi-config, which the ruling
+reversed — recorded in the amendment above, not rewritten into the spec. (b) Acceptance row
+9 could not be green from inside the dispatch, because pi-config's `main` and the live
+baba-pi checkout are the orchestrator's to move; it went green only after the seat pulled
+both. (c) The order's prohibition probes were vacuous for symlinked paths; every probe in
+the completion report uses `rg -nL` or `git ls-tree`.
+
+**Two decisions I accepted and record as mine.** `findMainRoot` is a new export from
+`src/client.ts` — the module boundary the ruling blesses as the test seam, not a widened
+public surface. And `findMainRoot`'s `execFileSync` sets `stdio: ["ignore","pipe","ignore"]`,
+which suppresses git's own `fatal:` line on a not-a-repo directory; the tool's behaviour to
+the model is unchanged, and the row pins the resulting stderr exactly.
+
+**Corrected after measuring.** The skill claimed "a few hundred milliseconds warm". Measured
+here: 0.53–0.66 s warm over pi-config's 700-file index (bun startup itself 0.03 s), 77–95 s
+for the re-index that follows a changed tree. The skill now states those numbers.

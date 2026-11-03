@@ -25,10 +25,12 @@ index, the same ranking.
 ## What it costs
 
 One socket round trip. The embedder lives in the daemon, so a query loads nothing and costs
-nothing beyond that round trip — a few hundred milliseconds warm.
+nothing beyond that round trip — 0.5-0.7 s warm against this repo's 700-file index, faster in
+a small repo.
 
-The daemon is per repo. The first call after it has been idle can take ten seconds or more
-while it refreshes the index; later calls are immediate. A query from a worktree or a
+The daemon is per repo. The first call after the code has changed re-indexes before it
+answers: 77-95 s measured on a drifted index, with a ten-second floor for a quiet one. Later
+calls are immediate. A query from a worktree or a
 subdirectory resolves to the main checkout's daemon, so the answer covers the main
 checkout's docs and code rather than your worktree's uncommitted state.
 
