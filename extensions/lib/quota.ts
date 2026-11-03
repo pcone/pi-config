@@ -673,7 +673,7 @@ export function renderQuotaSegment(
 	const descriptor = quotaDescriptorFor(modelProvider);
 	const parts = descriptor?.fromQuotaData?.(quota);
 	if (!descriptor || !parts) return "";
-	return renderQuotaSnapshot(snapshotFor(descriptor, parts), modelProvider, modelId, width, theme, {
+	return descriptor.render(snapshotFor(descriptor, parts), modelProvider, modelId, width, theme, {
 		now: now ?? new Date(),
 		resetNow: new Date(),
 	});
@@ -689,7 +689,7 @@ export function renderGoUsageSegment(
 ): string {
 	if (!usage || modelProvider !== GO_PROVIDER) return "";
 	const at = new Date(now ?? Date.now());
-	return renderQuotaSnapshot(snapshotFor(goDescriptor, goParts(usage)), modelProvider, undefined, width, theme, {
+	return goDescriptor.render(snapshotFor(goDescriptor, goParts(usage)), modelProvider, undefined, width, theme, {
 		now: at,
 		resetNow: at,
 	});

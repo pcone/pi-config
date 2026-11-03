@@ -43,9 +43,11 @@ Both halves landed, on four commits:
 **Kimi probe (premise P2, held).** `GET https://api.kimi.com/coding/v1/usages` with the
 configured OAuth subscription token answers 200 with a used ratio and an absolute reset
 instant per window (`limit_5h`, `limit_month_code`, `limit_month_total`); the endpoint is
-undocumented and was found by probing, not from a doc. The segment renders the Go shape
-(decision 006): `5h:28% 2m mo:12% thru7% 27.8d`. Response shape and the series choice:
-`docs/design/quota-footer.md`.
+undocumented and was found by probing, not from a doc. Two probes minutes apart on
+2026-11-03: the payload recorded in `docs/design/quota-footer.md` (04:28:45Z) renders
+`5h:18% 29m mo:11% thru7% 27.8d` and is the test fixture; the footer's own fetch path
+rendered `5h:28% 2m mo:12% thru7% 27.8d`, which is what follows. Response shape and the
+series choice: `docs/design/quota-footer.md`.
 
 **Design and the choices that are not rulings.** `docs/design/model-error-mail.md`
 carries the trigger, the classifier table over the corpus strings, the throttle window,
@@ -54,12 +56,19 @@ that are its author's, not the owner's, and they stand as written: the classifie
 the 30-minute window with a suppressed count that a good turn clears, and the two
 separately landable halves with the descriptor extracted first.
 
-**Cost.** The mail path adds no polling: measured 3 ns per non-error assistant message
-(0.6 µs for a 200-message turn), 63 ns when the message is an error, and nothing on an
-idle minute — no timer is registered. The footer's cost is unchanged for z.ai, MiniMax
-and Go (one request per 60s interval, as before) and one request per interval for a
-`kimi-coding` session, measured at 0.69–0.75 s per fetch, fire-and-forget at the poll
-boundary.
+**Cost.** Before this landing the mail path did not exist: an assistant message cost the
+extension exactly the handlers it already had, and an idle minute cost nothing because
+nothing was scheduled. After it, measured on this box with an ad-hoc `bun` harness (not
+committed — it is a microbenchmark of the module's own entry points, re-runnable against
+`createModelErrorMail`):
+one `message_end` with a non-error assistant message costs 3.0 ns (0.6 µs for a
+200-message turn, up from 0), a qualifying error costs 63 ns for the classifier plus one
+envelope write, and an idle minute still costs nothing — no timer and no poll is
+registered.
+The footer's per-60s-interval cost is unchanged for z.ai, MiniMax and Go (one request per
+interval, as before); a `kimi-coding` session adds one request per interval, measured at
+0.69–0.75 s per fetch, fire-and-forget at the poll boundary (Go 0.26–0.57 s and z.ai
+0.26–1.08 s on the same box, for scale).
 
 **Files:** `extensions/lib/quota.ts` (new), `extensions/footer-session-id.ts`,
 `extensions/peer-link/model-error-mail.ts` (new), `extensions/peer-link/mailbox.ts`,

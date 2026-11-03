@@ -280,3 +280,22 @@ consumed by `040-refactor-first`, 2026-10-21).
 The mimo-v2.6-flash recommendation above was NOT taken. Surviving follow-ups from the landing-WO
 contents: reviewer-vs-main-session GLM attribution via `seat_burn.py`, MTok/month metric doc
 update (038's supersession note landed at `2bbcae3`).
+
+---
+
+# WO-2026-065 residues — 2026-11-03 (landed; two follow-ups carry)
+
+Two known residues from the quota-mechanism refactor (`extensions/lib/quota.ts`,
+merge of WO-2026-065). Both are behaviour-preserving cleanups, deferred because each
+touches a site this order fenced off or changes a byte this order had to hold still.
+
+- **Overflow unification.** `QuotaSnapshot.overflow` keeps z.ai/MiniMax *clipping* the
+  first part while Go and Kimi *ellipsise* it — each provider's pre-refactor behaviour,
+  held byte-identical by `tests/footer-quota-characterisation.test.ts` (acceptance row 10).
+  Unify on one policy and update those goldens. Carrier: the next change that may move
+  rendered quota bytes (any order touching `extensions/lib/quota.ts`).
+- **Broadcast predicate.** "online peers other than self" is written twice —
+  `extensions/peer-link/index.ts` (`peer_send`'s broadcast) and
+  `extensions/peer-link/model-error-mail.ts` (`recipients()`). Extract one helper into
+  `mailbox.ts` and call it from both. Carrier: the next order that opens the peer-link
+  send path (this one's prohibitions forbid editing delivery/steering/queueing).

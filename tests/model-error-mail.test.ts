@@ -371,6 +371,13 @@ describe("recipient rule", () => {
 		expect(h.inbox(SELF)).toHaveLength(0);
 	});
 
+	it("never addresses a session that mailed itself", async () => {
+		const h = await harness({ correspondent: SELF, peers: [onlinePeer("peer-a")] });
+		h.mail.onAssistantMessage(assistantError(E_429));
+		expect(h.inbox(SELF)).toHaveLength(0);
+		expect(h.inbox("peer-a")).toHaveLength(1);
+	});
+
 	it("skips offline peers in the broadcast", async () => {
 		const h = await harness({
 			peers: [onlinePeer("peer-a"), { name: "peer-away", ts: 0, online: false }],
@@ -540,7 +547,7 @@ describe("composeModelErrorMail", () => {
 			model: "glm-5.2",
 			status: 503,
 			errorMessage: E_503,
-			suppressed: 0,
+			suppressed: null,
 		});
 		expect(text).toBe(
 			[
@@ -562,8 +569,7 @@ describe("composeModelErrorMail", () => {
 			model: "glm-5.2",
 			status: 429,
 			errorMessage: E_429,
-			suppressed: 7,
-			suppressedSince: since,
+			suppressed: { count: 7, since },
 		});
 		expect(text.split("\n").at(-1)).toBe(
 			`suppressed: 7 more qualifying failures since ${new Date(since).toISOString()}`,

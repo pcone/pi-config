@@ -64,12 +64,14 @@ export interface ModelErrorMailDeps {
 }
 
 export interface ModelErrorMail {
-	/** Call for every assistant `message_end`. */
+	/** Call for every assistant `message_end`. The model fields are required:
+	 *  an `AssistantMessage` always carries them, so a missing one is a caller
+	 *  bug, not a state the mail has to render around. */
 	onAssistantMessage(message: {
-		stopReason?: string;
+		stopReason: string;
 		errorMessage?: string;
-		provider?: string;
-		model?: string;
+		provider: string;
+		model: string;
 	}): void;
 	/** Record the sender of a delivered envelope (the last-correspondent rule). */
 	recordCorrespondent(from: string): void;
@@ -79,27 +81,25 @@ export interface ModelErrorMailBody {
 	peerName: string;
 	sessionId: string;
 	cwd: string;
-	provider?: string;
-	model?: string;
+	provider: string;
+	model: string;
 	status: number;
 	errorMessage?: string;
-	/** Qualifying failures the throttle dropped before this mail. */
-	suppressed: number;
-	/** When the throttle window that dropped them opened. */
-	suppressedSince?: number;
+	/** What the throttle dropped before this mail: null when it dropped nothing. */
+	suppressed: { count: number; since: number } | null;
 }
 
 /** The envelope text. No credentials, no prompt text, no summary. */
 export function composeModelErrorMail(body: ModelErrorMailBody): string {
 	const lines = [
-		`[model-error] ${body.provider ?? "unknown"}/${body.model ?? "unknown"} returned HTTP ${body.status}`,
+		`[model-error] ${body.provider}/${body.model} returned HTTP ${body.status}`,
 		`session: ${body.peerName} (${body.sessionId})`,
 		`cwd: ${body.cwd}`,
 		`error: ${(body.errorMessage ?? "").slice(0, MAIL_ERROR_CHARS).replace(/\r?\n/g, " ")}`,
 	];
-	if (body.suppressed > 0) {
-		const since = new Date(body.suppressedSince ?? 0).toISOString();
-		lines.push(`suppressed: ${body.suppressed} more qualifying failures since ${since}`);
+	if (body.suppressed) {
+		const { count, since } = body.suppressed;
+		lines.push(`suppressed: ${count} more qualifying failures since ${new Date(since).toISOString()}`);
 	}
 	return lines.join("\n");
 }
@@ -127,14 +127,20 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 		deps.warn(message);
 	}
 
-	/** The recorded correspondent, else the peers online now. */
+	/**
+	 * The recorded correspondent, else the peers online now.
+	 *
+	 * Self is excluded on both paths: a session that mailed itself would
+	 * otherwise become its own correspondent, and the mail would come back as an
+	 * injected user message — the one thing the mail path must never cause.
+	 */
 	function recipients(): string[] {
-		const recorded = correspondent ?? readLastCorrespondent(deps.mailbox(), deps.peerName());
-		if (recorded) {
+		const self = deps.peerName();
+		const recorded = correspondent ?? readLastCorrespondent(deps.mailbox(), self);
+		if (recorded && recorded !== self) {
 			correspondent = recorded;
 			return [recorded];
 		}
-		const self = deps.peerName();
 		return deps.peers()
 			.filter((peer) => peer.online && peer.name !== self)
 			.map((peer) => peer.name);
@@ -158,8 +164,10 @@ export function createModelErrorMail(deps: ModelErrorMailDeps): ModelErrorMail {
 			model: message.model,
 			status,
 			errorMessage: message.errorMessage,
-			suppressed,
-			suppressedSince: windowStart,
+			// `windowStart` is set iff a window is open, and only a dropped
+			// window leaves a count, so the two travel together.
+			suppressed:
+				suppressed > 0 && windowStart !== undefined ? { count: suppressed, since: windowStart } : null,
 		});
 		const from = deps.peerName();
 		try {

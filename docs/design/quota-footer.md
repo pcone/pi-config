@@ -68,7 +68,8 @@ https://api.kimi.com/coding/v1/usages` answers:
 }
 ```
 
-`usages` is the source: a used ratio plus an absolute reset instant per window.
+`usages` is the source: a `used_ratio` — already used, not remaining, unlike
+MiniMax's payload — plus an absolute reset instant per window.
 The `limits` array beside it is the same 5h window in rounded strings. The
 monthly window is `limit_month_code` — the coding plan's series; the seat only
 runs coding. The two monthly series held the same ratio in the probe, so prefer
@@ -76,10 +77,15 @@ the coding one and do not fall back to the total: a different quantity under the
 same `mo:` label would read as the coding cap.
 
 Display follows the Go shape (decision 006): rolling percent + time to reset,
-monthly percent + %-through + time to reset, e.g. `5h:18% 29m mo:11% thru7%
-27.8d`. The percentage is the used fraction the other providers show, derived
-from the remaining ratio. Kimi has no tier in this payload, and no second
-request is made to `/coding/v1/me` for the plan name.
+monthly percent + %-through + time to reset. The percentage is the used
+fraction the other providers show. Kimi has no tier in this payload, and no
+second request is made to `/coding/v1/me` for the plan name.
+
+Two probes on 2026-11-03, both 200: the payload above at 04:28:45Z rendered
+`5h:18% 29m mo:11% thru7% 27.8d` (the fixture
+`tests/footer-kimi-usage.test.ts` pins); the footer's own fetch path a few
+minutes later rendered `5h:28% 2m mo:12% thru7% 27.8d`, the figures decision
+008 § Outcome quotes.
 
 ## Cost
 

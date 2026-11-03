@@ -79,7 +79,13 @@ broadcast to the peers online now. No config key, no environment variable, no
 hardcoded id.
 
 "Delivered" means the extension's inbox scan injected it and acked it — an
-envelope read but not delivered is retried, not recorded.
+envelope read but not delivered is retried, not recorded. Two envelopes landing
+in the same scan window resolve in directory-read order, not by `sentAt`.
+
+The recorded peer can be gone before the next failure: a subagent heartbeats as
+a real peer and ages out when it exits. A mail to it queues in an inbox nobody
+reads — the silence this feature exists to break, one peer over. Preferring a
+live peer over the recorded one is a change to the ruling, not to this code.
 
 ## The mail
 
@@ -103,7 +109,7 @@ scan. A Claude Code peer reads it on its user's next prompt and starts no turn
 ## Cost
 
 Nothing runs on a turn that has no qualifying failure: one `stopReason` test
-per assistant message, then one regex test, and a map lookup. The mailbox is
-only read when a mail is about to go out, so an idle minute costs nothing.
+per assistant message, then one regex test. The mailbox is only read when a mail
+is about to go out, so an idle minute costs nothing.
 `tests/model-error-mail.test.ts` covers the behaviour; the measured figures are
 in the landing report for WO-2026-065.

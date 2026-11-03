@@ -1,12 +1,17 @@
 /**
  * Characterisation: the provider quota segment's exact bytes.
  *
- * Every row is a golden captured from the three pre-refactor renderers
- * (`renderQuotaSegment` for z.ai and MiniMax, `renderGoUsageSegment` for
- * OpenCode Go) before the provider-parameterised quota mechanism landed in
- * `extensions/lib/quota.ts`. The rows exist so the refactor is provably
- * behaviour-preserving (WO-2026-065 acceptance row 10): they pass unchanged
- * before and after, and any byte that moves is a rendered-output change.
+ * The `GOLDEN` rows are byte goldens captured from the three pre-refactor
+ * renderers (`renderQuotaSegment` for z.ai, MiniMax and minimax-cn,
+ * `renderGoUsageSegment` for OpenCode Go) before the provider-parameterised
+ * quota mechanism landed in `extensions/lib/quota.ts`. They exist so the
+ * refactor is provably behaviour-preserving (WO-2026-065 acceptance row 10):
+ * they pass unchanged at the pre-refactor commit, the refactor commit and the
+ * tip, and any byte that moves is a rendered-output change.
+ *
+ * The `descriptor table wiring` block below is not a golden: it drives each
+ * descriptor's own `parse` and provider tag, which the goldens (which go
+ * through `fromQuotaData`) cannot see.
  *
  * The reset instants are relative to `BASE` rather than absolute, because the
  * z.ai/MiniMax renderers derive reset durations from the real clock
