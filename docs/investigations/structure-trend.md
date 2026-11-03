@@ -643,3 +643,32 @@ the delivery record in `mailbox.ts`'s new `_state/` layer.
 peer-link's consume path (007 channel, this order); both added around the same delivery
 point (`sendUserMessage` + ack). Not a duplicate mechanism, but the seam to watch if a
 third lands there.
+
+## Snapshot 2026-11-03 — WO-2026-066 (liveness-gated mail, one predicate, loud init)
+
+**growth.** Production +25/−18 across three files: `extensions/peer-link/mailbox.ts`
+410 → 422 (the new `onlineExcept` plus its doc), `extensions/peer-link/index.ts`
+597 → 601 (the init catch now builds and rethrows an error; the broadcast arm is three
+lines shorter), `extensions/peer-link/model-error-mail.ts` 232 → 237 (`recipients()` gains
+the liveness test and its comment). No new extraction candidate: `recipients()` remains two
+arms over one predicate, and the init catch is five lines. Tests +456 across two files
+(`tests/peer-link.test.ts` 631 → 837, `tests/model-error-mail.test.ts` 578 → 792), with no
+new harness: the wired rows drive `SessionManager.inMemory` through the stub the mail rows
+already had, and the init rows reuse the fake-pi/`peerCtx` stubs.
+
+**unification.** One predicate replaces two copies. `onlineExcept` in `mailbox.ts` is now
+the only "online peers other than self" in the extension: `peer_send`'s broadcast arm and
+the mail's recipient fallback both call it, and the self exclusion that the self-record row
+pins lives only there. The extraction had to write its own characterization rows first —
+the three `peer_send` broadcast rows the order named did not exist (`rg -n 'broadcast'
+tests/peer-link.test.ts` → 0 matches at `e133b31`), so `b675a0d` pinned them and they pass
+unchanged through `33d7cd4`. Two files changed together for the shared call
+(`index.ts`, `model-error-mail.ts`): the shared-module shape, not a parallel mechanism.
+
+**watch (carried).** `extensions/peer-link/index.ts` is the third landing to touch the
+extension's delivery/lifecycle seam (`007` channel, `065` mail handler, `066` broadcast arm
+and `session_start` catch). This landing's edits there are two small ones in different
+functions and they removed duplication rather than adding it, so no strike and the register
+is unchanged: the overflow row in `extensions/lib/quota.ts` remains the only open one, and
+this order's own residue (the duplicate predicate) closes. The seam stays on the watch list
+for a fourth landing that adds mechanism there.

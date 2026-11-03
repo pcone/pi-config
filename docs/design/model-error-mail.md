@@ -7,7 +7,8 @@ nothing in the transcript is the model's to write.
 Code: `extensions/peer-link/model-error-mail.ts` (classifier, throttle,
 recipient, envelope text), wired in `extensions/peer-link/index.ts`.
 Rulings: `decisions/external-tools/008-model-error-mail.md`. Order:
-`work-orders/WO-2026-065-model-error-mail.md`.
+`work-orders/WO-2026-065-model-error-mail.md`; liveness gate and loud init:
+`work-orders/WO-2026-066-recipient-liveness.md`.
 
 ## Trigger
 
@@ -63,34 +64,42 @@ One mail per session per 30 minutes.
   when the dropped window opened. It then resets.
 - A non-error assistant message ends the stall: the window and the counter
   clear, so a new stall after a good turn mails immediately.
-- An unsendable recipient (no correspondent, no online peer) warns once and
-  mails nothing. The window does not open, so the next failure after a
-  recipient appears still mails.
+- No peer is online now, a recorded correspondent with a dead heartbeat
+  included: one warn, nothing mailed. The window does not open, so the next
+  failure after a peer comes online still mails.
 
 State is in-process. A window in progress does not survive a restart; the
 recipient does (below).
 
-## Recipient — the last correspondent
+## Recipient — the last correspondent, while it is online
 
 The peer that most recently sent this session an envelope: the `from` of the
 newest delivered envelope, written to `_state/<peer>.json` in the mailbox so a
-restart keeps it. When no peer has ever mailed this session, the mail is
-broadcast to the peers online now. No config key, no environment variable, no
-hardcoded id.
+restart keeps it. The mail goes to that peer when its heartbeat says it is
+online, and otherwise to every peer online now. With no peer online, nothing is
+sent. No config key, no environment variable, no hardcoded id.
+
+The gate is the ruling (owner 2026-11-03, decision external-tools/008: "online,
+else broadcast"). The correspondent can be gone by the next failure — a subagent
+heartbeats as a real peer, and its heartbeat ages out when it exits — and mail
+to a dead peer queues in an inbox nobody reads: the silence this feature exists
+to break, one peer over. Liveness is the same read the send gate uses,
+`listPeers(...).online` over the heartbeat files. `recipients()` in
+`extensions/peer-link/model-error-mail.ts` is the rule.
+
+Recording is unchanged by the gate: the sender of a delivered envelope is
+recorded whether or not it is online, because the record says who wrote last,
+not who can receive.
 
 This session is never a recipient, even when the record names it: a session
 that mailed itself would otherwise become its own correspondent, and the model
 error would come back as an injected user message — the one thing the mail path
-must never cause.
+must never cause. `onlineExcept` in `mailbox.ts` owns the self exclusion for
+both recipient paths.
 
 "Delivered" means the extension's inbox scan injected it and acked it — an
 envelope read but not delivered is retried, not recorded. Two envelopes landing
 in the same scan window resolve in directory-read order, not by `sentAt`.
-
-The recorded peer can be gone before the next failure: a subagent heartbeats as
-a real peer and ages out when it exits. A mail to it queues in an inbox nobody
-reads — the silence this feature exists to break, one peer over. Preferring a
-live peer over the recorded one is a change to the ruling, not to this code.
 
 ## The mail
 

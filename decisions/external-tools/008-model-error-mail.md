@@ -86,3 +86,27 @@ interval, as before); a `kimi-coding` session adds one request per interval, mea
 
 **Rollback:** the mail half is one file plus a handler registration; the quota half is a
 descriptor entry per provider, and the refactor commit is byte-identical by test.
+
+## Outcome — the dead correspondent and the silent init (landed 2026-11-03, order WO-2026-066)
+
+The "online, else broadcast" ruling is now the code. `recipients()` in
+`extensions/peer-link/model-error-mail.ts` mails the recorded correspondent only
+while `listPeers(...).online` lists it, else every peer online now, else nothing;
+recording is unchanged (who wrote last, not who can receive). The self exclusion
+has one home, `onlineExcept` in `extensions/peer-link/mailbox.ts`, which
+`peer_send`'s broadcast calls too.
+
+- `b675a0d` — the three `peer_send` broadcast characterization rows the order
+  named. They did not exist; they pin the predicate before it moves.
+- `33d7cd4` — the preparatory refactor: `onlineExcept(peers, self)` extracted,
+  both callers changed, no behaviour change (the four named characterization rows
+  passed unchanged).
+- `e53b120` — the gate, with six rows driven through the wired extension over
+  heartbeat and inbox files, each asserting which inboxes hold an envelope.
+- `bc50721` — the loud init: `session_start` notifies, then fails the emit with
+  `peer-link init failed:` in the message and the original error as `cause`.
+  Rows 7–9 assert the rejected emit, no heartbeat, no interval, no delivery.
+
+Design: `docs/design/model-error-mail.md` § Recipient. The init-side behaviour
+is stated in `README.md`'s peer-link entry; no `docs/design/peer-link.md`
+existed to update.
