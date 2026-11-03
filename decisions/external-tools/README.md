@@ -19,4 +19,4 @@ isn't re-litigated every time the tool trends on HN.
 | [007](007-peer-link-channel.md) | peer-link mail through an official Claude Code channel, which may start the session's turn | accepted |
 | [005](005-owner-asks-statusline.md) | Owner asks on the pi status bar and Claude Code statusline, counted from the pushed registry; `/asks` lists new first and marks seen | done |
 | [006](006-opencode-go-usage-footer.md) | OpenCode Go usage in the footer via the aggregate `/zen/go/v1/usage` endpoint; per-model burn stays client-side | done |
-| [008](008-model-error-mail.md) | A model request's HTTP 4XX/5XX mails a peer, throttled; Kimi usage joins the footer | accepted |
+| [008](008-model-error-mail.md) | A model request's HTTP 4XX/5XX mails a peer, throttled; Kimi usage joins the footer | done |

@@ -593,3 +593,32 @@ and related (060 re-bases on 057's contract) — no flag, stays on the watch lis
 cross-cutting pattern in the landing: hidden post-branch conventions (the spawn-env/
 hermeticity gate) reddened 14 branch rows until the suites adopted main's idiom — the cost
 was discovery, not design.
+
+## Snapshot 2026-11-03 — WO-2026-065 (model error mail, Kimi quota slot)
+
+**growth.** `extensions/footer-session-id.ts` 1652 → 1104 lines (−624/+76): the three
+per-provider quota blocks are gone. `extensions/lib/quota.ts` is new at 696 lines,
+holding what moved (three fetchers, three parsers, three render segments, one warn-once
+and one key memo) plus the descriptor table and the Kimi parser. Production net: +1072/−624
+across five files, of which the mail half is +220 and the quota mechanism +696 — a fourth
+provider now costs ~70 lines in the table instead of a fourth copy. No new extraction
+candidate: the two patches the refactor left are the pre-refactor entry points
+(`renderQuotaSegment`, `renderGoUsageSegment`), 8-line adapters onto the one renderer, kept
+because existing suites import them.
+
+**unification.** One mechanism replaces three: `extensions/lib/quota.ts` is now the only
+fetcher, the only warn-once, the only segment renderer and the only place a snapshot's
+provider is attached (`snapshotFor`) — which is what let the two MiniMax hosts share one
+parser without a second renderer. The footer's cache went from two slots to one and its
+key memo from three to one. `snapshotFor` closes the class of bug the old code invited
+(a parser handing back another provider's numbers) by construction rather than by test.
+
+No strikes. Two files were touched by both halves (`README.md`, `footer-session-id.ts`
+exports) — documentation and re-exports, not mechanism. The mail half reuses peer-link's
+existing envelope path and adds no mechanism to it: `sendEnvelope` + `newEnvelope`, with
+the delivery record in `mailbox.ts`'s new `_state/` layer.
+
+**watch.** `extensions/peer-link/index.ts` is now the second landing in a row to touch
+peer-link's consume path (007 channel, this order); both added around the same delivery
+point (`sendUserMessage` + ack). Not a duplicate mechanism, but the seam to watch if a
+third lands there.
