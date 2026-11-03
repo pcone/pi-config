@@ -14,7 +14,9 @@ What that settles:
 - The mail is throttled so a run of failures does not flood the recipient.
 - The footer gains Kimi (`kimi-coding`) usage, as 006 did for OpenCode Go.
 
-Not ruled, for the order to settle or raise as owner questions: the recipient, the throttle's shape and window, and whether non-HTTP failures (aborts, connection errors) count. The recorder reads "4XX/5XX" as excluding user aborts.
+Not ruled, for the order to settle or raise as owner questions: the throttle's shape and window, and whether non-HTTP failures (aborts, connection errors) count. The recorder reads "4XX/5XX" as excluding user aborts.
+
+**Ruling (owner, 2026-11-03, in Claude session 8f90746f), the recipient.** Asked who receives the mail, he picked "Last correspondent (Recommended)": the peer that most recently sent this session an envelope; when no peer ever has, a broadcast to the online peers. No config key.
 
 **Why.** A seat on a capped plan stops silently. The supervising seat learns of it only by reading the session log, and only when it is prompted to look.
 
