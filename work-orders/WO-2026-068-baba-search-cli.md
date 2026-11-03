@@ -107,3 +107,42 @@ Rows 4, 5, 7, 8 need P2's live daemon; if it is not live, spawn it once at the s
 The standard schema. Additionally: both line counts for `index.ts` before/after; the warm-query wall time and the evidence that no python process was spawned by the CLI; the characterization rows' pass at the refactor commit with that commit's id; and the `ls -l` output for the symlink.
 
 `review_cap_reached` is hard: **3 rounds maximum**. A fourth round is refused and escalated to the orchestrator, not entered.
+
+---
+
+### BLOCKED 2026-11-03 — three premises false, and repo topology decides it
+
+Dispatched off `0130a0c`, nothing landed on the branch. Three owner questions, all
+created by this order's text rather than by the code:
+
+- **Q1 (topology). `extensions/baba` is a tracked symlink, not a directory.**
+  `git ls-files -s extensions/baba` → `120000 … extensions/baba` →
+  `/Users/scott/Developer/baba-pi`, whose only source file is `src/index.ts`. So
+  `extensions/baba/bin/baba-search.ts` cannot be added to this repo at all
+  (`fatal: pathspec … is beyond a symbolic link`), and the order's own path was
+  unsatisfiable. Options: (A) two-repo landing — extract + CLI + tests in `baba-pi`, with
+  pi-config keeping the symlink and the skill; (B) move the source into pi-config and drop
+  the symlink; (C) a pi-config CLI that speaks the socket directly — rejected by 009's
+  "reuse the client, don't copy it".
+- **Q2 (public surface). `baba-pi/src/index.ts` exports exactly one symbol**
+  (`rg -n '^export'` → `561:export default function babaExtension`). Characterization rows
+  that run *before* the extract must import `resolveMainRoot`, `daemonRequest` and
+  `formatResults`, which means new exports. Options: (A) export them; (B) a test-only
+  re-export shim in `baba-pi`; (C) characterize through the registered tool via the
+  factory, which cannot pass unchanged across the extract.
+- **Q3 (the skill's home).** 009 attributes `pi-config/skills/baba-search/` to the
+  recorder, not to the owner ruling. Under Q1 option A the skill stays here and the CLI
+  lives in `baba-pi`; under B both are here. Whichever is chosen decides the command line
+  the skill documents.
+
+**This order's own defects, on the record.** The path was taken from 009's prose without
+checking the tree (`git ls-files -s` would have shown the symlink immediately). Two
+prohibition probes were vacuous: `rg` skips symlinks, so `rg -n 'daemon.sock'
+extensions/` exits 1 with no output whatever the code does. A control that cannot fail is
+not a control; the check is `rg -nL` or `git ls-tree`.
+
+**Ready to resume.** Client characterization rows are drafted and green (8 rows, per-row
+mutation table: 6 mutations, each reddening its own row) at
+`~/Developer/wt/wo068-drafts/`, outside any repo. Cold start measured at 77 s on a drifted
+index; warm queries 116–210 ms against the live daemon; one long-lived embedder child, no
+per-query load. CLI and skill rows are specified but unwritten.
