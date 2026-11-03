@@ -292,10 +292,10 @@ touches a site this order fenced off or changes a byte this order had to hold st
 - **Overflow unification.** `QuotaSnapshot.overflow` keeps z.ai/MiniMax *clipping* the
   first part while Go and Kimi *ellipsise* it — each provider's pre-refactor behaviour,
   held byte-identical by `tests/footer-quota-characterisation.test.ts` (acceptance row 10).
-  Unify on one policy and update those goldens. Carrier: the next change that may move
-  rendered quota bytes (any order touching `extensions/lib/quota.ts`).
-- **Broadcast predicate.** "online peers other than self" is written twice —
-  `extensions/peer-link/index.ts` (`peer_send`'s broadcast) and
-  `extensions/peer-link/model-error-mail.ts` (`recipients()`). Extract one helper into
-  `mailbox.ts` and call it from both. Carrier: the next order that opens the peer-link
-  send path (this one's prohibitions forbid editing delivery/steering/queueing).
+  Unify on one policy and update those goldens. Carrier: the
+  [refactor-needed register](../docs/investigations/structure-trend.md#refactor-needed-register)
+  row for `extensions/lib/quota.ts` overflow policy — no order is scheduled, so the row
+  holds it.
+- **Broadcast predicate — closed by WO-2026-066.** "online peers other than self" was
+  written twice, in `peer_send`'s broadcast and in `model-error-mail.ts`'s `recipients()`;
+  the order extracts it into `mailbox.ts` as one predicate both call.
