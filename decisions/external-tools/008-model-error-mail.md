@@ -33,6 +33,12 @@ correspondent from both arms: the mail goes to the pi peers online now, or nowhe
 still receive the mail is open, raised for an owner ruling through the planning seat
 (WO-2026-066 follow-up); it is not settled by this record.
 
+**Superseded in part (owner 2026-11-03, in Claude session 8f90746f), a Claude Code correspondent.**
+Asked whether a Claude Code correspondent should still receive the mail, he picked "Yes, deliver to
+it (Recommended)": a registered `external: true` correspondent is deliverable in the correspondent
+arm, and its mail queues for that session's next prompt (003). The broadcast arm still reaches only
+online pi peers.
+
 ## Outcome (landed 2026-11-03, order WO-2026-065)
 
 Both halves landed, on four commits:
