@@ -646,15 +646,17 @@ third lands there.
 
 ## Snapshot 2026-11-03 — WO-2026-066 (liveness-gated mail, one predicate, loud init)
 
-**growth.** Production +25/−18 across three files: `extensions/peer-link/mailbox.ts`
-410 → 422 (the new `onlineExcept` plus its doc), `extensions/peer-link/index.ts`
-597 → 601 (the init catch now builds and rethrows an error; the broadcast arm is three
-lines shorter), `extensions/peer-link/model-error-mail.ts` 232 → 237 (`recipients()` gains
-the liveness test and its comment). No new extraction candidate: `recipients()` remains two
-arms over one predicate, and the init catch is five lines. Tests +456 across two files
-(`tests/peer-link.test.ts` 631 → 837, `tests/model-error-mail.test.ts` 578 → 792), with no
-new harness: the wired rows drive `SessionManager.inMemory` through the stub the mail rows
-already had, and the init rows reuse the fake-pi/`peerCtx` stubs.
+**growth.** Production +35/−14 across three files (`git diff --numstat e133b31..HEAD --
+extensions/`): `extensions/peer-link/mailbox.ts` 410 → 422 (the new `onlineExcept` plus its
+doc), `extensions/peer-link/index.ts` 597 → 601 (the init catch now builds and rethrows an
+error; the broadcast arm is three lines shorter), `extensions/peer-link/model-error-mail.ts`
+232 → 237 (`recipients()` gains the liveness test; the redundant self term is gone). No new
+extraction candidate: `recipients()` remains two arms over one predicate, and the init catch
+is five lines. Tests +463/−66 across two files (`tests/peer-link.test.ts` 631 → 837,
+`tests/model-error-mail.test.ts` 578 → 769): the wired rows drive `SessionManager.inMemory`
+and the peer-link rows the fake-pi stub, and the review rework collapsed the two
+near-identical wired-extension stubs into one `wiredExtension` helper rather than landing a
+second.
 
 **unification.** One predicate replaces two copies. `onlineExcept` in `mailbox.ts` is now
 the only "online peers other than self" in the extension: `peer_send`'s broadcast arm and

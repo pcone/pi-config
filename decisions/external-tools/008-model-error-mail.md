@@ -103,9 +103,12 @@ has one home, `onlineExcept` in `extensions/peer-link/mailbox.ts`, which
   passed unchanged).
 - `e53b120` — the gate, with six rows driven through the wired extension over
   heartbeat and inbox files, each asserting which inboxes hold an envelope.
-- `bc50721` — the loud init: `session_start` notifies, then fails the emit with
-  `peer-link init failed:` in the message and the original error as `cause`.
-  Rows 7–9 assert the rejected emit, no heartbeat, no interval, no delivery.
+- `bc50721` — the loud init: `session_start` notifies, then throws
+  `peer-link init failed: …` with the original error as `cause`. Row 7 asserts the
+  handler's rejection, rows 8–9 that nothing starts before it. pi's runner still
+  catches a handler throw into its extension-error channel, so the session continues
+  and the failure now reaches that channel instead of only the notify the test
+  discarded.
 
 Design: `docs/design/model-error-mail.md` § Recipient. The init-side behaviour
 is stated in `README.md`'s peer-link entry; no `docs/design/peer-link.md`

@@ -87,6 +87,10 @@ to break, one peer over. Liveness is the same read the send gate uses,
 `listPeers(...).online` over the heartbeat files. `recipients()` in
 `extensions/peer-link/model-error-mail.ts` is the rule.
 
+An external peer (a Claude Code seat) is never online — its inbox is read only
+when its user prompts (`docs/design/peer-link-external.md`) — so it is never a
+recipient: both arms list `online` peers only.
+
 Recording is unchanged by the gate: the sender of a delivered envelope is
 recorded whether or not it is online, because the record says who wrote last,
 not who can receive.
