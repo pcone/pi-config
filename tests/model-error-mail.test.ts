@@ -510,7 +510,8 @@ describe("recipient liveness", () => {
 			// The scan delivered the envelope at session_start, so it recorded
 			// this session's correspondent. This fixture's persisted record holds the
 			// same name (the delivery writes both), so the row pins the correspondent
-			// arm; the precedence row below pins which source wins.
+			// arm; no row pins which of the two sources wins, because only a failed
+			// state write separates them.
 			expect(w.injected).toHaveLength(1);
 			w.heartbeat("corr-seat");
 			w.heartbeat("bystander");
@@ -703,7 +704,9 @@ describe("the mail never enters this session's branch", () => {
 			},
 		});
 		try {
+			// Both online, so a record is what keeps the second one out of the mail.
 			wired.heartbeat("oracle-seat");
+			wired.heartbeat("bystander");
 			await wired.emitMessageEnd({
 				role: "assistant",
 				content: [],
@@ -715,9 +718,11 @@ describe("the mail never enters this session's branch", () => {
 				errorMessage: E_429,
 				timestamp: Date.now(),
 			});
-			// The delivered envelope's sender is now the mail's address.
+			// The delivered envelope's sender is now the mail's address — not a
+			// broadcast to whoever is online.
 			expect(readIncoming(wired.mailbox, "oracle-seat")).toHaveLength(1);
 			expect(readIncoming(wired.mailbox, "oracle-seat")[0]!.to).toBe("oracle-seat");
+			expect(readIncoming(wired.mailbox, "bystander")).toHaveLength(0);
 		} finally {
 			await wired.cleanup();
 		}

@@ -24,6 +24,15 @@ Not ruled, for the order to settle or raise as owner questions: the throttle's s
 
 **Constraint.** Delivery to a Claude Code peer stays prompt-driven (003): the mail queues for that session's next human prompt and starts no Claude turn.
 
+**Superseded in part (owner 2026-11-03, the dead-correspondent ruling above — the
+consequence is recorded here, not ruled here).** A model-error mail no longer reaches a
+Claude Code correspondent. External peers register `external: true` and are never online
+(`extensions/peer-link/mailbox.ts:233`), so the liveness gate excludes a Claude
+correspondent from both arms: the mail goes to the pi peers online now, or nowhere. The
+"starts no Claude turn" clause holds vacuously. Whether a Claude correspondent should
+still receive the mail is open, raised for an owner ruling through the planning seat
+(WO-2026-066 follow-up); it is not settled by this record.
+
 ## Outcome (landed 2026-11-03, order WO-2026-065)
 
 Both halves landed, on four commits:
@@ -105,10 +114,10 @@ has one home, `onlineExcept` in `extensions/peer-link/mailbox.ts`, which
   heartbeat and inbox files, each asserting which inboxes hold an envelope.
 - `bc50721` — the loud init: `session_start` notifies, then throws
   `peer-link init failed: …` with the original error as `cause`. Row 7 asserts the
-  handler's rejection, rows 8–9 that nothing starts before it. pi's runner still
-  catches a handler throw into its extension-error channel, so the session continues
-  and the failure now reaches that channel instead of only the notify the test
-  discarded.
+  handler's rejection, row 8 that nothing starts before it, row 9 that an ordinary
+  `session_start` still starts the runtime and delivers. pi's runner still catches a
+  handler throw into its extension-error channel, so the session continues and the
+  failure now reaches that channel instead of only the notify the test discarded.
 
 Design: `docs/design/model-error-mail.md` § Recipient. The init-side behaviour
 is stated in `README.md`'s peer-link entry; no `docs/design/peer-link.md`
