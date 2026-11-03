@@ -56,3 +56,7 @@ What it settles, in the recorder's reading of the recommendation he accepted:
 - The skill and its `~/.claude/skills` symlink are deleted once the server is registered and answers, so Claude has one way to search.
 
 Carrier: [WO-2026-069](../../work-orders/WO-2026-069-baba-mcp.md).
+
+**Ruled (owner, 2026-11-03, same session), cold-start progress.** WO-2026-069 stopped `PREMISE FALSIFIED`: during the cold start the daemon has no socket, and the spawn discards its stderr, so the client had nothing to forward. Scott picked "Tail daemon log (Recommended)": the spawn writes the daemon's stderr to `<repo>/.baba/daemon.log`, and `ensureDaemon` reports new lines through a status callback while it polls; the CLI prints them to stderr, the MCP server sends them as progress. Rejected: elapsed-time ticks (say nothing of what the daemon does); progress only after the socket binds (leaves the cold start silent).
+
+**Ruled (owner, 2026-11-03, same session), the server's repo root.** Claude Code's MCP docs do not state a stdio server's cwd; they document `CLAUDE_PROJECT_DIR` and `roots/list`. Scott picked "CLAUDE_PROJECT_DIR (Recommended)": the server resolves the repo from `CLAUDE_PROJECT_DIR` when set, else its cwd. Rejected: `roots/list` per call (a round trip per call and more code).

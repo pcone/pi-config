@@ -32,7 +32,7 @@ baba-pi gains a stdio MCP server exposing one `search` tool over the existing da
 
 - **P1.** The client's request path runs without the pi runtime: the CLI already proves it
   (`bin/baba-search.ts`). Probe: the CLI's imports.
-- **P2.** Claude Code launches a user-scope stdio server with the session's working directory as
+- **P2.** *(Falsified 2026-11-03 and ruled; see Amendment.)* Claude Code launches a user-scope stdio server with the session's working directory as
   cwd, so `resolveMainRoot(process.cwd())` finds the repo as the CLI does. Probe: cite the Claude
   Code MCP docs on the launch cwd. Do not start a Claude session to test it (no `claude -p`, no
   headless session); the planning seat verifies live at registration. If the docs say the cwd is
@@ -41,6 +41,25 @@ baba-pi gains a stdio MCP server exposing one `search` tool over the existing da
   (two `_onUpdate` progress calls). Probe: `git -C ~/Developer/baba-pi status --short`. Work in a
   separate worktree or clone of `pcone/baba-pi`; never write in that checkout. The planning seat
   pulls it after landing, preserving those lines.
+
+### Amendment 2026-11-03 (owner rulings, 009 § cold-start progress and § repo root)
+
+Supersedes the Mechanism's progress source and P2.
+
+- **Progress.** The spawn in `ensureDaemon` sends the daemon's stderr to `<repo>/.baba/daemon.log`
+  (opened for append, truncated at each spawn) instead of discarding it. `ensureDaemon` takes a
+  status callback and, on each poll, reports the log's new lines through it. The CLI writes them
+  to stderr; the MCP server sends each as a progress notification when the call carries a token.
+  A client that finds a daemon already starting (spawned by someone else) tails the same log.
+- **Root.** The server resolves the repo from `CLAUDE_PROJECT_DIR` when set, else `process.cwd()`.
+  The CLI keeps `process.cwd()`.
+- **Rows added:** (7) a fake daemon that writes startup lines to its stderr before binding: the
+  CLI's stderr carries them, and row 5's notifications carry them; (8) the server with
+  `CLAUDE_PROJECT_DIR` set to a repo and cwd outside any repo finds the repo; (9) the server source
+  imports its daemon functions from `src/client.ts` by name and neither imports `net`/`node:net`
+  nor builds a `.baba`/`daemon.sock` path.
+- **Price.** The tool description and baba-pi README state the measured cost: warm 0.53–0.66 s on
+  a ~700-file index; a first query after the tree changes re-indexes for 77–95 s.
 
 ### Preparatory refactor
 
@@ -107,7 +126,8 @@ The existing 25 rows pass unchanged.
 2. `claude mcp add --scope user baba -- /Users/scott/Developer/baba-pi/bin/baba-mcp.ts`; verify in
    the next session that `search` is listed and answers from `~/Developer/tfd`, and confirm P2's
    cwd.
-3. Delete `skills/baba-search` and `~/.claude/skills/baba-search`.
+3. After one real query answers through the registered server, delete `skills/baba-search` and
+   `~/.claude/skills/baba-search`.
 
 ### Completion report
 
