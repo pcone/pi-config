@@ -174,6 +174,24 @@ answer would be **no-go, do nothing**. The sequencing matters more than the verd
 upgrading first would silently arm the fleet-summary override before the ownership
 rule exists to arbitrate it.
 
+## §7 status (2026-11-04, WO-2026-071)
+
+The sequencing this section recommends was overtaken: the upgrade landed
+(1.3.0, then 1.4.0 on 2026-10-31T20:17) before step 1, and the hazard it warned
+about is real. The fleet override is **live on 1.4.0** and has been replacing
+checkpoint summaries since 2026-11-01, against the owner's 2026-10-31
+verbatim-summary ruling whose carrier order (WO-2026-061) is unmerged.
+`docs/investigations/pi-1.4-compaction-override-2026-11.md` has the runs and the
+production pairs. Two deltas for §4/§6, both probed there:
+
+- §6 step 4's `compact(…, sessionId)` fix is **not needed**: 1.4.0 attaches an
+  `x-opencode-session` uuidv7 at dispatch and opencode-go accepts it, so the
+  `MissingSessionID` 400 no longer reproduces.
+- Of the §4 in-scope items, only `compaction-model.ts`'s header/`env` shape is
+  still unported (`ProviderHeaders` is `Record<string, string | null>` against
+  `compact()`'s `Record<string, string>`), and it is latent —
+  `work-orders/WO-fleet-client-headers-env.md`, blocked on WO-2026-061 landing.
+
 ## Sources
 
 - <https://registry.npmjs.org/@earendil-works/pi-coding-agent> — `dist-tags.latest = 1.3.0`, publish dates, full version list
