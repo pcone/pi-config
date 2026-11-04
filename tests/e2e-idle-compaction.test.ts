@@ -31,11 +31,12 @@
  * The payload arrives in a prompt, not from a tool read, because a read cannot
  * clear the floor: the read tool truncates at 2000 lines / 50KB (~12.5k tokens
  * by chars/4). Measured 2026-11-03: one 902-line read left the session at
- * 16,931 tokens against the 20k floor, refused with "Nothing to compact
- * (session too small)". That is why this row reds and greens on identical code —
+ * 16,931 tokens by `getContextUsage()` — ~12.9k by the floor walk that decides
+ * the cut — against the 20k floor, refused with "Nothing to compact (session
+ * too small)". That is why this row reds and greens on identical code —
  * it passed whenever the model happened to page the file with `offset` and cross
  * the floor. The payload prompt is 92,179 characters, ~23.0k by chars/4, so it
- * clears the floor whatever the model does with tools.
+ * clears the floor whatever the model does — the session has no tools.
  *
  * A red must name its cause, so `stubUI` records every `notify` with its level
  * and both failure-capable rows put the recorded levels, texts and the session's
@@ -209,8 +210,8 @@ async function waitForCompaction(harness: Harness): Promise<WaitResult> {
 	return result("deadline");
 }
 
-/** 57.6 chars per line: ~14.4 tokens by pi's chars/4 floor estimator, ~18 by
- *  the provider's tokenizer. Fixtures below are sized on the floor estimator. */
+/** ~57 chars per line: ~14.4 tokens by pi's chars/4 floor estimator, ~18 by the
+ *  provider's tokenizer. Fixtures below are sized on the floor estimator. */
 function fillerLines(count: number): string {
 	return Array.from(
 		{ length: count },
@@ -223,7 +224,7 @@ describe("idle compaction (live session)", () => {
 		const harness = await startSession();
 		try {
 			// 1600 lines = 92,179 chars ≈ 23.0k tokens by the floor estimator: 15%
-			// over pi's 20k floor, and independent of whether the model pages a file.
+			// over pi's 20k floor, and independent of the model (no tools exist).
 			const payload = fillerLines(1600);
 			await harness.session.prompt("Reply with just OK.");
 			await settle(harness.session);
@@ -242,7 +243,8 @@ describe("idle compaction (live session)", () => {
 			// the floor walk's chars/4 figure, which is what actually decides the cut.
 			expect(
 				marker.data.tokens,
-				`the marker recorded ${marker.data.tokens} tokens, at or under pi's ${KEEP_RECENT_TOKENS}-token keep floor${why}`,
+				`the marker recorded ${marker.data.tokens} tokens (provider-reported) under pi's ${KEEP_RECENT_TOKENS}-token keep floor; ` +
+					`the fixture clears that floor by chars/4, so this means it shrank${why}`,
 			).toBeGreaterThan(KEEP_RECENT_TOKENS);
 			expect(marker.data.percent, `percent=${marker.data.percent}${why}`).toBeGreaterThan(0);
 			expect(marker.data.idleMinutes, `idleMinutes=${marker.data.idleMinutes}${why}`).toBeGreaterThanOrEqual(0);
@@ -276,6 +278,11 @@ describe("idle compaction (live session)", () => {
 			// row must red rather than quietly stop exercising the refusal.
 			expect(wait.compaction, `a compaction landed, so the fixture cleared the floor${why}`).toBeFalsy();
 			expect(refusal, `pi did not refuse the compaction (wait ended on: ${wait.endedOn})${why}`).toBeTruthy();
+			// The wait must end on the notification, not on the deadline: that break is
+			// what makes a refusal red in ~2 s instead of ~180 s.
+			expect(wait.endedOn, `the wait ended on ${wait.elapsedMs}ms without breaking on the refusal${why}`).toBe(
+				"error notification",
+			);
 			// The deliverable is the message, so pin both halves of it by literal: the
 			// reason the extension reported, and the transcript shape that separates
 			// "never fired" from "pi refused".
