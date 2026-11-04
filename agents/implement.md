@@ -155,8 +155,10 @@ Each reviewer's task must include:
 (f) your assumptions, your `deviations_from_spec` items, and any
     issues encountered during implementation.
 
-Give the work order's path, and quote (a) as the work order says it —
-never your summary. List each item as a plain fact (what the order
+Give the work order's path in the reviewer's task text, never as
+`workOrderPath`: a reviewer never owns an order, so a reviewer spawn that
+sets it is recorded as its own dispatch. Quote (a) as the work order says
+it — never your summary. List each item as a plain fact (what the order
 specified, what landed). Never ask a reviewer to judge whether a
 departure is justified: that is an owner ruling (APPEND_SYSTEM § Spec
 authority), and a reviewer who finds one rejects it.
