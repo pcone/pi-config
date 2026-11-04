@@ -15,6 +15,14 @@ date: 2026-10-01
 
 **Why Flash and not Pro (explicit):** The user's read is that BenchLM numbers and anecdotal human feedback disagree for this series, so *Pro > Flash* is a hypothesis, not a premise. Flash's BenchLM composite (66.4) is within noise of DeepSeek's (64.6) — it is the cheap near-peer, and if it clears the quality bar it is the win. Pro (75.5 composite, AA 46.3, $0.41–0.44/$0.83–0.87) is the fallback only if Flash fails and its price is separately justified.
 
+## Superseded (2026-11-04)
+
+The MiMo tier this experiment tested did not survive. Decision 020 moved the review seats to
+`glm-5.3-flash` and 041 moved them to OpenRouter's Z.AI route on the same model, so the seats
+this record describes no longer exist. What held is the axis: the reviewer tier stays a
+different lab from the DeepSeek implementer. `APPEND_SYSTEM.md`'s note now states that, citing
+020/041, and no longer cites this record.
+
 ## Protocol
 
 Window: the next 2–3 code-changing work orders plus any plan reviews that trigger. The review gate is unchanged, so data arrives automatically; all three seats consume it.

@@ -155,7 +155,7 @@ Growth findings are delta-based, never absolute thresholds. A repo may set a sma
 
 **Orchestrator nesting is capped at one level.** An orchestrator may dispatch child orchestrators only for chunks large enough to deserve their own orchestrator context. Sequential chunks qualify exactly as much as parallel ones, because nesting buys context isolation. A nested orchestrator delegates to implementers. The harness refuses deeper spawning (`PI_SUBAGENT_DEPTH`). If the refusal fires, flatten the tree into work orders instead of working around it.
 
-**Review seats are experimental (decision 023).** All three reviewers run MiMo V2.6 Flash while the implementer runs DeepSeek. Don't rubber-stamp their verdicts. Check cited evidence against the diff, watch for missed defects and false-positive pushback, and surface findings that should feed the keep-Flash / Pro / revert-tier call. Full protocol: `/Users/scott/Developer/pi-config/decisions/subagents/023-mimo-decorrelated-reviewer-experiment.md` (this prompt is shared across repos, hence the absolute path). Delete this note when 023 resolves.
+**The review tier is a different lab from the implementer (decisions/subagents/020, 041).** Reviewers run `glm-5.3-flash` while the implementer runs DeepSeek, so their misses are not the generator's misses — and their false positives cost a round. Check cited evidence against the diff, watch for missed defects and false-positive pushback, and surface findings that should feed the seat call. Decision 023's MiMo trial was overtaken by 020/041: the decorrelation axis held, the specific tier did not.
 
 ## Sessions
 
