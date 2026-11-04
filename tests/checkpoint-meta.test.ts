@@ -109,6 +109,29 @@ describe("captureGitBinding: real git", () => {
 		expect(binding!.head).toBe(git(repo, "rev-parse", "HEAD"));
 		expect(binding!.branch).toBe("main");
 		expect(binding!.dirty).toBe(false);
+		// A scratch repo has no upstream: a stated fact, not a capture failure.
+		expect(binding!.aheadBehind).toBeNull();
+	}, ROW_TIMEOUT_MS);
+
+	it("counts commits ahead of the upstream, not behind it", async () => {
+		// `rev-list --left-right @{upstream}...HEAD` prints "<behind>\t<ahead>";
+		// one local commit against a pushed base pins that order (a swap reads
+		// behind: 1) without needing a second clone for the behind case.
+		const withUpstream = tmp("upstream");
+		const remote = tmp("remote");
+		git(remote, "init", "-q", "--bare", "-b", "main");
+		git(withUpstream, "init", "-q", "-b", "main");
+		writeFileSync(join(withUpstream, "a.txt"), "a\n");
+		git(withUpstream, "add", "-A");
+		git(withUpstream, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base");
+		git(withUpstream, "remote", "add", "origin", remote);
+		git(withUpstream, "push", "-q", "-u", "origin", "main");
+		writeFileSync(join(withUpstream, "b.txt"), "b\n");
+		git(withUpstream, "add", "-A");
+		git(withUpstream, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "ahead");
+
+		const binding = await captureGitBinding(withUpstream);
+		expect(binding!.aheadBehind).toEqual({ ahead: 1, behind: 0 });
 	}, ROW_TIMEOUT_MS);
 });
 
@@ -132,7 +155,12 @@ describe("captureGitBinding: hung git", () => {
 		expect(binding).toBeNull();
 		// The shim answered all three calls: had the PATH prepend not reached
 		// execFile, real git would have answered and this would be non-null.
-		expect(readCalls(shim.calls)).toEqual(["rev-parse --abbrev-ref HEAD", "rev-parse HEAD", "status --porcelain"]);
+		expect(readCalls(shim.calls)).toEqual([
+			"rev-list --count --left-right @{upstream}...HEAD",
+			"rev-parse --abbrev-ref HEAD",
+			"rev-parse HEAD",
+			"status --porcelain",
+		]);
 		// And it hung rather than failing fast: a shim that exits early would
 		// resolve null without ever exercising the timeout.
 		expect(elapsed).toBeGreaterThanOrEqual(GIT_TIMEOUT_MS * 0.75);

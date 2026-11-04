@@ -1,9 +1,11 @@
 /**
  * Compaction Model Extension
  *
- * Forces /compact and auto-compaction to use the fleet model at `:low`
+ * Forces `/compact` and auto-compaction to use the fleet model at `:low`
  * effort (decision 022) while keeping every other aspect of compaction
- * identical to the default.
+ * identical to the default. Checkpoint compactions are not its business: it
+ * yields on the `[CHECKPOINT]` marker so the summary `checkpoint.ts` composed is
+ * the one stored (owner 2026-10-31, `decisions/checkpoint/005`).
  *
  * Why force the model: the active session model can be switched mid-session,
  * and compaction should always run on the cheap fleet seat rather than
@@ -16,20 +18,29 @@
  * table-driven from extensions/lib/fleet-model.ts.
  *
  * If the model cannot be resolved or auth fails, falls through to pi's
- * default compaction behavior.
+ * default compaction behavior. A fleet call that fails is reported at `error`:
+ * a silent failure is not a summary-ownership policy.
  */
 
 import { compact } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CHECKPOINT_MARKER } from "./lib/checkpoint-marker.ts";
 import { FLEET_MODEL, FLEET_MODEL_SPEC, FLEET_PROVIDER } from "./lib/fleet-model.ts";
+import { safeNotify } from "./lib/safe-notify.ts";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {
 		const { preparation, customInstructions, signal } = event;
 
+		// A checkpoint compaction's summary is the text checkpoint.ts composed
+		// (owner 2026-10-31, decisions/checkpoint/005). Yield before resolving a
+		// model, so ownership is this predicate and not a fleet call's outcome.
+		if (customInstructions?.includes(CHECKPOINT_MARKER)) return;
+
 		const model = ctx.modelRegistry.find(FLEET_PROVIDER, FLEET_MODEL);
 		if (!model) {
-			ctx.ui.notify(
+			safeNotify(
+				ctx,
 				`Compaction model ${FLEET_MODEL_SPEC} not found — using default compaction`,
 				"warning",
 			);
@@ -39,7 +50,7 @@ export default function (pi: ExtensionAPI) {
 		// Resolve auth for the compaction model
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok) {
-			ctx.ui.notify(`Compaction auth failed: ${auth.error}`, "warning");
+			safeNotify(ctx, `Compaction auth failed: ${auth.error}`, "warning");
 			return;
 		}
 
@@ -61,7 +72,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`Compaction with ${FLEET_MODEL} failed: ${message}`, "error");
+			safeNotify(ctx, `Compaction with ${FLEET_MODEL_SPEC} failed: ${message}`, "error");
 			return;
 		}
 	});

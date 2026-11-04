@@ -59,9 +59,9 @@ must not claim any restore happened; a superseded claim keeps its original text 
 note, not a rewrite.
 
 **Files expected to change**:
-- `decisions/checkpoint/005-9925257-removals.md` (next free number at dispatch — `004` is the
-  audit record; branch `summary-ownership`'s `003-summary-ownership.md` renumbers above `004` when
-  it lands, so re-read the directory before writing) — the drift record: what `9925257` was, what
+- `decisions/checkpoint/006-9925257-removals.md` (next free number at dispatch — `005` went to
+  the summary-ownership ruling on 2026-11-04, so re-read the directory before writing) — the
+  drift record: what `9925257` was, what
   it removed (with `4611f42` as before-evidence), why no record existed at the time, the
   disposition table, and forward links to any restore orders.
 - `decisions/checkpoint/README.md` — the index row.

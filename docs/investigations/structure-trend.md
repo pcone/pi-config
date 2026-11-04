@@ -16,8 +16,40 @@ refactor lands.
 | area | strikes (landing or refusal) | state | refactor |
 |---|---|---|---|
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
-| `extensions/checkpoint.ts` growth | 1 (2026-10-21) | **resolved 2026-10-21 by WO-2026-057** — the named extraction landed (901 → 818 lines; git/token helpers now in `extensions/lib/checkpoint-meta.ts`) | done |
+| `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike. Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal). An orchestrator reading the rule as "two landings ever" closes the area now | the two `execute` preambles (`checkpoint.ts:784-860`, `:930-946`) into one helper |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
+
+## 2026-11-04 — chunk: WO-2026-073 summary-ownership integration (061 + 062 merged)
+
+**growth.** `extensions/checkpoint.ts` 994 → 1150 (+156), `extensions/compaction-model.ts`
+68 → 79 (+11: the predicate, and the notify guard folded onto `lib/safe-notify.ts` in place of
+a local copy), new `extensions/lib/checkpoint-summary.ts` (169),
+`tests/summary-ownership.test.ts` 600 → 800 (15 rows). Counts measured at the landed tip. 062's own delta on `checkpoint.ts` was
++221/−65; the net is smaller because main's wait surface and 062's composition share the body
+that grew. The new half lives in `lib/` rather than in `checkpoint.ts` itself, which is the
+split 062's order asked for: the composition is one `composeSummary([...])` shape at three sites
+(`checkpoint.ts:687`, `:820`, `:976`) and the machine block one `renderMachineBlock` call, so no
+function gained a branch structure.
+`extensions/checkpoint.ts` is the third-largest non-test source file (`rg`-counted:
+`subagent-async/index.ts` 4620, `watch-session-v2.ts` 1675, then 1150). One open strike on
+`extensions/checkpoint.ts` growth — the 2026-10-21 strike was resolved by WO-2026-057
+(901 → 818), so this landing starts the count again rather than closing the area. Candidate
+extraction if a third lands: the two tool `execute` bodies still repeat their
+validation → continuation → in-flight → archive preamble (`checkpoint.ts:784-860`,
+`checkpoint_fork`'s at `:930-1000`).
+
+**unification.** Two of the three carriers the 2026-10-31 entry named are closed by this merge:
+
+- the `[CHECKPOINT]` literal — `rg -n '"\[CHECKPOINT\]"' extensions/` → 1,
+  `extensions/lib/checkpoint-marker.ts:8`, imported by `checkpoint.ts` and `compaction-model.ts`.
+- the notify guard — `compaction-model.ts`'s own `notify()` is gone; it imports
+  `extensions/lib/safe-notify.ts:24`, the helper main landed after 061's base (`fd3ee99` has no
+  such file), so the merge was the point to fold it.
+
+Still open, unchanged: the captured-handler-table harness duplicated between
+`tests/summary-ownership.test.ts` and `tests/e2e-checkpoint.test.ts`. Carrier: the extraction is
+not scheduled, so this entry is the carrier — it lands with whichever order next edits both
+harnesses.
 
 ## 2026-11-03 — chunk: WO-2026-068 baba-search CLI
 
@@ -53,6 +85,26 @@ the single outbound path in `peer-link` (1 `sendEnvelope` call site). Files
 touched by the landing: `checkpoint.ts`, `waits.ts`, `subagent-state.ts`,
 `peer-link/index.ts`, `subagent-async/index.ts` — three of those only to register
 a derived source or move a test hook, which is the shape the order asked for.
+
+## 2026-10-31 — chunk: WO-2026-061 summary-ownership dispatch
+
+**growth.** `extensions/compaction-model.ts` 70 → 90 lines: one predicate plus one `notify`
+guard; no function grew, no extraction candidate appeared. New
+`extensions/lib/checkpoint-marker.ts` (9 lines) holds the `[CHECKPOINT]` literal. New
+`tests/summary-ownership.test.ts` (600 lines, 12 rows: real handlers, module-seam
+`compact()` mock). No strikes.
+
+**unification.** Three copies of one idea remain, each out of this order's reach because the
+other copy lives in a file another order owns or forbids changing:
+- notify guard — `extensions/compaction-model.ts:34-40` repeats `extensions/checkpoint.ts`'s
+  inline `try/catch` notify sites (`:461`, `:475`, `:489`, `:547`). Carrier: WO-2026-062 if
+  it rewrites those sites, otherwise `extensions/lib/notify.ts` under its own order.
+- captured-handler-table harness — `tests/summary-ownership.test.ts:105-224` repeats
+  `tests/e2e-checkpoint.test.ts:447-505`. Carrier: a `tests/helpers/extension-harness.ts`
+  extraction, blocked while `tests/e2e-checkpoint.test.ts` is required unchanged.
+- the `[CHECKPOINT]` literal — `extensions/checkpoint.ts:32` and
+  `extensions/lib/checkpoint-marker.ts:9`. Carrier: WO-2026-062 (owner of `checkpoint.ts`).
+No strikes: no area took work it must be refactored before.
 
 ## 2026-10-22 — chunk: seat-config ruling batch (3bf7b2f, ff7a78f, 9833b88, 28f10c2, 2bbcae3)
 

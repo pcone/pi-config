@@ -59,11 +59,17 @@ interface Harness {
 	lastKickoff(): string | null;
 }
 
+/**
+ * Valid authored fields — a checkpoint whose `decisions` and `triedAndFailed`
+ * are both N/A is rejected (nothing to resume), and `[]` is not the N/A token
+ * (`decisions/checkpoint/005`, WO-2026-062 C9/C10). The subject of every row
+ * here is the wait, not the summary.
+ */
 const SUMMARY = {
 	goal: "wait-state fixture",
-	filesTouched: [],
+	filesTouched: ["none"],
 	decisions: ["none"],
-	triedAndFailed: ["none"],
+	triedAndFailed: ["a first attempt — it failed, so the next window does not retry it"],
 	constraints: "none",
 };
 

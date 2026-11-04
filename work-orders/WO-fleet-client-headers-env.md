@@ -42,7 +42,7 @@ which is why the row below asserts behaviour, not types.
 
 ### Rulings
 
-- `decisions/checkpoint/003-summary-ownership.md` (owner 2026-10-31): "No model rewrites it.
+- `decisions/checkpoint/005-summary-ownership.md` (owner 2026-10-31): "No model rewrites it.
   `compaction-model.ts` returns `undefined` on the `[CHECKPOINT]` marker before making any fleet
   call" — this order does not touch the ownership predicate, and every row keeps it green.
 - Author's choice (recorder, WO-2026-071): filter `null` values with a local two-line helper

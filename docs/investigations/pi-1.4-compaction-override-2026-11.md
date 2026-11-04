@@ -7,8 +7,28 @@ WO-2026-071 step 1. Every claim below names the probe that produces it. Installe
 **Verdict.** The fleet override is **live**. On this box, since 2026-11-01, a checkpoint
 compaction's stored summary is the fleet model's rewrite, not the text `checkpoint.ts`
 composed. That contradicts the owner's 2026-10-31 ruling
-(`decisions/checkpoint/003-summary-ownership.md`) — the ruling and its carrier orders sit on
-branch `summary-ownership`, unmerged, so `main` runs the behaviour the ruling rejects.
+(`decisions/checkpoint/005-summary-ownership.md`) — the ruling and its carrier orders sat on
+branch `summary-ownership`, unmerged, so `main` ran the behaviour the ruling rejects.
+
+**Landed 2026-11-04 (WO-2026-073).** The ruling and both carriers are on `main`; the finding
+below is the record of the state that produced them. Re-probed with the §1 method, one real
+`checkpoint`-tool compaction per tree (`~/Developer/scratch/wo073/drive.ts`):
+
+| tree | fleet request on the checkpoint compaction | persisted `CompactionEntry.summary` |
+|---|---|---|
+| `5edaff6` (before) | `deepseek-v4.1-flash`, body carries `[CHECKPOINT]` | 1140 chars, `usage` present, does not start with the archive's authored text |
+| merged tip | **none** (no request to the fleet provider at all) | 1019 chars, no `usage`, byte-identical authored prefix then the machine block |
+| merged tip, `/compact` control | `deepseek-v4.1-flash` | 855 chars, `usage` present, fleet rewrite — the ruling does not reach it |
+
+**What "the stored summary is the composed text" is measured against.** The persisted
+`CompactionEntry.summary` is not byte-equal to the archive's `.meta.json` `summary`, and cannot
+be: the archive is written in the tool, before the hook holds the file facts, and WO-2026-062
+keeps the machine block out of it on purpose ("Its `summary` stays the authored text; the entity
+summary is the authored text plus the machine block"). Measured on the merged tip: the archive's
+378 chars are a byte-identical prefix of the 1019-char entry summary, machine block after; the
+fleet path fails both prefix equality and the no-`usage` test. WO-2026-073's acceptance row asks
+for byte-equality, which this design makes unmeetable — that row's wording is an open question
+for the owner (recorder's observation, not a ruling).
 
 ## 1. Which model served the summary
 
@@ -101,7 +121,8 @@ that a settled or idle session does not show at all. That is how 26 flips went u
 
 ## 6. The ruling, and where its carrier is
 
-`decisions/checkpoint/003-summary-ownership.md` on branch `summary-ownership` (commit `fd3ee99`,
+`decisions/checkpoint/005-summary-ownership.md` (renumbered from `003` when it landed) on branch
+`summary-ownership` (commit `fd3ee99`,
 2026-10-31) records the owner's ruling: a checkpoint's stored summary is the text `checkpoint.ts`
 composes, verbatim, and `compaction-model.ts` returns `undefined` on the marker **before** any
 fleet call. Its mechanism is WO-2026-061 (predicate + non-silent failure) and WO-2026-062
@@ -111,7 +132,7 @@ State of that work, probed:
 
 | item | state |
 |---|---|
-| `decisions/checkpoint/003`, WO-2026-061, WO-2026-062 | only on `origin/summary-ownership`; absent from `main` (`d31bfc1`) |
+| `decisions/checkpoint/005`, WO-2026-061, WO-2026-062 | landed on `main` 2026-11-04 by WO-2026-073 (was: only on `origin/summary-ownership`) |
 | WO-2026-061 implementation | branch `pi-subagent-1566ff09c877`, commit `418490b`: marker predicate before model resolution, stale-ctx-safe `notify`, shared `extensions/lib/checkpoint-marker.ts`, `tests/summary-ownership.test.ts` (600 lines) |
 | its test rows | `bun test tests/summary-ownership.test.ts` at that tip: **12 pass, 0 fail**, 1.57 s |
 | WO-2026-062 implementation | branch `pi-subagent-34403ce0c69c`, commits `78d356d` (refactor: N sections, one joiner) + `e9b9de8` (verbatim + machine block + field validation); `extensions/lib/checkpoint-summary.ts` new, `checkpoint.ts` +221/−65. Offline rows at that tip: `bun test tests/checkpoint-meta.test.ts tests/checkpoint-recoverability.test.ts` → 24 pass, 0 fail. Its `e2e-checkpoint.test.ts` rows are live-network and were not run here. |
@@ -144,14 +165,14 @@ this audit did not start a full-config TUI session.
 | draft | disposition |
 |---|---|
 | `WO-pi-upgrade-1.3.0.md` | **deleted**. Its premise (npm latest = 1.3.0) is false; the upgrade happened, and the only leftover from its scope is the type/env item now carried by `work-orders/WO-fleet-client-headers-env.md`. Reason recorded in `decisions/checkpoint/004`. |
-| `WO-summary-ownership-dispatch.md` | **deleted, superseded**. The owner ruled (`decisions/checkpoint/003`, 2026-10-31) and the ruling's carriers are WO-2026-061/062; this draft's three-column table cannot be dispatched as written because `reason` does not split `/compact` from a checkpoint (both `"manual"`), and its premise "fleet calls fail in this environment" is false on 1.4.0. |
+| `WO-summary-ownership-dispatch.md` | **deleted, superseded**. The owner ruled (`decisions/checkpoint/005`, 2026-10-31) and the ruling's carriers are WO-2026-061/062; this draft's three-column table cannot be dispatched as written because `reason` does not split `/compact` from a checkpoint (both `"manual"`), and its premise "fleet calls fail in this environment" is false on 1.4.0. |
 | `WO-drift-decision-record.md` | **restated**, narrowed to the live part: the missing `9925257` record and its disposition column (Q4). The README signature drift and the `checkpoint_search` references it also listed are already fixed in `main` (probe: `rg checkpoint_search README.md agents/` → 0, and `README.md:67-69` describes the two current tools). |
 
 ## 9. The four questions
 
 | q | state | citation |
 |---|---|---|
-| Q1 summary ownership | **answered 2026-10-31** — verbatim | `decisions/checkpoint/003` (owner 2026-10-31), on branch `summary-ownership` |
+| Q1 summary ownership | **answered 2026-10-31**, landed 2026-11-04 — verbatim | `decisions/checkpoint/005` (owner 2026-10-31) |
 | Q2 upgrade timing | **stale** — the upgrade happened, twice (1.3.0, then 1.4.0) | installed `package.json` 1.4.0, mtime 2026-10-31T20:17; `settings.json` `lastChangelogVersion: 1.4.0` |
 | Q3 uncommitted `auto-checkpoint.ts` WIP | **stale** — the WIP landed as idle compaction with its own record, and the file now imports the shared read-tracking helper (the last duplicate is gone) | `decisions/checkpoint/002` (2026-10-29); `git log --oneline -- extensions/auto-checkpoint.ts` → `edfffd6`, `92307ca`, `40e86b9`, `0c1f1fe`, `aa00a93`; `extensions/auto-checkpoint.ts:77` imports `lib/read-tracking.ts` |
 | Q4 `9925257` features removed | **live** — no decision record exists for the removals | `rg -l 9925257 decisions/ docs/` → only the sanity-check investigation; sent to the planning seat |
