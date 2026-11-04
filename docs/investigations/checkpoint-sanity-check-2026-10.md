@@ -76,6 +76,21 @@ Both are silent (empty set, not an error), which is why they persist unnoticed. 
 
 **In this environment the override never fires**: fleet `compact()` deterministically 400s with `MissingSessionID` — `opencode-go` requires an `x-opencode-session` header `getApiKeyAndHeaders` doesn't supply (`model-registry.js:30-46`) — and `compaction-model.ts:58-65` swallows the error. The verbatim summary wins today by accident of a silently swallowed provider failure. That swallow is itself a defect: a reproducible config/routing bug plus silent semantic fallback on transient errors.
 
+> **Correction (2026-11-04, WO-2026-071).** The paragraph above is false on
+> pi 1.4.0 (installed 2026-10-31T20:17): the override **is live**. The
+> summarization call carries an `x-opencode-session` uuidv7 that pi-ai attaches
+> at dispatch (`compaction.js:483` → pi-ai `models.js:442`) and opencode-go
+> accepts it, so the fleet call succeeds and replaces the checkpoint summary.
+> Probed by a driven compaction with the real extensions (wire request
+> `model: deepseek-v4.1-flash` while the session model was `k3.1-pro`; the same
+> run with `compaction-model.ts` omitted persists the verbatim text) and by 26
+> of 28 paired production checkpoints since 2026-11-01. The silent-swallow
+> defect also stands, with a sharper consequence: a fleet failure flips summary
+> ownership and emits no `session_compact_failed`, so the flip leaves no trace.
+> `docs/investigations/pi-1.4-compaction-override-2026-11.md`; the mechanism
+> that ends it is the owner's 2026-10-31 ruling
+> (`decisions/checkpoint/003-summary-ownership.md`) carried by WO-2026-061.
+
 ### 5.3 Green suite, inert coverage
 
 `bun test tests/e2e-checkpoint.test.ts tests/auto-checkpoint.test.ts` → 21 pass. But:
@@ -136,3 +151,22 @@ Suggested sequencing: 1 and 4 landed; 2 after the owner's summary-ownership ruli
 - **Q3 — Owner ruling needed, uncommitted `auto-checkpoint.ts` WIP** (identified in `structure-trend.md` as another session's work): hands-off + migrate in a follow-up order, or land it? (Asked 2026-10-21.)
 - **Q4 — Owner ruling needed, April-era features removed by `9925257`** (`doCheckpoint`, `checkpoint-continue`/`-stop`, `isAbnormalStop`, context strip): restore any, or record removal as intentional? (Asked 2026-10-21.)
 - ~~Open — injection utility~~ **Resolved (2026-10-21)**: keep with changes — validated 5/5 vs 0/4; fixes folded into WO-2026-055 (§5.7).
+
+- **Q1 status (2026-11-04): answered, not open.** The owner ruled on
+  2026-10-31 that a checkpoint's stored summary is the text `checkpoint.ts`
+  composes, verbatim, with `compaction-model.ts` yielding on the `[CHECKPOINT]`
+  marker before any fleet call (`decisions/checkpoint/003-summary-ownership.md`,
+  branch `summary-ownership`; carriers WO-2026-061 and WO-2026-062). Above, the
+  question's old `reason` premise is moot either way: `reason` is `"manual"` for
+  both `/compact` and a checkpoint compaction on 1.4.0, and
+  `CompactionResult.reason` does not exist.
+- **Q2 status (2026-11-04): stale.** The upgrade happened, twice — 1.3.0, then
+  1.4.0 (installed `package.json`, mtime 2026-10-31T20:17).
+- **Q3 status (2026-11-04): stale.** The WIP landed as idle compaction with its
+  own record (`decisions/checkpoint/002-idle-compaction.md`), and
+  `auto-checkpoint.ts` now imports the shared `lib/read-tracking.ts` helper, so
+  the duplicate this note worried about is gone.
+- **Q4 status (2026-11-04): live.** No decision record exists for `9925257`'s
+  removals (`rg -l 9925257 decisions/` → 0); the restore-vs-record question went
+  to the planning seat on 2026-11-04, and `work-orders/WO-drift-decision-record.md`
+  waits on it.
