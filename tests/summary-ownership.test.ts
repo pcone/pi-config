@@ -1,6 +1,6 @@
 /**
  * Summary ownership at the compaction boundary (WO-2026-061,
- * `decisions/checkpoint/003`).
+ * `decisions/checkpoint/005`).
  *
  * Both `session_before_compact` handlers are the real extension modules,
  * dispatched the way pi's runner does it
@@ -633,5 +633,147 @@ describe("summary ownership across the compaction boundary", () => {
 			expect(stored).toContain("### Machine facts");
 			expect(fleetCalls).toHaveLength(0);
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// WO-2026-073 — the integration's own rows
+//
+// The four days this cost were not a wrong summary: they were a *call* nobody
+// saw. These rows assert on the transport and on the dispatch table, not on the
+// text a handler happened to return.
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace `globalThis.fetch` for the duration of a row. The fleet summarisation
+ * goes out through pi-ai's own dispatch rather than the coding-agent
+ * `ModelRuntime` (`compaction.js:483` → pi-ai `models.js:442`), so a row that
+ * only spies on the mocked `compact()` seam would miss a re-implementation that
+ * calls the provider directly. Any request is recorded and refused.
+ */
+async function withoutTransport(run: (requests: string[]) => Promise<void>) {
+	const realFetch = globalThis.fetch;
+	const requests: string[] = [];
+	globalThis.fetch = (async (input: any) => {
+		requests.push(String(input?.url ?? input));
+		throw new Error("row: unexpected network request");
+	}) as typeof globalThis.fetch;
+	try {
+		await run(requests);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
+describe("WO-2026-073: ownership is decided before the call, not after it", () => {
+	it("I1: the marker path makes no fleet request at all — not on the seam, not on the wire", async () => {
+		await withoutTransport(async (requests) => {
+			await withCwd(async (cwd) => {
+				const h = makeCtx({ cwd });
+				const request = await queueCheckpoint(h, { nextSteps: "RESUME-HERE" });
+				// Calls this row counts are the ones after the checkpoint queued:
+				// the checkpoint's own tool path must not have reached the fleet either.
+				expect(fleetCalls).toHaveLength(0);
+				expect(requests).toEqual([]);
+
+				const dispatched = await dispatchBeforeCompact(
+					h.ctx,
+					beforeCompactEvent(request.customInstructions),
+				);
+
+				expect(dispatched.errors).toEqual([]);
+				// The three seams a call-then-discard implementation would trip:
+				// the fleet `compact()`, the model lookup, and auth resolution.
+				expect(fleetCalls).toHaveLength(0);
+				expect(requests).toEqual([]);
+				expect(h.registry.findCalls).toBe(0);
+				expect(h.registry.authCalls).toBe(0);
+				// Nothing was discarded: the checkpoint handler's result is what pi keeps.
+				expect(String(dispatched.result?.compaction.summary)).toContain(
+					"### Machine facts",
+				);
+			});
+		});
+	});
+
+	it("I2: the marker is the only yielding shape — /compact and auto still take the fleet seat", async () => {
+		// `checkpoint.ts` prefixes the marker, but it also survives mid-text on the
+		// post-reload path, so the predicate is `includes`, not `startsWith`.
+		const yielding = [
+			CHECKPOINT_MARKER,
+			`${CHECKPOINT_MARKER}\nGoal: authored`,
+			`${CHECKPOINT_MARKER} and more`,
+		];
+		const fleetBound = [
+			undefined,
+			"",
+			"Summarize the conversation so far",
+			"CHECKPOINT",
+			"[CHECKPOINT", // the marker with no closing bracket
+			"CHECKPOINT]",
+		];
+		for (const customInstructions of yielding) {
+			fleetCalls.length = 0;
+			await withCwd(async (cwd) => {
+				const h = makeCtx({ cwd });
+				const dispatched = await dispatchBeforeCompact(
+					h.ctx,
+					beforeCompactEvent(customInstructions),
+				);
+				expect(dispatched.errors).toEqual([]);
+				expect(fleetCalls).toHaveLength(0);
+			});
+		}
+		for (const reason of ["manual", "threshold", "overflow"] as const) {
+			for (const customInstructions of fleetBound) {
+				fleetCalls.length = 0;
+				await withCwd(async (cwd) => {
+					const h = makeCtx({ cwd });
+					const dispatched = await dispatchBeforeCompact(
+						h.ctx,
+						beforeCompactEvent(customInstructions, { reason }),
+					);
+					expect(dispatched.errors).toEqual([]);
+					expect(fleetCalls).toHaveLength(1);
+					expect(dispatched.result?.compaction.summary).toBe(
+						"FLEET REWRITE — not the checkpoint's text",
+					);
+				});
+			}
+		}
+	});
+
+	it("I3: a fleet failure on any non-checkpoint path is loud, and the message names the failure", async () => {
+		for (const reason of ["manual", "threshold", "overflow"] as const) {
+			fleetCalls.length = 0;
+			await withoutTransport(async (requests) => {
+				await withCwd(async (cwd) => {
+					fleetImpl = async () => {
+						throw new Error(`provider 503 on ${reason}`);
+					};
+					const h = makeCtx({ cwd });
+					const dispatched = await dispatchBeforeCompact(
+						h.ctx,
+						beforeCompactEvent(undefined, { reason }),
+					);
+
+					// No override (pi's default stands) and no extension error (which
+					// would leave a prior result standing silently).
+					expect(dispatched.errors).toEqual([]);
+					expect(dispatched.result).toBeUndefined();
+					expect(fleetCalls).toHaveLength(1);
+					expect(requests).toEqual([]);
+
+					// Exactly one surface, at error, naming both the seat and the cause:
+					// the old silent `undefined` left no trace at all.
+					const errors = h.notifications.filter((n) => n.level === "error");
+					expect(errors).toHaveLength(1);
+					expect(errors[0].message).toContain(FLEET_MODEL_SPEC);
+					expect(errors[0].message).toContain(`provider 503 on ${reason}`);
+					expect(h.notifications.filter((n) => n.level === "warning")).toEqual([]);
+				});
+			});
+		}
+		fleetImpl = (call) => Promise.resolve(fleetCompaction(call.preparation));
 	});
 });

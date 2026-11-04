@@ -12,7 +12,8 @@
 
 The owner ruled on **2026-10-31** that a checkpoint's stored summary is the text `checkpoint.ts`
 composes, verbatim, with `compaction-model.ts` yielding on the `[CHECKPOINT]` marker **before** any
-fleet call (`decisions/checkpoint/003-summary-ownership.md`). The ruling and both carriers never
+fleet call (`decisions/checkpoint/005-summary-ownership.md`, numbered `003` on that branch). The
+ruling and both carriers never
 merged. Meanwhile pi 1.4.0 armed the fleet override, so since 2026-11-01 this box has been
 rewriting checkpoint summaries — 26 of 28 production pairs, proven at the wire in
 `docs/investigations/pi-1.4-compaction-override-2026-11.md`. The box is violating a standing
@@ -35,12 +36,13 @@ make a conflict go away; if a change genuinely cannot hold both, stop with `PLAN
 
 ### Renumber, do not collide
 
-`decisions/checkpoint/003-summary-ownership.md` collides with `main`'s landed `003` (wait-state,
-2026-11-02), and `004` is now taken by the 1.4 audit record. Renumber the ruling to **`005`** and
-update **every** reference to it: WO-061, WO-062, the ruling's own cross-references, the
+The ruling file's number collides with `main`'s landed `003` (wait-state, 2026-11-02), and `004`
+is now taken by the 1.4 audit record. Renumber the ruling to **`005`** and update **every**
+reference to it: WO-061, WO-062, the ruling's own cross-references, the
 `decisions/checkpoint/README.md` index row, the sanity-check corrections, and any code comment
-that cites it by number. `rg -n '003-summary-ownership|checkpoint/003'` before and after; the
-after-count must be zero for the old form and every hit must resolve.
+that cites it by number. An `rg` for the old file name across `decisions/`, `work-orders/`,
+`docs/`, `extensions/` and `tests/` must return zero afterwards, and every hit for the new form
+must resolve.
 
 ### Acceptance rows
 

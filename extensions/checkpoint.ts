@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { setPendingGo } from "./go.ts";
+import { CHECKPOINT_MARKER } from "./lib/checkpoint-marker.ts";
 import {
 	captureGitBinding,
 	metaPathFor,
@@ -62,7 +63,6 @@ import {
 } from "./lib/waits.ts";
 
 const CHECKPOINT_DIR = ".pi/checkpoints";
-const MARKER = "[CHECKPOINT]";
 
 // Fraction of context window to use for file injection (15%).
 const INJECTION_BUDGET_FRACTION = 0.15;
@@ -158,7 +158,7 @@ function renderSummary(fields: SummaryFields, nextSteps: string): string {
 
 /**
  * The field contract both tools enforce before any side effect (owner
- * 2026-10-31, `decisions/checkpoint/003`): every field present and non-blank,
+ * 2026-10-31, `decisions/checkpoint/005`): every field present and non-blank,
  * with the literal `none` / `["none"]` as the only N/A token. `[]` is rejected
  * — an empty list is an omission, not a statement — as is a checkpoint that
  * records neither a decision nor a failed approach, because then there is
@@ -591,7 +591,7 @@ export default function (pi: ExtensionAPI) {
 		// checkpoint call replaces it before this fires (last request wins).
 		const pending = pendingCheckpoint;
 		ctx.compact({
-			customInstructions: `${MARKER}\n${pending?.summary ?? ""}`,
+			customInstructions: `${CHECKPOINT_MARKER}\n${pending?.summary ?? ""}`,
 			onComplete: async (result: CompactionResult) => {
 				const inj = pending?.injection;
 				const tokens: CheckpointTokens = {
@@ -646,14 +646,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {
 		const { customInstructions, preparation } = event;
 
-		if (customInstructions?.includes(MARKER)) {
+		if (customInstructions?.includes(CHECKPOINT_MARKER)) {
 			const pending = pendingCheckpoint;
 			if (!pending) {
 				// A marker with no pending state is the post-reload case: the authored
 				// text survives on the instructions, the machine facts do not.
 				return {
 					compaction: {
-						summary: customInstructions.replace(MARKER, "").trim(),
+						summary: customInstructions.replace(CHECKPOINT_MARKER, "").trim(),
 						firstKeptEntryId: preparation.firstKeptEntryId,
 						tokensBefore: preparation.tokensBefore,
 					},

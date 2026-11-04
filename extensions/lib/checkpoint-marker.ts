@@ -1,9 +1,8 @@
 /**
  * The marker `checkpoint.ts` prefixes to a checkpoint compaction's
  * `customInstructions`, and the one signal that decides summary ownership
- * (owner 2026-10-31, `decisions/checkpoint/003`).
+ * (owner 2026-10-31, `decisions/checkpoint/005`).
  *
- * `checkpoint.ts:32` still declares its own copy: that file belongs to
- * WO-2026-062. Two copies in `extensions/` until it adopts this one.
+ * `checkpoint.ts` imports this constant and declares no copy of its own.
  */
 export const CHECKPOINT_MARKER = "[CHECKPOINT]";

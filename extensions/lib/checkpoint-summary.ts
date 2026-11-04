@@ -1,7 +1,7 @@
 /**
  * The checkpoint summary's machine block: the facts only tooling knows,
  * appended verbatim after the authored text (owner 2026-10-31,
- * `decisions/checkpoint/003`).
+ * `decisions/checkpoint/005`).
  *
  * `checkpoint.ts` renders the authored text (`renderSummary`) and composes the
  * halves; this module owns the appended half, the file-op merge that feeds it,
@@ -86,7 +86,7 @@ function renderInjectionSection(injection: InjectionFacts): string {
 /**
  * The machine block appended after the authored text: the facts only tooling
  * knows, one line each in a fixed order (owner 2026-10-31,
- * `decisions/checkpoint/003`).
+ * `decisions/checkpoint/005`).
  */
 export function renderMachineBlock(facts: {
 	git: GitBinding | null;
