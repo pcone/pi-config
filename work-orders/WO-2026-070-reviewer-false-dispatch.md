@@ -90,3 +90,38 @@ Each new row must fail on today's tree, run alone. State the mutation that redde
 
 Hard cap 3 rounds. Gate at the tip: re-run the five rows, and mutate your own gate (drop the
 `reviewerKind` condition) to show row 1 and the iteration row go red.
+
+---
+
+### Landing stamp (2026-11-04, merged `d31204e`)
+
+Reproduced first: two `dispatch` rows in the fixture record, the second naming the reviewer's
+own session with the review prompt as body. Landed `562b749` + `2a0d520` — the gate
+(`agent.reviewerKind` undefined), one sentence in `agents/implement.md` step 4, and six rows.
+Three files, +293/−6.
+
+**Two items the implementer raised as owner questions are mine to settle, and neither is one.**
+
+- **The row-2 bound.** This order's premise claimed `reviewer_kind:` appears in
+  `review-code.md`, `review-tests.md` **and** `review-plan.md`, and set the census guard at
+  "fewer than 3". One `rg -c 'reviewer_kind' agents/*.md` falsifies it: two agents declare it, and
+  `review-plan.md` never has. The bound was a count measurement, not a ruling, so it is a
+  process-only count correction at the tip — the guard landed as a **kind census** (fails when a
+  declared kind disappears or a third appears), which is the stronger shape anyway. Recorded here
+  rather than escalated.
+- **`decisions/work-order-records/001` is tfd's file**, not this repo's; this order named it in
+  "Docs to update", which was my error. The record-design edit belongs in `~/Developer/tfd` and is
+  split out, not dropped.
+
+**Carried, with its carrier named:** `review-plan` declares no `reviewer_kind`, so a
+`review-plan` spawn carrying `workOrderPath` would still write a false dispatch — latent today
+because nothing instructs passing the path to a plan reviewer. The gate covers the set that
+declares a kind, and that set can grow without the gate noticing, so
+`work-orders/WO-2026-074-reviewers-declare-a-kind.md` carries the fix. The docstring at the gate
+says so.
+
+**Gate, re-run by me at the merged tip:** six rows 6/0; my own mutation (`const isReviewer =
+false`) reds row 1 and the kind-census row; restored, `work-record-ownership` +
+`work-record-capture` = 21 rows / 0 fail. Target set with the adjacent policy files: 51 rows, 0
+fail. The full suite's reds are the standing live-credit set plus pcone/pi-config#15
+(`subagent-model-inheritance` `sessionFile === undefined`), both present before this landing.
