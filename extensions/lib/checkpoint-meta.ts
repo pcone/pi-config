@@ -21,11 +21,19 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+/** Commits the branch is ahead of / behind its upstream. */
+export interface AheadBehind {
+	ahead: number;
+	behind: number;
+}
+
 /** The working tree a checkpoint was taken from (dual-state alignment, sanity-check §3 row 4). */
 export interface GitBinding {
 	head: string;
 	branch: string;
 	dirty: boolean;
+	/** Null when the branch has no upstream — a stated fact, not a failure. */
+	aheadBehind: AheadBehind | null;
 }
 
 /**
@@ -52,6 +60,23 @@ function runGit(cwd: string, args: string[]): Promise<string> {
 }
 
 /**
+ * `{behind, ahead}` against `@{upstream}`, or null when the branch has none.
+ * A missing upstream is the common case for a scratch worktree, so it is a
+ * stated fact rather than a capture failure: the rest of the binding survives.
+ */
+async function captureAheadBehind(cwd: string): Promise<AheadBehind | null> {
+	try {
+		// `--left-right @{upstream}...HEAD` prints "<behind>\t<ahead>".
+		const out = await runGit(cwd, ["rev-list", "--count", "--left-right", "@{upstream}...HEAD"]);
+		const [behind, ahead] = out.split(/\s+/).map(Number);
+		if (!Number.isInteger(behind) || !Number.isInteger(ahead)) return null;
+		return { ahead, behind };
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Bind the archive to the working tree it was taken from. Capture this *before*
  * writing the archive, or the archive's own untracked files read as `dirty`.
  * Any failure — not a repo, no git binary, timeout — yields null: git never
@@ -59,12 +84,13 @@ function runGit(cwd: string, args: string[]): Promise<string> {
  */
 export async function captureGitBinding(cwd: string): Promise<GitBinding | null> {
 	try {
-		const [head, branch, status] = await Promise.all([
+		const [head, branch, status, aheadBehind] = await Promise.all([
 			runGit(cwd, ["rev-parse", "HEAD"]),
 			runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
 			runGit(cwd, ["status", "--porcelain"]),
+			captureAheadBehind(cwd),
 		]);
-		return { head, branch, dirty: status.length > 0 };
+		return { head, branch, dirty: status.length > 0, aheadBehind };
 	} catch {
 		return null;
 	}

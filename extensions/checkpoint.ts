@@ -31,6 +31,12 @@ import {
 	type CheckpointTokens,
 	type GitBinding,
 } from "./lib/checkpoint-meta.ts";
+import {
+	checkpointFileOps,
+	renderMachineBlock,
+	NONE,
+	type InjectionFacts,
+} from "./lib/checkpoint-summary.ts";
 import { validateNextStepsOwnerState } from "./lib/owner-row.ts";
 import { safeNotify } from "./lib/safe-notify.ts";
 import {
@@ -85,9 +91,15 @@ const SUMMARY_FORMAT_HINT =
 	"`triedAndFailed` (each entry names an approach tried, what happened, and why it failed — " +
 	"the fresh window retries what it is not told about), " +
 	"`constraints` (limits the next window must respect). " +
-	'Empty means the literal "none"/["none"], never an omitted field.';
+	'Empty means the literal "none"/["none"], never an omitted field or an empty list: ' +
+	"`[]`, an omitted field and a blank string are rejected, and so is a checkpoint whose " +
+	'`decisions` and `triedAndFailed` are both `"none"` — nothing to resume.';
 
-/** Every field required: presence is the point, so the typebox schema enforces it. */
+/**
+ * Every field required: presence is the point, so the typebox schema enforces
+ * it. Presence is not enough — `validateSummaryFields` rejects the blank and
+ * empty-list forms the schema cannot express, before any side effect.
+ */
 const SUMMARY_SCHEMA = Type.Object(
 	{
 		goal: Type.String({
@@ -111,11 +123,15 @@ const SUMMARY_SCHEMA = Type.Object(
 	{ description: SUMMARY_FORMAT_HINT },
 );
 
-const NONE = "none";
-
-/** `"none"`/`["none"]`/`[]` all mean "nothing to report". */
-function isNone(items: string[]): boolean {
-	return items.length === 0 || (items.length === 1 && items[0].trim().toLowerCase() === NONE);
+/** `["none"]` and nothing else — the explicit N/A token. Total, so a malformed
+ *  tool argument is reported by the validator instead of throwing here. */
+function isNone(items: unknown): boolean {
+	return (
+		Array.isArray(items) &&
+		items.length === 1 &&
+		typeof items[0] === "string" &&
+		items[0].trim().toLowerCase() === NONE
+	);
 }
 
 /** `label: none`, or the label followed by one bullet per entry. */
@@ -135,9 +151,72 @@ function renderSummary(fields: SummaryFields, nextSteps: string): string {
 		`Files touched: ${isNone(fields.filesTouched) ? NONE : fields.filesTouched.join(", ")}`,
 		bulletSection("Decisions", fields.decisions),
 		bulletSection("Tried and failed (and why)", fields.triedAndFailed),
-		`Constraints: ${fields.constraints || NONE}`,
+		`Constraints: ${fields.constraints}`,
 		`Next: ${nextSteps}`,
 	].join("\n");
+}
+
+/**
+ * The field contract both tools enforce before any side effect (owner
+ * 2026-10-31, `decisions/checkpoint/003`): every field present and non-blank,
+ * with the literal `none` / `["none"]` as the only N/A token. `[]` is rejected
+ * — an empty list is an omission, not a statement — as is a checkpoint that
+ * records neither a decision nor a failed approach, because then there is
+ * nothing to resume.
+ *
+ * Returns one line per violating field; the caller turns a non-empty list into
+ * a single tool-error result, so a thin checkpoint lands nothing.
+ */
+function validateSummaryFields(fields: SummaryFields): string[] {
+	const problems: string[] = [];
+
+	if (typeof fields.goal !== "string" || fields.goal.trim().length === 0) {
+		problems.push("goal: must be a non-blank paragraph saying what this checkpoint is for");
+	}
+
+	for (const name of ["filesTouched", "decisions", "triedAndFailed"] as const) {
+		const items: unknown = fields[name];
+		if (!Array.isArray(items)) {
+			problems.push(`${name}: must be a list of strings; use ["none"] when there is nothing to report`);
+			continue;
+		}
+		if (items.length === 0) {
+			problems.push(`${name}: [] is rejected — use ["none"] when there is nothing to report`);
+			continue;
+		}
+		if (items.some((item) => typeof item !== "string" || item.trim().length === 0)) {
+			problems.push(`${name}: every entry must be a non-blank string`);
+		}
+	}
+
+	if (typeof fields.constraints !== "string" || fields.constraints.trim().length === 0) {
+		problems.push('constraints: must be a non-blank string; use "none" when there is nothing to report');
+	}
+
+	if (isNone(fields.decisions)) {
+		if (isNone(fields.triedAndFailed)) {
+			problems.push(
+				'decisions + triedAndFailed: both are "none" — record the choice made or the approach tried, or there is nothing to resume',
+			);
+		}
+	}
+
+	return problems;
+}
+
+// ---------------------------------------------------------------------------
+// Tool results
+// ---------------------------------------------------------------------------
+
+/** The tool-error result shape both tools return. */
+interface ToolError {
+	content: Array<{ type: "text"; text: string }>;
+	isError: true;
+}
+
+/** Every rejection reason is one tool-error result, prefixed as today's callers read it. */
+function toolError(text: string): ToolError {
+	return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +238,11 @@ interface ArchiveMetaExtras {
 
 /** State passed from checkpoint tool → compaction hook → onComplete callback. */
 interface PendingCheckpoint {
-	/** `composeSummary` output — the text the fresh window receives verbatim. */
+	/**
+	 * Everything known before the cut boundary: the authored text plus the
+	 * in-flight section. The compaction hook appends the machine block, whose
+	 * file facts only `preparation` has.
+	 */
 	summary: string;
 	next: string;
 	continuation: Continuation;
@@ -169,11 +252,12 @@ interface PendingCheckpoint {
 	 */
 	waits: Wait[];
 	tokens: CheckpointTokens;
+	git: GitBinding | null;
 	archivePath?: string;
 	relevantPaths: RelevantPathEntry[];
 	cwd: string;
 	contextWindow: number;
-	injection?: { text: string; omitted: string[]; skippedPreserved: string[] };
+	injection?: InjectionFacts;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,9 +300,14 @@ export function formatInFlightSection(entries: InFlightSubagent[]): string {
 	return lines.join("\n");
 }
 
-/** The stored summary: the model's three-part summary plus the machine section. */
-function composeSummary(summary: string, section: string): string {
-	return section ? `${summary}\n\n${section}` : summary;
+/**
+ * The stored summary: every section, authored text first, blank-line
+ * separated. Empty sections are dropped — a section is empty only when its
+ * producer has nothing to record (e.g. no in-flight subagents), which is a
+ * stated absence, not a missing line.
+ */
+function composeSummary(sections: ReadonlyArray<string>): string {
+	return sections.filter((section) => section.length > 0).join("\n\n");
 }
 
 /**
@@ -231,15 +320,10 @@ function composeSummary(summary: string, section: string): string {
 function checkOwnerState(
 	nextSteps: string,
 	cwd: string,
-): { error?: { content: Array<{ type: "text"; text: string }>; isError: true }; warning?: string } {
+): { error?: ToolError; warning?: string } {
 	const verdict = validateNextStepsOwnerState(nextSteps, cwd);
 	if (verdict.ok) return { warning: verdict.warning };
-	return {
-		error: {
-			content: [{ type: "text" as const, text: `Error: ${verdict.error}` }],
-			isError: true,
-		},
-	};
+	return { error: toolError(verdict.error) };
 }
 
 /**
@@ -268,25 +352,30 @@ const SNAPSHOT_LABEL =
  * are already preserved in the compacted context.
  *
  * Only the lines actually read this session are injected — if the whole file
- * was read the whole file goes through.  Files with no tracked read regions
- * are skipped entirely.  Windows whose file changed since the read are never
- * served: their line numbers described an older version, so the file is named
- * for a re-read instead.
+ * was read the whole file goes through. Windows whose file changed since the
+ * read are never served: their line numbers described an older version, so the
+ * file is named for a re-read instead.
+ *
+ * Every requested path lands in exactly one bucket and every bucket is
+ * rendered, so no path can vanish silently (§5.7: omission is misleading).
  */
 async function buildFileInjection(
 	relevantPaths: RelevantPathEntry[],
 	cwd: string,
 	contextWindow: number,
 	preserved: Set<string>,
-): Promise<{ text: string; omitted: string[]; skippedPreserved: string[] }> {
-	if (relevantPaths.length === 0) return { text: "", omitted: [], skippedPreserved: [] };
-
+): Promise<InjectionFacts> {
 	const budget = Math.round(contextWindow * INJECTION_BUDGET_FRACTION);
 	const parts: string[] = [];
+	const injected: string[] = [];
 	const omitted: string[] = [];
 	const skippedPreserved: string[] = [];
 	const changed: string[] = [];
+	const noTrackedRegion: string[] = [];
 	let used = 0;
+	if (relevantPaths.length === 0) {
+		return { text: "", injected, omitted, skippedPreserved, changed, noTrackedRegion };
+	}
 
 	for (const entry of relevantPaths) {
 		const key = normalizePath(entry.path, cwd);
@@ -298,9 +387,14 @@ async function buildFileInjection(
 			continue;
 		}
 
-		// No read regions tracked → nothing to inject, skip entirely.
+		// No read regions tracked → nothing to inject, but the path is named with
+		// its remedy instead of disappearing (a window that read via `bash` leaves
+		// no tracked region, and silence reads as "carried").
 		const regions = reads.regionsFor(entry.path, cwd);
-		if (!regions || regions.length === 0) continue;
+		if (!regions || regions.length === 0) {
+			noTrackedRegion.push(entry.path);
+			continue;
+		}
 
 		// -- Read and format file content (matching read-tool output format) -
 		const absolutePath = resolvePath(cwd, entry.path);
@@ -319,7 +413,9 @@ async function buildFileInjection(
 				changed.push(entry.path);
 				continue;
 			}
-			if (fresh.length < regions.length) changed.push(entry.path);
+			// A partly fresh file is `injected`: its surviving windows are served,
+			// and the block's own header says the line ranges came from an earlier
+			// read. One bucket per path — `changed` means nothing was served.
 
 			const merged = mergeRegions(fresh);
 			const rawLines = raw.split("\n");
@@ -338,6 +434,9 @@ async function buildFileInjection(
 			}
 			content = chunks.join("\n\n");
 		} catch {
+			// Gone or unreadable: its recorded windows no longer describe a file on
+			// disk, which is the same fact as an edit.
+			changed.push(entry.path);
 			continue;
 		}
 
@@ -351,6 +450,7 @@ async function buildFileInjection(
 		}
 
 		parts.push(block);
+		injected.push(entry.path);
 		used += blockTokens;
 	}
 
@@ -374,11 +474,17 @@ async function buildFileInjection(
 			`${changed.length} file(s) changed since read — re-read if needed: ${changed.join(", ")}. `,
 		);
 	}
+	if (noTrackedRegion.length > 0) {
+		notes.push(
+			`${noTrackedRegion.length} file(s) with no tracked read region — re-read after compaction: ` +
+				`${noTrackedRegion.join(", ")}. `,
+		);
+	}
 	if (notes.length > 0) {
 		text = text ? `${text}\n\n[${notes.join(" ")}]` : `[${notes.join(" ")}]`;
 	}
 
-	return { text, omitted, skippedPreserved };
+	return { text, injected, omitted, skippedPreserved, changed, noTrackedRegion };
 }
 
 // ---------------------------------------------------------------------------
@@ -541,32 +647,62 @@ export default function (pi: ExtensionAPI) {
 		const { customInstructions, preparation } = event;
 
 		if (customInstructions?.includes(MARKER)) {
-			const summary = customInstructions.replace(MARKER, "").trim();
-
-			// Read and inject files now that we know the preservation boundary.
-			if (pendingCheckpoint) {
-				// Scope the scan to the entries being compacted: `getEntries()` also
-				// holds off-branch reads, which are not in the model's context and
-				// would wrongly suppress injection.
-				const entries = event.branchEntries ?? ctx.sessionManager.getEntries();
-				const preserved = collectPreservedReadPaths(
-					entries,
-					preparation.firstKeptEntryId,
-					ctx.cwd,
-				);
-				pendingCheckpoint.injection = await buildFileInjection(
-					pendingCheckpoint.relevantPaths,
-					pendingCheckpoint.cwd,
-					pendingCheckpoint.contextWindow,
-					preserved,
-				);
+			const pending = pendingCheckpoint;
+			if (!pending) {
+				// A marker with no pending state is the post-reload case: the authored
+				// text survives on the instructions, the machine facts do not.
+				return {
+					compaction: {
+						summary: customInstructions.replace(MARKER, "").trim(),
+						firstKeptEntryId: preparation.firstKeptEntryId,
+						tokensBefore: preparation.tokensBefore,
+					},
+				};
 			}
+
+			// Scope the scan to the entries being compacted: `getEntries()` also
+			// holds off-branch reads, which are not in the model's context and
+			// would wrongly suppress injection.
+			const entries = event.branchEntries ?? ctx.sessionManager.getEntries();
+			const preserved = collectPreservedReadPaths(
+				entries,
+				preparation.firstKeptEntryId,
+				ctx.cwd,
+			);
+			// Built whether or not work continues: the injection now rides the
+			// summary, which exists on both paths.
+			const injection = await buildFileInjection(
+				pending.relevantPaths,
+				pending.cwd,
+				pending.contextWindow,
+				preserved,
+			);
+			pending.injection = injection;
+
+			const fileOps = checkpointFileOps(
+				preparation.fileOps,
+				entries,
+				preparation.firstKeptEntryId,
+			);
+			const summary = composeSummary([
+				pending.summary,
+				renderMachineBlock({
+					git: pending.git,
+					fileOps,
+					archivePath: pending.archivePath,
+					tokensBefore: preparation.tokensBefore,
+					injection,
+				}),
+			]);
 
 			return {
 				compaction: {
 					summary,
 					firstKeptEntryId: preparation.firstKeptEntryId,
 					tokensBefore: preparation.tokensBefore,
+					// Core does not inherit details from a hook compaction, so the file
+					// trail across checkpoints is carried here.
+					details: fileOps,
 				},
 			};
 		}
@@ -646,6 +782,18 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// Argument shape first (nothing is written on a rejection), then the R6
+			// verdict: both are tool-error results, so neither may sit behind an
+			// early `return`.
+			const fieldProblems = validateSummaryFields(params.summary);
+			if (fieldProblems.length > 0) {
+				return toolError(
+					[
+						"summary rejected — nothing was archived or compacted. Fix every field below:",
+						...fieldProblems.map((problem) => `- ${problem}`),
+					].join("\n"),
+				);
+			}
 			const ownerState = checkOwnerState(params.nextSteps ?? "", ctx.cwd);
 			if (ownerState.error) return ownerState.error;
 			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
@@ -662,13 +810,14 @@ export default function (pi: ExtensionAPI) {
 			const git = await captureGitBinding(ctx.cwd);
 			const tokens: CheckpointTokens = { before: tokensBefore(ctx), after: null };
 
-			// R3-1: one composed summary serves both the archive and the restore
-			// path, so the in-flight record is in the context after compaction.
+			// R3-1: the archive and the restore path read the same text, so the
+			// in-flight record is in the context after compaction. The machine block
+			// is appended by the compaction hook, which is the only site holding the
+			// file facts.
 			const inFlight = listInFlightSubagents({
 				selfSessionId: ctx.sessionManager.getSessionId(),
 			});
-			const section = formatInFlightSection(inFlight);
-			const summary = composeSummary(renderSummary(summaryFields, next), section);
+			const summary = composeSummary([renderSummary(summaryFields, next), formatInFlightSection(inFlight)]);
 
 			// Archive *before* compaction so all entries are captured in full.
 			let archivePath: string | undefined;
@@ -698,6 +847,7 @@ export default function (pi: ExtensionAPI) {
 				continuation,
 				waits,
 				tokens,
+				git,
 				archivePath,
 				relevantPaths,
 				cwd: ctx.cwd,
@@ -778,20 +928,24 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const fieldProblems = validateSummaryFields(params.summary);
+			if (fieldProblems.length > 0) {
+				return toolError(
+					[
+						"summary rejected — nothing was archived or staged. Fix every field below:",
+						...fieldProblems.map((problem) => `- ${problem}`),
+					].join("\n"),
+				);
+			}
+
 			let targetStat;
 			try {
 				targetStat = await stat(params.newCwd);
 			} catch {
-				return {
-					content: [{ type: "text", text: `Error: target directory does not exist: ${params.newCwd}` }],
-					isError: true,
-				};
+				return toolError(`target directory does not exist: ${params.newCwd}`);
 			}
 			if (!targetStat.isDirectory()) {
-				return {
-					content: [{ type: "text", text: `Error: not a directory: ${params.newCwd}` }],
-					isError: true,
-				};
+				return toolError(`not a directory: ${params.newCwd}`);
 			}
 
 			// Argument shape first: the R6 verdict (refusal or warning) goes on the
@@ -819,8 +973,7 @@ export default function (pi: ExtensionAPI) {
 			const inFlight = listInFlightSubagents({
 				selfSessionId: ctx.sessionManager.getSessionId(),
 			});
-			const section = formatInFlightSection(inFlight);
-			const summary = composeSummary(renderSummary(summaryFields, next), section);
+			const summary = composeSummary([renderSummary(summaryFields, next), formatInFlightSection(inFlight)]);
 
 			// Fork creates a new session — no preservation to dedup against.
 			const injection = await buildFileInjection(
@@ -830,7 +983,7 @@ export default function (pi: ExtensionAPI) {
 				new Set(), // empty — nothing preserved
 			);
 
-			const included = relevantPaths.length - injection.omitted.length - injection.skippedPreserved.length;
+			const included = injection.injected.length;
 
 			setPendingGo({
 				label: `fork → ${params.newCwd}`,
@@ -910,6 +1063,9 @@ export default function (pi: ExtensionAPI) {
 				);
 				if (injection.omitted.length > 0) notes.push(`Omitted (budget): ${injection.omitted.join(", ")}`);
 				if (injection.skippedPreserved.length > 0) notes.push(`Skipped (preserved): ${injection.skippedPreserved.join(", ")}`);
+				if (injection.changed.length > 0) notes.push(`Changed since read: ${injection.changed.join(", ")}`);
+				if (injection.noTrackedRegion.length > 0)
+					notes.push(`No tracked read region: ${injection.noTrackedRegion.join(", ")}`);
 				responseLines.push(`File injection: ${notes.join(". ")}`);
 			}
 

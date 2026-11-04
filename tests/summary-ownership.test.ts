@@ -213,7 +213,16 @@ async function dispatchBeforeCompact(ctx: any, event: Record<string, unknown>) {
 // ctx + fixtures
 // ---------------------------------------------------------------------------
 
-const BOUNDARY = { firstKeptEntryId: "entry-42", tokensBefore: 1234 };
+/**
+ * The boundary facts this file's rows share. `fileOps` is part of a real
+ * `CompactionPreparation` and the machine block reads it; `R2` compares the
+ * whole object, so it is the value the fleet seat is handed too.
+ */
+const BOUNDARY = {
+	firstKeptEntryId: "entry-42",
+	tokensBefore: 1234,
+	fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
+};
 
 interface CtxOptions {
 	cwd: string;
@@ -235,6 +244,9 @@ function makeCtx(opts: CtxOptions) {
 		},
 		sessionManager: {
 			getEntries: () => [],
+			// The wait store reads the session branch (main's `waitHost`); a
+			// checkpoint's continuation is "no wait pending" unless a row records one.
+			getBranch: () => [],
 			getSessionId: () => "test-session",
 			getCwd: () => opts.cwd,
 		},
@@ -254,15 +266,29 @@ function makeCtx(opts: CtxOptions) {
 	return { ctx, notifications, compactRequests, registry };
 }
 
+/**
+ * Valid authored fields. `triedAndFailed` cannot be `"none"` here: a checkpoint
+ * whose `decisions` and `triedAndFailed` are both N/A is rejected (nothing to
+ * resume, WO-2026-062 C10).
+ */
 function summary(over: Record<string, unknown> = {}) {
 	return {
 		goal: "A checkpoint owns its summary text",
 		filesTouched: ["fixture.ts"],
 		decisions: ["none"],
-		triedAndFailed: ["none"],
+		triedAndFailed: ["the first approach — it failed, so the next window does not retry it"],
 		constraints: "none",
 		...over,
 	};
+}
+
+/**
+ * A branch entry the cut boundary can name. `preparation.firstKeptEntryId`
+ * always references one (`findProjectedCutPoint` picks a real index), so the
+ * merged file-op walk asserts on a miss.
+ */
+function boundaryEntry(id: string = BOUNDARY.firstKeptEntryId) {
+	return { id, parentId: null, type: "message", message: { role: "user", content: [] } };
 }
 
 /** A `SessionBeforeCompactEvent` (`types.d.ts:601`) with the given instructions. */
@@ -272,7 +298,7 @@ function beforeCompactEvent(
 ) {
 	return {
 		preparation: { ...BOUNDARY },
-		branchEntries: [],
+		branchEntries: [boundaryEntry()],
 		customInstructions,
 		reason: "manual",
 		willRetry: false,
@@ -280,7 +306,11 @@ function beforeCompactEvent(
 	};
 }
 
-/** Queue a checkpoint through the tool and the `turn_end` trigger. */
+/**
+ * Queue a checkpoint through the tool and the compaction trigger. `turn_end`
+ * only runs the agent loop's mid-run boundary; the compaction request fires at
+ * `agent_settled`, after the run is idle.
+ */
 async function queueCheckpoint(
 	h: ReturnType<typeof makeCtx>,
 	args: Record<string, unknown> = {},
@@ -290,8 +320,9 @@ async function queueCheckpoint(
 		.get("checkpoint")
 		.execute("call-1", { summary: summary(), ...args }, undefined, undefined, h.ctx);
 	await emit(CHECKPOINT_EXT, "turn_end", h.ctx);
+	await emit(CHECKPOINT_EXT, "agent_settled", h.ctx);
 	const request = h.compactRequests[h.compactRequests.length - 1];
-	if (!request) throw new Error("turn_end did not request a compaction");
+	if (!request) throw new Error("agent_settled did not request a compaction");
 	return request;
 }
 
@@ -339,11 +370,15 @@ describe("summary ownership across the compaction boundary", () => {
 			expect(h.registry.authCalls).toBe(0);
 
 			const stored = dispatched.result?.compaction;
-			expect(stored.summary).toBe(
-				String(request.customInstructions).replace(CHECKPOINT_MARKER, "").trim(),
-			);
+			// 062 owns the composed text: the authored half is the byte-identical
+			// prefix and only the machine block is appended (its content is C1's).
+			const authored = String(request.customInstructions).replace(CHECKPOINT_MARKER, "").trim();
+			expect(stored.summary.startsWith(authored)).toBe(true);
+			expect(stored.summary.slice(authored.length)).toStartWith("\n\n### Machine facts\n");
 			expect(stored.firstKeptEntryId).toBe(BOUNDARY.firstKeptEntryId);
 			expect(stored.tokensBefore).toBe(BOUNDARY.tokensBefore);
+			// No summariser call, so no usage is recorded (owner 2026-10-31).
+			expect(stored.usage).toBeUndefined();
 		});
 	});
 
@@ -538,6 +573,7 @@ describe("summary ownership across the compaction boundary", () => {
 					h.ctx,
 				);
 			await emit(CHECKPOINT_EXT, "turn_end", h.ctx);
+			await emit(CHECKPOINT_EXT, "agent_settled", h.ctx);
 			const request = h.compactRequests[h.compactRequests.length - 1];
 
 			const dispatched = await dispatchBeforeCompact(
@@ -589,11 +625,12 @@ describe("summary ownership across the compaction boundary", () => {
 			expect(seenByModel?.event.customInstructions).toBe(request.customInstructions);
 			expect(seenByModel?.event.customInstructions).toContain(CHECKPOINT_MARKER);
 
-			// What pi stores is that same text with the marker consumed once.
-			const stored = dispatched.result?.compaction.summary;
-			expect(stored).toBe(
-				String(request.customInstructions).replace(CHECKPOINT_MARKER, "").trim(),
-			);
+			// What pi stores is that same text with the marker consumed once, plus
+			// the machine block 062 appends; the fleet never rewrote either half.
+			const stored = String(dispatched.result?.compaction.summary);
+			const authored = String(request.customInstructions).replace(CHECKPOINT_MARKER, "").trim();
+			expect(stored.startsWith(authored)).toBe(true);
+			expect(stored).toContain("### Machine facts");
 			expect(fleetCalls).toHaveLength(0);
 		});
 	});
