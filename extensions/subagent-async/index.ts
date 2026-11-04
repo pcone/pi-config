@@ -1395,7 +1395,9 @@ export function readSessionExchange(sessionFile: string): { task: string; output
 }
 
 /** Open a work-order record for a spawn by writing its dispatch. Returns the record to complete at
- *  close, plus notes to surface. Never throws; a repo without wo_record.py gets neither record nor note. */
+ *  close, plus notes to surface. Never throws; a repo without wo_record.py gets neither record nor note.
+ *  Only a spawn that OWNS the order calls this: a reviewer never owns one, so its spawn writes nothing
+ *  (the `reviewerKind` gate at the `subagent` call site). */
 export function openWorkRecord(
 	cwd: string,
 	workOrderPath: string,
@@ -3950,9 +3952,16 @@ export default function (pi: ExtensionAPI) {
 
 			running.set(sessionId, rs);
 
-			// Work-order record: the dispatch is written by this spawner, into its own repo.
-			// A failure is reported with the result; it never fails the spawn.
-			const dispatch = params.workOrderPath
+			// Work-order record: the dispatch belongs to the spawn that OWNS the order, which is a
+			// property of the spawned agent. A reviewer never owns one — it reviews one — so its
+			// spawn reads the order from its task text and writes no record. (Record design:
+			// decisions/work-order-records/001, tfd.) A failure is reported with the result; it
+			// never fails the spawn.
+			const isReviewer = agent.reviewerKind !== undefined;
+			if (params.workOrderPath && isReviewer) {
+				debugLog(`work-order record: no dispatch for ${agent.name} (reviewer_kind=${agent.reviewerKind}); a reviewer never owns an order`);
+			}
+			const dispatch = params.workOrderPath && !isReviewer
 				? openWorkRecord(cwd, params.workOrderPath, sessionId, params.task)
 				: { notes: [] };
 			rs.workRecord = dispatch.record;
