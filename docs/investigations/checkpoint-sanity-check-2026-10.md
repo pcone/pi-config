@@ -196,3 +196,8 @@ Suggested sequencing: 1 and 4 landed; 2 after the owner's summary-ownership ruli
   removals (`rg -l 9925257 decisions/` → 0); the restore-vs-record question went
   to the planning seat on 2026-11-04, and `work-orders/WO-drift-decision-record.md`
   waits on it.
+- **Q4 status (2026-11-05): answered — record as intended.** The owner chose
+  "Record as intended"; `decisions/checkpoint/006-9925257-removals.md` carries
+  the disposition table and the open `isAbnormalStop` crash-resume item. One
+  premise in §5.8 is corrected there: `isAbnormalStop` was removed by `1812a84`,
+  not by `9925257`.

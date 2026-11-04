@@ -1,7 +1,6 @@
 # WO-drift-decision-record — decision record for the `9925257` removals (restated 2026-11-04)
 
-**Status: DRAFT — DISPATCH-BLOCKED on the owner's restore-vs-record ruling (sanity-check §7 Q4)
-for the disposition column only. The record itself is ruling-independent.**
+**Status: LANDED 2026-11-05** (`decisions/checkpoint/006-9925257-removals.md`).
 
 Restated by WO-2026-071 (`docs/investigations/pi-1.4-compaction-override-2026-11.md` §8). Two of
 the three surfaces this draft originally carried are already fixed in `main`, so they leave scope:
@@ -48,9 +47,9 @@ removes them; `rg -l 9925257 decisions/` → 0. If either fails, stop with `PREM
 
 ### Rulings
 
-- **Open**: Q4 (restore vs record) fills the disposition column. Until it is answered, every item
-  is written `[RESTORE PENDING → unallocated]` and the order does not claim otherwise — an
-  unanswered question is not a ruling.
+- **Q4 answered (owner, 2026-11-05, via the planning seat): "Record as intended".** No feature is
+  restored. The record states "rebuilt, not restored" for the three capabilities `main` re-wrote
+  after the removal, and keeps the `isAbnormalStop` crash-resume gap open as its own item.
 
 ### Scope
 
@@ -104,3 +103,22 @@ sanity-check §5.8 (the drift inventory).
 
 Standard schema; `review_policy: skip`, so no review rounds. Include `deviations_from_spec` and
 `notes_for_orchestrator` regardless.
+
+---
+
+### Landing stamp (2026-11-05)
+
+**Landed by the orchestrator**, docs-only: `decisions/checkpoint/006-9925257-removals.md`, its index
+row, this order's Q4 ruling, and the sanity check's Q4 status. `review_policy: skip` applied — no
+code, no tests, no surface outside `decisions/` and retrievals of existing citations.
+
+**One premise of this order is wrong and is corrected in the record.** §5.8 lists `isAbnormalStop`
+among the features `9925257` removed; `git grep isAbnormalStop 9925257^` and `… 9925257` both return
+nothing, and `git log -S'function isAbnormalStop'` names `1812a84` as the remover — the
+stash-isolation commit that `9925257`'s own message identifies. So `1812a84`, not `9925257`, dropped
+it, four months earlier. That does not change the disposition (the owner ruled record-as-intended for
+all four) but it does change the story the record tells, which is the point of a drift record.
+
+**Verification:** `rg -n "doCheckpoint|isAbnormalStop|checkpoint-continue|checkpoint-stop" decisions/checkpoint/`
+finds the new record; no code or test file changed (`git diff --name-only` = 4 files, all docs).
+Full suite at the tip equals the base red set.

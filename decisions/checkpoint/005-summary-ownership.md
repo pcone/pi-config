@@ -7,6 +7,11 @@ date: 2026-10-31
 
 # Checkpoint compactions own their summary text
 
+**Ruling reconfirmed (owner, 2026-11-05, via the planning seat).** Asked
+whether the 2026-10-31 ruling recorded below is his and should land, he chose
+*"Yes, land it"*. No transcript of his 10-31 words survives, so this
+confirmation is the citable record; the 10-31 line stands as written.
+
 **Ruling (owner, 2026-10-31).** A checkpoint's stored summary is the text
 `checkpoint.ts` composes, verbatim: the authored fields
 (`goal / filesTouched / decisions / triedAndFailed / constraints / nextSteps`)
