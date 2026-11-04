@@ -1,5 +1,39 @@
 # WO-2026-074 — every agent that reviews declares a kind
 
+**Status: DISPATCH-BLOCKED (2026-11-05) on owner question Q-074-a below.** The mechanism is
+settled; whether it may add a frontmatter value is not, and `agents/*.md` frontmatter is agent
+surface rather than an integrator's call.
+
+### Owner question Q-074-a (raised 2026-11-05)
+
+**Ask:** may `reviewer_kind` gain a third value, `plan`, so `agents/review-plan.md` can declare
+itself a reviewer? A `plan` token touches `ReviewerKind` and `RECOGNISED_REVIEWER_KINDS`
+(`extensions/subagent-async/agents.ts:34`), one frontmatter line, and nothing else — but it is
+still a widening of a closed vocabulary that agent authors read.
+
+**Why a ruling is needed and a reviewer's approval is not.** Both candidate shapes *work*; they
+differ in what the machine accepts afterwards. A verifier can prove a row passes either way, so
+neither review nor a gate can choose between them.
+
+**Option A — new `plan` value (recommended).** One union member, one set member, one frontmatter
+line. The record gate already reads `reviewerKind !== undefined`, so `agents/implement.md` step 4
+and the gate stay as they are. Gap it opens: `reviewParentRequirements` shares the same type, so an
+implementer could then require a `plan` review before landing. Recommendation if A is chosen: no
+requirement may name `plan`, and a row proves a `plan` spawn does not satisfy an `implementation`
+requirement.
+
+**Option B — a separate `owns_work_order: false` field.** Read only by the record gate. It leaves
+`ReviewerKind` closed, which is its one advantage, at the cost of a second frontmatter concept for
+a single distinction — the shape this repo keeps paying for (a rule that must be kept in step by
+hand rather than by the type).
+
+**Option C — reuse `implementation` for `review-plan`.** Rejected on the merits, not on cost: a
+plan review would then satisfy `requires_parent_reviewers: [implementation]`, turning "a
+post-implementation code review happened" into "something reviewed something".
+
+**If no ruling,** the order stays blocked and the hole stays documented rather than patched: a
+`review-plan` spawn carrying a `workOrderPath` records a dispatch it does not own.
+
 ### Metadata
 
 - **work_order_id**: WO-2026-074
