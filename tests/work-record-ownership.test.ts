@@ -182,9 +182,14 @@ describe("a reviewer spawn carrying workOrderPath", () => {
 			expect(rows).toHaveLength(1);
 			expect(rows[0].argv).toEqual(["append", WO_ID, "dispatch", "--wo_blob", blobOf(root, WO_FILE),
 				"--implementer", impl.sid, "--work_order", WO_FILE]);
-			expect(rows.map((r) => r.argv)).not.toContain(reviewer.sid);
-			// The reviewer's own close must not complete a record it never opened.
-			expect(resolveRunningSession(reviewer.sid)?.workRecord).toBeUndefined();
+			expect(recordCalls(root).flatMap((c) => c.argv)).not.toContain(reviewer.sid);
+			// The reviewer's own close must not complete a record it never opened, and the
+			// skip is a debug log, never a note the implementer sees.
+			const rs = resolveRunningSession(reviewer.sid);
+			expect(rs).toBeDefined();
+			expect(rs?.workRecord).toBeUndefined();
+			expect(rs?.recordNotes).toEqual([]);
+			expect(reviewer.text).not.toContain("work-order record");
 		},
 		60_000,
 	);
@@ -192,17 +197,20 @@ describe("a reviewer spawn carrying workOrderPath", () => {
 
 // ── Row 2 — every declared reviewer, not the two that exist today ──────────
 describe("every reviewer agent in agents/", () => {
-	/** Agents whose frontmatter declares `reviewer_kind`, parsed by the extension itself. */
+	/** Agents whose frontmatter declares `reviewer_kind`, parsed by the extension itself.
+	 *  The field means "post-implementation reviewer" (`agents.ts:12-17`), so a reviewer that
+	 *  declares none — `review-plan` — is outside both this census and the record gate, and
+	 *  still writes a dispatch when a spawn passes it a `workOrderPath`. Covering it needs a
+	 *  `ReviewerKind` for it (`agents.ts:32`), which is a separate change. */
 	function declaredReviewers() {
 		return _loadAgentsFromDir(AGENTS_DIR, "project").filter((a) => a.reviewerKind !== undefined);
 	}
 
-	it("the iteration is not vacuous: at least two agents declare reviewer_kind", () => {
-		// Two at d31bfc1 (review-code, review-tests). The guard is what a deleted
-		// `reviewer_kind:` field trips — without it the loop below goes quiet.
-		const reviewers = declaredReviewers();
-		expect(reviewers.map((a) => a.name).sort()).toEqual(expect.arrayContaining(["review-code", "review-tests"]));
-		expect(reviewers.length).toBeGreaterThanOrEqual(2);
+	it("the iteration is not vacuous: both reviewer kinds are declared in agents/", () => {
+		// The census is relative to the type, not to a count, and it names no agent: a
+		// deleted `reviewer_kind:` field leaves one kind and reddens this row.
+		const kinds = declaredReviewers().map((a) => a.reviewerKind).sort();
+		expect(kinds).toEqual(["implementation", "tests"]);
 	});
 
 	it(

@@ -3952,15 +3952,16 @@ export default function (pi: ExtensionAPI) {
 
 			running.set(sessionId, rs);
 
-			// Work-order record: the dispatch belongs to the spawn that OWNS the order, which is
-			// a property of the spawned agent. A reviewer never owns one — it reviews one — so
-			// its spawn reads the order from its task text and writes no record
-			// (decisions/work-order-records/001). A failure is reported with the result; it never
-			// fails the spawn.
-			if (params.workOrderPath !== undefined && agent.reviewerKind !== undefined) {
+			// Work-order record: the dispatch belongs to the spawn that OWNS the order, which is a
+			// property of the spawned agent. A reviewer never owns one — it reviews one — so its
+			// spawn reads the order from its task text and writes no record. (Record design:
+			// decisions/work-order-records/001, tfd.) A failure is reported with the result; it
+			// never fails the spawn.
+			const isReviewer = agent.reviewerKind !== undefined;
+			if (params.workOrderPath && isReviewer) {
 				debugLog(`work-order record: no dispatch for ${agent.name} (reviewer_kind=${agent.reviewerKind}); a reviewer never owns an order`);
 			}
-			const dispatch = params.workOrderPath && agent.reviewerKind === undefined
+			const dispatch = params.workOrderPath && !isReviewer
 				? openWorkRecord(cwd, params.workOrderPath, sessionId, params.task)
 				: { notes: [] };
 			rs.workRecord = dispatch.record;
