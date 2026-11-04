@@ -71,17 +71,10 @@ checkpoint summarisation.
   separately* — a generated document and a machine block in one entry means
   two summarisation schemas to keep in sync, for no fact the block lacks.
 
-**Landed 2026-11-04 (WO-2026-073)** by merging both carriers into one tree; production-reprobed
-with one real `checkpoint`-tool compaction per tree: before the merge the fleet seat served it
-(`deepseek-v4.1-flash`, request body carrying the marker, `usage` recorded, summary not starting
-with the authored text); after it, no request to the fleet provider at all, no `usage`, and the
-authored text is a byte-identical prefix of the stored summary. `/compact` on the same tree still
-takes the fleet seat. Evidence: `docs/investigations/pi-1.4-compaction-override-2026-11.md`.
-
-**The archive and the stored summary differ by exactly the machine block.** The archive's
-`.meta.json` `summary` is the authored text (plus the in-flight record); the compaction entry's
-summary is that text followed by the block. Comparing the two byte-for-byte is therefore not the
-test of this ruling — prefix equality plus "no `usage`" is, and the fleet output fails both.
+**Landed.** Merged into one tree 2026-11-04 by WO-2026-073, which carried WO-2026-061 (the
+predicate) and WO-2026-062 (composition, machine block, field validation). Measurements from the
+landing, and the state that armed the override, are in
+`docs/investigations/pi-1.4-compaction-override-2026-11.md`.
 
 **Supersedes.** `docs/investigations/checkpoint-sanity-check-2026-10.md` §5.2's
 "the override never fires in this environment" (true on pi 0.83.0; the 1.4.0

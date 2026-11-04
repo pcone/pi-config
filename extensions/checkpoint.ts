@@ -839,8 +839,8 @@ export default function (pi: ExtensionAPI) {
 
 			// Stash params for session_before_compact to pick up (it has access
 			// to firstKeptEntryId, which lets us skip preserved files) and mark
-			// the request for the turn_end trigger. Do NOT compact here: the
-			// tool result has not been persisted yet.
+			// the request for the `agent_settled` trigger. Do NOT compact here:
+			// the tool result has not been persisted yet.
 			pendingCheckpoint = {
 				summary,
 				next,

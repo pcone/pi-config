@@ -23,21 +23,10 @@
  */
 
 import { compact } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CHECKPOINT_MARKER } from "./lib/checkpoint-marker.ts";
 import { FLEET_MODEL, FLEET_MODEL_SPEC, FLEET_PROVIDER } from "./lib/fleet-model.ts";
-
-/**
- * A surface failure must not become a runner error (`runner.js:826`): `ctx` can
- * be stale after a reload. `checkpoint.ts` guards its notifies the same way.
- */
-function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error"): void {
-	try {
-		ctx.ui.notify(message, level);
-	} catch {
-		/* ctx stale after reload */
-	}
-}
+import { safeNotify } from "./lib/safe-notify.ts";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -50,7 +39,7 @@ export default function (pi: ExtensionAPI) {
 
 		const model = ctx.modelRegistry.find(FLEET_PROVIDER, FLEET_MODEL);
 		if (!model) {
-			notify(
+			safeNotify(
 				ctx,
 				`Compaction model ${FLEET_MODEL_SPEC} not found — using default compaction`,
 				"warning",
@@ -61,7 +50,7 @@ export default function (pi: ExtensionAPI) {
 		// Resolve auth for the compaction model
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok) {
-			notify(ctx, `Compaction auth failed: ${auth.error}`, "warning");
+			safeNotify(ctx, `Compaction auth failed: ${auth.error}`, "warning");
 			return;
 		}
 
@@ -83,7 +72,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const message = error instanceof Error ? error.message : String(error);
-			notify(ctx, `Compaction with ${FLEET_MODEL_SPEC} failed: ${message}`, "error");
+			safeNotify(ctx, `Compaction with ${FLEET_MODEL_SPEC} failed: ${message}`, "error");
 			return;
 		}
 	});

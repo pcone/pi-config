@@ -283,6 +283,21 @@ function summary(over: Record<string, unknown> = {}) {
 }
 
 /**
+ * The authored text these rows' fixture renders to — a literal, not a
+ * re-derivation from `request.customInstructions`, so a composition that drops
+ * or truncates the authored half fails the row (R1/R8).
+ */
+const AUTHORED_TEXT = [
+	"Goal: A checkpoint owns its summary text",
+	"Files touched: fixture.ts",
+	"Decisions: none",
+	"Tried and failed (and why):",
+	"  - the first approach — it failed, so the next window does not retry it",
+	"Constraints: none",
+	"Next: RESUME-HERE",
+].join("\n");
+
+/**
  * A branch entry the cut boundary can name. `preparation.firstKeptEntryId`
  * always references one (`findProjectedCutPoint` picks a real index), so the
  * merged file-op walk asserts on a miss.
@@ -372,11 +387,13 @@ describe("summary ownership across the compaction boundary", () => {
 			const stored = dispatched.result?.compaction;
 			// 062 owns the composed text: the authored half is the byte-identical
 			// prefix and only the machine block is appended (its content is C1's).
-			const authored = String(request.customInstructions).replace(CHECKPOINT_MARKER, "").trim();
-			expect(stored.summary.startsWith(authored)).toBe(true);
-			expect(stored.summary.slice(authored.length)).toStartWith("\n\n### Machine facts\n");
+			expect(stored.summary.startsWith(AUTHORED_TEXT)).toBe(true);
+			expect(stored.summary.slice(AUTHORED_TEXT.length)).toStartWith("\n\n### Machine facts\n");
 			expect(stored.firstKeptEntryId).toBe(BOUNDARY.firstKeptEntryId);
 			expect(stored.tokensBefore).toBe(BOUNDARY.tokensBefore);
+			// The file trail rides the entry: core never inherits it from a hook
+			// compaction, so the next checkpoint would lose it (WO-2026-062 §2).
+			expect(stored.details).toEqual({ readFiles: [], modifiedFiles: [] });
 			// No summariser call, so no usage is recorded (owner 2026-10-31).
 			expect(stored.usage).toBeUndefined();
 		});
@@ -627,9 +644,9 @@ describe("summary ownership across the compaction boundary", () => {
 
 			// What pi stores is that same text with the marker consumed once, plus
 			// the machine block 062 appends; the fleet never rewrote either half.
+			// Asserted against the literal authored text, so dropping it is a red row.
 			const stored = String(dispatched.result?.compaction.summary);
-			const authored = String(request.customInstructions).replace(CHECKPOINT_MARKER, "").trim();
-			expect(stored.startsWith(authored)).toBe(true);
+			expect(stored.startsWith(AUTHORED_TEXT)).toBe(true);
 			expect(stored).toContain("### Machine facts");
 			expect(fleetCalls).toHaveLength(0);
 		});
@@ -646,10 +663,12 @@ describe("summary ownership across the compaction boundary", () => {
 
 /**
  * Replace `globalThis.fetch` for the duration of a row. The fleet summarisation
- * goes out through pi-ai's own dispatch rather than the coding-agent
- * `ModelRuntime` (`compaction.js:483` → pi-ai `models.js:442`), so a row that
- * only spies on the mocked `compact()` seam would miss a re-implementation that
- * calls the provider directly. Any request is recorded and refused.
+ * leaves through pi-ai's own dispatch rather than the coding-agent
+ * `ModelRuntime`, so a row that only spies on the mocked `compact()` seam would
+ * miss a re-implementation that calls the provider directly. Probe that
+ * establishes the bypass: `docs/investigations/pi-1.4-compaction-override-2026-11.md`
+ * §1 (its `globalThis.fetch` wrapper is the artefact that caught the four-day
+ * bug). Any request is recorded and refused.
  */
 async function withoutTransport(run: (requests: string[]) => Promise<void>) {
 	const realFetch = globalThis.fetch;
@@ -712,17 +731,19 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 			"[CHECKPOINT", // the marker with no closing bracket
 			"CHECKPOINT]",
 		];
-		for (const customInstructions of yielding) {
-			fleetCalls.length = 0;
-			await withCwd(async (cwd) => {
-				const h = makeCtx({ cwd });
-				const dispatched = await dispatchBeforeCompact(
-					h.ctx,
-					beforeCompactEvent(customInstructions),
-				);
-				expect(dispatched.errors).toEqual([]);
-				expect(fleetCalls).toHaveLength(0);
-			});
+		for (const reason of ["manual", "threshold", "overflow"] as const) {
+			for (const customInstructions of yielding) {
+				fleetCalls.length = 0;
+				await withCwd(async (cwd) => {
+					const h = makeCtx({ cwd });
+					const dispatched = await dispatchBeforeCompact(
+						h.ctx,
+						beforeCompactEvent(customInstructions, { reason }),
+					);
+					expect(dispatched.errors).toEqual([]);
+					expect(fleetCalls).toHaveLength(0);
+				});
+			}
 		}
 		for (const reason of ["manual", "threshold", "overflow"] as const) {
 			for (const customInstructions of fleetBound) {

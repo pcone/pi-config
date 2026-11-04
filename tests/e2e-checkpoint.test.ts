@@ -1184,7 +1184,9 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 				.get("checkpoint")
 				.execute("call-1", { summary: summaryFields(), nextSteps: "NEXT-STEP" }, undefined, undefined, ctx);
 			await h.emit("turn_end", ctx);
+			await h.emit("agent_settled", ctx);
 			const compact = h.compactCalls[h.compactCalls.length - 1];
+			if (!compact) throw new Error("agent_settled did not request a compaction");
 
 			const authored = String(compact.customInstructions).replace("[CHECKPOINT]", "").trim();
 			const results = await h.emit("session_before_compact", ctx, {
@@ -2013,6 +2015,7 @@ describe("checkpoint: field validation", () => {
 			expect(text).toContain("decisions");
 			expect(text).toContain("[] is rejected");
 			await h.emit("turn_end", ctx);
+			await h.emit("agent_settled", ctx);
 			expect(h.compactCalls).toHaveLength(0);
 			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
 		} finally {
@@ -2081,6 +2084,7 @@ describe("checkpoint: field validation", () => {
 			}
 			expect(text.match(/^- /gm)?.length).toBe(4);
 			await h.emit("turn_end", ctx);
+			await h.emit("agent_settled", ctx);
 			expect(h.compactCalls).toHaveLength(0);
 			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
 		} finally {

@@ -20,6 +20,16 @@ below is the record of the state that produced them. Re-probed with the §1 meth
 | merged tip | **none** (no request to the fleet provider at all) | 1019 chars, no `usage`, byte-identical authored prefix then the machine block |
 | merged tip, `/compact` control | `deepseek-v4.1-flash` | 855 chars, `usage` present, fleet rewrite — the ruling does not reach it |
 
+**What "the stored summary is the composed text" is measured against.** The persisted
+`CompactionEntry.summary` is not byte-equal to the archive's `.meta.json` `summary`, and cannot
+be: the archive is written in the tool, before the hook holds the file facts, and WO-2026-062
+keeps the machine block out of it on purpose ("Its `summary` stays the authored text; the entity
+summary is the authored text plus the machine block"). Measured on the merged tip: the archive's
+378 chars are a byte-identical prefix of the 1019-char entry summary, machine block after; the
+fleet path fails both prefix equality and the no-`usage` test. WO-2026-073's acceptance row asks
+for byte-equality, which this design makes unmeetable — that row's wording is an open question
+for the owner (recorder's observation, not a ruling).
+
 ## 1. Which model served the summary
 
 Two artefacts, one driven run, one production corpus.

@@ -26,8 +26,9 @@ refactor lands.
 `tests/summary-ownership.test.ts` 600 → 779 (15 rows). 062's own delta on `checkpoint.ts` was
 +221/−65; the net is smaller because main's wait surface and 062's composition share the body
 that grew. The new half lives in `lib/` rather than in `checkpoint.ts` itself, which is the
-split 062's order asked for: the composition is one `composeSummary([...])` call at two sites
-and the machine block one `renderMachineBlock` call, so no function gained a branch structure.
+split 062's order asked for: the composition is one `composeSummary([...])` shape at three sites
+(`checkpoint.ts:687`, `:820`, `:976`) and the machine block one `renderMachineBlock` call, so no
+function gained a branch structure.
 `extensions/checkpoint.ts` is the third-largest non-test source file (`rg`-counted:
 `subagent-async/index.ts` 4620, `watch-session-v2.ts` 1675, then 1150). One strike on
 `extensions/checkpoint.ts` growth — the 2026-10-21 strike was resolved by WO-2026-057
@@ -36,12 +37,18 @@ extraction if a third lands: the two tool `execute` bodies still repeat their
 validation → continuation → in-flight → archive preamble (`checkpoint.ts:784-860`,
 `checkpoint_fork`'s at `:930-1000`).
 
-**unification.** The `[CHECKPOINT]` literal duplication the 2026-10-31 entry listed as an open
-carrier is closed: `rg -n '"\[CHECKPOINT\]"' extensions/` → 1, `extensions/lib/checkpoint-marker.ts:8`,
-imported by `checkpoint.ts` and `compaction-model.ts`. Still open from that entry, unchanged:
-the notify guard (`compaction-model.ts`'s local `notify` vs `checkpoint.ts`'s inline
-`try/catch`) and the captured-handler-table harness duplicated between
-`tests/summary-ownership.test.ts` and `tests/e2e-checkpoint.test.ts`.
+**unification.** Two of the three carriers the 2026-10-31 entry named are closed by this merge:
+
+- the `[CHECKPOINT]` literal — `rg -n '"\[CHECKPOINT\]"' extensions/` → 1,
+  `extensions/lib/checkpoint-marker.ts:8`, imported by `checkpoint.ts` and `compaction-model.ts`.
+- the notify guard — `compaction-model.ts`'s own `notify()` is gone; it imports
+  `extensions/lib/safe-notify.ts:24`, the helper main landed after 061's base (`fd3ee99` has no
+  such file), so the merge was the point to fold it.
+
+Still open, unchanged: the captured-handler-table harness duplicated between
+`tests/summary-ownership.test.ts` and `tests/e2e-checkpoint.test.ts`. Carrier: the extraction is
+not scheduled, so this entry is the carrier — it lands with whichever order next edits both
+harnesses.
 
 ## 2026-11-03 — chunk: WO-2026-068 baba-search CLI
 
