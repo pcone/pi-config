@@ -80,3 +80,37 @@ is why three failures produced no diagnosis.
 
 Hard cap 3 rounds. Gate at the tip by running the row three times and pasting the durations, and
 by pasting the diagnostic message your stub produces on a deliberate failure.
+
+---
+
+### Landing stamp (2026-11-04, merged `b29ef9f`)
+
+**Cause, reproduced by my own mutant.** The fixture was 1600 lines — 92,179 chars, ~23.0k tokens
+by pi's chars/4 floor walk, 15% over the 20k `keepRecentTokens` floor — while the provider reports
+~28.9k for the same text. pi decides the cut with the floor walk, not with the number
+`getContextUsage()` reports. A prompt that fails at the provider is replaced during recovery by
+`context_edit` omissions, so the projected transcript shrinks **below** the floor, idle compaction
+refuses, and the only trace was the swallowed notify. My mutant (`fillerLines(1600)` →
+`fillerLines(800)`) reproduces the production text exactly —
+
+```
+[error] Idle compaction failed: Nothing to compact (session too small)
+```
+
+— and reds the row in 10.6 s. Three base runs before the fix: 23 s pass, 195 s fail, 41 s pass.
+Three at the tip: 13 s, 18 s, 14 s, both rows green.
+
+**Why the row could red three times without a diagnosis:** `stubUI()` replaced every `ui.notify`
+with a no-op, so a refusal, a failed summarization call and a deadline all looked like "no
+compaction entry". The stub now records level and text, every failure message carries the captured
+notifications and the transcript's entry types, and the wait's three-way exit (`compaction` /
+`error notification` / `deadline`) is asserted with a mutation proving the assertion reds.
+
+**Cost moved down:** ~30k billed prompt tokens in 3 requests (base was ~50–60k), runtime 11–21 s
+against 23–41 s. The always-on budget improved, so the structure-trend snapshot is deliberately
+untouched.
+
+**A product defect this exposed, carried separately:** a provider failure at prompt time makes the
+extension report "Nothing to compact (session too small)" when the session was neither small nor
+out of cut points — the right cause is the failed prompts. That is a reporting defect in
+`extensions/auto-checkpoint.ts`, not a test concern, and it is filed with pcone/pi-config#11.
