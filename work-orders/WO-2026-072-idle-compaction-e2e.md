@@ -112,5 +112,13 @@ untouched.
 
 **A product defect this exposed, carried separately:** a provider failure at prompt time makes the
 extension report "Nothing to compact (session too small)" when the session was neither small nor
-out of cut points — the right cause is the failed prompts. That is a reporting defect in
-`extensions/auto-checkpoint.ts`, not a test concern, and it is filed with pcone/pi-config#11.
+out of cut points — the right cause is the failed prompts. That is a reporting defect, not a test
+concern, and it is carried by **pcone/pi-config#16** (`#11` records the account exhaustion, which
+stops applying the moment the balance is topped up).
+
+The site, read at `0d13e8a`: the string is pi core's, not this repo's — `onError` relays
+`error.message` verbatim at `extensions/auto-checkpoint.ts:463`. So the wrong-cause assertion is
+core's, and what this repo can fix is the relay: it already holds the reported usage and the
+threshold (the same numbers the success marker prints at `:505`), so a refusal can name the counts
+it saw and say "session too small" only when that is true. Rewording without the numbers would
+trade one wrong answer for a vague one.
