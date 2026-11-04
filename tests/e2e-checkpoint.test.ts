@@ -554,6 +554,21 @@ function preparation(over: Record<string, unknown> = {}) {
 }
 
 /**
+ * What `summaryFields()` with `nextSteps: "NEXT-STEP"` renders to — a literal, so
+ * a row asserting the authored half cannot be satisfied by re-reading its own
+ * output (the shape WO-2026-073 removed from R1/R8).
+ */
+const S12_AUTHORED = [
+	"Goal: deterministic summary",
+	"Files touched: none",
+	"Decisions: none",
+	"Tried and failed (and why):",
+	"  - a first attempt — it failed, so the next window does not retry it",
+	"Constraints: none",
+	"Next: NEXT-STEP",
+].join("\n");
+
+/**
  * A branch entry the cut boundary can name. `preparation.firstKeptEntryId` always
  * references one — pi's `findProjectedCutPoint` picks a real index — so the
  * hook's ancestry walk asserts on a miss.
@@ -1188,7 +1203,8 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 			const compact = h.compactCalls[h.compactCalls.length - 1];
 			if (!compact) throw new Error("agent_settled did not request a compaction");
 
-			const authored = String(compact.customInstructions).replace("[CHECKPOINT]", "").trim();
+			const authored = S12_AUTHORED;
+			expect(compact.customInstructions).toBe(`[CHECKPOINT]\n${authored}`);
 			const results = await h.emit("session_before_compact", ctx, {
 				customInstructions: compact.customInstructions,
 				preparation: preparation(),
@@ -2142,7 +2158,7 @@ describe("checkpoint: field validation", () => {
 			expect(compaction.firstKeptEntryId).toBe("kept-entry");
 			expect(compaction.tokensBefore).toBe(42_000);
 			expect(compaction.details).toEqual({ readFiles: ["src/a.ts"], modifiedFiles: ["src/b.ts"] });
-			// No summariser call happens, so there is no usage to record (decision 003).
+			// No summariser call happens, so there is no usage to record (decision 005).
 			expect("usage" in compaction).toBe(false);
 		} finally {
 			_testSetInflightScanDir(undefined);

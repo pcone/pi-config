@@ -16,21 +16,22 @@ refactor lands.
 | area | strikes (landing or refusal) | state | refactor |
 |---|---|---|---|
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
-| `extensions/checkpoint.ts` growth | 1 (2026-10-21, resolved by WO-2026-057: 901 → 818) + 1 (2026-11-04, WO-2026-073) | open — one strike since the resolution; the next chunk there that cannot extract must refuse | the two `execute` preambles (`checkpoint.ts:784-860`, `:930-1000`) into one helper |
+| `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike. Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal). An orchestrator reading the rule as "two landings ever" closes the area now | the two `execute` preambles (`checkpoint.ts:784-860`, `:930-946`) into one helper |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
 
 ## 2026-11-04 — chunk: WO-2026-073 summary-ownership integration (061 + 062 merged)
 
 **growth.** `extensions/checkpoint.ts` 994 → 1150 (+156), `extensions/compaction-model.ts`
-68 → 90, new `extensions/lib/checkpoint-summary.ts` (169),
-`tests/summary-ownership.test.ts` 600 → 779 (15 rows). 062's own delta on `checkpoint.ts` was
+68 → 79 (+11: the predicate, and the notify guard folded onto `lib/safe-notify.ts` in place of
+a local copy), new `extensions/lib/checkpoint-summary.ts` (169),
+`tests/summary-ownership.test.ts` 600 → 800 (15 rows). Counts measured at the landed tip. 062's own delta on `checkpoint.ts` was
 +221/−65; the net is smaller because main's wait surface and 062's composition share the body
 that grew. The new half lives in `lib/` rather than in `checkpoint.ts` itself, which is the
 split 062's order asked for: the composition is one `composeSummary([...])` shape at three sites
 (`checkpoint.ts:687`, `:820`, `:976`) and the machine block one `renderMachineBlock` call, so no
 function gained a branch structure.
 `extensions/checkpoint.ts` is the third-largest non-test source file (`rg`-counted:
-`subagent-async/index.ts` 4620, `watch-session-v2.ts` 1675, then 1150). One strike on
+`subagent-async/index.ts` 4620, `watch-session-v2.ts` 1675, then 1150). One open strike on
 `extensions/checkpoint.ts` growth — the 2026-10-21 strike was resolved by WO-2026-057
 (901 → 818), so this landing starts the count again rather than closing the area. Candidate
 extraction if a third lands: the two tool `execute` bodies still repeat their

@@ -341,6 +341,18 @@ async function queueCheckpoint(
 	return request;
 }
 
+/**
+ * Clear the extension module's pending state between rows. `pendingCheckpoint`
+ * and the wait store are module state, cleared by `session_start`; without this
+ * a row that queues a checkpoint and never completes it leaks into later rows.
+ */
+async function resetCheckpointState(): Promise<void> {
+	await emit(CHECKPOINT_EXT, "session_start", {
+		cwd: "/tmp",
+		sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
+	});
+}
+
 async function withCwd(run: (cwd: string) => Promise<void>) {
 	const cwd = await mkdtemp(join(tmpdir(), "summary-ownership-"));
 	try {
@@ -716,6 +728,7 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 	});
 
 	it("I2: the marker is the only yielding shape — /compact and auto still take the fleet seat", async () => {
+		await resetCheckpointState();
 		// `checkpoint.ts` prefixes the marker, but it also survives mid-text on the
 		// post-reload path, so the predicate is `includes`, not `startsWith`.
 		const yielding = [
@@ -764,7 +777,34 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 		}
 	});
 
+	it("I4: a marker with no pending checkpoint (post-reload) still yields, on the authored text alone", async () => {
+		await withoutTransport(async (requests) => {
+			await withCwd(async (cwd) => {
+				// The state a reload leaves is exactly "the instructions carry the
+				// marker, the process holds no pending checkpoint" — so the facts the
+				// machine block needs do not exist and the authored text is all there is.
+				await resetCheckpointState();
+				const h = makeCtx({ cwd });
+				const authored = "Goal: survived a reload\nNext: RESUME-HERE";
+				const dispatched = await dispatchBeforeCompact(
+					h.ctx,
+					beforeCompactEvent(`${CHECKPOINT_MARKER}\n${authored}`),
+				);
+
+				expect(dispatched.errors).toEqual([]);
+				expect(fleetCalls).toHaveLength(0);
+				expect(requests).toEqual([]);
+				const stored = dispatched.result?.compaction;
+				expect(stored.summary).toBe(authored);
+				expect(stored.summary).not.toContain("### Machine facts");
+				expect(stored.firstKeptEntryId).toBe(BOUNDARY.firstKeptEntryId);
+				expect(stored.tokensBefore).toBe(BOUNDARY.tokensBefore);
+			});
+		});
+	});
+
 	it("I3: a fleet failure on any non-checkpoint path is loud, and the message names the failure", async () => {
+		await resetCheckpointState();
 		for (const reason of ["manual", "threshold", "overflow"] as const) {
 			fleetCalls.length = 0;
 			await withoutTransport(async (requests) => {
