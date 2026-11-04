@@ -83,3 +83,43 @@ Paste the comparison in the report. Before the merge it differs; after it, it mu
 Hard cap 3 rounds. Gate at the merged tip by re-running all 36 rows in one run plus the three new
 ones, then mutating the predicate (make `compaction-model.ts` call the fleet before checking the
 marker) and showing rows 1 and 2 go red.
+
+---
+
+### Landing stamp (2026-11-04, merged `b18e7c9`)
+
+**Landed.** Eight commits on `pi-subagent-124a5242c74d`: the ruling merged and renumbered to
+`decisions/checkpoint/005`, then WO-2026-061's predicate and loud failure, then WO-2026-062's
+composition and machine block, then the integration rows I1–I4, the wait-state fixture under the
+new field contract, and a structure-trend snapshot. 22 files, +2597/−160. The predicate now sits
+before model resolution (`extensions/compaction-model.ts:38`), so ownership is decided by the
+marker and not by whether the fleet call happens to succeed.
+
+**Two asks the implementer raised are my errors, not owner questions.**
+
+- **The byte-equality row was mis-specified.** This order demanded the persisted entry summary be
+  byte-equal to the archive's `meta.summary`. WO-2026-062 deliberately keeps the machine block out
+  of the archive, so the archive is the authored text and the entry is authored **plus** block —
+  the ruling's own words ("the authored fields … followed by a machine block"). The correct
+  acceptance is therefore prefix-equality plus the block, which is what C1 pins
+  (`tests/e2e-checkpoint.test.ts:1712`: `summary.startsWith(`${authored}\n\n### Machine facts\n`)`)
+  and what the fleet path fails. The row was a bad translation of the ruling, and I am correcting
+  it here rather than asking the owner to ratify my arithmetic.
+- **The renumber check was unmeetable as written.** `rg '003-summary-ownership|checkpoint/003'` →
+  zero could never hold: `checkpoint/003` legitimately names the wait-state record, and my own
+  order text contains the old slug. The right form is the path-only check the implementer ran:
+  `rg -n '003-summary-ownership'` → 3 hits, all inside this order's description of the collision,
+  zero in `decisions/ docs/ extensions/ tests/`.
+
+**Gate, re-run by me at the merged tip.** `tests/summary-ownership.test.ts` 16/0;
+`checkpoint-meta` + `checkpoint-recoverability` + `checkpoint-waits` 49/0; C1 (the composition
+row) 1/0. **My own mutation** — deleting the marker yield so the fleet call runs first — reds six
+rows, including I1 (`no fleet request at all — not on the seam, not on the wire`), I2 (the marker
+is the only yielding shape) and R8. Restored, 16/0. That is the control that matters: a
+call-then-discard implementation passes any summary-equality row.
+
+**Carried with carriers named.** `extensions/checkpoint.ts` growth takes a register row with one
+open strike, whose candidate extraction (the two `execute` preambles at `:784-860` and `:930-946`)
+still needs a carrier. `WO-fleet-client-headers-env.md` is unblocked — 061 landed. Two accepted
+gaps from 062's mechanism, out of this order's remit: `captureAheadBehind` returns `null` on error
+and renders as "unknown (no upstream)", and `behind > 0` is unexercised.
