@@ -40,10 +40,14 @@ requirement.
 **Before that ruling,** the order stayed blocked and the hole stays documented rather than patched: a
 `review-plan` spawn carrying a `workOrderPath` records a dispatch it does not own.
 
-### Q-074-b — settled without a ruling (2026-11-05, orchestrator)
+### Q-074-b — RULED: keep landed (owner, 2026-11-05, via the planning seat)
 
-**Not an owner question, and it is not routed as one.** The implementer raised it because two
-reviews reached opposite conclusions; both were arguing about a set that has not changed. Every
+**"No, keep landed (Recommended)" — a plan review does not count toward an implementer's three
+review rounds.** Landed as such; see the landing stamp.
+
+**Why the direction was already right, and why I did not forward it first.** The implementer raised
+it because two reviews reached opposite conclusions; both were arguing about a set that has not
+changed. Every
 kind that counted toward `reviewRounds` before this order still counts: `implementation` and
 `tests`. `plan` records a spawn and counts nothing — which is exactly what `agents/review-plan.md`
 did before it had a kind at all (no kind → no record → no round). The **bound is unchanged**, and
@@ -175,9 +179,11 @@ requireable — the obligation the ruling's option A carried.
 
 The first is the acceptance row this order exists for, red without the change and green with it.
 
-**Q-074-b closed as an orchestrator determination, not a ruling** (see above): the cap's bound is
-unchanged, so nothing needed the owner. The alternative — a plan review consuming one of three
-rounds — is recorded with its one-line reversal.
+**Q-074-b: owner-ruled "keep landed" (2026-11-05).** I settled the direction as an orchestrator
+determination because the cap's bound was unchanged, then put the question to the planning seat
+anyway once the reviews disagreed; the ruling confirms it. Recorded in `decisions/subagents/006` as
+a ruling, not a recorder's reading, and the reversal now needs an owner ruling rather than a guard
+edit.
 
 **Accepted debt with no carrier yet:** `ReviewerKind` and `RECOGNISED_REVIEWER_KINDS` remain two
 hand-kept lists of the same tokens (`agents.ts`). Both reviews flagged it; the requireable list

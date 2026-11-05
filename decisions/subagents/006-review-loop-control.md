@@ -163,14 +163,12 @@ kind (`agents/review-plan.md`, owner 2026-11-05), a plan spawn is recorded in
 the increment, so the counter's trigger set is the same set it had before the
 kind existed.
 
-*Recorder's reading (2026-11-05), not a separate ruling:* the ruling that made
-`plan` a kind settles the vocabulary and the record gate, not this counter, so
-the counter keeps its existing behaviour — which is the only option that does
-not change a bound the cap's ruling set. Counting plan reviews would consume a
-round before any code review exists, and the cap's escalation ("After 3
-rounds:") is about rework. Recorded so the alternative is answered rather than
-re-argued: if a plan review ever should count, that is a new ruling, and it must
-change the cap's meaning, not just this guard.
+**Ruled (owner, 2026-11-05, via the planning seat, Q-074-b): no — a plan review
+does not spend one of the three rounds.** The rule above was landed before the
+ruling as the behaviour-preserving direction (the counter's trigger set is the
+pre-dispatch set); the ruling confirms it. A plan review consuming a round
+before any code review exists is now closed, not merely unanswered: reversing
+it needs a new owner ruling that changes the cap's meaning, not a guard edit.
 
 Backward-compatible: files without `reviewRounds` are treated as
 round 1 if spawns exist, round 0 otherwise.
