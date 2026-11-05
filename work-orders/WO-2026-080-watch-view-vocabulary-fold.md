@@ -310,3 +310,22 @@ The invented `exitCode = 0` is gone from every pane; it is `number | null` and n
 
 **Pre-existing, not this order:** `watch-session-v2.ts` cannot run under plain `node` (parameter
 properties in a class constructor, present at base); its documented launcher is `npx tsx`.
+
+**Full suite at the merged tip, one `heavy --` slot, 1228 tests (base `e47a407` before this landing: 1228
+tests too).** Red set compared **by row name**: identical, in both directions, to the pre-080 run — 5
+checkpoint live rows (credit exhaustion, pi-config#11), 2 peer-link integration (HTTP 402), 2 `subagent
+tool boundary` (pi-config#15), and the `subagent-boundary hermeticity` injected-env row whose child run
+carries the #15 row. Nothing new red, nothing silently dropped.
+
+**The suite caught a break this order's own rows could not** (`97954ec`). The F16 row I added spawns
+`watch-session.ts`, and its `spawnSync` omitted `env` — which the repo's `subagent-boundary hermeticity`
+gate rejects outright (`tests/watch-view-vocabulary.test.ts:164 — options omit env`). Green on all 80
+targeted rows and on both reviewers' matrices; red on the gate, because the gate is a walk over every
+spawn site in `tests/` and the order told the implementer to run only its own rows. Fixed at the root —
+`env: childEnv()`, the suite's helper — re-ran the gate row green and F16 still red under the
+`TuiAltScreen` mutation, then re-ran the whole suite: red set back to the standing set, row for row.
+
+**Why the order could not have caught it:** a new test file that spawns a process inherits a repo-wide
+obligation that no per-file row exercises. The order's own boundary said "no row may require a TTY" and
+"do not run the full suite", and that pair leaves exactly this hole. Worth remembering for the next test
+file that launches something.
