@@ -34,7 +34,11 @@ repo that names a terminal word or matches a footer line.
 
 **watch.** `extensions/subagent-async/index.ts` (4761) and `watch-session-v2.ts` (1727) are the top two non-test sources; this chunk grew v2 by 50 lines and deleted more mechanism than it added, so it is a **downgrade** on v2 as well. A fourth footer word site, or a viewer that re-derives an outcome, is the strike: the register row above is closed, so the next vocabulary change edits `subagent-state.ts` and no view.
 
-**observation for the next refactor needed here, not this chunk's:** the four viewers duplicate *session discovery* — socket scan, `/tmp/pi-subagent-*.log` glob, mtime window, metadata load — in `watch-session-v2.ts`, `watch-session.cjs` and `test-viewer.cjs`, three times over. Only the vocabulary was folded; discovery is still three copies and has no register row.
+**observation for the next refactor needed here, not this chunk's:** only the vocabulary was folded.
+*Session discovery* — the `/tmp` socket scan, the `pi-subagent-*.log` glob, its own copy of
+`RECENT_WINDOW_MS = 30 * 60 * 1000` and the metadata load — is still two production copies
+(`watch-session-v2.ts`, `watch-session.cjs`; `rg -c 'readdirSync' ` → 2 each) plus the test harness's
+own scan over a temp dir in `test-viewer.cjs`. That cluster has no register row.
 
 ## 2026-11-05 — chunk: WO-2026-078 abnormal terminal turns are labelled
 
