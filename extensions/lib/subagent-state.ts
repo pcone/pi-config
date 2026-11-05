@@ -274,6 +274,10 @@ const TERMINAL_FOOTER_RE = new RegExp(`──\\s*(${FOOTER_WORDS.join("|")})\\s*
  * True when the log's last non-empty line is a terminal footer — the child-side
  * evidence that the run is over (`── <word> (…) ──`, one of `FOOTER_WORDS`).
  * The status vocabulary and the reap both key on this one predicate.
+ *
+ * Deliberately looser than `parseTerminalFooter`: this answers "is the run
+ * over", so a torn or hand-written footer line still counts as terminal, while
+ * the parser additionally demands the turn and exit counts it returns.
  */
 export function hasTerminalFooter(logLastLine: string | null): boolean {
 	return logLastLine !== null && TERMINAL_FOOTER_RE.test(logLastLine);
@@ -315,12 +319,12 @@ const OUTCOME_BY_STOP_REASON: Record<string, SubagentOutcome | undefined> = {
 
 /**
  * The outcome a terminal assistant turn's `stopReason` names, or null when the
- * reason is a normal end (`stop`, `toolUse`) or there is no terminal turn at all
- * (`null`) — then the process exit code decides. Throws on a reason this
- * vocabulary does not know: a new stop reason is a new outcome, never a success.
+ * reason is a normal end (`stop`, `toolUse`) — then the process exit code
+ * decides. Throws on a reason this vocabulary does not know: a new stop reason
+ * is a new outcome, never a success.
  */
-export function stopReasonOutcome(reason: string | null): SubagentOutcome | null {
-	if (reason === null || reason === "stop" || reason === "toolUse") return null;
+export function stopReasonOutcome(reason: string): SubagentOutcome | null {
+	if (reason === "stop" || reason === "toolUse") return null;
 	const outcome = OUTCOME_BY_STOP_REASON[reason];
 	if (!outcome) {
 		throw new Error(`stopReasonOutcome: unknown stopReason "${reason}" — add it to OUTCOME_BY_STOP_REASON`);
@@ -349,7 +353,9 @@ export function parseTerminalFooter(line: string): TerminalFooter | null {
 
 /**
  * The log's terminal footer: the last line that parses as one. Null when the
- * log carries no footer (a torn or truncated log).
+ * log carries no footer (a torn or truncated log). Scans every line, unlike
+ * `readSubagentState`'s last-non-empty-line rule: a recovered log may carry
+ * client chatter after the footer the dead session wrote.
  */
 export function readTerminalFooter(log: string): TerminalFooter | null {
 	const lines = log.split("\n");

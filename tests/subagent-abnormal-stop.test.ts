@@ -4,8 +4,8 @@
  * marked — never silently as success, and never refused (gating completion was
  * rejected).
  *
- * Three sites must say the same thing, which is what these rows assert
- * together:
+ * Three sites must say the same thing, which is what the rows assert together,
+ * against literals rather than against each other:
  *   1. the delivered message prefix (`deliverResult`),
  *   2. the live log footer word (the close handler's `terminalOutcome`),
  *   3. the state read back from disk (`readSubagentState` over that footer).
@@ -13,29 +13,35 @@
  * Rows:
  *  N1  `length` with text      → overflowed, at all three sites
  *  N2  `error` with text       → errored; the child's own text still delivered
- *  N3  `aborted` with exit 0   → aborted (exit code is not what keys it)
+ *  N3  `aborted` with exit 0   → aborted (the exit code is not what keys it)
  *  N4  recovery, `Stopped (7 turns, exit 143)` → not finished; word + exit read
  *  N4b recovery, `Completed (5 turns, exit 0)` → still finished
  *  N5  `stop` with text only   → byte-identical delivery (characterisation)
  *  N6  `length` with no text   → boundary: classified, but never `isDone`
+ *  E2E `length` through a stand-in child → the real close handler writes the
+ *      footer the state reader classifies, and delivers the new prefix
  *
- * Plus the classifier's refusals: an unknown stop reason and a footer word no
- * footer writes both throw rather than falling back to "finished".
+ * Plus the words the union ranges over that no N row names (`toolUse`,
+ * `pending`, `deferred`, `killed`), the exit-code dimension (`exit ?`, a
+ * reasonless message, a log with no footer) and the classifier's refusal of a
+ * stop reason it does not know.
  *
  * Run: bun test tests/subagent-abnormal-stop.test.ts
  * One row: bun test tests/subagent-abnormal-stop.test.ts -t 'N1'
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import {
+import subagentFactory, {
 	_testRunning,
 	_testSetLiveSessionCtx,
 	deliverResult,
+	metaPath,
 	recoverOrphanedSubagents,
+	resolveRunningSession,
 	terminalOutcome,
 	updateFooter,
 	type OwnerProbe,
@@ -49,6 +55,8 @@ import {
 	readTerminalFooter,
 	type SubagentDiskFacts,
 } from "../extensions/lib/subagent-state.ts";
+import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 
@@ -124,7 +132,7 @@ function rsStub(overrides: Record<string, any> = {}): any {
 
 /** An assistant `message_end` payload; `text: null` is a turn with no text
  *  part at all (the shape the completion detector ignores). */
-function assistantMessage(stopReason: string, text: string | null) {
+function assistantMessage(stopReason: string | null, text: string | null) {
 	return {
 		role: "assistant",
 		stopReason,
@@ -133,8 +141,8 @@ function assistantMessage(stopReason: string, text: string | null) {
 	};
 }
 
-function turns(n: number) {
-	return { turns: n, filesRead: new Set<string>(), filesModified: new Set<string>(), errors: [], currentActivity: "" };
+function turns(n: number, filesRead: string[] = []) {
+	return { turns: n, filesRead: new Set(filesRead), filesModified: new Set<string>(), errors: [], currentActivity: "" };
 }
 
 /** The state a reader gets from a log ending in `<word> (3 turns, exit 0)`. */
@@ -151,6 +159,11 @@ function stateForFooter(word: string, exitCode = 0) {
 		now: Date.now(),
 	};
 	return readSubagentState(facts);
+}
+
+/** A terminal footer line as the close handler writes it. */
+function footerLine(word: string, turnCount: number, exitCode: number | "?"): string {
+	return `── ${word} (${turnCount} turns, exit ${exitCode}) ──`;
 }
 
 const tempDirs: string[] = [];
@@ -184,13 +197,15 @@ describe("a child's abnormal terminal turn is labelled, not delivered as success
 		expect(sent[0].split("\n")[0]).toBe(`[Subagent test-agent overflowed] — session: ${rs.sessionId}`);
 		expect(sent[0]).toContain("partial review — stopped at 3 of 6 files");
 
-		// Site 2: the footer word the close handler writes, and the reader
-		// accepting it as terminal evidence.
-		expect(hasTerminalFooter(`── ${t.footer} (4 turns, exit 0) ──`)).toBe(true);
+		// Site 2: the footer line, asserted against its literal spelling.
+		const line = footerLine("Overflowed", 4, 0);
+		expect(t.footer).toBe("Overflowed");
+		expect(parseTerminalFooter(line)).toEqual({ word: "Overflowed", turns: 4, exitCode: 0 });
+		expect(hasTerminalFooter(line)).toBe(true);
 
 		// Site 3: the state read back from that log.
-		const reading = stateForFooter(t.footer);
-		expect(reading.state).not.toBe("complete");
+		const reading = stateForFooter("Overflowed");
+		expect(reading.state).toBe("orphaned");
 		expect(reading.evidence).toContain("Overflowed");
 	});
 
@@ -209,9 +224,9 @@ describe("a child's abnormal terminal turn is labelled, not delivered as success
 		expect(sent[0].split("\n")[0]).toBe(`[Subagent test-agent errored] — session: ${rs.sessionId}`);
 		expect(sent[0]).toContain("I could not reach the provider; here is what I found so far");
 
-		expect(hasTerminalFooter(`── ${t.footer} (2 turns, exit 0) ──`)).toBe(true);
-		const reading = stateForFooter(t.footer);
-		expect(reading.state).not.toBe("complete");
+		expect(parseTerminalFooter(footerLine("Errored", 2, 0))).toEqual({ word: "Errored", turns: 2, exitCode: 0 });
+		const reading = stateForFooter("Errored");
+		expect(reading.state).toBe("orphaned");
 		expect(reading.evidence).toContain("Errored");
 	});
 
@@ -229,18 +244,18 @@ describe("a child's abnormal terminal turn is labelled, not delivered as success
 		deliverResult(pi, rs, 0);
 		expect(sent[0].split("\n")[0]).toBe(`[Subagent test-agent aborted] — session: ${rs.sessionId}`);
 
-		expect(hasTerminalFooter(`── ${t.footer} (3 turns, exit 0) ──`)).toBe(true);
-		const reading = stateForFooter(t.footer);
-		expect(reading.state).not.toBe("complete");
+		expect(parseTerminalFooter(footerLine("Aborted", 3, 0))).toEqual({ word: "Aborted", turns: 3, exitCode: 0 });
+		const reading = stateForFooter("Aborted");
+		expect(reading.state).toBe("orphaned");
 		expect(reading.evidence).toContain("Aborted");
 	});
 
 	it("N5: `stopReason: stop`, text only — the delivery is the one it always was", () => {
-		// Characterisation: nothing here is new API, so this row passes on the
-		// pre-078 code too. A normal finish must not acquire an error word.
+		// Characterisation: this row uses only pre-078 API, so it passes on the
+		// base commit too (verified). A normal finish must not acquire an error word.
 		const rs = rsStub({
 			isDone: true,
-			progress: { ...turns(2), filesRead: new Set(["a.ts"]) },
+			progress: turns(2, ["a.ts"]),
 			messages: [assistantMessage("stop", "the report")],
 		});
 
@@ -257,26 +272,16 @@ describe("a child's abnormal terminal turn is labelled, not delivered as success
 			].join("\n"),
 		);
 
-		expect(hasTerminalFooter("── Completed (2 turns, exit 0) ──")).toBe(true);
-		expect(readSubagentState({
-			meta: { ownerPid: process.pid, ownerStartToken: null },
-			attached: false,
-			sockExists: false,
-			logLastLine: "── Completed (2 turns, exit 0) ──",
-			logMtimeMs: Date.now() - 3_600_000,
-			sessionFileExists: true,
-			hasRecordedOwner: true,
-			ownerAlive: true,
-			now: Date.now(),
-		}).state).toBe("complete");
+		expect(hasTerminalFooter(footerLine("Completed", 2, 0))).toBe(true);
+		expect(stateForFooter("Completed").state).toBe("complete");
 	});
 
 	it("N6: `stopReason: length` with no text — the classifier marks it, but the run is never `isDone`", () => {
-		// The completion detector (`!hasToolCalls && hasText`) never sets isDone
-		// for a textless turn, so this shape is delivered by the kill path (or the
-		// close path if the child exits first), not by the completion path. The
-		// classification of the turn itself is still abnormal, and its footer word
-		// is not a completion.
+		// The completion detector (`!hasToolCalls && hasText`) never sets isDone for
+		// a textless turn, so this shape is delivered by the kill path (or the close
+		// path if the child exits first), not by the completion path. The
+		// classification of the turn itself is still abnormal, and the footer word it
+		// would leave is not a completion.
 		const rs = rsStub({ isDone: false, progress: turns(1), messages: [assistantMessage("length", null)] });
 		const t = terminalOutcome(rs, 1);
 		expect(t.outcome).toBe("overflowed");
@@ -285,7 +290,66 @@ describe("a child's abnormal terminal turn is labelled, not delivered as success
 	});
 });
 
-// ── N4 / N4b: the recovery path ────────────────────────────────────────────
+// ── The rest of the union, and the exit-code dimension ─────────────────────
+
+describe("the vocabulary holds for every outcome and every ending", () => {
+	it("`toolUse` is a normal end: exit 0 is `finished`, a non-zero exit is `aborted`", () => {
+		const clean = rsStub({ isDone: false, progress: turns(2), messages: [assistantMessage("toolUse", null)] });
+		expect(terminalOutcome(clean, 0)).toEqual({ outcome: "finished", footer: "Exited", prefix: "finished" });
+		const failed = rsStub({ isDone: false, progress: turns(2), messages: [assistantMessage("toolUse", null)] });
+		expect(terminalOutcome(failed, 1)).toEqual({ outcome: "aborted", footer: "Stopped", prefix: "aborted" });
+	});
+
+	it("`pending` and `deferred` are turns that never settled: `aborted` at all three sites", () => {
+		for (const reason of ["pending", "deferred"]) {
+			const rs = rsStub({ isDone: true, progress: turns(1), messages: [assistantMessage(reason, "half an answer")] });
+			const t = terminalOutcome(rs, 0);
+			expect(t).toEqual({ outcome: "aborted", footer: "Aborted", prefix: "aborted" });
+			expect(stateForFooter(t.footer).state).toBe("orphaned");
+		}
+	});
+
+	it("a kill is `killed` at all three sites — the marker supersedes the prefix word", () => {
+		// decisions/subagents/015 + 043 keep the marker strings verbatim, so the
+		// delivered prefix is the marker rather than `[Subagent X killed]`; the
+		// footer word and the state reading still have to agree with the outcome.
+		const rs = rsStub({
+			isDone: false,
+			killedExplicitly: true,
+			killedVia: "progress-timeout",
+			progress: turns(6),
+			messages: [assistantMessage("toolUse", null)],
+		});
+		const t = terminalOutcome(rs, null);
+		expect(t).toEqual({ outcome: "killed", footer: "Killed", prefix: "killed" });
+
+		_testSetLiveSessionCtx(liveCtx());
+		const { pi, sent } = piStub();
+		deliverResult(pi, rs, null);
+		expect(sent[0].split("\n")[0]).toBe(
+			`[Killed via progress-timeout — process terminated, work in this subagent is lost] — session: ${rs.sessionId}`,
+		);
+
+		expect(parseTerminalFooter(footerLine("Killed", 6, "?"))).toEqual({ word: "Killed", turns: 6, exitCode: null });
+		const reading = stateForFooter("Killed");
+		expect(reading.state).toBe("orphaned");
+		expect(reading.evidence).toContain("Killed");
+	});
+
+	it("a process that left no exit code was terminated, not finished", () => {
+		const rs = rsStub({ isDone: false, progress: turns(3), messages: [assistantMessage("stop", "text")] });
+		// `stop` with text and no exit code: the turn is normal, the ending is not.
+		expect(terminalOutcome(rs, null).outcome).toBe("aborted");
+	});
+
+	it("a reasonless assistant message is an abnormal turn, not a normal end", () => {
+		const rs = rsStub({ isDone: true, progress: turns(1), messages: [assistantMessage(null, "some text")] });
+		const t = terminalOutcome(rs, 0);
+		expect(t).toEqual({ outcome: "aborted", footer: "Aborted", prefix: "aborted" });
+	});
+});
+
+// ── N4 / N4b and the recovery path's other endings ─────────────────────────
 
 interface FakeSocket {
 	unrefCalls: number;
@@ -321,13 +385,13 @@ function probeFrom(map: Map<number, string | null>): OwnerProbe {
 	};
 }
 
-/** Recover one orphan whose log ends with `log`, and return the delivery. */
-function recoverWith(log: string): { firstLine: string; message: string } {
+/** Recover one orphan whose log is `log`, and return the delivery. */
+function recoverWith(log: string | null): { firstLine: string; message: string } {
 	const dir = mkdtempSync(path.join(tmpdir(), "pi-abnormal-stop-"));
 	tempDirs.push(dir);
 	const sid = `subagent-recovered-${randomUUID()}`;
 	writeFileSync(path.join(dir, `pi-subagent-${sid}.sock`), "");
-	writeFileSync(path.join(dir, `pi-subagent-${sid}.log`), log);
+	if (log !== null) writeFileSync(path.join(dir, `pi-subagent-${sid}.log`), log);
 	writeFileSync(
 		path.join(dir, `pi-subagent-${sid}.meta.json`),
 		JSON.stringify({
@@ -391,19 +455,201 @@ describe("a recovered child is classified from the footer it left behind", () =>
 		expect(firstLine.startsWith("[Subagent scout-code finished] — session: ")).toBe(true);
 		expect(message).toContain("Turns: 5");
 	});
+
+	it("`Stopped (3 turns, exit ?)` — a signalled child is not delivered as `finished`", () => {
+		// The footer writes `exit ?` when the process left no exit code, which is
+		// what a signal kill looks like. It must not read as success.
+		const log = "── Turn 1 ──\nwork\n── Stopped (3 turns, exit ?) ──\n";
+		expect(readTerminalFooter(log)).toEqual({ word: "Stopped", turns: 3, exitCode: null });
+
+		const { firstLine } = recoverWith(log);
+		expect(firstLine.startsWith("[Subagent scout-code aborted] — session: ")).toBe(true);
+	});
+
+	it("a log with no footer leaves no evidence of a finished run", () => {
+		const { firstLine } = recoverWith("── Turn 1 ──\nthe previous session died here\n");
+		expect(firstLine.startsWith("[Subagent scout-code aborted] — session: ")).toBe(true);
+	});
+});
+
+// ── End to end: the close handler writes and delivers the new word ─────────
+
+/** A stand-in child that answers `get_state` and emits one text-only assistant
+ *  turn. `standin-mode.txt` in its cwd decides the case: `length` (default)
+ *  truncates the turn, `signalled` completes it and then dies by SIGKILL, so
+ *  the parent's close handler sees `code === null`. */
+const STANDIN_SOURCE = `
+import { appendFileSync, readFileSync } from "node:fs";
+
+const PI_SESSION_ID = "standin-abnormal-stop";
+let mode = "length";
+try { mode = readFileSync("standin-mode.txt", "utf8").trim() || mode; } catch { /* default */ }
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (d) => {
+	try { appendFileSync("stdin-echo.txt", d); } catch { /* */ }
+	for (const line of String(d).split("\\n")) {
+		if (!line.trim()) continue;
+		let msg;
+		try { msg = JSON.parse(line); } catch { continue; }
+		if (msg && msg.type === "get_state") {
+			process.stdout.write(JSON.stringify({
+				type: "response", id: msg.id, success: true,
+				data: { sessionId: PI_SESSION_ID, sessionFile: "/tmp/" + PI_SESSION_ID + ".jsonl" },
+			}) + "\\n");
+		}
+	}
+});
+process.stdin.on("end", () => {
+	if (mode === "signalled") process.kill(process.pid, "SIGKILL");
+	process.exit(0);
+});
+setTimeout(() => {
+	process.stdout.write(JSON.stringify({
+		type: "message_end",
+		message: {
+			role: "assistant",
+			stopReason: mode === "signalled" ? "stop" : "length",
+			content: [{ type: "text", text: "I got as far as the third file" }],
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+		},
+	}) + "\\n");
+}, 300);
+setInterval(() => {}, 1 << 30);
+`;
+
+let fixtureRoot: string;
+let argv1Before: string | undefined;
+let agentDirBefore: string | undefined;
+let restoreSubagentEnv: () => void = () => {};
+const spawnedSessions: string[] = [];
+
+// The harness injects PI_SUBAGENT_* into every subagent and reads them in the
+// spawn path, so the suite scrubs them to be green from inside a subagent
+// (tests/helpers/subagent-env.ts), like the other stand-in-child suites do.
+beforeAll(() => {
+	restoreSubagentEnv = scrubSubagentEnv();
+	fixtureRoot = mkdtempSync(path.join(tmpdir(), "pi-abnormal-stop-"));
+	const fakePi = path.join(fixtureRoot, "stand-in-pi.mjs");
+	writeFileSync(fakePi, STANDIN_SOURCE + STANDIN_EPILOGUE);
+	argv1Before = process.argv[1];
+	process.argv[1] = fakePi;
+
+	const agentsDir = path.join(fixtureRoot, "agent", "agents");
+	mkdirSync(agentsDir, { recursive: true });
+	writeFileSync(
+		path.join(agentsDir, "standin-worker.md"),
+		"---\nname: standin-worker\ndescription: abnormal-stop fixture\n---\n\nDo the work.\n",
+	);
+	agentDirBefore = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = path.join(fixtureRoot, "agent");
+});
+
+afterAll(() => {
+	restoreSubagentEnv();
+	if (argv1Before !== undefined) process.argv[1] = argv1Before;
+	if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = agentDirBefore;
+	rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+async function waitFor(check: () => boolean, ms = 15_000): Promise<boolean> {
+	const deadline = Date.now() + ms;
+	while (Date.now() < deadline) {
+		if (check()) return true;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	return check();
+}
+
+afterEach(async () => {
+	for (const sid of spawnedSessions.splice(0)) {
+		const rs = resolveRunningSession(sid);
+		if (rs) {
+			if (rs.staleTimer) clearTimeout(rs.staleTimer);
+			if (rs.silenceTimer) clearTimeout(rs.silenceTimer);
+			try { rs.proc?.kill("SIGKILL"); } catch { /* already gone */ }
+			await waitFor(() => !resolveRunningSession(sid), 5_000);
+		}
+		for (const f of [metaPath(sid), `/tmp/pi-subagent-${sid}.log`, `/tmp/pi-subagent-${sid}.sock`]) {
+			try { if (existsSync(f)) unlinkSync(f); } catch { /* best-effort */ }
+		}
+	}
+});
+
+/** Spawn the stand-in child through the real `subagent` tool and return the
+ *  session id plus the captured deliveries. */
+async function spawnStandin(mode: "length" | "signalled") {
+	const cwd = mkdtempSync(path.join(tmpdir(), "pi-abnormal-stop-case-"));
+	tempDirs.push(cwd);
+	writeFileSync(path.join(cwd, "standin-mode.txt"), mode);
+	const { pi, sent } = piStub();
+	const tools = new Map<string, any>();
+	pi.registerTool = (def: any) => tools.set(def.name, def);
+	subagentFactory(pi);
+	const ctx: any = {
+		cwd,
+		ui: { setStatus() {}, notify() {}, setWidget() {}, clearStatus() {} },
+		getModel: () => ({ provider: "openrouter", id: "xiaomi/mimo-v2.6-flash" }),
+		sessionManager: { getBranch: () => [], getEntries: () => [], getSessionId: () => SELF_SESSION },
+	};
+	_testSetLiveSessionCtx(ctx);
+
+	const res = await tools
+		.get("subagent")
+		.execute("tc", { agent: "standin-worker", task: "Reply with: ok", cwd, isolate: false, review_policy: "skip" }, undefined, undefined, ctx);
+	const match = /session: (subagent-[0-9a-f-]+)/.exec(res.content[0].text as string);
+	if (!match) throw new Error(`spawn did not return a session id:\n${res.content[0].text}`);
+	spawnedSessions.push(match[1]);
+	return { sid: match[1], sent };
+}
+
+describe("the close handler writes the word it classified", () => {
+	it("a child whose last turn was truncated is delivered `overflowed` and logged `Overflowed`", async () => {
+		const { sid, sent } = await spawnStandin("length");
+
+		expect(await waitFor(() => sent.length > 0)).toBe(true);
+		// Site 1: the delivered prefix.
+		expect(sent[0].split("\n")[0]).toBe(`[Subagent standin-worker overflowed] — session: ${sid}`);
+
+		// Site 2: the footer the close handler actually wrote to the log.
+		const log = readFileSync(`/tmp/pi-subagent-${sid}.log`, "utf8").split("\n").filter((l) => l.trim()).pop()!;
+		const footer = parseTerminalFooter(log);
+		expect(footer).toEqual({ word: "Overflowed", turns: 1, exitCode: 0 });
+
+		// Site 3: the state read back from that written line.
+		const reading = readSubagentState({
+			meta: { ownerPid: process.pid, ownerStartToken: null },
+			attached: false,
+			sockExists: false,
+			logLastLine: log,
+			logMtimeMs: Date.now() - 3_600_000,
+			sessionFileExists: true,
+			hasRecordedOwner: true,
+			ownerAlive: true,
+			now: Date.now(),
+		});
+		expect(reading.state).toBe("orphaned");
+		expect(reading.evidence).toContain("Overflowed");
+	}, 30_000);
+
+	it("a child that completed its turn and then died by signal is not delivered as `finished`", async () => {
+		// The parent's close handler gets `code === null` here. Coercing that to 0
+		// is what delivered a signalled child as a finished run.
+		const { sid, sent } = await spawnStandin("signalled");
+
+		expect(await waitFor(() => sent.length > 0)).toBe(true);
+		expect(sent[0].split("\n")[0]).toBe(`[Subagent standin-worker aborted] — session: ${sid}`);
+		// The footer keeps the pre-078 spelling for a completed turn (`Completed`),
+		// so only the prefix is asserted here.
+	}, 30_000);
 });
 
 // ── Vocabulary boundaries: fail loud, never "assume success" ───────────────
 
 describe("the terminal vocabulary has no safe default", () => {
 	it("refuses an unknown stop reason instead of calling it finished", () => {
-		const rs = rsStub({ isDone: true, messages: [assistantMessage("timeout", "?"), ], progress: turns(1) });
+		const rs = rsStub({ isDone: true, progress: turns(1), messages: [assistantMessage("timeout", "?")] });
 		expect(() => terminalOutcome(rs, 0)).toThrow(/unknown stopReason "timeout"/);
-	});
-
-	it("refuses an assistant message that carries no stopReason at all", () => {
-		const rs = rsStub({ isDone: true, messages: [{ role: "assistant", content: [{ type: "text", text: "x" }] }] });
-		expect(() => terminalOutcome(rs, 0)).toThrow(/carries no stopReason/);
 	});
 
 	it("refuses a footer word no footer writes", () => {
@@ -413,10 +659,17 @@ describe("the terminal vocabulary has no safe default", () => {
 	it("parses every word the footer vocabulary writes, and the legacy `exit ?`", () => {
 		const words = [...Object.values(OUTCOME_WORD).map((w) => w.footer), "Exited", "Stopped"];
 		for (const word of words) {
-			expect(parseTerminalFooter(`── ${word} (12 turns, exit 3) ──`)).toEqual({ word, turns: 12, exitCode: 3 });
-			expect(hasTerminalFooter(`── ${word} (12 turns, exit 3) ──`)).toBe(true);
+			const line = footerLine(word, 12, 3);
+			expect(parseTerminalFooter(line)).toEqual({ word, turns: 12, exitCode: 3 });
+			expect(hasTerminalFooter(line)).toBe(true);
 		}
-		expect(parseTerminalFooter("── Stopped (0 turns, exit ?) ──")).toEqual({ word: "Stopped", turns: 0, exitCode: null });
+		expect(parseTerminalFooter(footerLine("Stopped", 0, "?"))).toEqual({ word: "Stopped", turns: 0, exitCode: null });
 		expect(parseTerminalFooter("── Turn 3 ──")).toBeNull();
+	});
+
+	it("reads `Exited` and `Stopped` as the exit code it recorded", () => {
+		expect(outcomeFromFooterWord("Exited")).toBeNull();
+		expect(outcomeFromFooterWord("Stopped")).toBeNull();
+		expect(outcomeFromFooterWord("Overflowed")).toBe("overflowed");
 	});
 });

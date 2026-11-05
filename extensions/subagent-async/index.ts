@@ -2530,7 +2530,7 @@ async function spawnSubagent(
 		if (stdoutBuffer.trim()) processLine(stdoutBuffer);
 
 		// Write completion footer to live log
-		const { footer: how } = terminalOutcome(rs, code ?? 0);
+		const { footer: how } = terminalOutcome(rs, code);
 		logEntry("");
 		// Killed footer is always red — even in the rare race where a subagent
 		// raced to `isDone` before SIGTERM was dispatched, a hard kill is an
@@ -2581,7 +2581,7 @@ async function spawnSubagent(
 			? completeWorkRecord(rs.workRecord, rs.piSessionId ?? sessionId, () => getFinalOutput(rs.messages))
 			: [];
 		rs.recordNotes = [...(rs.recordNotes ?? []), ...recordNotes];
-		const deliveryPath = deliverCloseResult(pi, rs, code ?? 0, commitNote + recordNotes.map((n) => `\n${n}`).join(""));
+		const deliveryPath = deliverCloseResult(pi, rs, code, commitNote + recordNotes.map((n) => `\n${n}`).join(""));
 		if (PI_ASYNC_DEBUG) debugLog(`deliverResult (${deliveryPath}): ${Date.now() - tDeliver}ms`);
 
 		// POST-DELIVERY: worktree removal and branch cleanup. Fire-and-forget —
@@ -3106,34 +3106,41 @@ export function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "pro
 	return { alreadyDead };
 }
 
-/** The final assistant turn's `stopReason`, or null when this process holds no
- *  assistant message for the run (a recovered child, or one that died before its
- *  first turn). Throws when an assistant message carries no reason at all: pi's
- *  `AssistantMessage` always has one, so a reasonless message is a turn shape
- *  this vocabulary cannot classify and must not be read as a normal end. */
-function lastAssistantStopReason(messages: any[]): string | null {
+/** The final assistant turn's terminal evidence, or null when this process
+ *  holds no assistant message for the run (a recovered child, or one that died
+ *  before its first turn). `stopReason: null` means the message carried none at
+ *  all: pi's `AssistantMessage` always has one, and a turn that ended without it
+ *  never settled, so it reads as an abnormal turn rather than as a normal end
+ *  (WO-2026-078: "no reason at all"). */
+function lastAssistantTurn(messages: any[]): { stopReason: string | null } | null {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg?.role !== "assistant") continue;
 		const reason = msg.stopReason;
-		if (typeof reason !== "string" || reason.length === 0) {
-			throw new Error("lastAssistantStopReason: the final assistant message carries no stopReason");
-		}
-		return reason;
+		return { stopReason: typeof reason === "string" && reason.length > 0 ? reason : null };
 	}
 	return null;
 }
 
 /** Everything one run's terminal classification reads. */
 export interface TerminalFacts {
-	/** The final assistant turn's `stopReason`; null when no assistant message
-	 *  reached this process. */
-	stopReason: string | null;
+	/** The final assistant turn, or null when no assistant message reached this
+	 *  process. */
+	turn: { stopReason: string | null } | null;
 	/** The log footer's word, on the recovered path only. */
 	recoveredWord: string | null;
 	killedExplicitly: boolean;
 	turns: number;
-	exitCode: number;
+	/** The process exit code; null when it left none (terminated by a signal,
+	 *  which the footer writes as `exit ?`). */
+	exitCode: number | null;
+}
+
+/** The outcome the final turn names, or null when the turn ended normally or
+ *  there is no turn at all — then how the process ended decides. */
+function turnOutcome(turn: { stopReason: string | null } | null): SubagentOutcome | null {
+	if (!turn) return null;
+	return turn.stopReason === null ? "aborted" : stopReasonOutcome(turn.stopReason);
 }
 
 /**
@@ -3148,33 +3155,36 @@ export function classifyOutcome(facts: TerminalFacts): SubagentOutcome {
 	// evidence, and an `Exited`/`Stopped` word defers to the exit code below.
 	const fromFooter = facts.recoveredWord ? outcomeFromFooterWord(facts.recoveredWord) : null;
 	if (fromFooter) return fromFooter;
-	const fromTurn = stopReasonOutcome(facts.stopReason);
+	const fromTurn = turnOutcome(facts.turn);
 	if (fromTurn) return fromTurn;
-	// No abnormal turn: the process exit decides. Below the hard turn cap a
-	// non-zero exit is an abort the parent must not read as success (the
-	// turn-limit stop is the killed path, flagged above).
+	// No abnormal turn: how the process ended decides. No exit code at all means
+	// it did not exit — it was terminated — so that is not a finished run.
+	if (facts.exitCode === null) return "aborted";
+	// Below the hard turn cap a non-zero exit is an abort the parent must not read
+	// as success (the turn-limit stop is the killed path, flagged above).
 	return facts.exitCode !== 0 && facts.turns < MAX_TURNS_HARD ? "aborted" : "finished";
 }
 
 /** The outcome plus both of its words for one finished run. `footer` is the
  *  word the live close handler writes; a recovered run's footer already exists
- *  on disk, so only its `prefix` is used. */
-export function terminalOutcome(rs: RunningSubagent, exitCode: number): {
+ *  on disk, so only its `prefix` is used. Exported as an `@internal` test hook. */
+export function terminalOutcome(rs: RunningSubagent, exitCode: number | null): {
 	outcome: SubagentOutcome;
 	footer: string;
 	prefix: string;
 } {
-	const stopReason = lastAssistantStopReason(rs.messages);
+	const turn = lastAssistantTurn(rs.messages);
 	const outcome = classifyOutcome({
-		stopReason,
+		turn,
 		recoveredWord: rs.recoveredFooterWord,
 		killedExplicitly: rs.killedExplicitly,
 		turns: rs.progress.turns,
 		exitCode,
 	});
-	const fromTurn = stopReasonOutcome(stopReason);
+	const fromTurn = turnOutcome(turn);
 	// A run with no abnormal turn keeps the footer it has always had: a
-	// completion, or an exit with no completion to report.
+	// completion, or an end with no completion to report — `Exited` on a clean
+	// exit, `Stopped` otherwise, including a signal termination (`exit ?`).
 	const footer = outcome === "killed"
 		? OUTCOME_WORD.killed.footer
 		: fromTurn
@@ -3204,7 +3214,7 @@ function killedMarker(rs: RunningSubagent): string | null {
  *  delivery. Returns which path ran so callers can log it. Exported as an
  *  @internal test hook so the mutual-exclusion contract can be exercised
  *  without spawning a real child process. */
-export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: number, commitNote?: string): "stop" | "deliver" {
+export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: number | null, commitNote?: string): "stop" | "deliver" {
 	if (rs.resolveOnStop) {
 		let stoppedText = getFinalOutput(rs.messages) + commitNote;
 		// Kill marker keyed on the kill source (subagent_kill tool vs
@@ -3227,7 +3237,7 @@ export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: 
  *  the kill marker when `killedExplicitly` is set. Exported as an
  *  @internal test hook so the delivered-marker contract (WO-2026-043
  *  integration contract) can be exercised with a stub `ExtensionAPI`. */
-export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
+export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number | null, isolationNote?: string): void {
 	// No live session → the parent cannot receive the result. pi invalidates
 	// its ExtensionAPI alongside the ctx, so `pi.sendUserMessage` would throw
 	// from inside the child's close handler. Skip deliberately (not a
@@ -3468,16 +3478,18 @@ export function recoverOrphanedSubagents(
 				// The footer is this path's only terminal evidence: the child's
 				// messages never reached this process. Its word and exit code
 				// classify the run exactly as the live close handler would have
-				// (WO-2026-078 N4). With no footer there is nothing to classify,
-				// so the delivery keeps the unclassified shape it always had.
-				let recoveredExitCode = 0;
+				// (WO-2026-078 N4). A log with no footer records no ending at all, so
+				// there is likewise no evidence of a finished run: `null` (not
+				// pre-078's assumed exit 0) leaves the classification to the exit
+				// code, which then says "terminated, not exited".
+				let recoveredExitCode: number | null = null;
 				try {
 					const log = fs.readFileSync(logPath, "utf-8");
 					const footer = readTerminalFooter(log);
 					if (footer) {
 						rs.progress.turns = footer.turns;
 						rs.recoveredFooterWord = footer.word;
-						recoveredExitCode = footer.exitCode ?? 0;
+						recoveredExitCode = footer.exitCode;
 						finalOutput = log.split("── ").pop()?.trim() || finalOutput;
 					}
 				} catch {}

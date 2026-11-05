@@ -173,7 +173,11 @@ whose final assistant turn ended on `stopReason: error` / `length` /
 `aborted`, or whose recovered-session log recorded one. The recovered-session
 path now classifies from the footer word and exit code it used to discard.
 
-What this note does **not** change: `Completed` still reads as `complete`, every
-other terminal word still reads as terminal-but-not-completed (so the
-`subagent_resume` offer stands), and the state names above are unchanged.
+What this note does **not** change: the state names above, and `Completed`
+as the only word that reads as `complete`. Every other terminal word falls into
+the pre-existing terminal-but-not-completed branch, so `subagent_status` keeps
+offering `subagent_resume` for an `Errored`/`Overflowed`/`Aborted` child exactly
+as it did for `Stopped`. That consequence is this implementation's, not the
+ruling's — withdrawing the resume offer would change the state vocabulary.
+
 Ruling: WO-2026-078 Q-A1 — "done, but labelled"; gating completion rejected.
