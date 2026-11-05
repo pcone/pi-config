@@ -187,10 +187,12 @@ production pairs. Two deltas for §4/§6, both probed there:
 - §6 step 4's `compact(…, sessionId)` fix is **not needed**: 1.4.0 attaches an
   `x-opencode-session` uuidv7 at dispatch and opencode-go accepts it, so the
   `MissingSessionID` 400 no longer reproduces.
-- Of the §4 in-scope items, only `compaction-model.ts`'s header/`env` shape is
-  still unported (`ProviderHeaders` is `Record<string, string | null>` against
-  `compact()`'s `Record<string, string>`), and it is latent —
-  `work-orders/WO-fleet-client-headers-env.md`, blocked on WO-2026-061 landing.
+- Of the §4 in-scope items, only `compaction-model.ts`'s header/`env` shape was
+  unported (`ProviderHeaders` is `Record<string, string | null>` against
+  `compact()`'s `Record<string, string>`), and it was latent. **Ported** by
+  WO-2026-075: the `null` markers are filtered and `auth.env` goes to the 9th
+  positional. `auth.baseUrl` is still dropped — `compact()` has no slot for it;
+  carrier: a follow-up order, not drafted yet (raised by WO-2026-075's report).
 
 ## Sources
 

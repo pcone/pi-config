@@ -152,7 +152,7 @@ landed. The F0 control above is what the branch's predicate produces.
 | malformed tool-arg rejection | pi-ai `dist/utils/json-parse.js:87-97` throws "Tool arguments must be a JSON object"; `validation.js:282` rejects with the parse error | no |
 | `read` label fixes | display-only, shipped in 1.3.0; no extension surface | no |
 | `context_with_system` | `rg context_with_system extensions/ tests/` → 0 | no |
-| in-scope type mismatch | `ProviderHeaders = Record<string, string \| null>` (pi-ai `dist/types.d.ts:41`) vs `compact(…, headers?: Record<string, string>)`; `compaction-model.ts` forwards `auth.headers` and drops `auth.env` | **yes**, latent — no runtime symptom today (the live call succeeds), no typecheck exists, and the fix belongs to the fleet client surface WO-2026-061 explicitly leaves out of scope. Order: `work-orders/WO-fleet-client-headers-env.md` (draft, numbered at dispatch), blocked on WO-2026-061 landing |
+| in-scope type mismatch | `ProviderHeaders = Record<string, string \| null>` (pi-ai `dist/types.d.ts:41`) vs `compact(…, headers?: Record<string, string>)`; `compaction-model.ts` forwarded `auth.headers` and dropped `auth.env` | **no** — WO-2026-075 filters the `null` deletion markers and forwards `auth.env` through the 9th positional, after `streamFn` |
 
 Nothing else in `checkpoint.ts`, `compaction-model.ts`, `lib/read-tracking.ts` or
 `lib/checkpoint-meta.ts` needs a port: the first has no removed API (its `agent_settled` trigger,

@@ -32,6 +32,8 @@ interface FleetCall {
 	customInstructions: string | undefined;
 	signal: AbortSignal | undefined;
 	thinkingLevel: string | undefined;
+	streamFn: unknown;
+	env: Record<string, string> | undefined;
 }
 
 const fleetCalls: FleetCall[] = [];
@@ -65,6 +67,8 @@ await mock.module("@earendil-works/pi-coding-agent", () => ({
 		customInstructions: string | undefined,
 		signal: AbortSignal | undefined,
 		thinkingLevel: string | undefined,
+		streamFn: unknown,
+		env: Record<string, string> | undefined,
 	) => {
 		const call: FleetCall = {
 			preparation,
@@ -74,6 +78,8 @@ await mock.module("@earendil-works/pi-coding-agent", () => ({
 			customInstructions,
 			signal,
 			thinkingLevel,
+			streamFn,
+			env,
 		};
 		fleetCalls.push(call);
 		return fleetImpl(call);
@@ -227,7 +233,9 @@ const BOUNDARY = {
 interface CtxOptions {
 	cwd: string;
 	modelFound?: boolean;
-	auth?: { ok: true; apiKey: string; headers?: Record<string, string> } | { ok: false; error: string };
+	auth?:
+		| { ok: true; apiKey: string; headers?: Record<string, string | null>; env?: Record<string, string> }
+		| { ok: false; error: string };
 }
 
 function makeCtx(opts: CtxOptions) {
@@ -836,5 +844,124 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 			});
 		}
 		fleetImpl = (call) => Promise.resolve(fleetCompaction(call.preparation));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// WO-2026-075 — the auth the registry resolved is the auth the fleet call gets
+//
+// pi 1.4.0's `ProviderHeaders` is `Record<string, string | null>`
+// (pi-ai `dist/types.d.ts:41`) while `compact()` takes `Record<string, string>`
+// (`compaction.d.ts:144`): the `null`s are deletion markers pi strips at its own
+// call sites (`agent-session.js:67`). This call site is outside that filter, and
+// `auth.env` reaches `compact()` through the 9th positional, after `streamFn`.
+// ---------------------------------------------------------------------------
+
+describe("WO-2026-075: the fleet call forwards the resolved auth", () => {
+	it("R1: a null header value never reaches compact(); the auth's env does", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const h = makeCtx({
+				cwd,
+				auth: {
+					ok: true,
+					apiKey: "test-key",
+					headers: { "a": "1", b: null },
+					env: { E: "1" },
+				},
+			});
+			const dispatched = await dispatchBeforeCompact(h.ctx, beforeCompactEvent(undefined));
+
+			expect(dispatched.errors).toEqual([]);
+			expect(fleetCalls).toHaveLength(1);
+			// The deletion marker is dropped; the surviving header is untouched.
+			expect(fleetCalls[0].headers).toEqual({ a: "1" });
+			expect("b" in fleetCalls[0].headers).toBe(false);
+			// The auth's env is forwarded, not dropped (WO-2026-075's other half).
+			expect(fleetCalls[0].env).toEqual({ E: "1" });
+			// The filter is argument construction, not a routing change.
+			expect(fleetCalls[0].preparation).toEqual(BOUNDARY);
+			expect(fleetCalls[0].apiKey).toBe("test-key");
+			expect(fleetCalls[0].thinkingLevel).toBe("low");
+			expect(fleetCalls[0].streamFn).toBeUndefined();
+			expect(dispatched.result?.compaction.summary).toBe(
+				"FLEET REWRITE — not the checkpoint's text",
+			);
+		});
+	});
+
+	it("R2: absent headers and env stay undefined — never an empty map", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const h = makeCtx({ cwd, auth: { ok: true, apiKey: "test-key" } });
+			const dispatched = await dispatchBeforeCompact(h.ctx, beforeCompactEvent(undefined));
+
+			expect(dispatched.errors).toEqual([]);
+			expect(fleetCalls).toHaveLength(1);
+			// Absent stays absent (WO-2026-075 R2): what the registry did not resolve
+			// is not invented at this call site.
+			expect(fleetCalls[0].headers).toBeUndefined();
+			expect(fleetCalls[0].env).toBeUndefined();
+			expect(fleetCalls[0].streamFn).toBeUndefined();
+			expect(dispatched.result?.compaction.summary).toBe(
+				"FLEET REWRITE — not the checkpoint's text",
+			);
+		});
+	});
+
+	it("R2b: env is forwarded on its own, with no headers present", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const h = makeCtx({ cwd, auth: { ok: true, apiKey: "test-key", env: { E: "1" } } });
+			const dispatched = await dispatchBeforeCompact(h.ctx, beforeCompactEvent(undefined));
+
+			expect(dispatched.errors).toEqual([]);
+			expect(fleetCalls).toHaveLength(1);
+			// `env` does not depend on `headers` being present, and vice versa.
+			expect(fleetCalls[0].headers).toBeUndefined();
+			expect(fleetCalls[0].env).toEqual({ E: "1" });
+		});
+	});
+
+	it("R3: a [CHECKPOINT] compaction still resolves nothing and calls nothing", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const h = makeCtx({ cwd });
+			const request = await queueCheckpoint(h, { nextSteps: "RESUME-HERE" });
+			expect(request.customInstructions?.startsWith(CHECKPOINT_MARKER)).toBe(true);
+
+			const dispatched = await dispatchBeforeCompact(
+				h.ctx,
+				beforeCompactEvent(request.customInstructions),
+			);
+
+			expect(dispatched.errors).toEqual([]);
+			// 061's predicate, not a filter applied after the fact: no lookup, no
+			// auth resolution, no request.
+			expect(h.registry.findCalls).toBe(0);
+			expect(h.registry.authCalls).toBe(0);
+			expect(fleetCalls).toHaveLength(0);
+			expect(String(dispatched.result?.compaction.summary)).toContain("### Machine facts");
+		});
+		await resetCheckpointState();
+	});
+
+	it("R4: a rejected fleet call notifies at error level and returns undefined", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			fleetImpl = async () => {
+				throw new Error("fleet provider exploded");
+			};
+			const h = makeCtx({ cwd });
+			const dispatched = await dispatchBeforeCompact(h.ctx, beforeCompactEvent(undefined));
+
+			expect(dispatched.errors).toEqual([]);
+			expect(dispatched.result).toBeUndefined();
+			expect(fleetCalls).toHaveLength(1);
+			const errors = h.notifications.filter((n) => n.level === "error");
+			expect(errors).toHaveLength(1);
+			expect(errors[0].message).toContain(FLEET_MODEL_SPEC);
+			expect(errors[0].message).toContain("fleet provider exploded");
+		});
 	});
 });

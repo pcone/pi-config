@@ -28,6 +28,18 @@ import { CHECKPOINT_MARKER } from "./lib/checkpoint-marker.ts";
 import { FLEET_MODEL, FLEET_MODEL_SPEC, FLEET_PROVIDER } from "./lib/fleet-model.ts";
 import { safeNotify } from "./lib/safe-notify.ts";
 
+/**
+ * pi 1.4.0's `ProviderHeaders` carries deletion markers (`null`) that pi strips
+ * at its own call sites; this one is outside that filter.
+ */
+function withoutDeletedHeaders(
+	headers: Record<string, string | null> | undefined,
+): Record<string, string> | undefined {
+	return headers
+		? Object.fromEntries(Object.entries(headers).filter(([, value]) => value !== null))
+		: undefined;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {
 		const { preparation, customInstructions, signal } = event;
@@ -59,10 +71,12 @@ export default function (pi: ExtensionAPI) {
 				preparation,
 				model,
 				auth.apiKey,
-				auth.headers,
+				withoutDeletedHeaders(auth.headers),
 				customInstructions,
 				signal,
 				"low", // decision 022 effort audit — summarization runs at the discount tier
+				undefined, // streamFn: pi's own dispatch (`completeSimple`), as before
+				auth.env,
 			);
 
 			return { compaction: result };
