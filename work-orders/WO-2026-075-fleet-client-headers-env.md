@@ -1,13 +1,18 @@
 # WO-fleet-client-headers-env — fleet compaction client: null headers and `env` (pi 1.4.0)
 
-**Status: DRAFT — DISPATCH-BLOCKED on WO-2026-061 landing.** Both orders edit the same
-`session_before_compact` body in `extensions/compaction-model.ts`, and 061's implementation is
-unmerged (branch `pi-subagent-1566ff09c877`, commit `418490b`). Dispatch after 061 is on `main`;
-no id is reserved until then (`rules/work-order-numbering.md` §1; 073 and up are free).
+**Status: DISPATCHED 2026-11-05** as `WO-2026-075`. WO-2026-061 landed (`b18e7c9`, merged with
+073), so the blocker is gone.
+
+**Citations re-derived at dispatch** (the originals pointed at a path that does not exist on this
+box): pi 1.4.0 is installed at `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent`,
+its `compact()` signature is `dist/core/compaction/compaction.d.ts:144` — `env` is the **9th**
+positional, after `streamFn` — and `ProviderHeaders = Record<string, string | null>` is
+`node_modules/@earendil-works/pi-ai/dist/types.d.ts:41`. Caller census at dispatch:
+`rg -n 'compact\(' extensions/` → one real call, `extensions/compaction-model.ts:58`.
 
 ### Metadata
 
-- **work_order_id**: assigned at dispatch (slug: fleet-client-headers-env)
+- **work_order_id**: WO-2026-075
 - **parent_plan_id**: WO-2026-071 step 2 (`docs/investigations/pi-1.4-compaction-override-2026-11.md` §7)
 - **sequence_position**: after WO-2026-061
 - **routed_to**: implement
