@@ -67,9 +67,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		try {
+			// `compact()` takes the resolved auth as positionals and has no slot for the
+			// URL, which the provider api reads off the model, so wrap it the way pi's
+			// own summarization path does (`dist/core/agent-session.js:264`).
+			// Conditional, as there: an absent `baseUrl` must not overwrite the
+			// registry's with `undefined`. The positionals' drift class is
+			// `docs/investigations/pi-upgrade-2026-10.md` §4.
+			const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+
 			const result = await compact(
 				preparation,
-				model,
+				requestModel,
 				auth.apiKey,
 				withoutDeletedHeaders(auth.headers),
 				customInstructions,

@@ -230,13 +230,53 @@ const BOUNDARY = {
 	fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
 };
 
+/** The auth the registry resolves (`apiKey` is optional there), plus its failure arm. */
+interface ResolvedAuth {
+	ok: true;
+	apiKey?: string;
+	headers?: Record<string, string | null>;
+	env?: Record<string, string>;
+	baseUrl?: string;
+}
+
 interface CtxOptions {
 	cwd: string;
 	modelFound?: boolean;
-	auth?:
-		| { ok: true; apiKey: string; headers?: Record<string, string | null>; env?: Record<string, string> }
-		| { ok: false; error: string };
+	auth?: ResolvedAuth | { ok: false; error: string };
 }
+
+/**
+ * What `modelRegistry.find()` returns: the opencode-go fleet seat's catalogue
+ * entry, field for field (`pi-ai dist/providers/data/opencode-go.json`,
+ * `Model<Api>` at `dist/types.d.ts:630-665`). The shape is load-bearing: a stub
+ * of `{ provider, id }` lets a row assert `baseUrl` while the call path has
+ * dropped `api`, `compat` and the rest.
+ */
+const REGISTRY_MODEL = {
+	id: FLEET_MODEL,
+	name: "DeepSeek V4.1 Flash",
+	api: "openai-completions",
+	provider: FLEET_PROVIDER,
+	baseUrl: "https://opencode.ai/inference/go/v1",
+	reasoning: true,
+	input: ["text", "image"],
+	cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 },
+	compat: {
+		supportsStore: false,
+		supportsDeveloperRole: false,
+		supportsStrictMode: true,
+		maxTokensField: "max_tokens",
+		requiresReasoningContentOnAssistantMessages: true,
+		thinkingFormat: "deepseek",
+	},
+	contextWindow: 1_000_000,
+	maxTokens: 384_000,
+	inputLimits: {
+		images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4_718_592, jpegQuality: 80 } },
+	},
+	thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+	type: "chat",
+};
 
 function makeCtx(opts: CtxOptions) {
 	const notifications: Array<{ message: string; level: string }> = [];
@@ -262,7 +302,10 @@ function makeCtx(opts: CtxOptions) {
 		modelRegistry: {
 			find: (provider: string, model: string) => {
 				registry.findCalls++;
-				return opts.modelFound === false ? undefined : { provider, id: model };
+				// Only the fleet pair is resolvable, so a lookup on the wrong provider
+				// or id takes the not-found path instead of passing silently.
+				if (provider !== REGISTRY_MODEL.provider || model !== REGISTRY_MODEL.id) return undefined;
+				return opts.modelFound === false ? undefined : REGISTRY_MODEL;
 			},
 			getApiKeyAndHeaders: async (model: any) => {
 				registry.authCalls++;
@@ -428,7 +471,7 @@ describe("summary ownership across the compaction boundary", () => {
 			expect(fleetCalls).toHaveLength(1);
 			expect(fleetCalls[0].customInstructions).toBeUndefined();
 			expect(fleetCalls[0].preparation).toEqual(BOUNDARY);
-			expect(fleetCalls[0].model).toEqual({ provider: FLEET_PROVIDER, id: FLEET_MODEL });
+			expect(fleetCalls[0].model).toEqual(REGISTRY_MODEL);
 			expect(fleetCalls[0].apiKey).toBe("test-key");
 			expect(fleetCalls[0].headers).toEqual({ "x-test": "1" });
 			expect(fleetCalls[0].thinkingLevel).toBe("low");
@@ -966,5 +1009,98 @@ describe("WO-2026-075: the fleet call forwards the resolved auth", () => {
 			expect(errors[0].message).toContain(FLEET_MODEL_SPEC);
 			expect(errors[0].message).toContain("fleet provider exploded");
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// WO-2026-077 — the resolved auth's URL reaches the fleet call
+//
+// `compact()` has no positional for `baseUrl`; the provider api reads the URL
+// off the model (pi-ai `dist/api/openai-completions.js:562`), so the caller
+// wraps the model the way pi's own summarization path does
+// (`dist/core/agent-session.js:264`). Latent today: only an OAuth handler's
+// `toAuth()` populates `auth.baseUrl`, and the fleet seat is api-key auth.
+// ---------------------------------------------------------------------------
+
+describe("WO-2026-077: the fleet call forwards the resolved baseUrl", () => {
+	it("A1: a resolved baseUrl reaches compact() on a model that keeps the registry's fields", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const baseUrl = "https://proxy.example.test/v1";
+			const h = makeCtx({ cwd, auth: { ok: true, apiKey: "test-key", baseUrl } });
+			const dispatched = await dispatchBeforeCompact(h.ctx, beforeCompactEvent(undefined));
+
+			expect(dispatched.errors).toEqual([]);
+			expect(fleetCalls).toHaveLength(1);
+			const model = fleetCalls[0].model;
+			expect(model.baseUrl).toBe(baseUrl);
+			// The spread keeps every field the registry resolved. `api` and `id` are
+			// what a wrapper carrying only the URL would drop, and the request's model
+			// id comes from `model.id`.
+			expect(model.api).toBe("openai-completions");
+			expect(model.id).toBe(FLEET_MODEL);
+			expect(model.provider).toBe(FLEET_PROVIDER);
+			expect(model).toEqual({ ...REGISTRY_MODEL, baseUrl });
+			expect(dispatched.result?.compaction.summary).toBe(
+				"FLEET REWRITE — not the checkpoint's text",
+			);
+		});
+	});
+
+	it("A2: with no resolved baseUrl, compact() gets the registry's own object", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const h = makeCtx({ cwd, auth: { ok: true, apiKey: "test-key" } });
+			const dispatched = await dispatchBeforeCompact(h.ctx, beforeCompactEvent(undefined));
+
+			expect(dispatched.errors).toEqual([]);
+			expect(fleetCalls).toHaveLength(1);
+			const model = fleetCalls[0].model;
+			// Identity, not equality: an unconditional `{ ...model, baseUrl: undefined }`
+			// is a different object and blanks the registry's URL.
+			expect(model).toBe(REGISTRY_MODEL);
+			expect(model.baseUrl).toBe(REGISTRY_MODEL.baseUrl);
+			expect(Object.keys(model)).toEqual(Object.keys(REGISTRY_MODEL));
+			// What the registry did not resolve is not invented at this call site.
+			for (const value of Object.values(model)) expect(value).not.toBeUndefined();
+			expect(dispatched.result?.compaction.summary).toBe(
+				"FLEET REWRITE — not the checkpoint's text",
+			);
+		});
+	});
+
+	it("A2b: a resolved-but-empty baseUrl is no URL either", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const h = makeCtx({ cwd, auth: { ok: true, apiKey: "test-key", baseUrl: "" } });
+			const dispatched = await dispatchBeforeCompact(h.ctx, beforeCompactEvent(undefined));
+
+			expect(dispatched.errors).toEqual([]);
+			expect(fleetCalls).toHaveLength(1);
+			// The condition is pi's own truthiness test, not a definedness test: an empty
+			// URL is not an endpoint, and wrapping on it would blank the registry's.
+			expect(fleetCalls[0].model).toBe(REGISTRY_MODEL);
+		});
+	});
+
+	it("A3: the wrapper sits below the [CHECKPOINT] predicate — no registry read, no call", async () => {
+		await resetCheckpointState();
+		await withCwd(async (cwd) => {
+			const h = makeCtx({ cwd, auth: { ok: true, apiKey: "test-key", baseUrl: "https://x.test" } });
+			const request = await queueCheckpoint(h, { nextSteps: "RESUME-HERE" });
+
+			const dispatched = await dispatchBeforeCompact(
+				h.ctx,
+				beforeCompactEvent(request.customInstructions),
+			);
+
+			expect(dispatched.errors).toEqual([]);
+			// The wrap reads `auth`, so wrapping above the predicate would have to
+			// resolve a model and its auth first: both counters stay at zero.
+			expect(h.registry.findCalls).toBe(0);
+			expect(h.registry.authCalls).toBe(0);
+			expect(fleetCalls).toHaveLength(0);
+		});
+		await resetCheckpointState();
 	});
 });
