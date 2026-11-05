@@ -735,7 +735,10 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 		});
 	});
 
-	it("I2: the marker is the only yielding shape — /compact and auto still take the fleet seat", async () => {
+	// 27 dispatches (3 reasons x 9 instruction shapes): at ~190 ms each the row
+	// sits on bun's 5 s default, so it reds under any concurrent suite run while
+	// the behaviour it pins is green. The budget is the row's cost, not slack.
+	it("I2: the marker is the only yielding shape — /compact and auto still take the fleet seat", { timeout: 60_000 }, async () => {
 		await resetCheckpointState();
 		// `checkpoint.ts` prefixes the marker, but it also survives mid-text on the
 		// post-reload path, so the predicate is `includes`, not `startsWith`.
@@ -811,7 +814,7 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 		});
 	});
 
-	it("I3: a fleet failure on any non-checkpoint path is loud, and the message names the failure", async () => {
+	it("I3: a fleet failure on any non-checkpoint path is loud, and the message names the failure", { timeout: 30_000 }, async () => {
 		await resetCheckpointState();
 		for (const reason of ["manual", "threshold", "overflow"] as const) {
 			fleetCalls.length = 0;
