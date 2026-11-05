@@ -178,3 +178,50 @@ The standard schema. For this order specifically:
 ## Report on completion
 
 Every completion report and landing for this order goes to `claude-8f90746f-e9aa-4dab-81ef-eb303ba0cb65` by peer message (external peer; it is read when its owner next prompts). State commit hashes, not "landed".
+
+---
+
+### Landing stamp (2026-11-05, merged `0ce2454`, gate commit `0c8f`-series)
+
+**Landed.** The five duplicated steps — validate, owner verdict, continuation, git binding, in-flight —
+live in one `prepareCheckpoint` helper; each tool keeps the half that differs. 1150 → 1231 lines in
+`extensions/checkpoint.ts`, per-element duplication 2 → 1 (every cited `rg` → 1).
+
+**Two commits, as the order's Preparatory refactor required:** `a633dcc` (seven characterisation rows,
+no production change — `git show --stat` shows the test file only), `e14e145` (the extraction, rows
+unedited). The order's step 2 evidence is that the seven rows were green against the un-extracted file
+too.
+
+**Gate, run by me at the merged tip:** `checkpoint-preamble` 7/0, `checkpoint-waits` +
+`checkpoint-meta` + `checkpoint-stale-ctx` 43/0 combined, `summary-ownership` 21/0, `auto-checkpoint`
+31/0, `checkpoint-recoverability` 19/0. **Two mutations of mine red C1:** declare a `PendingCheckpoint`
+member that nothing sets; add a second post-construction assignment to `pending`.
+
+**Order defect, corrected at the tip rather than escalated.** This order's Representation-level check
+demanded `Object.keys(...).sort()` on `pendingCheckpoint` *and*, in the Prohibitions, that no exported
+symbol be added. Both cannot hold: the object is module-private, so the runtime form needs a test
+accessor the Prohibition forbids. That contradiction is mine; the implementer found the only
+satisfiable reading (parse the construction literal, refuse a spread, refuse a second construction
+site) and correctly reported it as a departure instead of quietly choosing. **Ruling: the source-parse
+form stands, and the alternative was rejected** — an export is production surface, which needs an ask
+it does not have, and it buys nothing here.
+
+The substitute had a hole worth closing, and closing it is the gate commit: the literal is not the
+whole shape, because `session_before_compact` fills `injection` afterwards (`pending.injection =
+injection`). A literal-only expectation would keep passing while the interface grew a second
+post-construction member. C1 now pairs the literal's keys with the post-construction assignments
+against `interface PendingCheckpoint`, and pins the assignment set to exactly `injection`.
+
+**Two more order defects, recorded not rewritten:** matrix row C1's named mutation (swap the refusal
+verb into the success path) is inert, because the verb exists only in the refusal branches; and after
+the fold, C5's and C6's per-path mutations are no longer expressible — they red both tools at once,
+which is the extraction working as intended.
+
+**Accepted, not fixed:** the fork hoists its `ctx.sessionManager` reads above validation, so a throwing
+read on a stale ctx would surface where a rejection path previously read nothing. Both reviewers rated
+it LOW, no row covers that state, and making `gitCwd` a thunk is a mechanism change nobody asked for.
+
+**Register state this landing leaves:** the strike WO-2026-073 opened is resolved by this extraction;
+the area is not closed — the register row's reading is that closure needs two flagged landings, and
+this one is the refactor rather than a third strike. `docs/investigations/structure-trend.md` needs a
+snapshot for the chunk (1150 → 1231, +81), which the implementer correctly left out of the diff.
