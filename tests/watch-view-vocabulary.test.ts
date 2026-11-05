@@ -23,6 +23,7 @@ import {
 	readTerminalFooter,
 } from "../extensions/lib/subagent-state.ts";
 import { statusFromLogContent } from "../extensions/subagent-async/watch-session-v2.ts";
+import { childEnv } from "./helpers/subagent-env.ts";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -164,6 +165,9 @@ describe("the single-pane viewer's renderer (F16)", () => {
 		const run = spawnSync("node", ["extensions/subagent-async/watch-session.ts", "bogus-id-wo-080"], {
 			cwd: REPO_ROOT,
 			encoding: "utf8",
+			// The suite-wide rule: a spawn without `env` gets bun's startup snapshot,
+			// so an inherited PI_SUBAGENT_* value would reach the child instead.
+			env: childEnv(),
 			// stdin at EOF: an open pipe leaves pi-tui's terminal-capability probe
 			// waiting, and the pane never paints.
 			stdio: ["ignore", "pipe", "pipe"],
