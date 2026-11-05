@@ -1,6 +1,8 @@
 # WO-2026-079 — heavy jobs take a machine-wide slot
 
-**Status: DISPATCHED 2026-11-05.**
+**Status: LANDED 2026-11-05.** The polled `flock` (above) and the `.gitignore` exception for
+`bin/heavy` and `bin/heavy_slot.py` are the dispatcher's corrections to its own wording, not
+departures from external-tools/010.
 
 ### Metadata
 
@@ -20,8 +22,9 @@ Linux) runs a command holding one of N machine-wide slots, waiting until one is 
 ### Mechanism
 
 - Slots are lock files `~/.cache/heavy-slots/slot-<i>.lock`, `N` from `HEAVY_SLOTS` (default 1).
-  Acquire with a blocking exclusive `flock`. The kernel drops it when the holder exits, killed
-  included.
+  Acquire with an exclusive `flock` (non-blocking, polled every 0.5 s, so a waiter over N slots
+  takes whichever frees first and can print its 60 s status). The kernel drops it when the holder
+  exits, killed included.
 - The holder writes `pid`, the command, its start time and its cwd into `slot-<i>.info`. A waiter
   prints that once (`heavy: waiting for slot 0, held by pid 123 (cargo build …, 4m12s, ~/wt/x)`)
   and then every 60 s.
