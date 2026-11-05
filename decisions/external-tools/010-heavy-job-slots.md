@@ -27,3 +27,18 @@ What it settles, in the recorder's reading of the option he picked:
 with load checks in briefs (agents did not follow it reliably on 2026-11-05).
 
 Carrier: [WO-2026-079](../../work-orders/WO-2026-079-heavy-job-slots.md).
+
+## Outcome (landed 2026-11-05, order WO-2026-079)
+
+On two commits:
+
+- `819c263` — `bin/heavy` (the CLI), `bin/heavy_slot.py` (`slot()`, the importable form), and
+  `tests/heavy-slots.test.ts` (one test per order row). `.gitignore` un-ignores the two scripts;
+  `bin/` stays ignored for the binary tools.
+- `8deeda1` — the README line.
+
+Waiting polls the slots with `LOCK_EX | LOCK_NB` every 0.5 s, not one blocking `flock`: a waiter
+over N slots must wake when any slot frees, and must print the holder every 60 s. The kernel still
+releases each lock when its holder dies.
+
+Open: when the holder is SIGKILLed, the child keeps running without a slot. Nothing stops it.
