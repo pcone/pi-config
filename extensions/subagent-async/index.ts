@@ -34,6 +34,8 @@ import {
 	isOwnerAlive,
 	listInFlightSubagents,
 	listSubagentMetas,
+	MAX_TURNS_HARD,
+	outcomeFromExitCode,
 	outcomeFromFooterWord,
 	processStartToken,
 	readSubagentState,
@@ -63,7 +65,6 @@ import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const MAX_TURNS_HARD = 500;
 const TURN_NUDGE_SOFT = 450; // warn once before the hard 500-turn kill
 const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const HARD_KILL_DELAY_MS = 5000;
@@ -3159,12 +3160,8 @@ function classifyOutcome(facts: TerminalFacts): SubagentOutcome {
 	if (fromFooter) return fromFooter;
 	const fromTurn = turnOutcome(facts.turn);
 	if (fromTurn) return fromTurn;
-	// No abnormal turn: how the process ended decides. No exit code at all means
-	// it did not exit — it was terminated — so that is not a finished run.
-	if (facts.exitCode === null) return "aborted";
-	// Below the hard turn cap a non-zero exit is an abort the parent must not read
-	// as success (the turn-limit stop is the killed path, flagged above).
-	return facts.exitCode !== 0 && facts.turns < MAX_TURNS_HARD ? "aborted" : "finished";
+	// No abnormal turn: how the process ended decides.
+	return outcomeFromExitCode(facts.exitCode, facts.turns);
 }
 
 /** The outcome plus its two words for one live-handler run: the close handler
