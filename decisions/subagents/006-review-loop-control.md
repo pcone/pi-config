@@ -157,6 +157,11 @@ rounds and respects the cap:
 - **`subagent_review_status`** returns `reviewRounds` and
   `reviewCapReached` so the orchestrator can make informed decisions
 
+A round is a post-implementation review spawn: since `plan` became a
+reviewer kind (WO-2026-074), a plan spawn is recorded in `spawns` but does not
+increment `reviewRounds` — see `decisions/subagents/004` and WO-2026-074 Q-074-b,
+which carries the question for confirmation.
+
 Backward-compatible: files without `reviewRounds` are treated as
 round 1 if spawns exist, round 0 otherwise.
 

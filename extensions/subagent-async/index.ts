@@ -113,10 +113,13 @@ const PI_ASYNC_DEBUG = process.env.PI_ASYNC_DEBUG === "1";
 
 // ── Reviewer-spawn tracker ────────────────────────────────────────────────
 //
-// Tracks which post-implementation reviewer kinds each parent (the running pi
-// process) has spawned. The orchestrator's `subagent_review_status` tool reads
-// the persisted form of this map to mechanically verify that an implementer's
-// declared `reviewParentRequirements` are met before forwarding `complete`.
+// Tracks which reviewer kinds each parent (the running pi process) has spawned.
+// The orchestrator's `subagent_review_status` tool reads the persisted form of
+// this map to mechanically verify that an implementer's declared
+// `reviewParentRequirements` are met before forwarding `complete`. A `plan`
+// spawn is recorded like any other kind but never satisfies a requirement and
+// never counts as a review round: the soft-prompt check compares kind tokens
+// exactly, and `plan` is not a requirement kind (WO-2026-074 Q-074-a).
 //
 // Two views of the same data:
 //   - `parentReviewerSpawns`: in-memory `Map<parentSessionId, SpawnEntry[]>`,
@@ -132,7 +135,7 @@ const PI_ASYNC_DEBUG = process.env.PI_ASYNC_DEBUG === "1";
 // in nested-orchestration scenarios; normal pi sessions always have a
 // session id.
 
-import type { ReviewerKind } from "./agents.ts";
+import { isReviewRequirementKind, type ReviewRequirementKind, type ReviewerKind } from "./agents.ts";
 
 interface SpawnEntry {
 	reviewerKind: ReviewerKind;
@@ -170,7 +173,11 @@ function reviewStatusPath(parentKey: string): string {
 function recordReviewerSpawn(parentKey: string, entry: SpawnEntry): void {
 	const state = parentReviewerSpawns.get(parentKey) ?? { spawns: [], reviewRounds: 0, reviewCapReached: false };
 	state.spawns.push(entry);
-	state.reviewRounds++;
+	// A round is a post-implementation review. A `plan` spawn is recorded (the
+	// orchestrator reads `spawns`) but consumes none of the 3 rounds: the cap
+	// suppresses the missing-reviewer nudge, which a plan review must not weaken
+	// (WO-2026-074 Q-074-a; decisions/subagents/006).
+	if (isReviewRequirementKind(entry.reviewerKind)) state.reviewRounds++;
 	if (state.reviewRounds >= REVIEW_ROUND_CAP) {
 		state.reviewCapReached = true;
 	}
@@ -698,7 +705,7 @@ interface RunningSubagent {
 	sockClients: Set<net.Socket>; // connected viewers
 	// Reviewer invocation guard: the parent agent's declared requirements.
 	// Empty / undefined means "no gate applies" (the soft-prompt check is a no-op).
-	reviewParentRequirements?: ReviewerKind[];
+	reviewParentRequirements?: ReviewRequirementKind[];
 	// R4 owner-asks gate: set when the agent's report schema declares the
 	// `owner_asks` field, so its completion report is refused unless the field is
 	// well-formed. Derived from the agent prompt, never a name list.
@@ -4002,7 +4009,9 @@ export default function (pi: ExtensionAPI) {
 			// to mechanically verify the gate. Recording happens AFTER the spawn
 			// succeeds and BEFORE the result returns to the caller, so a child
 			// session that hasn't yet been recorded is "not yet spawned" per the
-			// work-order ordering invariant.
+			// work-order ordering invariant. Every kind is recorded, `plan`
+			// included — that entry is what proves a plan review leaves an
+			// `implementation` requirement unmet (WO-2026-074 Q-074-a).
 			if (agent.reviewerKind) {
 				try {
 					const parentKey = getParentTrackerKey(ctx);
@@ -4101,7 +4110,7 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent_review_status",
 		label: "Subagent Review Status",
 		description:
-			"Read-only tool. Returns the list of post-implementation reviewer kinds " +
+			"Read-only tool. Returns the list of reviewer kinds " +
 			"that a given parent session has spawned, with each child session id. " +
 			"Use after an implementer's completion report to mechanically verify that " +
 			"every reviewer kind the implementer declared in `requires_parent_reviewers` " +
