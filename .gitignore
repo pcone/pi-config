@@ -1,5 +1,7 @@
 auth.json
-bin/
+bin/*
+!bin/heavy
+!bin/heavy_slot.py
 /sessions/
 checkpoints/
 .pi/mode.json

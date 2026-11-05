@@ -1,0 +1,36 @@
+#!/usr/bin/env -S python3 -I
+"""Run a command holding one machine-wide heavy-job slot.
+
+Usage: heavy -- <cmd> [args...]
+
+Exit status and stdout are the child's. Waiter lines go to stderr.
+"""
+import os
+import signal
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I omits the script dir
+from heavy_slot import slot  # noqa: E402
+
+USAGE = "usage: heavy -- <cmd> [args...]"
+
+
+def main(argv):
+    if len(argv) < 2 or argv[0] != "--":
+        print(USAGE, file=sys.stderr)
+        return 2
+    cmd = argv[1:]
+    try:
+        with slot(cmd):
+            child = subprocess.Popen(cmd)  # inherits HEAVY_SLOT_HELD from slot()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(sig, lambda signum, _frame: child.send_signal(signum))
+            rc = child.wait()
+    except KeyboardInterrupt:
+        return 130
+    return 128 - rc if rc < 0 else rc  # killed by signal N -> 128+N, as a shell reports it
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
