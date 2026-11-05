@@ -333,6 +333,12 @@ this rule, not a thorough one.
 - **Always list files NOT to modify** when adjacent files could plausibly be touched — strongest signal against scope creep.
 - **Use repo-relative paths everywhere.** Subagents run in isolated worktrees; absolute parent-repo paths bypass isolation.
 - **Cross-reference AGENTS.md** for project-specific conventions.
+- **A mandated fixture correction un-edits the rows that encode it.** When an order requires a test
+  fixture to carry the shape production returns (a stub returning `{ provider, id }` for a full
+  `Model<Api>`), any row asserting the old shape must change, so "existing rows unedited" is not
+  available beside it. Say which rows may change and why, or expect the implementer to stop and
+  register the conflict. Two orders hit this in one afternoon (WO-2026-076, 077); both landed only
+  because the implementer refused to pick silently.
 - **Consider pre-dispatch simplification.** If the change looks larger than the goal warrants, route through `review-plan` first.
 ## Review routing criterion
 
