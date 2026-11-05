@@ -53,7 +53,9 @@ same facts. `review-code` (round 1) read the order's prohibition — do not chan
 cap that silences that requirement's nudge, and asked for the counter to count post-implementation
 spawns only. `review-tests` (round 1) read `decisions/subagents/006:153` ("increments
 `reviewRounds` on each fresh spawn", written when every recorded spawn was a post-implementation
-review) as settling it the other way, and asked for a row pinning that a plan spawn spends a round.
+review) as supplying the argument for the other direction, and asked for the direction to be ruled
+rather than assumed, with a row pinning whichever way it resolved (so round 1's demand was a row,
+not that round).
 Neither document was written with a third reviewer kind in mind, so neither answers it.
 
 **Landed pending the ruling (Q-074-b direction 1):** no round spent.

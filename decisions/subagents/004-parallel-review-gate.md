@@ -261,7 +261,8 @@ A review round is a post-implementation review spawn, the unit
 (`spawns`) — which is what shows it satisfies no requirement — but it spends
 none of the three rounds behind `reviewCapReached`: that cap suppresses the
 missing-reviewer nudge, and a new review phase must not weaken the nudge that
-surfaces `requires_parent_reviewers` (WO-2026-074).
+surfaces `requires_parent_reviewers` (WO-2026-074; the round semantics are
+raised for confirmation as Q-074-b).
 
 ### Orchestrator parent-id handling
 

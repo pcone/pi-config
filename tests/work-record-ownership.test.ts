@@ -268,7 +268,9 @@ describe("a review-plan spawn carrying workOrderPath", () => {
 
 // ── Row 2c — the plan spawn reaches the tracker the review gate reads ──────
 describe("a review-plan spawn in the reviewer tracker", () => {
-	const PARENT = "session-parent-plan";
+	// This row owns the key: the tracker is module-level in-memory state as well as a
+	// file, so a second user of the same key would see this row's rounds.
+	const PARENT = `session-parent-plan-${process.pid}`;
 	const trackerPath = `/tmp/pi-subagent-${PARENT}.reviewers.json`;
 	afterEach(() => {
 		fs.rmSync(trackerPath, { force: true });
