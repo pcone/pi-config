@@ -180,4 +180,13 @@ offering `subagent_resume` for an `Errored`/`Overflowed`/`Aborted` child exactly
 as it did for `Stopped`. That consequence is this implementation's, not the
 ruling's — withdrawing the resume offer would change the state vocabulary.
 
+Which word a run writes follows its outcome: `Completed` only for a completion,
+`Exited` for a clean exit with nothing delivered, `Stopped` for an abort the exit
+code decided (a completed turn followed by a signal or a non-zero exit, so the
+word has no outcome of its own and reading it back defers to the recorded exit
+code), and the turn's own word for `Errored`/`Overflowed`/`Aborted`. A
+`stopReason` the table does not name is classified `aborted` and named once at
+the head of the delivered `Errors:` line, so a new pi reason is visible until it
+gets its own word.
+
 Ruling: WO-2026-078 Q-A1 — "done, but labelled"; gating completion rejected.

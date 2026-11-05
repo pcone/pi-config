@@ -2531,12 +2531,13 @@ async function spawnSubagent(
 		if (stdoutBuffer.trim()) processLine(stdoutBuffer);
 
 		// Write completion footer to live log
-		const { footer: how } = terminalOutcome(rs, code);
+		const { outcome, footer: how } = terminalOutcome(rs, code);
 		logEntry("");
-		// Killed footer is always red — even in the rare race where a subagent
-		// raced to `isDone` before SIGTERM was dispatched, a hard kill is an
-		// abort and should render as such.
-		const style = rs.killedExplicitly ? S.doneFail : (rs.isDone ? S.doneOk : S.doneFail);
+		// The colour follows the outcome, not `isDone`: a completion is green and
+		// everything else — a kill, a truncated or errored turn — renders as the
+		// abort it was delivered as. `Exited` (a clean exit with nothing delivered)
+		// stays red, as it always was.
+		const style = outcome === "finished" && rs.isDone ? S.doneOk : S.doneFail;
 		logEntry(`${style}── ${how} (${rs.progress.turns} turns, exit ${code ?? "?"}) ──${S.reset}`);
 
 		// Widget stays visible for user to review; they clear it with /watch off
@@ -3166,9 +3167,10 @@ function classifyOutcome(facts: TerminalFacts): SubagentOutcome {
 	return facts.exitCode !== 0 && facts.turns < MAX_TURNS_HARD ? "aborted" : "finished";
 }
 
-/** The outcome plus both of its words for one finished run. `footer` is the
- *  word the live close handler writes; a recovered run's footer already exists
- *  on disk, so only its `prefix` is used. Exported as an `@internal` test hook. */
+/** The outcome plus its two words for one live-handler run: the close handler
+ *  writes `footer` and `deliverResult` writes `prefix`.
+ *  @internal test hook so the outcome vocabulary can be exercised without
+ *  spawning a real child process. */
 export function terminalOutcome(rs: RunningSubagent, exitCode: number | null): {
 	outcome: SubagentOutcome;
 	footer: string;
@@ -3178,9 +3180,11 @@ export function terminalOutcome(rs: RunningSubagent, exitCode: number | null): {
 	// A reason the vocabulary does not name is a turn that did not complete, and
 	// it must not pass quietly: name it where the parent reads the result, so a
 	// new pi stop reason is visible until it gets its own word in the table.
+	// Prepended because the delivered `Errors:` line shows only its first three
+	// entries — appended, the note is dropped exactly where the run was messiest.
 	if (turn?.stopReason && !isKnownStopReason(turn.stopReason)) {
 		const note = `unknown stopReason "${turn.stopReason}" — classified aborted`;
-		if (!rs.progress.errors.includes(note)) rs.progress.errors.push(note);
+		if (!rs.progress.errors.includes(note)) rs.progress.errors.unshift(note);
 	}
 	const outcome = classifyOutcome({
 		turn,

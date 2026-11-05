@@ -612,6 +612,7 @@ describe("the close handler writes the word it classified", () => {
 		const { sid, sent } = await spawnStandin("length");
 
 		expect(await waitFor(() => sent.length > 0)).toBe(true);
+		expect(sent.length).toBe(1);
 		// Site 1: the delivered prefix.
 		expect(sent[0].split("\n")[0]).toBe(`[Subagent standin-worker overflowed] — session: ${sid}`);
 
@@ -670,7 +671,12 @@ describe("the close handler writes the word it classified", () => {
 		const { sid, sent } = await spawnStandin("unknown");
 
 		expect(await waitFor(() => sent.length > 0)).toBe(true);
+		expect(sent.length).toBe(1);
 		expect(sent[0].split("\n")[0]).toBe(`[Subagent standin-worker aborted] — session: ${sid}`);
+		// Named once, and still named when the child has already logged errors:
+		// the delivered `Errors:` line renders three entries, so the note is
+		// prepended to that list rather than appended.
+		expect(sent[0].split('unknown stopReason "timeout"').length - 1).toBe(1);
 		expect(sent[0]).toContain('Errors: unknown stopReason "timeout" — classified aborted');
 		const log = readFileSync(`/tmp/pi-subagent-${sid}.log`, "utf8").split("\n").filter((l) => l.trim()).pop()!;
 		expect(parseTerminalFooter(log)).toEqual({ word: "Aborted", turns: 1, exitCode: 0 });
@@ -685,6 +691,27 @@ describe("the terminal vocabulary has no safe default", () => {
 		const t = terminalOutcome(rs, 0);
 		expect(t).toEqual({ outcome: "aborted", footer: "Aborted", prefix: "aborted" });
 		expect(rs.progress.errors).toContain('unknown stopReason "timeout" — classified aborted');
+	});
+
+	it("names an unknown stop reason where the result renders it, and only once", () => {
+		// The delivered `Errors:` line shows the first three entries, so the note
+		// must lead the list: a child that already logged three errors is exactly
+		// the run whose classification the parent most needs to see.
+		const note = 'unknown stopReason "timeout" — classified aborted';
+		const rs = rsStub({
+			isDone: true,
+			progress: { ...turns(1), errors: ["e1", "e2", "e3"] },
+			messages: [assistantMessage("timeout", "?")],
+		});
+		_testSetLiveSessionCtx(liveCtx());
+		const { pi, sent } = piStub();
+		deliverResult(pi, rs, 0);
+		expect(sent[0]).toContain(`Errors: ${note}; e1; e2`);
+		// Called from two sites (the footer computation and the delivery), and the
+		// note is still there once.
+		terminalOutcome(rs, 0);
+		expect(rs.progress.errors.filter((e) => e === note).length).toBe(1);
+		expect(rs.progress.errors[0]).toBe(note);
 	});
 
 	it("refuses a footer word no footer writes", () => {
