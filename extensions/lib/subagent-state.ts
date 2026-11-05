@@ -303,6 +303,23 @@ export function outcomeFromFooterWord(word: string): SubagentOutcome | null {
 	return outcome;
 }
 
+/** The turn count at which a run is killed for exceeding its turn budget.
+ *  Shared with the viewers through `outcomeFromExitCode`, so the cap that
+ *  decides a kill is the same number the classifier reads. */
+export const MAX_TURNS_HARD = 500;
+
+/**
+ * The outcome the process exit code names: no exit code at all means the
+ * process did not exit — it was terminated — so that is not a finished run.
+ * Below the hard turn cap a non-zero exit is an abort the parent must not read
+ * as success; the turn-limit stop carries its own `Killed` footer word and
+ * never reaches this rule.
+ */
+export function outcomeFromExitCode(exitCode: number | null, turns: number): SubagentOutcome {
+	if (exitCode === null) return "aborted";
+	return exitCode !== 0 && turns < MAX_TURNS_HARD ? "aborted" : "finished";
+}
+
 /**
  * Outcomes of pi's non-normal `StopReason`s. `pending` and `deferred` are its
  * not-yet-settled reasons, so a turn that reached the terminal path in either
@@ -365,6 +382,14 @@ export function readTerminalFooter(log: string): TerminalFooter | null {
 		if (footer) return footer;
 	}
 	return null;
+}
+
+/**
+ * The outcome a parsed footer names: its word, or — for `Exited`/`Stopped`,
+ * which record only that the process exited — the exit code and turn count.
+ */
+export function outcomeFromFooter(footer: TerminalFooter): SubagentOutcome {
+	return outcomeFromFooterWord(footer.word) ?? outcomeFromExitCode(footer.exitCode, footer.turns);
 }
 
 /**

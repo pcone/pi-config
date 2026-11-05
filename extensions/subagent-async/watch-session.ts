@@ -22,6 +22,14 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
+import {
+	STOPPED_FOOTER_WORD,
+	outcomeFromFooter,
+	parseTerminalFooter,
+	type SubagentOutcome,
+	type TerminalFooter,
+} from "../lib/subagent-state.ts";
+
 const sid = process.argv[2];
 if (!sid) {
 	console.error("Usage: npx tsx watch-session.ts <session-id>");
@@ -38,8 +46,10 @@ const sockPath = sid.startsWith("/")
 class SessionViewer {
 	private lines: string[] = [];
 	private done = false;
-	private exitCode = 0;
+	private exitCode: number | null = null;
 	private turns = 0;
+	private word: string | null = null;
+	private outcome: SubagentOutcome | null = null;
 	private _cachedLines?: string[];
 	private _cachedWidth = -1;
 	private _cachedLineCount = -1;
@@ -48,10 +58,14 @@ class SessionViewer {
 		this.lines.push(text);
 	}
 
-	setDone(code: number, count: number) {
+	/** Record the terminal footer the log wrote, or null when the socket closed
+	 *  with no footer — then the run still reads terminal but names no word. */
+	setDone(footer: TerminalFooter | null) {
 		this.done = true;
-		this.exitCode = code;
-		this.turns = count;
+		this.word = footer ? footer.word : null;
+		this.outcome = footer ? outcomeFromFooter(footer) : null;
+		this.exitCode = footer ? footer.exitCode : null;
+		this.turns = footer ? footer.turns : this.turns;
 	}
 
 	invalidate() {
@@ -76,11 +90,7 @@ class SessionViewer {
 		const out: string[] = [];
 
 		// Header bar (inverse video)
-		const status = this.done
-			? this.exitCode === 0
-				? "Completed"
-				: `Stopped (exit ${this.exitCode})`
-			: "running";
+		const status = this.done ? (this.word ?? STOPPED_FOOTER_WORD) : "running";
 		const turnsStr = this.turns > 0 ? `  |  Turns: ${this.turns}` : "";
 		out.push(
 			"\x1b[7m" +
@@ -143,11 +153,10 @@ const socket = createConnection(sockPath, () => {
 	rl.on("line", (line: string) => {
 		viewer.pushLine(line);
 
-		// Parse completion footer for structured data
-		const doneMatch = line.match(/^── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
-		if (doneMatch) {
-			viewer.setDone(parseInt(doneMatch[3]), parseInt(doneMatch[2]));
-		}
+		// The footer is the log's own line; its ANSI prefix is why the pattern is
+		// unanchored.
+		const footer = parseTerminalFooter(line);
+		if (footer) viewer.setDone(footer);
 
 		viewer.invalidate();
 		tui.requestRender();
@@ -155,7 +164,7 @@ const socket = createConnection(sockPath, () => {
 
 	socket.on("close", () => {
 		clearInterval(tick);
-		if (!viewer["done"]) viewer.setDone(0, viewer["turns"]);
+		if (!viewer["done"]) viewer.setDone(null);
 		viewer.invalidate();
 		tui.requestRender();
 

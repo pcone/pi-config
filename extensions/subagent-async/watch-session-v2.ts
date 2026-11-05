@@ -55,6 +55,12 @@ import {
 type ThemeBg = "selectedBg" | "userMessageBg" | "customMessageBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+	outcomeFromFooter,
+	parseTerminalFooter,
+	readTerminalFooter,
+	type SubagentOutcome,
+} from "../lib/subagent-state.ts";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -249,7 +255,10 @@ function timeAgo(ms: number): string {
 
 // ── Session discovery ───────────────────────────────────────────────────────
 
-export type SessionStatus = "RUNNING" | "COMPLETED" | "STOPPED" | "EMPTY";
+/** A session's terminal state and — when its log records one — the word the
+ *  footer wrote. The word rides beside the status: `TERMINAL` says the run is
+ *  over, the word says how, and the literal word list lives in the lib. */
+export type SessionStatus = "RUNNING" | "TERMINAL" | "EMPTY";
 
 export interface SessionMeta {
 	/** Agent type (implement, review-code, etc.) */
@@ -271,6 +280,11 @@ export interface SessionInfo {
 	sockPath: string;
 	logPath: string;
 	status: SessionStatus;
+	/** The terminal footer's word, or null when the log carries no footer. */
+	word: string | null;
+	/** The outcome that word names; for a word that records only an exit, the
+	 *  exit code the same footer carries decides. */
+	outcome: SubagentOutcome | null;
 	mtimeMs: number;
 	turns: number;
 	/** Rich metadata extracted from meta.json (if available) */
@@ -345,6 +359,22 @@ function agentColor(agentName: string): (s: string) => string {
 	return S.muted; // fallback
 }
 
+/**
+ * Derive a finished session's status from its log content: the terminal footer
+ * the log wrote, if any. `EMPTY` is the no-content arm; a non-empty log with no
+ * footer is a torn or legacy log — terminal, but naming no word.
+ */
+export function statusFromLogContent(content: string): {
+	status: SessionStatus;
+	word: string | null;
+	outcome: SubagentOutcome | null;
+} {
+	if (content.trim().length === 0) return { status: "EMPTY", word: null, outcome: null };
+	const footer = readTerminalFooter(content);
+	if (!footer) return { status: "TERMINAL", word: null, outcome: null };
+	return { status: "TERMINAL", word: footer.word, outcome: outcomeFromFooter(footer) };
+}
+
 export function discoverSessions(): SessionInfo[] {
 	const sessions: SessionInfo[] = [];
 	let sockFiles: string[] = [];
@@ -367,7 +397,7 @@ export function discoverSessions(): SessionInfo[] {
 		try { mtime = Math.max(mtime, fs.statSync(logPath).mtimeMs); } catch {}
 		const turns = countTurns(logPath);
 		const meta = loadSessionMeta(id);
-		sessions.push({ id, sockPath, logPath, status: "RUNNING", mtimeMs: mtime, turns, meta });
+		sessions.push({ id, sockPath, logPath, status: "RUNNING", word: null, outcome: null, mtimeMs: mtime, turns, meta });
 	}
 
 	for (const f of logFiles) {
@@ -379,13 +409,9 @@ export function discoverSessions(): SessionInfo[] {
 		if (Date.now() - stat.mtimeMs > RECENT_WINDOW_MS) continue;
 		let content = "";
 		try { content = fs.readFileSync(logPath, "utf8"); } catch { continue; }
-		const status: SessionStatus = content.includes("── Completed")
-			? "COMPLETED"
-			: content.includes("── Exited") || content.includes("── Stopped")
-				? "STOPPED"
-				: content.trim().length === 0 ? "EMPTY" : "STOPPED";
+		const { status, word, outcome } = statusFromLogContent(content);
 		const meta = loadSessionMeta(id);
-		sessions.push({ id, sockPath: logPath.replace(/\.log$/, ".sock"), logPath, status, mtimeMs: stat.mtimeMs, turns: countTurns(logPath), meta });
+		sessions.push({ id, sockPath: logPath.replace(/\.log$/, ".sock"), logPath, status, word, outcome, mtimeMs: stat.mtimeMs, turns: countTurns(logPath), meta });
 	}
 
 	sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
@@ -411,8 +437,13 @@ function resolveSockPath(id: string): string {
 
 interface PaneData {
 	done: boolean;
-	exitCode: number;
+	/** The exit code the footer recorded; null when the footer recorded `exit ?`
+	 *  or no footer was seen. */
+	exitCode: number | null;
 	turns: number;
+	/** The footer's word, or null while running or when it recorded none. */
+	word: string | null;
+	outcome: SubagentOutcome | null;
 	connected: boolean;
 	connectedAt: number;
 	missing: boolean;
@@ -939,8 +970,10 @@ class Pane extends Container implements Focusable {
 
 		this.data = {
 			done: false,
-			exitCode: 0,
+			exitCode: null,
 			turns: 0,
+			word: null,
+			outcome: null,
 			connected: false,
 			connectedAt: 0,
 			missing: false,
@@ -978,8 +1011,10 @@ class Pane extends Container implements Focusable {
 		this.currentThinking = undefined;
 		this.lastTool = undefined;
 		this.data.done = false;
-		this.data.exitCode = 0;
+		this.data.exitCode = null;
 		this.data.turns = 0;
+		this.data.word = null;
+		this.data.outcome = null;
 		this.data.connected = false;
 		this.data.connectedAt = 0;
 		this.data.missing = false;
@@ -1008,19 +1043,19 @@ class Pane extends Container implements Focusable {
 		}
 
 		// Completion footer
-		const doneMatch = trimmed.match(/^──\s*(Completed|Exited|Stopped)\b/);
-		if (doneMatch) {
+		const footer = parseTerminalFooter(trimmed);
+		if (footer) {
 			this.flushAssistant();
 			this.flushThinking();
 			this.lastTool = undefined;
-			const style = doneMatch[1] === "Completed" ? TS.success : TS.error;
+			const outcome = outcomeFromFooter(footer);
+			const style = outcome === "finished" ? TS.success : TS.error;
 			this.body.buffer.add(new TextEntry(trimmed, style));
 			this.data.done = true;
-			const m = trimmed.match(/(\d+)\s+turns,\s+exit\s+(-?\d+|null)/);
-			if (m) {
-				this.data.turns = parseInt(m[1], 10);
-				this.data.exitCode = m[2] === "null" ? 0 : parseInt(m[2], 10);
-			}
+			this.data.word = footer.word;
+			this.data.outcome = outcome;
+			this.data.turns = footer.turns;
+			this.data.exitCode = footer.exitCode;
 			this.body.invalidate();
 			return;
 		}
@@ -1126,15 +1161,21 @@ class Pane extends Container implements Focusable {
 		return this.id.startsWith("subagent-") ? this.id.slice(9, 17) : this.id.slice(0, 8);
 	}
 
+	/** The word a finished pane's footer wrote. `done` is set only by the parsed
+	 *  footer branch, so a done pane with no word is a bug, not a wordless run. */
+	private terminalWord(): string {
+		if (this.data.word === null) throw new Error(`${this.id} is done but recorded no footer word`);
+		return this.data.word.toUpperCase();
+	}
+
 	render(width: number): string[] {
 		// Build the pane header per-frame
 		const elapsed = this.data.connectedAt
 			? Math.round((Date.now() - this.data.connectedAt) / 1000)
 			: -1;
+		const completionColor = this.data.outcome === "finished" ? TS.success : TS.error;
 		const status = this.data.done
-			? this.data.exitCode === 0
-				? TS.success("COMPLETED")
-				: TS.error(`EXIT ${this.data.exitCode}`)
+			? completionColor(this.terminalWord())
 			: this.data.connected
 				? TS.accent(`${Math.floor(elapsed / 60)}m ${elapsed % 60}s`)
 				: TS.muted(this.data.missing ? "missing" : "connecting");
