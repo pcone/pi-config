@@ -127,7 +127,7 @@ must stay green.
 Carried from WO-2026-075's landing stamp and `docs/investigations/pi-upgrade-2026-10.md`'s §4 item,
 which names this order as the carrier for the `baseUrl` half.
 
-### Q-B1 — SETTLED (orchestrator, 2026-11-05, relayed to implement): the prohibition wins, R2 keeps `toEqual(REGISTRY_MODEL)`
+### Q-B1 — RULED (owner, 2026-11-05, via the planning seat): the prohibition wins, R2 keeps `toEqual(REGISTRY_MODEL)`
 
 Two clauses of this order cannot both hold. Prohibitions: "Fix the stub to include `api` and
 `baseUrl` … then the row means something." Verification Criteria: "existing rows unedited."
@@ -136,12 +136,21 @@ With the stub carrying the production `Model<Api>`, the pre-existing R2 row's as
 `expect(fleetCalls[0].model).toEqual({ provider: FLEET_PROVIDER, id: FLEET_MODEL })` — fails on the
 fields the stub now carries.
 
-**Settled: keep `toEqual(REGISTRY_MODEL)`.** The orchestrator's ground (2026-11-05, relayed; not an
-owner quotation): the contradiction is the order's, not the spec's — a corrected fixture necessarily
-changes what the pre-existing row sees, the row's property ("the model handed to `compact()` is the
-registry's model") is unchanged and now asserted strictly, and nothing about what the code accepts or
-does changes. So it is a fixture consequence, not an assert-scope departure. Same shape of defect on
-WO-2026-076's key-set row, settled the same way (`61809c6` on main).
+**Ruled: "Ratify (Recommended)"** — the owner ratified the orchestrator's reading on 2026-11-05 via
+the planning seat, so `toEqual(REGISTRY_MODEL)` stands and the widened assertion is the ruling, not a
+tolerated deviation.
+
+The orchestrator's ground, which the ruling adopted: the contradiction is the order's, not the
+spec's — a corrected fixture necessarily changes what the pre-existing row sees, the row's property
+("the model handed to `compact()` is the registry's model") is unchanged and now asserted strictly,
+and nothing about what the code accepts or does changes. So it is a fixture consequence, not an
+assert-scope departure. The same shape of defect on WO-2026-076's key-set row was settled the same way
+(`61809c6` on main) and was not raised, because it added no surface and kept every row.
+
+**Standing rule from the same message (owner, 2026-11-05):** an edit to an existing test row, or a
+contradiction between two of an order's own acceptance clauses, is an owner question raised
+**before** landing — even when the orchestrator's reading is clearly right. This case is the precedent
+that makes the rule concrete: right answer, wrong process.
 
 Evidence, each mutation run alone: R2 reds under an unconditional wrapper (`toEqual` at
 `tests/summary-ownership.test.ts:474`, baseUrl overwritten with `undefined`); a dropped wrapper leaves
@@ -180,12 +189,12 @@ A1 is the discriminating row because it is the only row whose auth resolves a UR
 because a wrong gate instruction that is silently not followed reads as an implementer failure when it
 is the opposite.
 
-**Q-B1 — settled by me, not the owner, and here is the ground.** The order mandated that the test stub
-carry production's shape and separately said existing rows stay unedited; the corrected fixture
-necessarily changes what the pre-existing R2 assertion sees. The contradiction is mine. The row's
-property is unchanged — the model handed to `compact()` is the registry's model — and it is now
-asserted strictly rather than loosely, so the erosion risk runs the other way. Fixture consequence,
-not assert scope. Recorded as the orchestrator's ground, not an owner quotation.
+**Q-B1 — ratified by the owner (2026-11-05, via the planning seat): "Ratify (Recommended)."** I had
+settled it myself first; the ratification stands as his ruling, and the seat's standing rule from the
+same message is worth more than the ruling: an edit to an existing test row, or a contradiction
+between two of an order's own acceptance clauses, is an owner question raised **before** landing, even
+when my reading is clearly right. Right answer, wrong process — the process fix in
+`skills/work-order-template/SKILL.md` is the durable part.
 
 **Accepted, ordered by the matrix and kept:** A3 duplicates R1/I1/075-R3. **Accepted, not extended:**
 A1 does not also assert `headers`/`env` — WO-2026-075's rows pin those positionals, and widening a
