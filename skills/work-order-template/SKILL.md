@@ -333,6 +333,11 @@ this rule, not a thorough one.
 - **Always list files NOT to modify** when adjacent files could plausibly be touched — strongest signal against scope creep.
 - **Use repo-relative paths everywhere.** Subagents run in isolated worktrees; absolute parent-repo paths bypass isolation.
 - **Cross-reference AGENTS.md** for project-specific conventions.
+- **A contradiction between your own acceptance clauses is an owner question, raised before landing.**
+  So is any edit to an existing test row — including when your reading is clearly right (owner,
+  2026-11-05, after WO-2026-077: the answer was ratified, the process was still wrong). Write the
+  clauses so they cannot collide, and when they do, stop at the conflict rather than picking the better
+  of the two.
 - **A mandated fixture correction un-edits the rows that encode it.** When an order requires a test
   fixture to carry the shape production returns (a stub returning `{ provider, id }` for a full
   `Model<Api>`), any row asserting the old shape must change, so "existing rows unedited" is not
