@@ -127,6 +127,28 @@ must stay green.
 Carried from WO-2026-075's landing stamp and `docs/investigations/pi-upgrade-2026-10.md`'s §4 item,
 which names this order as the carrier for the `baseUrl` half.
 
+### Q-B1 — SETTLED (orchestrator, 2026-11-05, relayed to implement): the prohibition wins, R2 keeps `toEqual(REGISTRY_MODEL)`
+
+Two clauses of this order cannot both hold. Prohibitions: "Fix the stub to include `api` and
+`baseUrl` … then the row means something." Verification Criteria: "existing rows unedited."
+
+With the stub carrying the production `Model<Api>`, the pre-existing R2 row's assertion —
+`expect(fleetCalls[0].model).toEqual({ provider: FLEET_PROVIDER, id: FLEET_MODEL })` — fails on the
+fields the stub now carries.
+
+**Settled: keep `toEqual(REGISTRY_MODEL)`.** The orchestrator's ground (2026-11-05, relayed; not an
+owner quotation): the contradiction is the order's, not the spec's — a corrected fixture necessarily
+changes what the pre-existing row sees, the row's property ("the model handed to `compact()` is the
+registry's model") is unchanged and now asserted strictly, and nothing about what the code accepts or
+does changes. So it is a fixture consequence, not an assert-scope departure. Same shape of defect on
+WO-2026-076's key-set row, settled the same way (`61809c6` on main).
+
+Evidence, each mutation run alone: R2 reds under an unconditional wrapper (`toEqual` at
+`tests/summary-ownership.test.ts:474`, baseUrl overwritten with `undefined`); a dropped wrapper leaves
+R2 green, because R2's fixture resolves no `baseUrl` and never enters the wrapper's true branch — A1
+is the row that reds there, as it does under a wrapper trimmed to `{ id, provider, baseUrl }`. A2b
+reds under both an unconditional wrapper and a definedness (rather than truthiness) condition.
+
 ---
 
 ## Report on completion

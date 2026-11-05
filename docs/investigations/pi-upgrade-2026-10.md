@@ -187,16 +187,18 @@ production pairs. Two deltas for §4/§6, both probed there:
 - §6 step 4's `compact(…, sessionId)` fix is **not needed**: 1.4.0 attaches an
   `x-opencode-session` uuidv7 at dispatch and opencode-go accepts it, so the
   `MissingSessionID` 400 no longer reproduces.
-- Of the §4 in-scope items, only `compaction-model.ts`'s header/`env` shape was
+- Of the §4 in-scope items, only `compaction-model.ts`'s auth handling was
   unported (`ProviderHeaders` is `Record<string, string | null>` against
   `compact()`'s `Record<string, string>`), and it was latent. **Ported** by
   WO-2026-075: the `null` markers are filtered and `auth.env` goes to the 9th
-  positional. `auth.baseUrl` is still dropped — `compact()` has no slot for it,
-  but the URL is read from the model object, so it is reachable by wrapping the
-  model. Carrier: `work-orders/WO-fleet-compaction-baseurl.md`, dispatch-blocked
-  on an owner call between wrapping the model and dispatching through the
-  runtime. Latent rather than live: api-key auth never sets `baseUrl`, and only
-  the `github-copilot` OAuth handler returns one.
+  positional. `auth.baseUrl` followed in WO-2026-077: the model is wrapped
+  (`auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model`) the way pi's own
+  summarization path does it, because the provider api reads the URL off the
+  model and `compact()` has no positional for it. Dispatching through the
+  `ModelRuntime` instead was rejected: it would put compaction under
+  `before_provider_request` and `model_call`, which it bypasses today. Latent
+  rather than live: api-key auth never sets `baseUrl`, and only the
+  `github-copilot` OAuth handler returns one.
 
 ## Sources
 
