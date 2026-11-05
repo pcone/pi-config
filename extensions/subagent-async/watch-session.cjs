@@ -11,6 +11,12 @@ const { createConnection } = require("node:net");
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const {
+  STOPPED_FOOTER_WORD,
+  outcomeFromFooter,
+  parseTerminalFooter,
+  readTerminalFooter,
+} = require("../lib/subagent-state.ts");
 
 // Silently ignore stale-socket errors (subagent killed, socket file remains)
 process.on("uncaughtException", (err) => {
@@ -86,7 +92,10 @@ function timeAgo(ms) {
 const RECENT_WINDOW_MS = 30 * 60 * 1000;
 
 function discoverSessions() {
-  /** @type {Array<{id:string, sockPath:string, logPath:string, status:string, mtimeMs:number, order:number}>} */
+  /**
+   * @type {Array<{id:string, sockPath:string, logPath:string, status:string,
+   *   word:string|null, outcome:string|null, mtimeMs:number, order:number}>}
+   */
   const sessions = [];
 
   // Active sessions (have a socket)
@@ -100,7 +109,7 @@ function discoverSessions() {
     let mtimeMs = 0;
     try { mtimeMs = fs.statSync(logPath).mtimeMs; } catch {}
     try { mtimeMs = Math.max(mtimeMs, fs.statSync(sockPath).mtimeMs); } catch {}
-    sessions.push({ id, sockPath, logPath, status: "RUNNING", mtimeMs, order: 0 });
+    sessions.push({ id, sockPath, logPath, status: "RUNNING", word: null, outcome: null, mtimeMs, order: 0 });
   }
 
   // Recently finished (log file exists, no socket, modified in last 30 min)
@@ -116,9 +125,23 @@ function discoverSessions() {
     try { stat = fs.statSync(logPath); } catch { continue; }
     const age = Date.now() - stat.mtimeMs;
     if (age > RECENT_WINDOW_MS) continue;
-    const lines = countLines(logPath);
-    const done = lines > 0 && fs.readFileSync(logPath, "utf-8").includes("── Completed");
-    sessions.push({ id, sockPath, logPath, status: done ? "COMPLETED" : "STOPPED", mtimeMs: stat.mtimeMs, order: 0 });
+    let content = null;
+    try { content = fs.readFileSync(logPath, "utf-8"); } catch {}
+    // The status string stays the footer's own word here (unlike v2): this
+    // viewer prints and pads it. A log carrying no footer — unreadable, torn or
+    // legacy — reads STOPPED, as it always has.
+    const footer = content === null ? null : readTerminalFooter(content);
+    const word = footer ? footer.word : null;
+    sessions.push({
+      id,
+      sockPath,
+      logPath,
+      status: (word || STOPPED_FOOTER_WORD).toUpperCase(),
+      word,
+      outcome: footer ? outcomeFromFooter(footer) : null,
+      mtimeMs: stat.mtimeMs,
+      order: 0,
+    });
   }
 
   // Sort by mtime descending, then add order
@@ -155,7 +178,7 @@ function pickSession(sessions) {
         const marker = i === selected ? "\x1b[7m" : "";
         const reset = i === selected ? "\x1b[27m" : "";
         const prefix = marker + (i === selected ? " \u25b6 " : "   ") + reset;
-        const statusColor = s.status === "RUNNING" ? "\x1b[32m" : s.status === "COMPLETED" ? "\x1b[34m" : "\x1b[33m";
+        const statusColor = s.status === "RUNNING" ? "\x1b[32m" : s.outcome === "finished" ? "\x1b[34m" : "\x1b[33m";
         const idShort = s.id.startsWith("subagent-") ? s.id.slice(9, 17) : s.id.slice(0, 8);
         const line = `${prefix}${statusColor}${s.status.padEnd(10)}\x1b[0m  ${idShort}  ${DIM(timeAgo(Date.now() - s.mtimeMs))}`;
         buf += CLEAR_LINE + truncate(line, w) + "\r\n";
@@ -242,8 +265,10 @@ function runMultiViewer(initialIds, initialSplitCount) {
       sockPath,
       lines: [],
       done: false,
-      exitCode: 0,
+      exitCode: null,
       turns: 0,
+      word: null,
+      outcome: null,
       connected: false,
       connectedAt: 0,
       scrollOffset: 0,
@@ -274,12 +299,14 @@ function runMultiViewer(initialIds, initialSplitCount) {
     p.rl = readline.createInterface({ input: p.socket, crlfDelay: Infinity });
     p.rl.on("line", (line) => {
       p.lines.push(line);
-      // Match completion footer — may have ANSI codes at start
-      const m = plainLine(line).match(/^── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
-      if (m) {
+      // Match completion footer — the log line may carry an ANSI prefix
+      const footer = parseTerminalFooter(plainLine(line));
+      if (footer) {
         p.done = true;
-        p.exitCode = parseInt(m[3]);
-        p.turns = parseInt(m[2]);
+        p.exitCode = footer.exitCode;
+        p.turns = footer.turns;
+        p.word = footer.word;
+        p.outcome = outcomeFromFooter(footer);
       }
       if (!p.userScrolled) {
         p.scrollOffset = Math.max(0, (showThinking ? p.lines : p.lines.filter((l) => !l.includes("[thinking]"))).length - getBodyRows());
@@ -288,7 +315,7 @@ function runMultiViewer(initialIds, initialSplitCount) {
     });
     p.socket.on("close", () => {
       p.connected = false;
-      if (!p.done) { p.done = true; p.exitCode = 0; }
+      if (!p.done) { p.done = true; p.exitCode = null; }
       render();
     });
     p.socket.on("error", () => {
@@ -339,7 +366,9 @@ function runMultiViewer(initialIds, initialSplitCount) {
     p.scrollOffset = 0;
     p.userScrolled = false;
     p.turns = 0;
-    p.exitCode = 0;
+    p.exitCode = null;
+    p.word = null;
+    p.outcome = null;
     connectPane(p);
     render();
   }
@@ -396,7 +425,7 @@ function runMultiViewer(initialIds, initialSplitCount) {
   function renderPaneHeader(p, w) {
     const elapsed = p.connectedAt ? Math.round((Date.now() - p.connectedAt) / 1000) : 0;
     const sStr = p.done
-      ? p.exitCode === 0 ? "COMPLETED" : `EXIT ${p.exitCode}`
+      ? (p.word || STOPPED_FOOTER_WORD).toUpperCase()
       : p.connected ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : "connecting";
     const idShort = p.sid.startsWith("subagent-") ? p.sid.slice(9, 17) : p.sid.slice(0, 8);
     const tStr = p.turns > 0 ? ` | ${p.turns}t` : "";
@@ -563,7 +592,9 @@ function runMultiViewer(initialIds, initialSplitCount) {
         p.scrollOffset = 0;
         p.userScrolled = false;
         p.turns = 0;
-        p.exitCode = 0;
+        p.exitCode = null;
+        p.word = null;
+        p.outcome = null;
         connectPane(p);
       } else {
         // No completed pane — flash alert

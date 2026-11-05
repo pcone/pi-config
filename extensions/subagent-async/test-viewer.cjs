@@ -40,6 +40,11 @@ const {
   timeAgo,
   countLines,
 } = require("./watch-session.cjs");
+const {
+  parseTerminalFooter,
+  readTerminalFooter,
+  outcomeFromFooter,
+} = require("../lib/subagent-state.ts");
 
 // ── Tests: plainLen ─────────────────────────────────────────────────────────
 
@@ -217,6 +222,69 @@ test("completed without log text match = STOPPED", () => {
   const s = sessions.find((x) => x.id === "test-stopped-001");
   eq(Boolean(s), true);
   eq(s.status, "STOPPED");
+  eq(s.word, null);
+  eq(s.outcome, null);
+});
+
+test("errored footer = ERRORED, never COMPLETED", () => {
+  const f = createSessionFiles("test-errored-001");
+  unlink(f.sock);
+  touchLog(f.log, "log\ngoes\nhere\n── Errored (3 turns, exit 1)", 60);
+  const s = discoverSessions().find((x) => x.id === "test-errored-001");
+  eq(Boolean(s), true);
+  eq(s.status, "ERRORED");
+  eq(s.word, "Errored");
+  eq(s.outcome, "errored");
+});
+
+test("overflowed footer with exit 0 = OVERFLOWED, failure outcome", () => {
+  const f = createSessionFiles("test-overflowed-001");
+  unlink(f.sock);
+  touchLog(f.log, "log\n── Overflowed (3 turns, exit 0)", 60);
+  const s = discoverSessions().find((x) => x.id === "test-overflowed-001");
+  eq(Boolean(s), true);
+  eq(s.status, "OVERFLOWED");
+  eq(s.outcome, "overflowed");
+});
+
+test("exited footer names its word, exit code decides the outcome", () => {
+  const f = createSessionFiles("test-exited-001");
+  unlink(f.sock);
+  touchLog(f.log, "log\n── Exited (3 turns, exit 1)", 60);
+  const s = discoverSessions().find((x) => x.id === "test-exited-001");
+  eq(s.status, "EXITED");
+  eq(s.word, "Exited");
+  eq(s.outcome, "aborted");
+});
+
+test("stopped footer with exit ? = STOPPED, exitCode null", () => {
+  const f = createSessionFiles("test-stopped-q-001");
+  unlink(f.sock);
+  touchLog(f.log, "log\n── Stopped (3 turns, exit ?)", 60);
+  const s = discoverSessions().find((x) => x.id === "test-stopped-q-001");
+  eq(s.status, "STOPPED");
+  eq(s.word, "Stopped");
+  eq(s.outcome, "aborted");
+});
+
+test("aborted footer = ABORTED, failure outcome", () => {
+  const f = createSessionFiles("test-aborted-001");
+  unlink(f.sock);
+  touchLog(f.log, "log\n── Aborted (3 turns, exit 0)", 60);
+  const s = discoverSessions().find((x) => x.id === "test-aborted-001");
+  eq(s.status, "ABORTED");
+  eq(s.word, "Aborted");
+  eq(s.outcome, "aborted");
+});
+
+test("killed footer = KILLED, never COMPLETED", () => {
+  const f = createSessionFiles("test-killed-001");
+  unlink(f.sock);
+  touchLog(f.log, "log\n── Killed (3 turns, exit ?)", 60);
+  const s = discoverSessions().find((x) => x.id === "test-killed-001");
+  eq(s.status, "KILLED");
+  eq(s.word, "Killed");
+  eq(s.outcome, "killed");
 });
 
 test("stale log (>30min) excluded", () => {
@@ -235,34 +303,69 @@ test("empty /tmp (no sessions) returns empty array", () => {
   eq(Array.isArray(sessions), true);
 });
 
-// ── Tests: completion footer regex ──────────────────────────────────────────
+// ── Tests: completion footer parser ─────────────────────────────────────────
+// The rows drive the shared parser; the fixtures are the lines the extension's
+// footer writer emits (`── <word> (<n> turns, exit <code|?>) ──`).
 
-console.log("\nCompletion footer regex:");
-const DONE_RE = /^── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/;
+console.log("\nCompletion footer parser:");
 
-test("Completed match", () => {
-  const m = "── Completed (3 turns, exit 0)".match(DONE_RE);
-  eq(m[1], "Completed");
-  eq(m[2], "3");
-  eq(m[3], "0");
+// [fixture, word, outcome, turns, exitCode] — expected values spelled out, not
+// recomputed from the table the writer builds.
+const FOOTER_ROWS = [
+  ["── Completed (3 turns, exit 0) ──", "Completed", "finished", 3, 0],
+  ["── Errored (3 turns, exit 1) ──", "Errored", "errored", 3, 1],
+  ["── Overflowed (3 turns, exit 0) ──", "Overflowed", "overflowed", 3, 0],
+  ["── Aborted (3 turns, exit 0) ──", "Aborted", "aborted", 3, 0],
+  ["── Killed (3 turns, exit ?) ──", "Killed", "killed", 3, null],
+  ["── Exited (3 turns, exit 0) ──", "Exited", "finished", 3, 0],
+  ["── Exited (3 turns, exit 1) ──", "Exited", "aborted", 3, 1],
+  ["── Stopped (3 turns, exit 143) ──", "Stopped", "aborted", 3, 143],
+  ["── Stopped (3 turns, exit ?) ──", "Stopped", "aborted", 3, null],
+];
+
+for (const [line, word, outcome, turns, exitCode] of FOOTER_ROWS) {
+  test(`${word} (exit ${exitCode === null ? "?" : exitCode})`, () => {
+    const parsed = parseTerminalFooter(line);
+    eq(parsed, { word, turns, exitCode });
+    eq(outcomeFromFooter(parsed), outcome);
+  });
+}
+
+test("ANSI prefix does not hide the footer", () => {
+  const parsed = parseTerminalFooter("\x1b[1;32m── Errored (2 turns, exit 1) ──\x1b[0m");
+  eq(parsed, { word: "Errored", turns: 2, exitCode: 1 });
 });
-test("Exited non-zero", () => {
-  const m = "── Exited (1 turns, exit 1)".match(DONE_RE);
-  eq(m[1], "Exited");
-  eq(m[2], "1");
-  eq(m[3], "1");
+
+test("the old `exit null` spelling is not a footer", () => {
+  // The writer emits `?` for an absent exit code; `null` is the spelling the
+  // retired viewer regex coerced to 0.
+  eq(parseTerminalFooter("── Stopped (0 turns, exit null)"), null);
 });
-test("Stopped with signal", () => {
-  const m = "── Stopped (0 turns, exit null)".match(DONE_RE);
-  eq(m, null);
-});
+
 test("no match on normal log line", () => {
-  const m = "  ▸ bash echo hello".match(DONE_RE);
-  eq(m, null);
+  eq(parseTerminalFooter("  ▸ bash echo hello"), null);
 });
+
 test("no match on partial", () => {
-  const m = "── Completed (3 turns)".match(DONE_RE);
-  eq(m, null);
+  eq(parseTerminalFooter("── Completed (3 turns)"), null);
+});
+
+test("no match on a word no writer emits", () => {
+  eq(parseTerminalFooter("── Finished (1 turns, exit 0) ──"), null);
+});
+
+test("readTerminalFooter tolerates lines after the footer", () => {
+  const log = "── Turn 1 ──\nassistant text\n── Aborted (1 turns, exit 0) ──\ntrailing noise\n";
+  eq(readTerminalFooter(log), { word: "Aborted", turns: 1, exitCode: 0 });
+});
+
+test("readTerminalFooter returns the last footer, not the first", () => {
+  const log = "── Completed (2 turns, exit 0) ──\n── Errored (3 turns, exit 1) ──\n";
+  eq(readTerminalFooter(log), { word: "Errored", turns: 3, exitCode: 1 });
+});
+
+test("readTerminalFooter is null without a footer", () => {
+  eq(readTerminalFooter("── Turn 1 ──\nassistant text\n"), null);
 });
 
 // ── Tests: formatToolAction (from extension) ────────────────────────────────
