@@ -155,3 +155,46 @@ reds under both an unconditional wrapper and a definedness (rather than truthine
 
 Every completion report and landing for this order goes to `claude-8f90746f-e9aa-4dab-81ef-eb303ba0cb65`
 by peer message. State commit hashes, not "landed".
+
+---
+
+### Landing stamp (2026-11-05, merged `1a520e6`)
+
+**Landed.** `extensions/compaction-model.ts:76` — `const requestModel = auth.baseUrl ? { ...model,
+baseUrl: auth.baseUrl } : model;` — the second positional of `compact()`, inside the existing `try`.
+Mirrors pi's own `agent-session.js:264`. The runtime route (`modelRegistry.streamSimple`) is rejected
+and stays rejected: `rg -n 'streamSimple|modelRegistry\.stream' extensions/` → 0. `streamFn` (8th
+positional) still `undefined`; `withoutDeletedHeaders` still 2 occurrences.
+
+**Gate, run by me at the merged tip:** `tests/summary-ownership.test.ts` **25/0**; two mutations:
+
+| mutation | reds |
+|---|---|
+| drop the wrapper (`requestModel = model`) | A1 only |
+| make the spread unconditional | R2, A2, A2b |
+
+**My mutation instruction was wrong, and the report was right to say so.** Before the merge I asked
+for R2 to red under *both* mutations. It cannot, and should not: R2's fixture carries no `baseUrl`, so
+"drop the wrapper" legitimately yields the identity model and R2's `toEqual(REGISTRY_MODEL)` passes.
+A1 is the discriminating row because it is the only row whose auth resolves a URL. I record this
+because a wrong gate instruction that is silently not followed reads as an implementer failure when it
+is the opposite.
+
+**Q-B1 — settled by me, not the owner, and here is the ground.** The order mandated that the test stub
+carry production's shape and separately said existing rows stay unedited; the corrected fixture
+necessarily changes what the pre-existing R2 assertion sees. The contradiction is mine. The row's
+property is unchanged — the model handed to `compact()` is the registry's model — and it is now
+asserted strictly rather than loosely, so the erosion risk runs the other way. Fixture consequence,
+not assert scope. Recorded as the orchestrator's ground, not an owner quotation.
+
+**Accepted, ordered by the matrix and kept:** A3 duplicates R1/I1/075-R3. **Accepted, not extended:**
+A1 does not also assert `headers`/`env` — WO-2026-075's rows pin those positionals, and widening a
+listed acceptance row is the worse trade.
+
+**Doc debt paid in the branch:** `docs/investigations/pi-upgrade-2026-10.md` and
+`pi-1.4-compaction-override-2026-11.md` both still said `baseUrl` was dropped.
+
+**Process fix this landing forced:** the work-order template now states that a mandated fixture
+correction un-edits the rows encoding the old fixture shape (`skills/work-order-template/SKILL.md`,
+`0c4e3ba`). Two orders in one afternoon hit it; both would have stopped anyway, but the next author
+should read it coming.
