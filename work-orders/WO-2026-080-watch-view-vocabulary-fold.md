@@ -23,6 +23,8 @@ The viewers are the last copies of the vocabulary: WO-2026-078 made `extensions/
 
 Probe that falsifies it: `rg -nic 'completed|errored|overflowed|aborted|killed|exited|stopped' extensions/subagent-async/watch-session.ts extensions/subagent-async/watch-session-v2.ts extensions/subagent-async/watch-session.cjs` is non-zero in each. If any of those files already derives from the lib, that file is out of scope and the plan is wrong about its size — report and continue with the rest rather than inventing work. Second probe: the `.cjs` files must be able to load the lib at all — `node -e 'const m=require("./extensions/lib/subagent-state.ts"); console.log(Object.keys(m).length)'` prints a count on this box's node v25.9.0. If it fails on the runtime these viewers are launched with, stop and report: converting the `.cjs` viewers to `.ts` is a change to how they are invoked, which is an owner question, not this order's call.
 
+**Prerequisite:** the two TypeScript viewers do not load at this order's base — pi-tui 1.4 made `TUI` an interface and both still do `new TUI(terminal)`. WO-2026-081 ports them and lands first. Re-dispatch this order on top of that landing; the fold itself is unchanged by it.
+
 ### Preparatory refactor
 
 **Refactor commit**, `extensions/lib/subagent-state.ts` and `extensions/subagent-async/index.ts`, behaviour-preserving:
@@ -58,8 +60,10 @@ Characterization: `bun test tests/subagent-abnormal-stop.test.ts tests/subagent-
 - `parseTerminalFooter` and `readTerminalFooter` keep their current acceptance: the `(… turns, exit N|?)` shape, and `readTerminalFooter`'s backwards scan. Do not loosen either to match an old viewer regex.
 - The viewers stay standalone scripts: no viewer imports `extensions/subagent-async/index.ts`, and the extension does not import a viewer.
 
-**Census at this order's base (the lower bound; verify it, do not trust it)** — eleven sites in four
-files, each naming a terminal word or matching a footer line:
+**Census at this order's base (the lower bound; verify it, do not trust it)** — fifteen sites in four
+files, each naming a terminal word or matching a footer line. The first dispatch reviewed this table
+against the code and found four sites it had missed; they are marked ▸ and are the ones the fold is
+likeliest to skip:
 
 | file | construct | what it does today |
 |---|---|---|
@@ -69,12 +73,14 @@ files, each naming a terminal word or matching a footer line:
 | `watch-session-v2.ts` | `discoverSessions`, log arm | `content.includes("── Completed")` then `Exited`/`Stopped`, everything else `STOPPED` |
 | `watch-session-v2.ts` | the live-tail "Completion footer" branch | three-word regex |
 | `watch-session-v2.ts` | the same branch's style | `word === "Completed" ? success : error` |
+| ▸ `watch-session-v2.ts` | the same branch's exit-code parse | a **second** regex spelling the absent exit code `null` (the writer emits `?`), then coercing `null → 0` |
 | `watch-session-v2.ts` | the pane header | `exitCode === 0 ? "COMPLETED" : \`EXIT N\`` |
 | `watch-session.cjs` | `discoverSessions`, log arm | `includes("── Completed")` → `COMPLETED`/`STOPPED` |
 | `watch-session.cjs` | the picker's status colour and label | keyed on `status === "COMPLETED"`, prints `status` |
 | `watch-session.cjs` | the socket `line` handler | three-word regex, `exit (\d+)` only |
 | `watch-session.cjs` | `renderPaneHeader` | `exitCode === 0 ? "COMPLETED" : \`EXIT N\`` |
-| `test-viewer.cjs` | `DONE_RE` and its assertions | the same three-word regex |
+| ▸ `test-viewer.cjs` | the discover rows over `watch-session.cjs` | assert `s.status === "COMPLETED"` / `"STOPPED"` by string |
+| ▸ `test-viewer.cjs` | `DONE_RE` and its assertions | the same three-word regex |
 
 **Files expected to change**:
 
@@ -108,7 +114,7 @@ Each with the check that shows it holds at the tip.
 
 - **No terminal word literal in a viewer.** `rg -n '"Completed"|"Errored"|"Overflowed"|"Aborted"|"Killed"|"Exited"|"Stopped"' extensions/subagent-async/watch-session.ts extensions/subagent-async/watch-session-v2.ts extensions/subagent-async/watch-session.cjs` → no output. In `test-viewer.cjs`, such a literal may appear only inside a fixture input string (e.g. `"── Errored (3 turns, exit 1)"`), never in a matcher.
 - **No second word→outcome map.** `rg -n 'outcomeFromFooterWord|outcomeFromExitCode|outcomeFromFooter' extensions/subagent-async/watch-session.ts extensions/subagent-async/watch-session-v2.ts extensions/subagent-async/watch-session.cjs` → every hit is a call into the lib import, and the lib holds the only definition: `rg -n 'function outcomeFrom(Footer|ExitCode)' extensions/` → two hits, both in `extensions/lib/subagent-state.ts`.
-- **No second regex for a footer line.** `rg -c 'turns, exit' extensions/subagent-async/watch-session.ts extensions/subagent-async/watch-session-v2.ts extensions/subagent-async/watch-session.cjs extensions/subagent-async/test-viewer.cjs` → 0; the only footer pattern is `TERMINAL_FOOTER_LINE_RE` in the lib.
+- **No second regex for a footer line.** `rg -c 'turns, exit' extensions/subagent-async/watch-session.ts extensions/subagent-async/watch-session-v2.ts extensions/subagent-async/watch-session.cjs` → 0: the only footer pattern in the viewers is `TERMINAL_FOOTER_LINE_RE` in the lib. `test-viewer.cjs` is exempt by design — its fixtures *are* real footer lines (`"── Errored (3 turns, exit 1)"`), so a fixture-free count there would mean the rows stopped testing the shape the writer emits.
 - **The extension entry does not import a viewer.** `rg -n 'watch-session' extensions/subagent-async/index.ts` → no output.
 - **No `classifyOutcome` export.** It stays module-private in `index.ts`: `rg -c 'export function classifyOutcome' extensions/` → 0.
 - **`MAX_TURNS_HARD` has one definition.** `rg -c 'MAX_TURNS_HARD = ' extensions/` → 1, in `extensions/lib/subagent-state.ts`; `index.ts` imports it.
@@ -132,12 +138,13 @@ Each with the check that shows it holds at the tip.
    - `discoverSessions`: the socket arm stays `RUNNING`; the log arm becomes `readTerminalFooter(content)` → `TERMINAL` with `word`/`outcome` (via `outcomeFromFooter`), `EMPTY` for an empty log, and `TERMINAL` with `word: null` for a non-empty log with no footer. The log is already read exactly once per file here (`content`); keep it at one read, and note `countTurns` below it opens the file again for its own purpose — leave that alone.
    - The live-tail "Completion footer" branch tries `parseTerminalFooter(trimmed)` and, on a match, sets `done`, `word`, `outcome`, `turns` and `exitCode` from it. Style: `TS.success` when `outcome === "finished"`, `TS.error` otherwise — the same rule as before, now reading the outcome rather than one word.
    - The pane header uses `word` (upper-cased) for the terminal case and `outcome === "finished"` for its colour, instead of `exitCode === 0`.
-   - The picker/status rendering shows the upper-cased `word`, and `STOPPED` (from `STOPPED_FOOTER_WORD`) for a wordless terminal log — today's fallback, now spelled from the lib.
+   - v2's picker renders **no** status word today, and `SessionStatus` is read only in `status === "RUNNING"` filters — so v2 takes no picker change from this order. Its `status` becomes `RUNNING`/`TERMINAL`/`EMPTY` and the word rides beside it.
 
 5. **`watch-session.cjs`** (`require("../lib/subagent-state.ts")`):
-   - `discoverSessions`: `status: "TERMINAL"`, plus `word`/`outcome` from `readTerminalFooter`. This arm reads the log twice today (`countLines` then `fs.readFileSync(...).includes(...)`); fold that into one read while you are here, or leave `countLines` and read once for the footer — either is fine, but do not reach three.
+   - `discoverSessions`: `status` becomes `"RUNNING"` or the upper-cased footer word (`STOPPED_FOOTER_WORD` upper-cased when wordless), plus `word`/`outcome` from `readTerminalFooter`. **The status string stays the word here, unlike v2**, because this viewer prints and pads it and `test-viewer.cjs` pins `"COMPLETED"`/`"STOPPED"` by string — so those rows stay unedited. This arm reads the log twice today (`countLines` then `fs.readFileSync(...).includes(...)`); fold that into one read while you are here, or leave `countLines` and read once for the footer — either is fine, but do not reach three.
    - The picker's colour rule: `RUNNING` green, `outcome === "finished"` blue, everything else terminal yellow — the current rule re-expressed, not changed — and its label becomes the upper-cased `word` (`STOPPED` from `STOPPED_FOOTER_WORD` when there is none), padded as today.
-   - `renderPaneHeader` takes its word from `word` (upper-cased, `STOPPED` when wordless) instead of `exitCode === 0`, keeping the `EXIT n` fallback shape for a terminal pane whose word is unknown. Colour by `outcome === "finished"`.
+   - `renderPaneHeader` takes its word from `word` (upper-cased, `STOPPED_FOOTER_WORD` when wordless) instead of `exitCode === 0`, and colours by `outcome === "finished"`. **Delete the `EXIT n` branch**: no path reaches it, because the process's real exit code arrives only in a footer and a footer always carries a word.
+   - The pane's `exitCode` becomes `number | null`, matching `TerminalFooter.exitCode`: a wordless close records `null` ("none observed") instead of today's invented `0`. Nothing displays it after the fold, so the field stops lying rather than starting to.
    - The socket `line` handler uses `parseTerminalFooter(line)` (with `plainLine`), as in `watch-session.ts`.
 
 6. **`test-viewer.cjs`**: delete the private `DONE_RE` and re-point its rows at `parseTerminalFooter`, adding one row per footer word and one for `exit ?`. Its assertions must show the shared parser's output, not a copy of the regex.
@@ -209,7 +216,7 @@ Do not spawn a TUI in a test. No row may require a TTY, a socket, or a real chil
 - `bun test tests/watch-view-vocabulary.test.ts` — every row green.
 - `bun test tests/subagent-abnormal-stop.test.ts tests/subagent-state-vocabulary.test.ts` — green, rows unedited (`git diff --name-only <base>..HEAD -- tests/subagent-abnormal-stop.test.ts tests/subagent-state-vocabulary.test.ts` → empty).
 - `node extensions/subagent-async/test-viewer.cjs` — exits 0, per-word rows print.
-- `bun build extensions/subagent-async/watch-session.ts extensions/subagent-async/watch-session-v2.ts` — clean.
+- `bun build --target node --outdir <scratch dir> <viewer>` — clean, once per viewer. Not one command with two entry points (`bun build` refuses those without `--outdir`), and not the default target (pi-tui's browser arm cannot resolve `child_process`). At base this fails with exactly `No matching export … for import "TUI"`, which WO-2026-081 fixes first.
 - `node --check extensions/subagent-async/watch-session.cjs extensions/subagent-async/test-viewer.cjs` — clean.
 - `printf '' | pi -ne -e ./extensions/subagent-async/index.ts --offline --mode rpc` — the extension loads (the refactor moved code out of it).
 
