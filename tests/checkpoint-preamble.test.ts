@@ -303,6 +303,40 @@ function registryThatFails(): string {
 
 const OWNER_CLAIM = "The owner approved the schema row (known.md#K1).";
 
+/**
+ * The interface's members, and the ones assigned after construction.
+ *
+ * The literal alone is not the whole shape: `injection` is filled by
+ * `session_before_compact` (`pending.injection = injection`), so a row that
+ * compared the literal's keys to its own expectation would keep passing while
+ * the interface grew a second post-construction field. This pairs the two halves
+ * against the interface, so a new member has to be accounted for somewhere.
+ */
+function pendingCheckpointShape(): {
+	literal: string[];
+	assigned: string[];
+	declared: string[];
+} {
+	const source = readFileSync(join(import.meta.dir, "..", "extensions", "checkpoint.ts"), "utf8");
+
+	const iface = /interface PendingCheckpoint \{([\s\S]*?)\n\}/.exec(source);
+	if (!iface) throw new Error("no `interface PendingCheckpoint` declaration");
+	const declared: string[] = [];
+	for (const m of iface[1].matchAll(/^[ \t]+([A-Za-z_$][\w$]*)\??\s*:/gm)) declared.push(m[1]);
+
+	// Assignments to the stashed object after the literal built it.
+	const assigned = new Set<string>();
+	for (const m of source.matchAll(/\bpending\.([A-Za-z_$][\w$]*)\s*=(?!=)/g)) assigned.add(m[1]);
+
+	// A post-construction assignment the literal never names is only legitimate
+	// for an optional member; a required one must arrive complete.
+	return {
+		literal: pendingCheckpointKeys(),
+		assigned: [...assigned].sort(),
+		declared: declared.sort(),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Rows
 // ---------------------------------------------------------------------------
@@ -343,7 +377,8 @@ describe("checkpoint preamble: characterized before the extraction", () => {
 		expect(instructions.startsWith(`${CHECKPOINT_MARKER}\n`)).toBe(true);
 		expect(instructions.slice(CHECKPOINT_MARKER.length + 1)).toBe(readMeta(archivePath).summary);
 
-		expect(pendingCheckpointKeys()).toEqual([
+		const shape = pendingCheckpointShape();
+		expect(shape.literal).toEqual([
 			"archivePath",
 			"contextWindow",
 			"continuation",
@@ -355,6 +390,12 @@ describe("checkpoint preamble: characterized before the extraction", () => {
 			"tokens",
 			"waits",
 		]);
+		// Every declared member is either built by the literal or filled later.
+		// A member that is neither would be a field nothing ever sets.
+		const accounted = new Set([...shape.literal, ...shape.assigned]);
+		expect(shape.declared.filter((field) => !accounted.has(field))).toEqual([]);
+		// And the later fill is exactly the one the compaction hook performs.
+		expect(shape.assigned).toEqual(["injection"]);
 	}, 30_000);
 
 	it("C2: checkpoint invalid summary — the `compacted` refusal, and nothing written", async () => {
