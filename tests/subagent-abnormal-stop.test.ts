@@ -313,27 +313,29 @@ describe("the vocabulary holds for every outcome and every ending", () => {
 		// decisions/subagents/015 + 043 keep the marker strings verbatim, so the
 		// delivered prefix is the marker rather than `[Subagent X killed]`; the
 		// footer word and the state reading still have to agree with the outcome.
-		const rs = rsStub({
-			isDone: false,
-			killedExplicitly: true,
-			killedVia: "progress-timeout",
-			progress: turns(6),
-			messages: [assistantMessage("toolUse", null)],
-		});
-		const t = terminalOutcome(rs, null);
-		expect(t).toEqual({ outcome: "killed", footer: "Killed", prefix: "killed" });
+		for (const exitCode of [null, 0, 143]) {
+			const rs = rsStub({
+				isDone: false,
+				killedExplicitly: true,
+				killedVia: "progress-timeout",
+				progress: turns(6),
+				messages: [assistantMessage("toolUse", null)],
+			});
+			const t = terminalOutcome(rs, exitCode);
+			expect(t).toEqual({ outcome: "killed", footer: "Killed", prefix: "killed" });
 
-		_testSetLiveSessionCtx(liveCtx());
-		const { pi, sent } = piStub();
-		deliverResult(pi, rs, null);
-		expect(sent[0].split("\n")[0]).toBe(
-			`[Killed via progress-timeout — process terminated, work in this subagent is lost] — session: ${rs.sessionId}`,
-		);
+			_testSetLiveSessionCtx(liveCtx());
+			const { pi, sent } = piStub();
+			deliverResult(pi, rs, exitCode);
+			expect(sent[0].split("\n")[0]).toBe(
+				`[Killed via progress-timeout — process terminated, work in this subagent is lost] — session: ${rs.sessionId}`,
+			);
 
-		expect(parseTerminalFooter(footerLine("Killed", 6, "?"))).toEqual({ word: "Killed", turns: 6, exitCode: null });
-		const reading = stateForFooter("Killed");
-		expect(reading.state).toBe("orphaned");
-		expect(reading.evidence).toContain("Killed");
+			expect(parseTerminalFooter(footerLine("Killed", 6, "?"))).toEqual({ word: "Killed", turns: 6, exitCode: null });
+			const reading = stateForFooter("Killed");
+			expect(reading.state).toBe("orphaned");
+			expect(reading.evidence).toContain("Killed");
+		}
 	});
 
 	it("a process that left no exit code was terminated, not finished", () => {
@@ -476,8 +478,9 @@ describe("a recovered child is classified from the footer it left behind", () =>
 
 /** A stand-in child that answers `get_state` and emits one text-only assistant
  *  turn. `standin-mode.txt` in its cwd decides the case: `length` (default)
- *  truncates the turn, `signalled` completes it and then dies by SIGKILL, so
- *  the parent's close handler sees `code === null`. */
+ *  truncates the turn, `signalled` completes it and then dies by SIGKILL (so the
+ *  parent's close handler sees `code === null`), `unknown` completes it with a
+ *  `stopReason` no vocabulary names. */
 const STANDIN_SOURCE = `
 import { appendFileSync, readFileSync } from "node:fs";
 
@@ -504,11 +507,12 @@ process.stdin.on("end", () => {
 	process.exit(0);
 });
 setTimeout(() => {
+	const stopReason = mode === "length" ? "length" : mode === "unknown" ? "timeout" : "stop";
 	process.stdout.write(JSON.stringify({
 		type: "message_end",
 		message: {
 			role: "assistant",
-			stopReason: mode === "signalled" ? "stop" : "length",
+			stopReason,
 			content: [{ type: "text", text: "I got as far as the third file" }],
 			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
 		},
@@ -578,7 +582,7 @@ afterEach(async () => {
 
 /** Spawn the stand-in child through the real `subagent` tool and return the
  *  session id plus the captured deliveries. */
-async function spawnStandin(mode: "length" | "signalled") {
+async function spawnStandin(mode: "length" | "signalled" | "unknown") {
 	const cwd = mkdtempSync(path.join(tmpdir(), "pi-abnormal-stop-case-"));
 	tempDirs.push(cwd);
 	writeFileSync(path.join(cwd, "standin-mode.txt"), mode);
@@ -638,18 +642,49 @@ describe("the close handler writes the word it classified", () => {
 		const { sid, sent } = await spawnStandin("signalled");
 
 		expect(await waitFor(() => sent.length > 0)).toBe(true);
+		expect(sent.length).toBe(1);
 		expect(sent[0].split("\n")[0]).toBe(`[Subagent standin-worker aborted] — session: ${sid}`);
-		// The footer keeps the pre-078 spelling for a completed turn (`Completed`),
-		// so only the prefix is asserted here.
+
+		// Sites 2 and 3 from the log the handler wrote: the abort the delivery
+		// reports is the abort the durable record and the state reader report.
+		const log = readFileSync(`/tmp/pi-subagent-${sid}.log`, "utf8").split("\n").filter((l) => l.trim()).pop()!;
+		expect(parseTerminalFooter(log)).toEqual({ word: "Stopped", turns: 1, exitCode: null });
+		const reading = readSubagentState({
+			meta: { ownerPid: process.pid, ownerStartToken: null },
+			attached: false,
+			sockExists: false,
+			logLastLine: log,
+			logMtimeMs: Date.now() - 3_600_000,
+			sessionFileExists: true,
+			hasRecordedOwner: true,
+			ownerAlive: true,
+			now: Date.now(),
+		});
+		expect(reading.state).toBe("orphaned");
+	}, 30_000);
+
+	it("an unknown stop reason is delivered labelled and named, not thrown over", async () => {
+		// A child pi newer than this vocabulary reports a reason the table does not
+		// name (decisions/subagents/001 plans `timeout`). It must still be delivered
+		// — labelled non-success — with the reason named where the parent reads it.
+		const { sid, sent } = await spawnStandin("unknown");
+
+		expect(await waitFor(() => sent.length > 0)).toBe(true);
+		expect(sent[0].split("\n")[0]).toBe(`[Subagent standin-worker aborted] — session: ${sid}`);
+		expect(sent[0]).toContain('Errors: unknown stopReason "timeout" — classified aborted');
+		const log = readFileSync(`/tmp/pi-subagent-${sid}.log`, "utf8").split("\n").filter((l) => l.trim()).pop()!;
+		expect(parseTerminalFooter(log)).toEqual({ word: "Aborted", turns: 1, exitCode: 0 });
 	}, 30_000);
 });
 
 // ── Vocabulary boundaries: fail loud, never "assume success" ───────────────
 
 describe("the terminal vocabulary has no safe default", () => {
-	it("refuses an unknown stop reason instead of calling it finished", () => {
+	it("classifies a stop reason the vocabulary does not name as an abort, and names it", () => {
 		const rs = rsStub({ isDone: true, progress: turns(1), messages: [assistantMessage("timeout", "?")] });
-		expect(() => terminalOutcome(rs, 0)).toThrow(/unknown stopReason "timeout"/);
+		const t = terminalOutcome(rs, 0);
+		expect(t).toEqual({ outcome: "aborted", footer: "Aborted", prefix: "aborted" });
+		expect(rs.progress.errors).toContain('unknown stopReason "timeout" — classified aborted');
 	});
 
 	it("refuses a footer word no footer writes", () => {

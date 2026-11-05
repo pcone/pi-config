@@ -320,16 +320,18 @@ const OUTCOME_BY_STOP_REASON: Record<string, SubagentOutcome | undefined> = {
 /**
  * The outcome a terminal assistant turn's `stopReason` names, or null when the
  * reason is a normal end (`stop`, `toolUse`) — then the process exit code
- * decides. Throws on a reason this vocabulary does not know: a new stop reason
- * is a new outcome, never a success.
+ * decides. A reason the vocabulary does not name is not a completed turn, so it
+ * reads `aborted`; `classifyOutcome`'s caller names such a reason in the
+ * delivered result so a new pi reason is visible until it gets its own word.
  */
 export function stopReasonOutcome(reason: string): SubagentOutcome | null {
 	if (reason === "stop" || reason === "toolUse") return null;
-	const outcome = OUTCOME_BY_STOP_REASON[reason];
-	if (!outcome) {
-		throw new Error(`stopReasonOutcome: unknown stopReason "${reason}" — add it to OUTCOME_BY_STOP_REASON`);
-	}
-	return outcome;
+	return OUTCOME_BY_STOP_REASON[reason] ?? "aborted";
+}
+
+/** True when the vocabulary names this stop reason. */
+export function isKnownStopReason(reason: string): boolean {
+	return reason === "stop" || reason === "toolUse" || OUTCOME_BY_STOP_REASON[reason] !== undefined;
 }
 
 /** A parsed terminal footer line: the word it wrote and the counts it recorded. */
@@ -352,10 +354,9 @@ export function parseTerminalFooter(line: string): TerminalFooter | null {
 }
 
 /**
- * The log's terminal footer: the last line that parses as one. Null when the
- * log carries no footer (a torn or truncated log). Scans every line, unlike
- * `readSubagentState`'s last-non-empty-line rule: a recovered log may carry
- * client chatter after the footer the dead session wrote.
+ * The log's terminal footer: the last line that parses as one. A log carries
+ * one terminal footer; scanning backwards finds it without assuming it is the
+ * very last line. Null when the log carries no footer (a torn log).
  */
 export function readTerminalFooter(log: string): TerminalFooter | null {
 	const lines = log.split("\n");

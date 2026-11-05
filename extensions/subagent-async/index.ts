@@ -30,6 +30,7 @@ import {
 	defaultOwnerProbe,
 	gatherSubagentDiskFacts,
 	hasTerminalFooter,
+	isKnownStopReason,
 	isOwnerAlive,
 	listInFlightSubagents,
 	listSubagentMetas,
@@ -3123,7 +3124,7 @@ function lastAssistantTurn(messages: any[]): { stopReason: string | null } | nul
 }
 
 /** Everything one run's terminal classification reads. */
-export interface TerminalFacts {
+interface TerminalFacts {
 	/** The final assistant turn, or null when no assistant message reached this
 	 *  process. */
 	turn: { stopReason: string | null } | null;
@@ -3147,9 +3148,9 @@ function turnOutcome(turn: { stopReason: string | null } | null): SubagentOutcom
  * The single owner of the `SubagentOutcome` vocabulary, called by the two sites
  * that write its words — `deliverResult`'s prefix and the footer — so a run
  * cannot be finished in one place and errored in another (WO-2026-078 Q-A1:
- * classify and mark, never gate). Exported as an `@internal` test hook.
+ * classify and mark, never gate).
  */
-export function classifyOutcome(facts: TerminalFacts): SubagentOutcome {
+function classifyOutcome(facts: TerminalFacts): SubagentOutcome {
 	if (facts.killedExplicitly) return "killed";
 	// A recovered run left no message here: its footer word is the terminal
 	// evidence, and an `Exited`/`Stopped` word defers to the exit code below.
@@ -3174,6 +3175,13 @@ export function terminalOutcome(rs: RunningSubagent, exitCode: number | null): {
 	prefix: string;
 } {
 	const turn = lastAssistantTurn(rs.messages);
+	// A reason the vocabulary does not name is a turn that did not complete, and
+	// it must not pass quietly: name it where the parent reads the result, so a
+	// new pi stop reason is visible until it gets its own word in the table.
+	if (turn?.stopReason && !isKnownStopReason(turn.stopReason)) {
+		const note = `unknown stopReason "${turn.stopReason}" — classified aborted`;
+		if (!rs.progress.errors.includes(note)) rs.progress.errors.push(note);
+	}
 	const outcome = classifyOutcome({
 		turn,
 		recoveredWord: rs.recoveredFooterWord,
@@ -3182,14 +3190,16 @@ export function terminalOutcome(rs: RunningSubagent, exitCode: number | null): {
 		exitCode,
 	});
 	const fromTurn = turnOutcome(turn);
-	// A run with no abnormal turn keeps the footer it has always had: a
-	// completion, or an end with no completion to report — `Exited` on a clean
-	// exit, `Stopped` otherwise, including a signal termination (`exit ?`).
+	// The footer word follows the outcome, spelled the way the log has always
+	// spelled it: `Completed` only for a completion, `Exited` for a clean exit
+	// with no completion to report, and `Stopped` for an abort the exit code
+	// decided (a signalled or non-zero exit with a normal turn). Those two are
+	// outcome-less on purpose, so reading them back defers to the same exit code.
 	const footer = outcome === "killed"
 		? OUTCOME_WORD.killed.footer
-		: fromTurn
-			? OUTCOME_WORD[fromTurn].footer
-			: rs.isDone ? OUTCOME_WORD.finished.footer : exitCode === 0 ? EXITED_FOOTER_WORD : STOPPED_FOOTER_WORD;
+		: outcome === "finished"
+			? (rs.isDone ? OUTCOME_WORD.finished.footer : EXITED_FOOTER_WORD)
+			: fromTurn ? OUTCOME_WORD[fromTurn].footer : STOPPED_FOOTER_WORD;
 	return { outcome, footer, prefix: OUTCOME_WORD[outcome].prefix };
 }
 
