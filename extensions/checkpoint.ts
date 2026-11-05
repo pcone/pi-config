@@ -19,6 +19,7 @@ import {
 	SessionManager,
 	type CompactionResult,
 	type ExtensionAPI,
+	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { setPendingGo } from "./go.ts";
@@ -324,6 +325,135 @@ function checkOwnerState(
 	const verdict = validateNextStepsOwnerState(nextSteps, cwd);
 	if (verdict.ok) return { warning: verdict.warning };
 	return { error: toolError(verdict.error) };
+}
+
+// ---------------------------------------------------------------------------
+// Preamble both checkpoint tools run before their own half
+// ---------------------------------------------------------------------------
+
+/** The parameters both tools carry; `checkpoint_fork`'s `newCwd` is its own concern. */
+interface CheckpointParams {
+	summary: SummaryFields;
+	nextSteps?: string;
+	continue?: boolean;
+	relevantPaths?: RelevantPathEntry[];
+}
+
+/** What the preamble derived, for the tool-specific half that follows it. */
+interface PreparedCheckpoint {
+	summary: string;
+	next: string;
+	continuation: Continuation;
+	waits: Wait[];
+	tokens: CheckpointTokens;
+	git: GitBinding | null;
+	relevantPaths: RelevantPathEntry[];
+	contextWindow: number;
+	summaryFields: SummaryFields;
+	inFlight: InFlightSubagent[];
+	/** The R6 existence-check degradation, also carried onto the tool result. */
+	warning?: string;
+}
+
+/**
+ * The three facts the two sites do not share, discriminated by tool so that
+ * neither half can be supplied wrongly: the plain tool has no target to check,
+ * the fork has no check to omit, and each verb belongs to one member. A
+ * defaulted check would stage into a directory that does not exist; a defaulted
+ * verb would let one tool claim the other's outcome.
+ */
+type PreambleOptions =
+	| {
+			tool: "checkpoint";
+			refusalVerb: "compacted";
+			/** The tool's own cwd. */
+			gitCwd: string;
+	  }
+	| {
+			tool: "checkpoint_fork";
+			refusalVerb: "staged";
+			/** The session's source cwd: the fork binds the tree it leaves behind. */
+			gitCwd: string;
+			/** Runs between validation and the owner verdict. */
+			checkTarget: () => Promise<ToolError | undefined>;
+	  };
+
+/** The prepared values, or the tool-error result that ends the call. */
+type PreambleResult = ({ ok: true } & PreparedCheckpoint) | { ok: false; error: ToolError };
+
+/**
+ * The sequence both `execute` bodies ran inline: argument shape → (the fork's
+ * target check) → owner verdict → continuation → git capture → in-flight →
+ * composed summary.
+ *
+ * Nothing here writes: every refusal is a tool-error result, so a rejected call
+ * archives and stages nothing.
+ */
+async function prepareCheckpoint(
+	pi: ExtensionAPI,
+	params: CheckpointParams,
+	ctx: ExtensionContext,
+	options: PreambleOptions,
+): Promise<PreambleResult> {
+	const fieldProblems = validateSummaryFields(params.summary);
+	if (fieldProblems.length > 0) {
+		return {
+			ok: false,
+			error: toolError(
+				[
+					`summary rejected — nothing was archived or ${options.refusalVerb}. Fix every field below:`,
+					...fieldProblems.map((problem) => `- ${problem}`),
+				].join("\n"),
+			),
+		};
+	}
+
+	if (options.tool === "checkpoint_fork") {
+		const targetError = await options.checkTarget();
+		if (targetError) return { ok: false, error: targetError };
+	}
+
+	// Argument shape first: the R6 verdict (refusal or warning) goes on the tool
+	// result, so it must not sit behind an early `return`.
+	const ownerState = checkOwnerState(params.nextSteps ?? "", ctx.cwd);
+	if (ownerState.error) return { ok: false, error: ownerState.error };
+	if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
+
+	const next = params.nextSteps ?? "Continue work";
+	const waits = pendingWaits(waitHost(pi, ctx), waitCollection(ctx));
+	const continuation = resolveContinuation(params.continue, waits);
+	const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
+	const contextWindow = ctx.model?.contextWindow ?? 200_000;
+	const summaryFields: SummaryFields = params.summary;
+
+	// Captured before anything is written, so the archive's own untracked files
+	// cannot show up in `git.dirty`.
+	const git = await captureGitBinding(options.gitCwd);
+	const tokens: CheckpointTokens = { before: tokensBefore(ctx), after: null };
+
+	// R3-1: the archive and the restore path read the same text, so the
+	// in-flight record is in the context after compaction. The machine block is
+	// appended by the compaction hook, which is the only site holding the file
+	// facts.
+	const inFlight = listInFlightSubagents({
+		selfSessionId: ctx.sessionManager.getSessionId(),
+	});
+	const summary = composeSummary([renderSummary(summaryFields, next), formatInFlightSection(inFlight)]);
+
+	return {
+		ok: true,
+		summary,
+		next,
+		continuation,
+		waits,
+		tokens,
+		git,
+		relevantPaths,
+		contextWindow,
+		summaryFields,
+		inFlight,
+		warning: ownerState.warning,
+	};
 }
 
 /**
@@ -782,42 +912,14 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			// Argument shape first (nothing is written on a rejection), then the R6
-			// verdict: both are tool-error results, so neither may sit behind an
-			// early `return`.
-			const fieldProblems = validateSummaryFields(params.summary);
-			if (fieldProblems.length > 0) {
-				return toolError(
-					[
-						"summary rejected — nothing was archived or compacted. Fix every field below:",
-						...fieldProblems.map((problem) => `- ${problem}`),
-					].join("\n"),
-				);
-			}
-			const ownerState = checkOwnerState(params.nextSteps ?? "", ctx.cwd);
-			if (ownerState.error) return ownerState.error;
-			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
-
-			const next = params.nextSteps ?? "Continue work";
-			const waits = pendingWaits(waitHost(pi, ctx), waitCollection(ctx));
-			const continuation = resolveContinuation(params.continue, waits);
-			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
-			const contextWindow = ctx.model?.contextWindow ?? 200_000;
-			const summaryFields: SummaryFields = params.summary;
-
-			// Captured before anything is written, so the archive's own untracked
-			// files cannot show up in `git.dirty`.
-			const git = await captureGitBinding(ctx.cwd);
-			const tokens: CheckpointTokens = { before: tokensBefore(ctx), after: null };
-
-			// R3-1: the archive and the restore path read the same text, so the
-			// in-flight record is in the context after compaction. The machine block
-			// is appended by the compaction hook, which is the only site holding the
-			// file facts.
-			const inFlight = listInFlightSubagents({
-				selfSessionId: ctx.sessionManager.getSessionId(),
+			const prepared = await prepareCheckpoint(pi, params, ctx, {
+				tool: "checkpoint",
+				refusalVerb: "compacted",
+				gitCwd: ctx.cwd,
 			});
-			const summary = composeSummary([renderSummary(summaryFields, next), formatInFlightSection(inFlight)]);
+			if (!prepared.ok) return prepared.error;
+			const { summary, next, continuation, waits, tokens, git, relevantPaths, contextWindow, summaryFields, inFlight, warning } =
+				prepared;
 
 			// Archive *before* compaction so all entries are captured in full.
 			let archivePath: string | undefined;
@@ -856,7 +958,7 @@ export default function (pi: ExtensionAPI) {
 			compactRequested = true;
 
 			const responseLines = [`Checkpoint queued.`];
-			if (ownerState.warning) responseLines.push(ownerState.warning);
+			if (warning) responseLines.push(warning);
 			if (inFlight.length > 0) {
 				responseLines.push(
 					`In-flight subagents recorded in the summary: ${inFlight.length} ` +
@@ -928,52 +1030,31 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const fieldProblems = validateSummaryFields(params.summary);
-			if (fieldProblems.length > 0) {
-				return toolError(
-					[
-						"summary rejected — nothing was archived or staged. Fix every field below:",
-						...fieldProblems.map((problem) => `- ${problem}`),
-					].join("\n"),
-				);
-			}
-
-			let targetStat;
-			try {
-				targetStat = await stat(params.newCwd);
-			} catch {
-				return toolError(`target directory does not exist: ${params.newCwd}`);
-			}
-			if (!targetStat.isDirectory()) {
-				return toolError(`not a directory: ${params.newCwd}`);
-			}
-
-			// Argument shape first: the R6 verdict (refusal or warning) goes on the
-			// tool result, so it must not sit behind an early `return`.
-			const ownerState = checkOwnerState(params.nextSteps ?? "", ctx.cwd);
-			if (ownerState.error) return ownerState.error;
-			if (ownerState.warning) safeNotify(ctx, ownerState.warning, "warning");
-
-			const next = params.nextSteps ?? "Continue work";
-			const waits = pendingWaits(waitHost(pi, ctx), waitCollection(ctx));
-			const continuation = resolveContinuation(params.continue, waits);
-			const relevantPaths: RelevantPathEntry[] = params.relevantPaths ?? [];
 			const oldSessionId = ctx.sessionManager.getSessionId();
 			const oldCwd = ctx.sessionManager.getCwd();
-			const contextWindow = ctx.model?.contextWindow ?? 200_000;
-			const summaryFields: SummaryFields = params.summary;
-
-			// The source tree's ref, captured when the fork is authored (the archive
-			// itself is written at /go, after this): the summary describes this state.
-			const git = await captureGitBinding(oldCwd);
-			const tokens: CheckpointTokens = { before: tokensBefore(ctx), after: null };
-
-			// R3-1: both the fork-source archive and the new session's summary
-			// carry the in-flight record.
-			const inFlight = listInFlightSubagents({
-				selfSessionId: ctx.sessionManager.getSessionId(),
+			const prepared = await prepareCheckpoint(pi, params, ctx, {
+				tool: "checkpoint_fork",
+				refusalVerb: "staged",
+				// The source tree's ref, captured when the fork is authored (the
+				// archive itself is written at /go, after this): the summary describes
+				// this state.
+				gitCwd: oldCwd,
+				// The target must exist before anything is staged into it, and the
+				// argument shape is still what the caller is told to fix first.
+				checkTarget: async () => {
+					let targetStat;
+					try {
+						targetStat = await stat(params.newCwd);
+					} catch {
+						return toolError(`target directory does not exist: ${params.newCwd}`);
+					}
+					if (!targetStat.isDirectory()) return toolError(`not a directory: ${params.newCwd}`);
+					return undefined;
+				},
 			});
-			const summary = composeSummary([renderSummary(summaryFields, next), formatInFlightSection(inFlight)]);
+			if (!prepared.ok) return prepared.error;
+			const { summary, next, continuation, waits, tokens, git, relevantPaths, contextWindow, summaryFields, inFlight, warning } =
+				prepared;
 
 			// Fork creates a new session — no preservation to dedup against.
 			const injection = await buildFileInjection(
@@ -1050,7 +1131,7 @@ export default function (pi: ExtensionAPI) {
 			safeNotify(ctx, `Fork prepared → ${params.newCwd}. Run /go to switch.`, "info");
 
 			const responseLines = [`Fork prepared → ${params.newCwd}. Run /go to switch.`];
-			if (ownerState.warning) responseLines.push(ownerState.warning);
+			if (warning) responseLines.push(warning);
 			if (inFlight.length > 0) {
 				responseLines.push(`In-flight subagents recorded in the summary: ${inFlight.length}.`);
 			}
