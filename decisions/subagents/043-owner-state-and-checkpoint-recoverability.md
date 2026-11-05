@@ -163,3 +163,30 @@ post-disposal semantics — no cross-session delivery injection — are untouche
 - **Auto-resuming orphaned children**: the status answer prints the
   `subagent_resume` call and the checkpoint records their ids and branches; the
   choice to resume stays with the orchestrator.
+
+## Superseded in part (owner, 2026-11-05, WO-2026-078): the terminal footer vocabulary
+
+The footer is no longer `── Completed|Exited|Stopped|Killed (…) ──`.
+`extensions/lib/subagent-state.ts` owns the words as one table
+(`OUTCOME_WORD`), and `Errored`, `Overflowed` and `Aborted` join them for a run
+whose final assistant turn ended on `stopReason: error` / `length` /
+`aborted`, or whose recovered-session log recorded one. The recovered-session
+path now classifies from the footer word and exit code it used to discard.
+
+What this note does **not** change: the state names above, and `Completed`
+as the only word that reads as `complete`. Every other terminal word falls into
+the pre-existing terminal-but-not-completed branch, so `subagent_status` keeps
+offering `subagent_resume` for an `Errored`/`Overflowed`/`Aborted` child exactly
+as it did for `Stopped`. That consequence is this implementation's, not the
+ruling's — withdrawing the resume offer would change the state vocabulary.
+
+Which word a run writes follows its outcome: `Completed` only for a completion,
+`Exited` for a clean exit with nothing delivered, `Stopped` for an abort the exit
+code decided (a completed turn followed by a signal or a non-zero exit, so the
+word has no outcome of its own and reading it back defers to the recorded exit
+code), and the turn's own word for `Errored`/`Overflowed`/`Aborted`. A
+`stopReason` the table does not name is classified `aborted` and named once at
+the head of the delivered `Errors:` line, so a new pi reason is visible until it
+gets its own word.
+
+Ruling: WO-2026-078 Q-A1 — "done, but labelled"; gating completion rejected.

@@ -22,19 +22,27 @@ import { registerWaitSource } from "../lib/waits.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
 import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
 import {
+	EXITED_FOOTER_WORD,
+	OUTCOME_WORD,
+	STOPPED_FOOTER_WORD,
 	SUBAGENT_STALE_TURN_MS,
 	decideRecoveryAdoption,
 	defaultOwnerProbe,
 	gatherSubagentDiskFacts,
 	hasTerminalFooter,
+	isKnownStopReason,
 	isOwnerAlive,
 	listInFlightSubagents,
 	listSubagentMetas,
+	outcomeFromFooterWord,
 	processStartToken,
 	readSubagentState,
+	readTerminalFooter,
 	resumeCallFor,
 	selfStartToken,
+	stopReasonOutcome,
 	type OwnerProbe,
+	type SubagentOutcome,
 } from "../lib/subagent-state.ts";
 
 // The 027 ownership gate and the R3-3 state vocabulary live in
@@ -672,6 +680,11 @@ interface RunningSubagent {
 	// steer can be "sent" into a dead pipe. Check this (and stdin state)
 	// before any stdin write.
 	procExited: boolean;
+	// Terminal footer word read from the log on the orphan-recovery path
+	// (WO-2026-078). A recovered child left no assistant message in this
+	// process, so the word its dead session already wrote is the only terminal
+	// evidence there is. Null for a run this process spawned.
+	recoveredFooterWord: string | null;
 	// Set by the `subagent_kill` tool before it dispatches SIGTERM/SIGKILL
 	// so the close handler can label the footer "Killed" and prepend a
 	// `[Killed via subagent_kill ...]` marker to the delivered result.
@@ -2019,6 +2032,7 @@ async function spawnSubagent(
 		resolveOnStop: null,
 		isDone: false,
 		procExited: false,
+		recoveredFooterWord: null,
 		killedExplicitly: false,
 		stoppedExplicitly: false,
 		turnNudged: false,
@@ -2517,14 +2531,13 @@ async function spawnSubagent(
 		if (stdoutBuffer.trim()) processLine(stdoutBuffer);
 
 		// Write completion footer to live log
-		const how = rs.killedExplicitly
-			? "Killed"
-			: (rs.isDone ? "Completed" : (code === 0 ? "Exited" : "Stopped"));
+		const { outcome, footer: how } = terminalOutcome(rs, code);
 		logEntry("");
-		// Killed footer is always red — even in the rare race where a subagent
-		// raced to `isDone` before SIGTERM was dispatched, a hard kill is an
-		// abort and should render as such.
-		const style = rs.killedExplicitly ? S.doneFail : (rs.isDone ? S.doneOk : S.doneFail);
+		// The colour follows the outcome, not `isDone`: a completion is green and
+		// everything else — a kill, a truncated or errored turn — renders as the
+		// abort it was delivered as. `Exited` (a clean exit with nothing delivered)
+		// stays red, as it always was.
+		const style = outcome === "finished" && rs.isDone ? S.doneOk : S.doneFail;
 		logEntry(`${style}── ${how} (${rs.progress.turns} turns, exit ${code ?? "?"}) ──${S.reset}`);
 
 		// Widget stays visible for user to review; they clear it with /watch off
@@ -2570,7 +2583,7 @@ async function spawnSubagent(
 			? completeWorkRecord(rs.workRecord, rs.piSessionId ?? sessionId, () => getFinalOutput(rs.messages))
 			: [];
 		rs.recordNotes = [...(rs.recordNotes ?? []), ...recordNotes];
-		const deliveryPath = deliverCloseResult(pi, rs, code ?? 0, commitNote + recordNotes.map((n) => `\n${n}`).join(""));
+		const deliveryPath = deliverCloseResult(pi, rs, code, commitNote + recordNotes.map((n) => `\n${n}`).join(""));
 		if (PI_ASYNC_DEBUG) debugLog(`deliverResult (${deliveryPath}): ${Date.now() - tDeliver}ms`);
 
 		// POST-DELIVERY: worktree removal and branch cleanup. Fire-and-forget —
@@ -3095,6 +3108,105 @@ export function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "pro
 	return { alreadyDead };
 }
 
+/** The final assistant turn's terminal evidence, or null when this process
+ *  holds no assistant message for the run (a recovered child, or one that died
+ *  before its first turn). `stopReason: null` means the message carried none at
+ *  all: pi's `AssistantMessage` always has one, and a turn that ended without it
+ *  never settled, so it reads as an abnormal turn rather than as a normal end
+ *  (WO-2026-078: "no reason at all"). */
+function lastAssistantTurn(messages: any[]): { stopReason: string | null } | null {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg?.role !== "assistant") continue;
+		const reason = msg.stopReason;
+		return { stopReason: typeof reason === "string" && reason.length > 0 ? reason : null };
+	}
+	return null;
+}
+
+/** Everything one run's terminal classification reads. */
+interface TerminalFacts {
+	/** The final assistant turn, or null when no assistant message reached this
+	 *  process. */
+	turn: { stopReason: string | null } | null;
+	/** The log footer's word, on the recovered path only. */
+	recoveredWord: string | null;
+	killedExplicitly: boolean;
+	turns: number;
+	/** The process exit code; null when it left none (terminated by a signal,
+	 *  which the footer writes as `exit ?`). */
+	exitCode: number | null;
+}
+
+/** The outcome the final turn names, or null when the turn ended normally or
+ *  there is no turn at all — then how the process ended decides. */
+function turnOutcome(turn: { stopReason: string | null } | null): SubagentOutcome | null {
+	if (!turn) return null;
+	return turn.stopReason === null ? "aborted" : stopReasonOutcome(turn.stopReason);
+}
+
+/**
+ * The single owner of the `SubagentOutcome` vocabulary, called by the two sites
+ * that write its words — `deliverResult`'s prefix and the footer — so a run
+ * cannot be finished in one place and errored in another (WO-2026-078 Q-A1:
+ * classify and mark, never gate).
+ */
+function classifyOutcome(facts: TerminalFacts): SubagentOutcome {
+	if (facts.killedExplicitly) return "killed";
+	// A recovered run left no message here: its footer word is the terminal
+	// evidence, and an `Exited`/`Stopped` word defers to the exit code below.
+	const fromFooter = facts.recoveredWord ? outcomeFromFooterWord(facts.recoveredWord) : null;
+	if (fromFooter) return fromFooter;
+	const fromTurn = turnOutcome(facts.turn);
+	if (fromTurn) return fromTurn;
+	// No abnormal turn: how the process ended decides. No exit code at all means
+	// it did not exit — it was terminated — so that is not a finished run.
+	if (facts.exitCode === null) return "aborted";
+	// Below the hard turn cap a non-zero exit is an abort the parent must not read
+	// as success (the turn-limit stop is the killed path, flagged above).
+	return facts.exitCode !== 0 && facts.turns < MAX_TURNS_HARD ? "aborted" : "finished";
+}
+
+/** The outcome plus its two words for one live-handler run: the close handler
+ *  writes `footer` and `deliverResult` writes `prefix`.
+ *  @internal test hook so the outcome vocabulary can be exercised without
+ *  spawning a real child process. */
+export function terminalOutcome(rs: RunningSubagent, exitCode: number | null): {
+	outcome: SubagentOutcome;
+	footer: string;
+	prefix: string;
+} {
+	const turn = lastAssistantTurn(rs.messages);
+	// A reason the vocabulary does not name is a turn that did not complete, and
+	// it must not pass quietly: name it where the parent reads the result, so a
+	// new pi stop reason is visible until it gets its own word in the table.
+	// Prepended because the delivered `Errors:` line shows only its first three
+	// entries — appended, the note is dropped exactly where the run was messiest.
+	if (turn?.stopReason && !isKnownStopReason(turn.stopReason)) {
+		const note = `unknown stopReason "${turn.stopReason}" — classified aborted`;
+		if (!rs.progress.errors.includes(note)) rs.progress.errors.unshift(note);
+	}
+	const outcome = classifyOutcome({
+		turn,
+		recoveredWord: rs.recoveredFooterWord,
+		killedExplicitly: rs.killedExplicitly,
+		turns: rs.progress.turns,
+		exitCode,
+	});
+	const fromTurn = turnOutcome(turn);
+	// The footer word follows the outcome, spelled the way the log has always
+	// spelled it: `Completed` only for a completion, `Exited` for a clean exit
+	// with no completion to report, and `Stopped` for an abort the exit code
+	// decided (a signalled or non-zero exit with a normal turn). Those two are
+	// outcome-less on purpose, so reading them back defers to the same exit code.
+	const footer = outcome === "killed"
+		? OUTCOME_WORD.killed.footer
+		: outcome === "finished"
+			? (rs.isDone ? OUTCOME_WORD.finished.footer : EXITED_FOOTER_WORD)
+			: fromTurn ? OUTCOME_WORD[fromTurn].footer : STOPPED_FOOTER_WORD;
+	return { outcome, footer, prefix: OUTCOME_WORD[outcome].prefix };
+}
+
 /** Marker prefix for a delivered kill result. Mirrors the `subagent_kill`
  *  marker; the stage-2 variant is greppable as `[Killed via progress-timeout]`
  *  and the turn-limit variant as `[Killed via turn-limit]`. */
@@ -3116,7 +3228,7 @@ function killedMarker(rs: RunningSubagent): string | null {
  *  delivery. Returns which path ran so callers can log it. Exported as an
  *  @internal test hook so the mutual-exclusion contract can be exercised
  *  without spawning a real child process. */
-export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: number, commitNote?: string): "stop" | "deliver" {
+export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: number | null, commitNote?: string): "stop" | "deliver" {
 	if (rs.resolveOnStop) {
 		let stoppedText = getFinalOutput(rs.messages) + commitNote;
 		// Kill marker keyed on the kill source (subagent_kill tool vs
@@ -3139,7 +3251,7 @@ export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: 
  *  the kill marker when `killedExplicitly` is set. Exported as an
  *  @internal test hook so the delivered-marker contract (WO-2026-043
  *  integration contract) can be exercised with a stub `ExtensionAPI`. */
-export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number, isolationNote?: string): void {
+export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number | null, isolationNote?: string): void {
 	// No live session → the parent cannot receive the result. pi invalidates
 	// its ExtensionAPI alongside the ctx, so `pi.sendUserMessage` would throw
 	// from inside the child's close handler. Skip deliberately (not a
@@ -3152,14 +3264,11 @@ export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: n
 	}
 	const output = getFinalOutput(rs.messages) || "(no output)";
 
-	const wasAborted = exitCode !== 0 && rs.progress.turns < MAX_TURNS_HARD;
 	// A kill (subagent_kill tool or decision 015 stage-2 progress-timeout)
 	// supersedes the standard prefix — make the marker the first line of
 	// the delivered message so the orchestrator sees what happened.
 	const killedNote = killedMarker(rs);
-	const prefix = killedNote
-		? killedNote
-		: `[Subagent ${rs.agentName} ${wasAborted ? "aborted" : "finished"}]`;
+	const prefix = killedNote ?? `[Subagent ${rs.agentName} ${terminalOutcome(rs, exitCode).prefix}]`;
 
 	// Surface child stderr when the agent never made a turn. The most
 	// common cause is a child `pi` that failed to start (broken extension,
@@ -3304,6 +3413,9 @@ export function recoverOrphanedSubagents(
 				resolveOnStop: null,
 				isDone: false,
 				procExited: false,
+				// Classified from the log footer the dead session wrote — see
+				// `readTerminalFooter` in the close handler below.
+				recoveredFooterWord: null,
 				// Recovered subagents are re-attached to a fresh pi
 				// session; the kill flag never applies (the previous
 				// session died, not killed). Initialize to false to
@@ -3377,11 +3489,21 @@ export function recoverOrphanedSubagents(
 				rs.isDone = true;
 				// Read final output from log
 				let finalOutput = "(no output)";
+				// The footer is this path's only terminal evidence: the child's
+				// messages never reached this process. Its word and exit code
+				// classify the run exactly as the live close handler would have
+				// (WO-2026-078 N4). A log with no footer records no ending at all, so
+				// there is likewise no evidence of a finished run: `null` (not
+				// pre-078's assumed exit 0) leaves the classification to the exit
+				// code, which then says "terminated, not exited".
+				let recoveredExitCode: number | null = null;
 				try {
 					const log = fs.readFileSync(logPath, "utf-8");
-					const match = log.match(/── (Completed|Exited|Stopped) \((\d+) turns, exit (\d+)\)/);
-					if (match) {
-						rs.progress.turns = parseInt(match[2]);
+					const footer = readTerminalFooter(log);
+					if (footer) {
+						rs.progress.turns = footer.turns;
+						rs.recoveredFooterWord = footer.word;
+						recoveredExitCode = footer.exitCode;
 						finalOutput = log.split("── ").pop()?.trim() || finalOutput;
 					}
 				} catch {}
@@ -3390,7 +3512,7 @@ export function recoverOrphanedSubagents(
 					? completeWorkRecord(rs.workRecord, meta.piSessionId ?? sid, () => sessionFinalText(meta.sessionFile))
 					: [];
 				rs.recordNotes = recordNotes;
-				deliverResult(pi, rs, 0, `\n[Isolation] Recovered from previous session.${recordNotes.map((n) => `\n${n}`).join("")}`);
+				deliverResult(pi, rs, recoveredExitCode, `\n[Isolation] Recovered from previous session.${recordNotes.map((n) => `\n${n}`).join("")}`);
 				running.delete(sid);
 				updateFooter();
 			});
@@ -3417,10 +3539,11 @@ export interface ReapResult {
  * Two gates, both required:
  *   - 027's adoption gate — a live foreign owner's tree is never touched, and a
  *     legacy meta is unattributable;
- *   - child-side terminal evidence — the log's last line is the
- *     `── Completed|Exited|Stopped|Killed (…) ──` footer, the same evidence the
- *     status vocabulary reads. Owner death alone is NOT enough: the child is a
- *     separate process and a dead owner can outlive it.
+ *   - child-side terminal evidence — the log's last line is a terminal footer
+ *     (`hasTerminalFooter`, one of `OUTCOME_WORD`'s words or `Exited`/
+ *     `Stopped`), the same evidence the status vocabulary reads. Owner death
+ *     alone is NOT enough: the child is a separate process and a dead owner can
+ *     outlive it.
  *
  * Then: a clean tree (`git status --porcelain -uall` empty, so the work lives
  * on the branch) is unlocked and removed with a plain `worktree remove` — no
