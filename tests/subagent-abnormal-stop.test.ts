@@ -344,6 +344,19 @@ describe("the vocabulary holds for every outcome and every ending", () => {
 		expect(terminalOutcome(rs, null).outcome).toBe("aborted");
 	});
 
+	it("an abnormal turn outranks a missing exit code — the turn is the more specific fact", () => {
+		// Both facts are abnormal, so only the precedence is at stake: the turn
+		// names what went wrong (`overflowed`), the exit code only says the
+		// process was signalled. Swapping the two branches keeps every other row
+		// green, which is why this one exists.
+		const rs = rsStub({ isDone: false, progress: turns(2), messages: [assistantMessage("length", "trunc")] });
+		expect(terminalOutcome(rs, null)).toEqual({
+			outcome: "overflowed",
+			footer: "Overflowed",
+			prefix: "overflowed",
+		});
+	});
+
 	it("a reasonless assistant message is an abnormal turn, not a normal end", () => {
 		const rs = rsStub({ isDone: true, progress: turns(1), messages: [assistantMessage(null, "some text")] });
 		const t = terminalOutcome(rs, 0);
