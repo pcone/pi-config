@@ -157,10 +157,20 @@ rounds and respects the cap:
 - **`subagent_review_status`** returns `reviewRounds` and
   `reviewCapReached` so the orchestrator can make informed decisions
 
-A round is a post-implementation review spawn: since `plan` became a
-reviewer kind (WO-2026-074), a plan spawn is recorded in `spawns` but does not
-increment `reviewRounds` — see `decisions/subagents/004` and WO-2026-074 Q-074-b,
-which carries the question for confirmation.
+A round is a post-implementation review spawn. Since `plan` became a reviewer
+kind (`agents/review-plan.md`, owner 2026-11-05), a plan spawn is recorded in
+`spawns` and does not increment `reviewRounds`; `isReviewRequirementKind` guards
+the increment, so the counter's trigger set is the same set it had before the
+kind existed.
+
+*Recorder's reading (2026-11-05), not a separate ruling:* the ruling that made
+`plan` a kind settles the vocabulary and the record gate, not this counter, so
+the counter keeps its existing behaviour — which is the only option that does
+not change a bound the cap's ruling set. Counting plan reviews would consume a
+round before any code review exists, and the cap's escalation ("After 3
+rounds:") is about rework. Recorded so the alternative is answered rather than
+re-argued: if a plan review ever should count, that is a new ruling, and it must
+change the cap's meaning, not just this guard.
 
 Backward-compatible: files without `reviewRounds` are treated as
 round 1 if spawns exist, round 0 otherwise.
