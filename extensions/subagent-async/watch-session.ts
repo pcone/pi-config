@@ -12,7 +12,8 @@ import { createConnection } from "node:net";
 import * as readline from "node:readline";
 import {
 	ProcessTerminal,
-	TUI,
+	TuiMainScreen,
+	type TUI,
 	Container,
 	Text,
 	Spacer,
@@ -121,7 +122,8 @@ class SessionViewer {
 
 const viewer = new SessionViewer();
 const terminal = new ProcessTerminal();
-const tui = new TUI(terminal);
+// TuiMainScreen leaves the log in the terminal's scrollback so it survives exit; TuiAltScreen owns the viewport and restores the main buffer (pi-tui README).
+const tui: TUI = new TuiMainScreen(terminal);
 
 // Add viewer as child component (TUI renders all children vertically)
 (tui as any).addChild(viewer);

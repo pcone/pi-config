@@ -40,7 +40,8 @@ import {
 	Spacer,
 	Text,
 	truncateToWidth,
-	TUI,
+	TuiMainScreen,
+	type TUI,
 	Markdown,
 	type MarkdownTheme,
 } from "@earendil-works/pi-tui";
@@ -1456,7 +1457,8 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 	viewer.setShowThinkingEverywhere(true);
 
 	const terminal = new ProcessTerminal();
-	const tui = new TUI(terminal);
+	// TuiMainScreen leaves the log in the terminal's scrollback so it survives exit; TuiAltScreen owns the viewport and restores the main buffer (pi-tui README).
+	const tui: TUI = new TuiMainScreen(terminal);
 	tui.addChild(viewer);
 
 	// Seed pane count for layout
