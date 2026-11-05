@@ -17,8 +17,24 @@ refactor lands.
 |---|---|---|---|
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
-| terminal-outcome vocabulary in the watch views | — (carried by the 2026-11-05 WO-2026-078 entry, not a strike) | open — five hand-itemised copies do not know `errored`/`overflowed`/`aborted`; they fall back on mtime/`STOPPED`, so nothing misreports liveness | fold them onto `OUTCOME_WORD`/`TERMINAL_FOOTER_RE` in `extensions/lib/subagent-state.ts`, which one landing already made the single table |
+| terminal-outcome vocabulary in the watch views | — (closed by WO-2026-080, `a8ff8be`) | **closed 2026-11-05** — 0 terminal word literals in the three viewers; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in `extensions/lib/subagent-state.ts`; the two live viewers had also been dead since pi-tui 1.4 (WO-2026-081) | — |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
+
+## 2026-11-05 — chunk: WO-2026-081 + WO-2026-080 the views read the vocabulary, and the viewers load again
+
+**growth.** `watch-session-v2.ts` 1677 → 1727 (+50), `watch-session.cjs` 606 → 639 (+33),
+`watch-session.ts` 188 → 197 (+9), `extensions/lib/subagent-state.ts` 550 → 575 (+25). The three viewer
+files gained the fold's plumbing and lost two regexes, one private word list, one fabricated `exitCode = 0`
+and one dead `EXIT n` branch; the lib gained `MAX_TURNS_HARD`, `outcomeFromExitCode` and
+`outcomeFromFooter`, which `classifyOutcome` now calls instead of owning. New
+`tests/watch-view-vocabulary.test.ts` (+181) — test-only. Net: `subagent-state.ts` is the only file in the
+repo that names a terminal word or matches a footer line.
+
+**unification.** One idea, one home, counted at the landed tip: `rg -n '"Completed"|"Errored"|"Overflowed"|"Aborted"|"Killed"|"Exited"|"Stopped"'` over the three viewers → 0; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in the lib; `rg -c 'MAX_TURNS_HARD = ' extensions/` → 1; `rg -n 'exitCode === 0'` over the viewers → 0. The fold cost two orders because the four viewers had drifted into five vocabularies *and* two of them had stopped loading — the same idea's decay and the reason nobody noticed were the same fact: nothing runs a viewer in CI.
+
+**watch.** `extensions/subagent-async/index.ts` (4761) and `watch-session-v2.ts` (1727) are the top two non-test sources; this chunk grew v2 by 50 lines and deleted more mechanism than it added, so it is a **downgrade** on v2 as well. A fourth footer word site, or a viewer that re-derives an outcome, is the strike: the register row above is closed, so the next vocabulary change edits `subagent-state.ts` and no view.
+
+**observation for the next refactor needed here, not this chunk's:** the four viewers duplicate *session discovery* — socket scan, `/tmp/pi-subagent-*.log` glob, mtime window, metadata load — in `watch-session-v2.ts`, `watch-session.cjs` and `test-viewer.cjs`, three times over. Only the vocabulary was folded; discovery is still three copies and has no register row.
 
 ## 2026-11-05 — chunk: WO-2026-078 abnormal terminal turns are labelled
 
