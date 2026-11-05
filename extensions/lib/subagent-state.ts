@@ -236,16 +236,128 @@ export interface SubagentStateReading {
 	evidence: string;
 }
 
-const COMPLETED_FOOTER_RE = /──\s*Completed\s*\(/;
-const TERMINAL_FOOTER_RE = /──\s*(Completed|Exited|Stopped|Killed)\s*\(/;
+// ── Terminal-outcome vocabulary (WO-2026-078) ──────────────────────────────
+
+/**
+ * How a subagent run ended. One vocabulary, three renderings: the word in the
+ * delivered message prefix, the word in the log footer, and the word the status
+ * reader matches in that footer. `finished` is the only success member.
+ */
+export type SubagentOutcome = "finished" | "errored" | "overflowed" | "aborted" | "killed";
+
+/** The delivered-prefix word and the log-footer word per outcome. */
+export const OUTCOME_WORD: Record<SubagentOutcome, { prefix: string; footer: string }> = {
+	finished: { prefix: "finished", footer: "Completed" },
+	errored: { prefix: "errored", footer: "Errored" },
+	overflowed: { prefix: "overflowed", footer: "Overflowed" },
+	aborted: { prefix: "aborted", footer: "Aborted" },
+	killed: { prefix: "killed", footer: "Killed" },
+};
+
+/**
+ * A run that ended with no terminal assistant turn to classify: the process
+ * exited (0 / non-zero) and the footer records only that. These two words carry
+ * no outcome of their own — `Exited` reads as `finished`, `Stopped` as
+ * `aborted` — and keep the spellings they had before this vocabulary existed.
+ */
+export const EXITED_FOOTER_WORD = "Exited";
+export const STOPPED_FOOTER_WORD = "Stopped";
+
+/** Every terminal footer word. The regexes below are built from it, so the
+ *  words a footer writes and the words a reader accepts are one list. */
+const FOOTER_WORDS = [...Object.values(OUTCOME_WORD).map((w) => w.footer), EXITED_FOOTER_WORD, STOPPED_FOOTER_WORD];
+
+const COMPLETED_FOOTER_RE = new RegExp(`──\\s*${OUTCOME_WORD.finished.footer}\\s*\\(`);
+const TERMINAL_FOOTER_RE = new RegExp(`──\\s*(${FOOTER_WORDS.join("|")})\\s*\\(`);
 
 /**
  * True when the log's last non-empty line is a terminal footer — the child-side
- * evidence that the run is over (`── Completed|Exited|Stopped|Killed (…) ──`).
+ * evidence that the run is over (`── <word> (…) ──`, one of `FOOTER_WORDS`).
  * The status vocabulary and the reap both key on this one predicate.
  */
 export function hasTerminalFooter(logLastLine: string | null): boolean {
 	return logLastLine !== null && TERMINAL_FOOTER_RE.test(logLastLine);
+}
+
+const OUTCOME_BY_FOOTER_WORD = new Map<string, SubagentOutcome>(
+	Object.entries(OUTCOME_WORD).map(([outcome, words]) => [words.footer, outcome] as [string, SubagentOutcome]),
+);
+
+/**
+ * The outcome a terminal footer word names — the inverse of the vocabulary the
+ * footer writes. Null for `Exited`/`Stopped`, which record only that the
+ * process exited: those words have no outcome of their own, so the exit code
+ * the same footer carries decides (exactly as it does for a live run). Throws
+ * on a word no footer writes.
+ */
+export function outcomeFromFooterWord(word: string): SubagentOutcome | null {
+	if (word === EXITED_FOOTER_WORD || word === STOPPED_FOOTER_WORD) return null;
+	const outcome = OUTCOME_BY_FOOTER_WORD.get(word);
+	if (!outcome) {
+		throw new Error(`outcomeFromFooterWord: "${word}" is not a terminal footer word (${FOOTER_WORDS.join(", ")})`);
+	}
+	return outcome;
+}
+
+/**
+ * Outcomes of pi's non-normal `StopReason`s. `pending` and `deferred` are its
+ * not-yet-settled reasons, so a turn that reached the terminal path in either
+ * never delivered its answer. `stop` and `toolUse` are normal ends and are
+ * deliberately absent: they fall to the exit code instead.
+ */
+const OUTCOME_BY_STOP_REASON: Record<string, SubagentOutcome | undefined> = {
+	length: "overflowed",
+	error: "errored",
+	aborted: "aborted",
+	pending: "aborted",
+	deferred: "aborted",
+};
+
+/**
+ * The outcome a terminal assistant turn's `stopReason` names, or null when the
+ * reason is a normal end (`stop`, `toolUse`) or there is no terminal turn at all
+ * (`null`) — then the process exit code decides. Throws on a reason this
+ * vocabulary does not know: a new stop reason is a new outcome, never a success.
+ */
+export function stopReasonOutcome(reason: string | null): SubagentOutcome | null {
+	if (reason === null || reason === "stop" || reason === "toolUse") return null;
+	const outcome = OUTCOME_BY_STOP_REASON[reason];
+	if (!outcome) {
+		throw new Error(`stopReasonOutcome: unknown stopReason "${reason}" — add it to OUTCOME_BY_STOP_REASON`);
+	}
+	return outcome;
+}
+
+/** A parsed terminal footer line: the word it wrote and the counts it recorded. */
+export interface TerminalFooter {
+	word: string;
+	turns: number;
+	/** Null when the footer recorded `exit ?` (the process left no exit code). */
+	exitCode: number | null;
+}
+
+const TERMINAL_FOOTER_LINE_RE = new RegExp(
+	`──\\s*(${FOOTER_WORDS.join("|")})\\s*\\((\\d+) turns, exit (\\d+|\\?)\\)`,
+);
+
+/** Parse a line as a terminal footer, or null when it is not one. */
+export function parseTerminalFooter(line: string): TerminalFooter | null {
+	const m = TERMINAL_FOOTER_LINE_RE.exec(line);
+	if (!m) return null;
+	return { word: m[1], turns: Number(m[2]), exitCode: m[3] === "?" ? null : Number(m[3]) };
+}
+
+/**
+ * The log's terminal footer: the last line that parses as one. Null when the
+ * log carries no footer (a torn or truncated log).
+ */
+export function readTerminalFooter(log: string): TerminalFooter | null {
+	const lines = log.split("\n");
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const footer = parseTerminalFooter(lines[i]);
+		if (footer) return footer;
+	}
+	return null;
 }
 
 /**
