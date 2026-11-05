@@ -92,7 +92,8 @@ which is not loaded).
 - Normal completions are untouched: `stopReason: "stop"` with text still delivers `[Subagent X
   finished]`, the same footer, and `complete` from `readSubagentState`.
 - `killedExplicitly` / `killedMarker` and its strings are untouched
-  (`:3101-3109`; [`decisions/subagents/015`](../../pi-config/decisions/subagents/015-*.md) and `043`).
+  (`:3101-3109`; [`decisions/subagents/015`](../../pi-config/decisions/subagents/015-progress-kill-timeout.md) and
+  [`043`](../../pi-config/decisions/subagents/043-owner-state-and-checkpoint-recoverability.md)).
 - The `resolveOnStop` vs `deliverResult` mutual exclusion (`deliverCloseResult`, `:3122-3140`) is
   untouched.
 - The review gate and `owner_asks` gate steer paths (`:2385-2430`) are untouched.
