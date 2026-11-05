@@ -1,10 +1,10 @@
-# WO-fleet-compaction-baseurl — the fleet compaction call forwards `auth.baseUrl`
+# WO-2026-077 — the fleet compaction call forwards `auth.baseUrl`
 
-**Status: DRAFT — DISPATCH-BLOCKED on Q-A1 (owner call).** Slug-only; the id is reserved at dispatch.
+**Status: DISPATCHED (2026-11-05). Q-A1 ruled: mechanism A, the two-line spread.**
 
 ### Metadata
 
-- **work_order_id**: WO-2026-077 (reserved at dispatch)
+- **work_order_id**: WO-2026-077
 - **parent_plan_id**: planning-seat queue 2026-11-05 (item 1, from WO-2026-075's notes)
 - **sequence_position**: 1 of 1
 - **routed_to**: implement
@@ -38,47 +38,41 @@ field is `undefined` today. This is a faithfulness fix — the second of the sam
 (`compact()` decomposes `ResolvedRequestAuth` into positionals, so every field pi adds to that type is
 silently dropped until someone notices) — not a live bug fix.
 
-### Q-A1 — owner call: two working mechanisms, mutually exclusive
+### Q-A1 — ruled 2026-11-05: the two-line spread (mechanism A)
 
-Both make the field reach the client. They differ in what else they change, so neither is a default
-the implementer or I can pick.
+**Owner ruling (2026-11-05, via the planning seat): "Two-line spread (Recommended)."** Pass
+`{ ...model, baseUrl: auth.baseUrl }`, as pi's own compaction path does, so the call path and hook
+visibility are unchanged. **Rejected: routing through `modelRegistry.streamSimple`** — that would move
+the compaction request onto the coding-agent runtime and make it visible to `before_provider_request`
+and `model_call`, which this landing does not do.
 
-**Mechanism A — wrap the model, mirroring pi (recommended).** One conditional at the `compact()` call
-site: `const modelForCall = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model`. It is pi's own
-code, its own conditional (`agent-session.js:264`); `id`, `provider`, `api`, `headers`, `compat` and
-`contextWindow` all survive the spread, and the request's model id still comes from `model.id`
-(`openai-completions.js:577`). Cost: a third copy of a pi-internal normalization in one file (after
-WO-2026-075's `withoutDeletedHeaders`), because pi exports no helper to share. Exposure: `detectCompat`
-reads `model.baseUrl` (`openai-completions.js:1318-1321`), so a proxied URL can flip auto-detected
-compat flags — mitigated by the fleet model's explicit `compat` block, and it is the same exposure pi
-accepts on every other request. Rows: one.
+So mechanism A is the order. It is pi's own code, its own conditional (`agent-session.js:264`); `id`,
+`provider`, `api`, `headers`, `compat` and `contextWindow` survive the spread, and the request's model
+id still comes from `model.id` (`openai-completions.js:577`).
 
-**Mechanism C — dispatch through the runtime instead.** Pass `ctx.modelRegistry.streamSimple` as
-`compact()`'s 8th positional (`streamFn`), which routes through `ModelRuntime.prepareRequest` and
+The alternative is recorded rather than erased, since it is the one that removes the duplicate and the
+drift class: dispatching through `ctx.modelRegistry.streamSimple` as `compact()`'s 8th positional
 applies the `baseUrl` wrapper, the compat semantics and opencode's `x-opencode-session` header
-(`model-runtime.js:456-522`, `:465`). This makes A — and its question — moot: `ProviderHeaders` null
-semantics are preserved end to end, so WO-2026-075's local filter could be deleted rather than kept.
-Cost, and why it is not a free win: it moves the compaction request from pi-ai's compat dispatch onto
-the coding-agent runtime, so `before_provider_request` hooks and `model_call` telemetry start seeing a
-request that today bypasses both (`docs/investigations/pi-1.4-compaction-override-2026-11.md:52,192`),
-and auth resolution moves from the extension into the runtime. That is a behaviour change outside the
-`baseUrl` question, so it needs a ruling of its own rather than riding a gap-closing order.
+(`model-runtime.js:456-522`) and would retire WO-2026-075's local header filter — at the cost of
+compaction becoming visible to `before_provider_request` and `model_call`, which it bypasses today
+(`docs/investigations/pi-1.4-compaction-override-2026-11.md:52,192`). **Not this order.** A later order
+may propose it; landing it here is a departure.
 
-**Why this is an owner question and not my call:** A is minimal and safe but adds a duplicate; C removes
-the duplicate and the whole drift class while changing dispatch visibility the project currently relies
-on a doc statement about. Picking one is a shape decision with a cost on each side, which is the
-owner's to make. The order lands whichever A1 names and only that one — they are mutually exclusive
-(doing both resolves auth twice and pins two contradictory `streamFn` assertions).
+Exposure to note, not to fix: `detectCompat` reads `model.baseUrl`
+(`openai-completions.js:1318-1321`), so a proxied URL can flip auto-detected compat flags. The fleet
+model carries an explicit `compat` block, and it is the same exposure pi accepts on every other
+request.
 
 ### Rulings
 
 - WO-2026-075's landing (`8c1595d`): `null` header markers filtered, `auth.env` forwarded to the 9th
   positional. Not revisited here.
-- Author's choice: the wrapper is **conditional** (`auth.baseUrl ? … : model`), mirroring
+- Q-A1 ruling quoted above. Author's choice: the wrapper is **conditional** (`auth.baseUrl ? … : model`), mirroring
   `agent-session.js:264`. An unconditional `{ ...model, baseUrl: undefined }` would invent a value the
   registry did not resolve, which is the defect WO-2026-075's R2 rejected in the other direction.
 
-**Rejected alternatives**: none by the owner yet. Q-A1 names C as the alternative A would foreclose.
+**Rejected alternatives (owner, 2026-11-05):** routing the summarization call through
+`modelRegistry.streamSimple` / the coding-agent runtime. See Q-A1.
 
 ### Scope
 
@@ -87,8 +81,7 @@ stays `undefined` under A); the `[CHECKPOINT]` yield at the top of the handler s
 before any registry read; `withoutDeletedHeaders` still filters `null` markers.
 
 **Files expected to change**: `extensions/compaction-model.ts` (the call site and the doc block above
-it), `tests/summary-ownership.test.ts` (one row under A; under C, the existing `streamFn` assertion
-inverts and the header-filter row changes meaning).
+it), `tests/summary-ownership.test.ts` (three rows).
 
 **Files NOT to modify**: `extensions/checkpoint.ts`, `decisions/checkpoint/{005,006}`,
 `extensions/lib/fleet-model.ts` (the model's own `baseUrl` and `compat` block are not this order's
@@ -118,6 +111,9 @@ positionals 3/4/9. Recorded in the doc, not implemented here.
 | A1 | `auth.baseUrl` resolved | the model handed to `compact()` has that `baseUrl`, and still has the registry's `id`, `provider`, `api` | drop the wrapper |
 | A2 | `auth.baseUrl` absent | the model handed to `compact()` is the registry's object, `baseUrl` not invented as `undefined`-own-property — compare `Object.keys` / identity | make the wrapper unconditional |
 | A3 | checkpoint path | still zero registry reads and zero `compact()` calls (`[CHECKPOINT]` yield intact) | move the wrapper above the marker predicate |
+
+**Under A the `streamFn` positional stays `undefined`.** The existing row asserting it is unedited and
+must stay green.
 
 ### Verification Criteria
 
