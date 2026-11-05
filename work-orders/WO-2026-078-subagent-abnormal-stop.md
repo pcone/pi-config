@@ -155,3 +155,55 @@ order's starting facts — the record, not this draft, is the citation.
 
 Every completion report and landing for this order goes to `claude-8f90746f-e9aa-4dab-81ef-eb303ba0cb65`
 by peer message. State commit hashes, not "landed".
+
+---
+
+### Landing stamp (2026-11-05, merged `fa3c9d6`, gate row `0b0`-series)
+
+**Landed.** One classifier (`classifyOutcome` / `terminalOutcome`) over the child's last assistant
+`stopReason`, the exit code and the kill flag feeds three words that used to be three independent
+booleans: the delivered prefix, the footer the close handler writes, and `readSubagentState`'s on-disk
+state. `OUTCOME_WORD` holds five words (`finished`, `errored`, `overflowed`, `aborted`, `killed`) and
+`TERMINAL_FOOTER_RE` is built from the same table, so the vocabulary cannot drift between read and
+write. The recovery path reads the footer word and exit code it used to discard.
+
+**Gate, run by me at the merged tip:** the eight targeted files 144/0 → **145/0** after my row. Claims
+re-checked at the tip: `rg -c 'code \?\? 0|exitCode \?\? 0'` → 0; `rg -c 'isAbnormalStop'` in
+`subagent-async/` and `lib/` → 0; the five footer words present. **Two mutations of mine:** a null exit
+code classified `finished` reds 4 rows; moving the exit-code branch above the turn branch reds nothing —
+see below.
+
+**A hole the green mutation found, and the row I added for it.** Reordering `classifyOutcome`'s two
+branches — the abnormal turn versus the missing exit code — left all 22 rows green. Both facts are
+abnormal, so only the precedence was at stake, and nothing observed it. The precedence is deliberate
+(the code says so) but unpinned, so I added a row: a `length` turn with no exit code is `overflowed`,
+not `aborted`, and it reds under that reorder. That is the gate doing its job on its own author's
+assumption rather than on the implementer's.
+
+**Full suite at the merged tip, one `heavy --` slot:** 1170 tests. Red set = the standing set, row for
+row: 5 checkpoint live rows (credit exhaustion, pi-config#11), 2 peer-link integration (HTTP 402), 2
+`subagent tool boundary` (#15), and the `subagent-boundary hermeticity` cascade whose child run carries
+the credit row. Compared against the pre-078 run by row name, not by count: the two rows that differ
+(`reapFinishedWorktrees … the real session_start handler runs the reap`, `subagent live-session
+lifetime`) were **red before this landing and green after**, and both are green when run alone at the
+tip — timing, not this change. No row that this landing could affect is red.
+
+**Disclosed by the implementer and accepted:** a completed child killed by a signal now reads
+`Stopped`/`orphaned` on disk rather than `Completed`/`complete`. That is what `Stopped` always meant, and
+it is the ruling's own requirement ("visibly marked"), so it lands rather than being softened.
+
+**Accepted, not fixed, with the reason stated:** pre-078 logs already on disk that say
+`Completed (N turns, exit 1)` still read `complete`; not rewritable in place, documented in
+`decisions/subagents/043`, and a migration can treat a `Completed` footer with a recorded non-zero exit
+as `orphaned`. Five hand-itemised footer vocabularies outside this order (`watch-session.ts`,
+`watch-session-v2.ts` ×2, `watch-session.cjs` ×2, `test-viewer.cjs`, plus the test mirror) do not know
+the three new words; they fall back on mtime/`STOPPED`, so nothing claims a child is running forever —
+it is a live-tail styling gap and a unification refactor, not this order.
+
+**Row vocabulary in the order vs what landed:** N6's end is a boundary, not a delivery — a `length`
+turn with no text never sets `isDone`, so the watchdog/silence path owns its delivery. Recorded as the
+order asked rather than forced into a mechanism.
+
+**Handed off, not routed around:** `tests/subagent-recovery-ownership.test.ts`'s start-token row flakes
+because `processStartToken` returns `null` when `execFileSync("ps", …)` fails under load. Pre-existing
+at base, `bug-triage` notified with the repro.
