@@ -17,7 +17,38 @@ refactor lands.
 |---|---|---|---|
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
+| terminal-outcome vocabulary in the watch views | — (carried by the 2026-11-05 WO-2026-078 entry, not a strike) | open — five hand-itemised copies do not know `errored`/`overflowed`/`aborted`; they fall back on mtime/`STOPPED`, so nothing misreports liveness | fold them onto `OUTCOME_WORD`/`TERMINAL_FOOTER_RE` in `extensions/lib/subagent-state.ts`, which one landing already made the single table |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
+
+## 2026-11-05 — chunk: WO-2026-078 abnormal terminal turns are labelled
+
+**growth.** `extensions/subagent-async/index.ts` 4688 → 4761 (+145/−22): the classifier, the word
+table and the two live-handler call sites, minus the three booleans and their branches it replaces.
+`extensions/lib/subagent-state.ts` 431 → 550 (+122/−3): `classifyOutcome`, `OUTCOME_WORD`, the reversed
+vocabulary and `TERMINAL_FOOTER_RE` built from it. New `tests/subagent-abnormal-stop.test.ts` (750
+lines, 23 rows) — test-only. Net structural effect is **down** in `index.ts`, despite the line count:
+"how did this run end" went from three independent booleans (`isDone`, `killedExplicitly`, exit code)
+read at three sites to one classification read from one table. Named extraction for a future landing:
+`terminalOutcome` is now the file's single funnel for terminal vocabulary, and the recovery path's
+`terminalOutcome`-from-footer read is its second consumer, so a third consumer (watch views, see below)
+has one place to come to.
+
+**unification.** One idea, one home, counted at the landed tip: `rg -c 'isAbnormalStop'` in
+`subagent-async/` and `lib/` → 0 (it survives only in the unloaded `_index.ts.off`); `rg -c 'code \?\?
+0|exitCode \?\? 0'` → 0; `rg -o 'footer: "[A-Za-z]+"' extensions/lib/subagent-state.ts` → the five
+words, and `TERMINAL_FOOTER_RE` is generated from the same list, so read and write cannot drift.
+`rg -n 'terminalOutcome\(' extensions/subagent-async/index.ts` → 3 (footer, delivery, recovery).
+
+**carried, with its carrier named.** Five hand-itemised footer vocabularies outside this chunk
+(`watch-session.ts`, `watch-session-v2.ts` ×2, `watch-session.cjs` ×2, `test-viewer.cjs`, plus the test
+mirror) do not know the three new words. They fall back on mtime/`STOPPED`, so no child is claimed to be
+running forever — the cost is live-tail styling. This is a unification refactor (five copies, one
+vocabulary) and it has no order yet: the register row below is its carrier until one is written.
+
+**watch.** `extensions/subagent-async/index.ts` is 4761 lines, the repo's largest non-test source file,
+and three of today's four landings touched it or its neighbours. This entry is a **downgrade** rather
+than a strike, because the landing removed branches rather than adding them; a further landing that adds
+a fourth word site or another boolean over terminal state is the strike.
 
 ## 2026-11-05 — chunk: WO-2026-076 checkpoint execute-preamble extraction
 
