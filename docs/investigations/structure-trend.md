@@ -19,6 +19,35 @@ refactor lands.
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
 
+## 2026-11-05 — chunk: WO-2026-076 checkpoint execute-preamble extraction
+
+**growth.** `extensions/checkpoint.ts` 1150 → 1231 (+81, `git diff --numstat` 161/−80): the two
+`execute` preambles are now one module-private helper, and each tool body keeps only the half that
+differs. The line count rose because a helper needs its own signature, options union and doc comment;
+the measure that matters for this area moved the other way. New `tests/checkpoint-preamble.test.ts`
+(602 lines, seven rows) — a test-only file, no production surface. Export count 3 → 3, checked, so the
+"no new exported symbol" prohibition held without needing an accessor.
+
+**unification.** The strike this closes was one mechanism duplicated per rule: five steps (validate,
+owner verdict, continuation, git binding, in-flight) each appeared twice. Counts at the landed tip, one
+`rg` per element, all → 1: `validateSummaryFields(params.summary)`, `checkOwnerState(params.nextSteps`,
+`resolveContinuation(params.continue`, `listInFlightSubagents({`, `formatInFlightSection(inFlight)`.
+The one dispatch site is `options.tool === "checkpoint_fork"` → 1. No second vocabulary: the refusal
+verb is a literal per tool, not a default, and `rg -F 'archived or'` → 1 site.
+
+**register.** `extensions/checkpoint.ts` growth: the 2026-11-04 strike is resolved by this landing and
+spent. The area is **not** closed — the register's reading is that closure needs two flagged landings,
+and this one is the named refactor rather than a second strike. A further landing that duplicates
+structure there reopens it with a fresh strike.
+
+**watch.** The extraction is where a third tool would land, and it is the file's only funnel for tool
+preparation. Two things to watch rather than act on: `PendingCheckpoint.injection` is the one member
+filled after construction (`pending.injection = injection`), so a second post-construction field means
+the literal is no longer the whole shape — C1 pins the assignment set to exactly `injection` so that
+shows up as a red row rather than a silent gap. And the fork hoists its `ctx.sessionManager` reads
+above validation, so a throwing read on a stale ctx surfaces where a rejection path once read nothing;
+both reviewers rated it LOW and no row covers that state.
+
 ## 2026-11-04 — chunk: WO-2026-073 summary-ownership integration (061 + 062 merged)
 
 **growth.** `extensions/checkpoint.ts` 994 → 1150 (+156), `extensions/compaction-model.ts`
