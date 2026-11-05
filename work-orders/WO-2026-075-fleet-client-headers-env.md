@@ -145,3 +145,37 @@ show R1 red.
 
 Standard schema plus the `review_policy: required` extras (assumptions, unexpected changes,
 issues, test coverage, both reviewer verdicts with session ids and rounds, `review_cap_reached`).
+
+---
+
+### Landing stamp (2026-11-05, merged `8c1595d`, budget fix `fa7c4dd`)
+
+**Landed.** One helper and two positional arguments: `withoutDeletedHeaders` filters `null` deletion
+markers before `compact()` sees them, and `auth.env` now reaches the 9th positional. Five rows in
+`tests/summary-ownership.test.ts` (R1, R2, R2b, R3, R4), all at the handler boundary with
+`compact()` mocked at its module seam. The ownership predicate at `:38` is untouched, and 073's
+sixteen rows still pass.
+
+**Gate, run by me at the merged tip.** `tests/summary-ownership.test.ts` 21/0 with the code
+unchanged. **Two mutations, each reddening a named row:** dropping the helper reds R1's header
+assertion; `auth.env` → `undefined` reds R1's env assertion. Both restored.
+
+**A red I had to disprove before accepting the merge, and the reason it mattered.** At the merged
+tip two rows red and the implementer reported 21/0 — the shape of an unreproducible completion
+report. They are **not** 075's: `I2`/`I3` red identically at the base `a21107f` in a clean worktree,
+and `uptime` showed load average 441 because a parallel implementer was running the full suite. `I2`
+spends 27 dispatches at ~190 ms each against bun's 5 s default, so it reds under any concurrent run
+while pinning green behaviour — the same timeout cliff as WO-2026-072's floor-sized fixture. Raising
+the budget (`{ timeout: 60_000 }`, `30_000`) turns both green with no code change, which is the
+differential that proves the cause. `I3`'s "2 fleet calls" was the cascade: a timed-out row's
+dispatch keeps running and appends after the next row's `beforeEach` clears the array.
+
+**Accepted, recorded, not carried into this landing:** R2b (a fifth row asserting `env` is forwarded
+even when `headers` is absent) is the implementer's own addition beyond the order's row table. It
+asserts nothing the order does not already state and closes a real hole, so it lands; the order's
+four rows are all present.
+
+**Found and reported, out of scope by the order's own boundary:** `auth.baseUrl` is resolved by the
+registry and silently dropped — `compact()` has no positional for it. That is a Goal-sentence gap,
+not an implementation defect: forwarding it needs either a pi change or a model override, so it
+needs its own ruling rather than a patch here.
