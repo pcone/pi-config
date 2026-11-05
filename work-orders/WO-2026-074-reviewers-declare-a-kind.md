@@ -40,7 +40,22 @@ requirement.
 **Before that ruling,** the order stayed blocked and the hole stays documented rather than patched: a
 `review-plan` spawn carrying a `workOrderPath` records a dispatch it does not own.
 
-### Owner question Q-074-b (raised 2026-11-05, by implement)
+### Q-074-b — settled without a ruling (2026-11-05, orchestrator)
+
+**Not an owner question, and it is not routed as one.** The implementer raised it because two
+reviews reached opposite conclusions; both were arguing about a set that has not changed. Every
+kind that counted toward `reviewRounds` before this order still counts: `implementation` and
+`tests`. `plan` records a spawn and counts nothing — which is exactly what `agents/review-plan.md`
+did before it had a kind at all (no kind → no record → no round). The **bound is unchanged**, and
+the landed code's trigger set is byte-for-byte the pre-dispatch set (`isReviewRequirementKind`).
+
+So the default direction needed no permission, and the opposite direction would have needed one:
+counting plan reviews would spend a round before any code review exists. `decisions/subagents/006`
+now states the rule and records the recorder's reading, per the "anything a ruling settles must
+land in the forward docs" rule. `Q-074-b` stays in this order as the record of why the direction was
+chosen, with the one-line reversal documented.
+
+### Original framing, for the record
 
 **Ask:** does a `plan` review spend one of an implementer's three review rounds? The tracker records
 the spawn either way — that is what proves a plan review satisfies no requirement. The open half is
@@ -140,3 +155,31 @@ reviewer without a kind reds instead of silently escaping the gate.
 
 Hard cap 3 rounds. Gate at the merged tip by re-running the census row plus the six 070 rows, and
 mutating the gate yourself to show both the plan-reviewer row and the census row go red.
+
+---
+
+### Landing stamp (2026-11-05, merged `aca3e59`)
+
+**Landed.** `ReviewerKind` gains `plan`; `agents/review-plan.md` declares `reviewer_kind: plan`; the
+record gate is unchanged (`agent.reviewerKind !== undefined`). The requirement vocabulary is now a
+separate type (`ReviewRequirementKind` + `isReviewRequirementKind`), so `plan` can never be
+requireable — the obligation the ruling's option A carried.
+
+**Gate, run by me at the merged tip:** `work-record-ownership` + `agents-reviewer-kind` +
+`subagent-owner-asks-gate` → 27/0. **Two mutations, each reddening named rows:**
+
+| mutation | red rows |
+|---|---|
+| delete `reviewer_kind: plan` from `agents/review-plan.md` | 5, including *"a review-plan spawn carrying workOrderPath writes no dispatch"* — acceptance row 1 |
+| add `plan` to `REVIEW_REQUIREMENT_KINDS` | 3, including *"ignores a plan-only requirement"* and the tracker's round assertion |
+
+The first is the acceptance row this order exists for, red without the change and green with it.
+
+**Q-074-b closed as an orchestrator determination, not a ruling** (see above): the cap's bound is
+unchanged, so nothing needed the owner. The alternative — a plan review consuming one of three
+rounds — is recorded with its one-line reversal.
+
+**Accepted debt with no carrier yet:** `ReviewerKind` and `RECOGNISED_REVIEWER_KINDS` remain two
+hand-kept lists of the same tokens (`agents.ts`). Both reviews flagged it; the requireable list
+already has the one-source shape they recommended. Naming a carrier is the orchestrator's job and it
+is the next small order in this area.
