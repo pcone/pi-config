@@ -260,3 +260,53 @@ Do not spawn a TUI in a test. No row may require a TTY, a socket, or a real chil
 status / owner_asks / invariant_exhaustiveness / commits / files_modified / tests (each row's red-turning revert) / deviations_from_spec / claims (each prohibition with its check's output) / structural_checks / assumptions_made / unexpected_changes / issues_encountered / test_coverage / adversarial_reviews / accepted_notes / notes_for_orchestrator — per the agent's system prompt.
 
 Send the same summary to `claude-8f90746f-e9aa-4dab-81ef-eb303ba0cb65` by peer message: every completion, gate, landing and stop goes there.
+
+---
+
+### Landing stamp (2026-11-05, merged `a8ff8be`, commits `82d87d2` refactor + `d09da48` fold)
+
+**Landed.** `MAX_TURNS_HARD`, `outcomeFromExitCode` and `outcomeFromFooter` live in
+`extensions/lib/subagent-state.ts`; `classifyOutcome` calls them and stays private to the extension. All
+four viewers read a footer through `parseTerminalFooter`/`readTerminalFooter`, display **the word the
+footer wrote**, and take only success-versus-failure from the same functions the writer uses.
+
+**Gated by me at the merged tip:** 80 pass / 0 fail on the new file plus both characterization files;
+`test-viewer.cjs` 95 passed; `test-layout.ts` 27 passed; characterization files unedited
+(`git diff --name-only e47a407..HEAD -- <both> _index.ts.off` empty). Prohibitions re-run: **0 terminal
+word literals** in the three viewers, `MAX_TURNS_HARD = ` once (in the lib), **0** `exitCode === 0`
+completion tests left in any viewer, and the three `outcomeFrom*` definitions all in the lib.
+
+**My own mutations:** `outcomeFromFooter` ignoring the word and using only the exit code reds 9 rows
+(every failure word plus F3's "exit 0 does not win"); swapping `TuiMainScreen` for `TuiAltScreen` reds
+**F16**, the row I added after WO-2026-081's finding — so the renderer choice is pinned now, which 081
+could not do.
+
+**Three more defects in this order, all mine, all found by the implementer:**
+
+1. **The census said eleven, then fifteen, and was still one short** — the table lists 14 rows; the
+   missing fifteenth is `watch-session.ts`'s wordless close, and it is the only site whose *screen*
+   changed for a pre-existing word (`Completed` → `Stopped`). Counting is not the deliverable; the
+   enumeration was, and it corrected me three times.
+2. **Three of my four mutation predictions were wrong.** M2 was said to red F6/F7 — `Exited`/`Stopped`
+   delegate to the exit code, so they don't. M3 was said to red F5 — `Killed`'s word short-circuits it.
+   Prohibition 2's predicted count was two; the pattern also matches `outcomeFromFooterWord`, so it is
+   three.
+3. **§5's colour clause for the `.cjs` pane header had no referent.** I wrote "colour by
+   `outcome === "finished"`" for a function that has never coloured anything, then forbade changing
+   existing screens in the same order. The implementer struck the clause (word from `word`, `EXIT n`
+   branch deleted, no colour added) and both reviewers endorsed it; the clause was my error, and the
+   correct reading was its absence.
+
+**Disclosed screen changes, accepted, all of them the fold working:** `Exited` now reads `EXITED` in the
+`.cjs` picker and in every header (it read `STOPPED` where the word was collapsed, and `Completed`/
+`Stopped (exit 1)` in the single-pane header); `Stopped (…, exit ?)` and `Killed (…, exit ?)` parse at
+all for the first time; the `.cjs` discover arm takes the **last** footer's word where base required
+`includes("── Completed")` anywhere.
+
+**No safe defaults, applied twice by the implementer:** v2's pane header *throws* for a done pane with no
+word rather than defaulting, because v2 sets `done` only from a parsed footer, so the state cannot occur;
+the wordless arms that can occur (a socket close, an unreadable log) are commented as the expected state.
+The invented `exitCode = 0` is gone from every pane; it is `number | null` and nothing displays it.
+
+**Pre-existing, not this order:** `watch-session-v2.ts` cannot run under plain `node` (parameter
+properties in a class constructor, present at base); its documented launcher is `npx tsx`.
