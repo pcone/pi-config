@@ -179,6 +179,8 @@ Do not spawn a TUI in a test. No row may require a TTY, a socket, or a real chil
 | F13 | An empty log | `EMPTY`, unchanged |
 | F14 | A footer line carrying an ANSI prefix | parsed — the pattern is unanchored on the left |
 | F15 | A footer word no writer emits (`── Finished (1 turns, exit 0) ──`) | **not** parsed as a footer: `parseTerminalFooter` → null, `readTerminalFooter` → null (the word list is the acceptance, not a prefix match) |
+| F16 | `watch-session.ts` launched at a bogus id, stdout captured | **no alternate-buffer switch** (`ESC[?1049h` absent). WO-2026-081 could not pin this: its own order claimed the renderer choice was unobservable headlessly, and that was wrong — the escape sequence reaches a pipe, 0 on `TuiMainScreen`, present under a mutating `TuiAltScreen`. This is the row that pins it, since this order edits both viewers |
+| F17 | A `TUI` value import re-added beside `TuiMainScreen` (type-position only) | green — both loaders elide it, so no build or launch row sees it. The prohibition `rg` is the only guard; run it, do not assume a row covers it |
 
 **Representation-level checks**: the word set in the viewers must be empty (the grep in Prohibitions is the check); `SessionStatus`'s terminal member is `"TERMINAL"`, so no terminal word appears in a type; `SessionInfo`'s `word` is `string | null` — the literal union of words lives only in the lib.
 

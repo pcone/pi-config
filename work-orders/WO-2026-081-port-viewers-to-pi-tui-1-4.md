@@ -158,3 +158,38 @@ Second fact the fix depends on: `TuiMainScreen` is the behaviour-preserving choi
 status / owner_asks / invariant_exhaustiveness / commits / files_modified / tests (each row's red-turning revert) / deviations_from_spec / claims (each prohibition with its check's output) / structural_checks / assumptions_made / unexpected_changes / issues_encountered / test_coverage / adversarial_reviews / accepted_notes / notes_for_orchestrator — per the agent's system prompt.
 
 Send the same summary to `claude-8f90746f-e9aa-4dab-81ef-eb303ba0cb65` by peer message: every completion, gate, landing and stop goes there.
+
+---
+
+### Landing stamp (2026-11-05, merged `08c5b20`, port commit `3f3b2b0`)
+
+**Landed, verified at the merged tip by me, not from the report:**
+
+- P1 `npx --no-install tsx extensions/subagent-async/watch-session.ts subagent-nope` → its own
+  `No subagent session found for: …` plus the socket path, exit 1.
+- P3 `npx --no-install tsx extensions/subagent-async/test-layout.ts` → 27 passed, 0 failed, file
+  unedited.
+- P5 `bun build --target node --outdir <scratch> <both viewers>` → both entry points emitted, no
+  diagnostics.
+- **My mutation: the full base state** (value `TUI,` *and* `new TUI(terminal)`) reds both P1
+  (`does not provide an export named 'TUI'`) and P5 (`No matching export … for import "TUI"`).
+
+**Two defects in this order, both mine, both confirmed by re-running:**
+
+1. **Mutation evidence row 1 was a no-op.** I wrote "restore `TUI` as a value import → P1, P2, P3, P5
+   red". Re-adding `TUI,` while the construction stays `new TuiMainScreen(…)` bundles clean: both
+   esbuild/tsx and bun elide a named import used only in a type position. The discriminating revert is
+   the **full base state**, which the implementer ran instead of the literal instruction. Verified:
+   `0 errors` on the type-position-only mutant, `1` on the full revert.
+2. **"No headless row can observe the renderer choice" was false.** The alternate-buffer switch
+   `ESC[?1049h` reaches stdout through a pipe: 0 occurrences on the main-screen build, present under a
+   `TuiAltScreen` mutant. So the choice *is* pinnable — and is pinned in WO-2026-080, which touches
+   both viewers again, rather than by rewriting this frozen spec.
+
+**Accepted, with the reason it is not a gap here:** the `const tui: TUI` annotation was *added*, not
+kept — neither file had one at base (`const tui = new TUI(terminal)` inferred the concrete class). It
+restores the base's static type instead of narrowing it to `TuiMainScreen`, types erase, and the
+upstream README spells the construction this way. Both reviewers read it as inside the order.
+
+**Not coverage of the port, so it is not cited as any:** `test-viewer.cjs`'s 77 passed rows require
+`watch-session.cjs`, not the TS viewers; P6 and P7 are green regardless of them too.
