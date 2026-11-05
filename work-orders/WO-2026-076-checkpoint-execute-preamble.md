@@ -217,6 +217,12 @@ verb into the success path) is inert, because the verb exists only in the refusa
 the fold, C5's and C6's per-path mutations are no longer expressible — they red both tools at once,
 which is the extraction working as intended.
 
+**Post-hoc, from the seat's 2026-11-05 ruling on WO-2026-077's Q-B1:** an edit to an existing test row,
+or a contradiction between two of an order's own acceptance clauses, is now an owner question raised
+*before* landing. This order's conflict was examined under that rule and left standing — it added no
+surface and kept every row — so the correction here reads as a precedent the owner accepted rather
+than one he ruled on. The rule now lives in `skills/work-order-template/SKILL.md` (`4174e35`).
+
 **Accepted, not fixed:** the fork hoists its `ctx.sessionManager` reads above validation, so a throwing
 read on a stale ctx would surface where a rejection path previously read nothing. Both reviewers rated
 it LOW, no row covers that state, and making `gitCwd` a thunk is a mechanism change nobody asked for.
