@@ -40,6 +40,33 @@ requirement.
 **Before that ruling,** the order stayed blocked and the hole stays documented rather than patched: a
 `review-plan` spawn carrying a `workOrderPath` records a dispatch it does not own.
 
+### Owner question Q-074-b (raised 2026-11-05, by implement)
+
+**Ask:** does a `plan` review spend one of an implementer's three review rounds? The tracker records
+the spawn either way — that is what proves a plan review satisfies no requirement. The open half is
+the counter: `recordReviewerSpawn` increments `reviewRounds`, and at 3 `reviewCapReached` suppresses
+the missing-reviewer soft prompt.
+
+**Why a ruling is needed.** Two reviews of the same commit reached opposite conclusions from the
+same facts. `review-code` (round 1) read the order's prohibition — do not change
+`requires_parent_reviewers` semantics for implementers — as forbidding a new kind from reaching the
+cap that silences that requirement's nudge, and asked for the counter to count post-implementation
+spawns only. `review-tests` (round 1) read `decisions/subagents/006:153` ("increments
+`reviewRounds` on each fresh spawn", written when every recorded spawn was a post-implementation
+review) as settling it the other way, and asked for a row pinning that a plan spawn spends a round.
+Neither document was written with a third reviewer kind in mind, so neither answers it.
+
+**Landed pending the ruling (Q-074-b direction 1):** no round spent.
+`isReviewRequirementKind` guards the increment, so the counter's trigger set is byte-for-byte the
+pre-dispatch set, and a plan spawn is recorded in `spawns` without touching `reviewRounds`.
+`tests/work-record-ownership.test.ts` pins both halves (plan spawn → rounds 0; then a `review-code`
+spawn → rounds 1).
+
+**If the owner prefers direction 2 (a plan review is a round):** delete the predicate guard in
+`recordReviewerSpawn` (`extensions/subagent-async/index.ts`), flip the two `reviewRounds`
+assertions in that row, and amend the `decisions/subagents/004` note with the ruling. Nothing else
+depends on it.
+
 ### Metadata
 
 - **work_order_id**: WO-2026-074

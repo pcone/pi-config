@@ -32,7 +32,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import subagentFactory, { metaPath, resolveRunningSession } from "../extensions/subagent-async/index.ts";
+import subagentFactory, { metaPath, readPersistedSpawns, resolveRunningSession } from "../extensions/subagent-async/index.ts";
 import { _loadAgentsFromDir } from "../extensions/subagent-async/agents.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
@@ -261,6 +261,43 @@ describe("a review-plan spawn carrying workOrderPath", () => {
 			expect(dispatches(root)).toEqual([]);
 			expect(resolveRunningSession(plan.sid)?.workRecord).toBeUndefined();
 			expect(plan.text).not.toContain("work-order record");
+		},
+		60_000,
+	);
+});
+
+// ── Row 2c — the plan spawn reaches the tracker the review gate reads ──────
+describe("a review-plan spawn in the reviewer tracker", () => {
+	const PARENT = "session-parent-plan";
+	const trackerPath = `/tmp/pi-subagent-${PARENT}.reviewers.json`;
+	afterEach(() => {
+		fs.rmSync(trackerPath, { force: true });
+	});
+
+	it(
+		"records the spawn under the parent, and it consumes no review round",
+		async () => {
+			// A file left by an earlier run would be a second entry.
+			fs.rmSync(trackerPath, { force: true });
+			const root = makeRepo();
+			const plan = await spawnAgent(root, "review-plan", "Review the plan.",
+				{}, stubCtx(root, PARENT));
+
+			let state = readPersistedSpawns(PARENT);
+			expect(state.spawns.map((s) => ({ kind: s.reviewerKind, agent: s.childAgentName, sid: s.childSessionId })))
+				.toEqual([{ kind: "plan", agent: "review-plan", sid: plan.sid }]);
+			// The round counter feeds `reviewCapReached`, which suppresses the
+			// missing-reviewer nudge; a plan review must not spend one of the three
+			// rounds an implementer has (WO-2026-074 Q-074-a).
+			expect({ rounds: state.reviewRounds, capped: state.reviewCapReached })
+				.toEqual({ rounds: 0, capped: false });
+
+			// The contrast the counter exists for: a post-implementation review does
+			// spend a round.
+			await spawnAgent(root, "review-code", "Review the code.", {}, stubCtx(root, PARENT));
+			state = readPersistedSpawns(PARENT);
+			expect(state.spawns.map((s) => s.reviewerKind)).toEqual(["plan", "implementation"]);
+			expect(state.reviewRounds).toBe(1);
 		},
 		60_000,
 	);

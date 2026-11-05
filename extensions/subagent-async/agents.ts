@@ -37,17 +37,21 @@ export type AgentScope = "user" | "project" | "both";
 // and camelCase YAML keys for forward compatibility.
 export type ReviewerKind = "implementation" | "tests" | "plan";
 
-/** Kinds a parent may require in `requires_parent_reviewers` — the
- *  post-implementation kinds only (WO-2026-074 Q-074-a). */
-export type ReviewRequirementKind = Exclude<ReviewerKind, "plan">;
+/** Kinds a parent may require in `requires_parent_reviewers`, and the only kinds that
+ *  count as a review round. A positive list, so a new review phase stays out of the
+ *  parent gate and out of the round counter until an author puts it here: a plan review
+ *  is a phase, not a post-implementation gate (WO-2026-074 Q-074-a). */
+export const REVIEW_REQUIREMENT_KINDS = ["implementation", "tests"] as const;
+
+export type ReviewRequirementKind = (typeof REVIEW_REQUIREMENT_KINDS)[number];
 
 const RECOGNISED_REVIEWER_KINDS = new Set<string>(["implementation", "tests", "plan"]);
 
-/** The recognised kinds the parent gate accepts, derived from the one token list
- *  so a new review phase cannot silently become a requirement. */
-const REQUIREABLE_REVIEWER_KINDS = new Set<string>(
-	[...RECOGNISED_REVIEWER_KINDS].filter((kind) => kind !== "plan"),
-);
+/** The two places that must treat requirement kinds specially narrow through this:
+ *  the `requires_parent_reviewers` parser and the review-round counter. */
+export function isReviewRequirementKind(kind: string): kind is ReviewRequirementKind {
+	return (REVIEW_REQUIREMENT_KINDS as readonly string[]).includes(kind);
+}
 
 export interface AgentConfig {
 	name: string;
@@ -174,7 +178,7 @@ function loadAgentsFromDirUncached(dir: string, source: "user" | "project"): Age
 			.map((t: string) => t.trim())
 			.filter(Boolean);
 
-		// Parse `reviewer_kind: implementation | tests` (snake_case YAML key;
+		// Parse `reviewer_kind: implementation | tests | plan` (snake_case YAML key;
 		// also accept camelCase `reviewerKind` for forward compatibility).
 		// Single token, not a list. Empty / missing → undefined (no reviewerKind).
 		// Unknown values warn and fall through to undefined so the agent is not
@@ -213,8 +217,8 @@ function loadAgentsFromDirUncached(dir: string, source: "user" | "project"): Age
 			const notRequireable: string[] = [];
 			const unknown: string[] = [];
 			for (const token of tokens) {
-				if (REQUIREABLE_REVIEWER_KINDS.has(token)) {
-					resolved.push(token as ReviewRequirementKind);
+				if (isReviewRequirementKind(token)) {
+					resolved.push(token);
 				} else if (RECOGNISED_REVIEWER_KINDS.has(token)) {
 					notRequireable.push(token);
 				} else {
@@ -226,14 +230,14 @@ function loadAgentsFromDirUncached(dir: string, source: "user" | "project"): Age
 					`[subagent-async] Agent "${frontmatter.name}" lists ${notRequireable.join(", ")} ` +
 						`in requires_parent_reviewers, which accepts post-implementation kinds only ` +
 						`(plan is a review phase, not a gate). Requireable kinds: ` +
-						`${[...REQUIREABLE_REVIEWER_KINDS].join(", ")}. They will be ignored.`,
+						`${REVIEW_REQUIREMENT_KINDS.join(", ")}. They will be ignored.`,
 				);
 			}
 			if (unknown.length > 0) {
 				console.warn(
 					`[subagent-async] Agent "${frontmatter.name}" declares unknown reviewer kind(s) ` +
 						`in requires_parent_reviewers: ${unknown.join(", ")}. Recognised values: ` +
-						`${[...REQUIREABLE_REVIEWER_KINDS].join(", ")}. They will be ignored.`,
+						`${REVIEW_REQUIREMENT_KINDS.join(", ")}. They will be ignored.`,
 				);
 			}
 			reviewParentRequirements = resolved.length > 0 ? resolved : undefined;

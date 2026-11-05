@@ -117,9 +117,9 @@ const PI_ASYNC_DEBUG = process.env.PI_ASYNC_DEBUG === "1";
 // The orchestrator's `subagent_review_status` tool reads the persisted form of
 // this map to mechanically verify that an implementer's declared
 // `reviewParentRequirements` are met before forwarding `complete`. A `plan`
-// spawn is recorded like any other kind but never satisfies a requirement: the
-// soft-prompt check compares kind tokens exactly, and `plan` is not a
-// requireable kind (WO-2026-074 Q-074-a).
+// spawn is recorded like any other kind but never satisfies a requirement and
+// never counts as a review round: the soft-prompt check compares kind tokens
+// exactly, and `plan` is not a requirement kind (WO-2026-074 Q-074-a).
 //
 // Two views of the same data:
 //   - `parentReviewerSpawns`: in-memory `Map<parentSessionId, SpawnEntry[]>`,
@@ -135,7 +135,7 @@ const PI_ASYNC_DEBUG = process.env.PI_ASYNC_DEBUG === "1";
 // in nested-orchestration scenarios; normal pi sessions always have a
 // session id.
 
-import type { ReviewRequirementKind, ReviewerKind } from "./agents.ts";
+import { isReviewRequirementKind, type ReviewRequirementKind, type ReviewerKind } from "./agents.ts";
 
 interface SpawnEntry {
 	reviewerKind: ReviewerKind;
@@ -173,7 +173,11 @@ function reviewStatusPath(parentKey: string): string {
 function recordReviewerSpawn(parentKey: string, entry: SpawnEntry): void {
 	const state = parentReviewerSpawns.get(parentKey) ?? { spawns: [], reviewRounds: 0, reviewCapReached: false };
 	state.spawns.push(entry);
-	state.reviewRounds++;
+	// A round is a post-implementation review. A `plan` spawn is recorded (the
+	// orchestrator reads `spawns`) but consumes none of the 3 rounds: the cap
+	// suppresses the missing-reviewer nudge, which a plan review must not weaken
+	// (WO-2026-074 Q-074-a; decisions/subagents/006).
+	if (isReviewRequirementKind(entry.reviewerKind)) state.reviewRounds++;
 	if (state.reviewRounds >= REVIEW_ROUND_CAP) {
 		state.reviewCapReached = true;
 	}

@@ -256,6 +256,13 @@ not a post-implementation gate, so it neither satisfies nor may be demanded by
 one. Owner ruling Q-074-a (2026-11-05) chose this over a second `owns_work_order`
 frontmatter field, which was rejected outright.
 
+A review round is a post-implementation review spawn, the unit
+`decisions/subagents/006` caps. A `plan` spawn is recorded in the tracker
+(`spawns`) — which is what shows it satisfies no requirement — but it spends
+none of the three rounds behind `reviewCapReached`: that cap suppresses the
+missing-reviewer nudge, and a new review phase must not weaken the nudge that
+surfaces `requires_parent_reviewers` (WO-2026-074).
+
 ### Orchestrator parent-id handling
 
 The `parent_session_id` passed to `subagent_review_status` is the
