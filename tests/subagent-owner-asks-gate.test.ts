@@ -395,6 +395,24 @@ describe("under the reviewer flow (requires_parent_reviewers)", () => {
 		expect(await waitFor(() => child.delivered.length > 0)).toBe(true);
 		expect(child.delivered.join("\n")).toContain("emitir-transport.md#E2");
 	}, 40_000);
+
+	it("a plan-review spawn does not satisfy an implementation requirement", async () => {
+		// WO-2026-074 Q-074-a: a `reviewer_kind: plan` spawn records itself in the
+		// tracker like any other reviewer kind (`index.ts:4006`), and the gate compares
+		// tokens exactly (`index.ts:2374`) — so a plan entry leaves both post-
+		// implementation requirements missing. Written before the spawn because the
+		// stand-in's pi session id (hence the tracker key) is fixed.
+		writeFileSync(TRACKER, reviewerTracker(["plan"]));
+		const child = await spawnWithReport(
+			`**status:** complete\n\n**owner_asks:** none\n${CONFORMING_TAIL}`,
+			{ agent: "gated-implement", review_policy: "required" },
+		);
+
+		expect(await waitFor(() => stdinEcho(child).includes("[review-gate]"))).toBe(true);
+		expect(stdinEcho(child)).toContain("Missing: implementation, tests");
+		expect(child.delivered).toEqual([]);
+		expect(child.rs.isDone).toBe(false);
+	}, 40_000);
 });
 
 // ── Gate scope ─────────────────────────────────────────────────────────────

@@ -9,6 +9,10 @@
  * (`reviewer_kind` in its frontmatter), not of the spawn call, so the record
  * gate is `agent.reviewerKind === undefined`.
  *
+ * WO-2026-074: that gate covers every reviewer only if every reviewer declares a
+ * kind, so `review-plan` declares `plan` and the census below selects reviewers by
+ * what their name and description say, not by the declaration it is checking.
+ *
  * Every row drives the registered `subagent` tool against a temp repo holding a
  * stub `scripts/wo_record.py` that logs each append, so the assertions read the
  * argv a real record would receive. The child binary is a stand-in that holds
@@ -54,11 +58,17 @@ const AGENTS_DIR = path.resolve(import.meta.dir, "../agents");
 const tmpDirs: string[] = [];
 let fixtureDir = "";
 let argv1Before: string | undefined;
+let agentDirBefore: string | undefined;
 let restoreSubagentEnv: () => void = () => {};
 const children: { sid: string; ctx: any; tools: Map<string, any> }[] = [];
 
 beforeAll(() => {
 	restoreSubagentEnv = scrubSubagentEnv();
+	// The spawns resolve agents through `getAgentDir()/agents`; point that at this
+	// repo so the census (`AGENTS_DIR`) and the spawn rows describe one directory
+	// instead of the machine's user agent dir, which may be another checkout.
+	agentDirBefore = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = path.resolve(import.meta.dir, "..");
 	// `getPiInvocation` re-invokes `process.argv[1]` (pi's entry when the
 	// extension runs inside pi; this test file under `bun test`). Point it at a
 	// stand-in that never runs a turn.
@@ -71,6 +81,8 @@ beforeAll(() => {
 
 afterAll(() => {
 	if (argv1Before !== undefined) process.argv[1] = argv1Before;
+	if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = agentDirBefore;
 	restoreSubagentEnv();
 	fs.rmSync(fixtureDir, { recursive: true, force: true });
 	for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
@@ -195,38 +207,62 @@ describe("a reviewer spawn carrying workOrderPath", () => {
 	);
 });
 
-// ── Row 2 — every declared reviewer, not the two that exist today ──────────
+// ── Row 2 — every reviewer in agents/, declared kind or not ────────────────
 describe("every reviewer agent in agents/", () => {
-	/** Agents whose frontmatter declares `reviewer_kind`, parsed by the extension itself.
-	 *  The field means "post-implementation reviewer" (`agents.ts:12-17`), so a reviewer that
-	 *  declares none — `review-plan` — is outside both this census and the record gate, and
-	 *  still writes a dispatch when a spawn passes it a `workOrderPath`. Covering it needs a
-	 *  `ReviewerKind` for it (`agents.ts:32`), which is a separate change. */
-	function declaredReviewers() {
-		return _loadAgentsFromDir(AGENTS_DIR, "project").filter((a) => a.reviewerKind !== undefined);
+	/** Agents the directory says are reviewers, recognised by name or description. The
+	 *  filter deliberately does not read `reviewerKind`: that is the value under test, and
+	 *  filtering by it is how a reviewer that declares nothing escapes the census. The
+	 *  production record gate never enumerates — it reads `reviewerKind !== undefined`
+	 *  (`index.ts:3963`) — so this recogniser is a test-side census guard only. */
+	function reviewerAgents() {
+		return _loadAgentsFromDir(AGENTS_DIR, "project").filter(
+			(a) => a.name.startsWith("review-") || /\breviewers?\b/i.test(a.description));
 	}
 
-	it("the iteration is not vacuous: both reviewer kinds are declared in agents/", () => {
+	it("every such agent declares a reviewer_kind", () => {
+		const undeclared = reviewerAgents().filter((a) => a.reviewerKind === undefined).map((a) => a.name);
+		expect(undeclared).toEqual([]);
+	});
+
+	it("the iteration is not vacuous: all three reviewer kinds are declared in agents/", () => {
 		// The census is relative to the type, not to a count, and it names no agent: a
-		// deleted `reviewer_kind:` field leaves one kind and reddens this row.
-		const kinds = declaredReviewers().map((a) => a.reviewerKind).sort();
-		expect(kinds).toEqual(["implementation", "tests"]);
+		// deleted `reviewer_kind:` field leaves a kind unrepresented and reddens this row.
+		const kinds = reviewerAgents().map((a) => a.reviewerKind).sort();
+		expect(kinds).toEqual(["implementation", "plan", "tests"]);
 	});
 
 	it(
 		"writes no dispatch, whichever reviewer it is",
 		async () => {
-			const reviewers = declaredReviewers();
-			expect(reviewers.length).toBeGreaterThanOrEqual(2);
+			const reviewers = reviewerAgents();
+			expect(reviewers.length).toBeGreaterThanOrEqual(3);
 			for (const agent of reviewers) {
 				const root = makeRepo();
 				const spawned = await spawnAgent(root, agent.name,
-					`Review the implementation. The work order is ${WO_FILE}.`, { workOrderPath: WO_FILE });
+					`Review the work. The work order is ${WO_FILE}.`, { workOrderPath: WO_FILE });
 				expect(spawned.isError).toBeFalsy();
-				expect(dispatches(root)).toEqual([]);
+				expect({ reviewer: agent.name, dispatches: dispatches(root) })
+					.toEqual({ reviewer: agent.name, dispatches: [] });
 			}
 		},
 		120_000,
+	);
+});
+
+// ── Row 2b — the reviewer that declared nothing before WO-2026-074 ─────────
+describe("a review-plan spawn carrying workOrderPath", () => {
+	it(
+		"writes no dispatch: a plan review never owns the order it reads",
+		async () => {
+			const root = makeRepo();
+			const plan = await spawnAgent(root, "review-plan",
+				`Review the plan for ${WO_FILE}.`, { workOrderPath: WO_FILE });
+			expect(plan.isError).toBeFalsy();
+			expect(dispatches(root)).toEqual([]);
+			expect(resolveRunningSession(plan.sid)?.workRecord).toBeUndefined();
+			expect(plan.text).not.toContain("work-order record");
+		},
+		60_000,
 	);
 });
 
