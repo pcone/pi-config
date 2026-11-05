@@ -1,8 +1,7 @@
 # WO-2026-074 — every agent that reviews declares a kind
 
-**Status: DISPATCH-BLOCKED (2026-11-05) on owner question Q-074-a below.** The mechanism is
-settled; whether it may add a frontmatter value is not, and `agents/*.md` frontmatter is agent
-surface rather than an integrator's call.
+**Status: DISPATCHED 2026-11-05.** Q-074-a answered: **option A** (owner, 2026-11-05, via the
+planning seat — "Go"; a second frontmatter field rejected).
 
 ### Owner question Q-074-a (raised 2026-11-05)
 
@@ -31,7 +30,14 @@ hand rather than by the type).
 plan review would then satisfy `requires_parent_reviewers: [implementation]`, turning "a
 post-implementation code review happened" into "something reviewed something".
 
-**If no ruling,** the order stays blocked and the hole stays documented rather than patched: a
+**Answered (owner, 2026-11-05, via the planning seat): "Go".** Option A, and option B is rejected
+outright — no second frontmatter field. The `plan` token is added, `agents/review-plan.md` declares
+it, and the record gate covers every reviewer through `reviewerKind !== undefined` alone. The
+recommendation attached to A stands as part of the ruling's shape: no `reviewParentRequirements`
+entry may name `plan`, and a row proves a `plan` spawn does not satisfy an `implementation`
+requirement.
+
+**Before that ruling,** the order stayed blocked and the hole stays documented rather than patched: a
 `review-plan` spawn carrying a `workOrderPath` records a dispatch it does not own.
 
 ### Metadata
