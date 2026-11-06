@@ -272,3 +272,72 @@ this order did not name.
 - **`REFACTOR FIRST`** — the recovery function needs the scan split out before it can take the change, or
   `resolveSubagentMeta`'s meta scan turns out to be entangled with this one (it should not be: it is a
   separate function and a separate question).
+
+---
+
+### Landing stamp (2026-11-06, merged `85f100d`, commits `4b32c9e` rows + `ff533bf` fold + `633cec0`/`df64add` review notes)
+
+**Landed.** `recoverOrphanedSubagents` takes the socket list, the registry object and the turn count from
+`discoverSessions({ dir })`. Three hand-written reads and a second turn regex are gone
+(`index.ts` 4758 → 4752, the function 168 → 161). The 027 predicate did not move: `decideRecoveryAdoption`
+stays in `subagent-state.ts:162` and is still called from `index.ts` with `selfPid` / `selfSessionId` /
+`probe`.
+
+**Gated by me at the merged tip, with my own `rg`s:** `endsWith("\.sock")` in `index.ts` → **0**;
+`readdirSync` in `index.ts` → **1** (the out-of-scope meta scan, now `:429`); the turn parser → **0**, the
+header print surviving at `:2205`; `extensions/lib/` byte-identical; the `index.ts` diff is one import line
+and two hunks inside the function, no field value touched; the four pinning files' 79 rows green
+(30 / 23 / 15 / 11), hermeticity `-t 'explicit env'` green, no fixture dirs left (`/tmp/pi-recovery-*` →
+none; note the W-rows' `mkdtemp` prefix is `pi-recovery-`, not the `pi-subagent-test-wo083-` this order's
+cleanup line names — see defect 2).
+
+**My mutations, each alone with `index.ts` restored from a sha1-verified copy:**
+
+| mine | mutation | red |
+|---|---|---|
+| M1 | recovery reuses the viewer's window: `… .filter(s => s.running && Date.now() - s.mtimeMs <= 30*60*1000)` | W1 |
+| M2 | the `running` filter dropped, so the log-only arm reaches `connect` | W4 |
+| M3 | `if (!meta) { fs.unlinkSync(sockPath); continue; }` | W2 |
+| M4 | the predicate called with `selfSessionId: undefined` | three existing 027 rows (dead-owner adopt, its owner_asks delivery, the gone-listener drop) + W1 + W3 |
+
+M4 is the one that mattered: it proves 027's matrix still bites *through* the fold, i.e. the scan did not
+quietly stop consulting the predicate while staying green on its own new rows.
+
+**Full suite, one `heavy` slot: 1264 tests across 66 files.** Red set identical to WO-2026-082's tip
+**except one row** — `idle compaction (live session) > compacts itself after the idle delay and leaves a
+marker` (75.8 s, in-suite). It is a timing row: run alone it passes, 2/2, at 102 s. Nothing in this diff
+can reach it (`git diff 1755470..HEAD` touches `index.ts`'s recovery function and one test file), so it is
+a load flake recorded, not a regression. The standing set is otherwise unchanged row-for-row.
+
+**Three defects in this order, all mine:**
+
+1. **Prohibition 3 asserted a count I never took.** It said `decideRecoveryAdoption` has "one call site in
+   `index.ts`". Base has **two** (`:3383` the scan, `:3562` the reap) plus one lib-internal
+   (`subagent-state.ts:552`), and the tip keeps all three at `:3380` / `:3556` / `:552`. I read the
+   definition with a scoped `rg` and then wrote a file-wide count from memory. The prohibition's *substance*
+   holds (one call per candidate, all three deps); its number was fiction.
+2. **The cleanup criterion proves nothing.** `ls -d /tmp/pi-subagent-test-wo083-*` is vacuous: this file's
+   fixtures are `mkdtemp(path.join(tmpdir(), "pi-recovery-"))`. I copied the line from WO-2026-082's order,
+   where the prefix did match. The implementer caught it and checked the right glob.
+3. **Two citations moved** under the new import line (`:428`→`:429`, `:2204`→`:2205`): process-only, re-derived.
+
+**Three behaviour deltas the order could not pin, disclosed rather than hidden.** A row that pins any of
+these fails at base, which the order forbids: (a) a socket file named `pi-subagent-.sock` was adoptable as
+sid `""` at base and the lib's `if (!id) continue` skips it; (b) a scan directory whose *path* contains
+`.sock` never matched a meta at base, because base's `sockPath.replace(".sock", ".log")` rewrote the
+directory segment — the lib's anchored `replace(/\.sock$/, …)` fixes that, a favourable change nobody asked
+for; (c) iteration moves from readdir order to `mtimeMs` descending, so several adoptable sockets connect in
+mtime order. No adopt/skip answer changes.
+
+**Register: closed, with the residue split out honestly.** The row is now "session discovery in `/tmp`" and
+closed — the sock scan has one implementation. The implementer added a **separate row** for
+`resolveSubagentMeta`'s meta glob (`index.ts:429`, hardcoded `/tmp` where `listSubagentMetas(dir)` already
+does it), carried by itself. That is the right shape: two different folds, two different carriers, neither
+pretending the other finished the area.
+
+**Cost, recorded:** every log and every meta in the directory is read on each `session_start`, where base
+read a log only for a socket it had already decided to adopt. Once per start, over `/tmp`; the viewers pay
+the same reads on a 5 s tick.
+
+**Budget:** implementer 73 turns of 140 (no stop-report), plus one dispatch killed at turn 8 by a provider
+429 storm with zero files touched; my gate ~40.
