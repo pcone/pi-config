@@ -20,7 +20,25 @@ refactor lands.
 | terminal-outcome vocabulary in the watch views | — (closed by WO-2026-080, `a8ff8be`) | **closed 2026-11-05** — 0 terminal word literals in the three viewers; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in `extensions/lib/subagent-state.ts`; the two live viewers had also been dead since pi-tui 1.4 (WO-2026-081) | — |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
 | session discovery in `/tmp` | — (observation only; no landing was flagged for it) | **closed 2026-11-06 by WO-2026-083** — the three viewers folded in WO-2026-082 (`7eeaeb6`), then the last production copy: `rg -n 'endsWith("\.sock")' extensions/subagent-async/index.ts` → 0, `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1 (the out-of-scope meta scan, `:429`), `rg -n '── Turn' extensions/subagent-async/index.ts` → 1 (`:2205`, a header print). `recoverOrphanedSubagents` now takes its sock list, meta and turn count from `discoverSessions()`. The adoption predicate did not move: `decideRecoveryAdoption` stays in `subagent-state.ts:162`, called from `index.ts` with `selfPid` / `selfSessionId` / `probe` (WO-2026-083's 027 section). One copy is named and left uncarried: `resolveSubagentMeta` (`index.ts:426-456`) globs `pi-subagent-*.meta.json` on a hardcoded `/tmp` where `listSubagentMetas(dir)` already does it — its partial-id matching and ambiguity error make it its own fold, not this one's | — |
-| `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | open — carried; no order scheduled, so this row is the carrier. `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 1 (`:430`): a second `/tmp` listing where `listSubagentMetas(dir)` (`subagent-state.ts:187`) already returns the same entries | fold `resolveSubagentMeta` onto `listSubagentMetas(dir)`; its partial-id matching and ambiguity error make it its own order |
+| `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
+
+## 2026-11-06 — chunk: review triage, the meta lookup and the memoised key
+
+**growth.** `extensions/subagent-async/index.ts` 4752 → 4688 (−64): `normalizeIdQuery`,
+`idMatchesQuery` and `resolveSubagentMeta` moved to `lib/subagent-state.ts` 575 → 631 (+56), and
+`index.ts` re-exports them. `extensions/subagent-async/test-resume.cjs` 840 → 810 (−30): its copy
+of the resolver is gone, a `require` replaced it. `footer-session-id.ts` 1107 → 1113 (+6). New
+`tests/footer-quota-key.test.ts` (3 rows).
+
+**unification.** `rg -n 'readdirSync\("/tmp"\)' extensions/subagent-async/index.ts` → 0. The
+resolver's own listing and its per-id `readMetaJson` read are both gone; one registry scan serves
+the recovery scan, the viewers and the id lookup. `warnOnce` is exported rather than copied, so a
+second warn site shares the fetch path's once-per-provider memory.
+
+**not taken here.** The review's other MEDIUMs are queued as orders (discovery's eager log/meta
+reads, the viewers' duplicated text helpers, the dead `renderQuotaSegment`/`renderGoUsageSegment`
+entry points) and one is an owner question (the marker-with-no-pending checkpoint arm against
+decision 005).
 
 ## 2026-11-06 — chunk: WO-2026-083 the recovery scan is discovery's last copy
 
