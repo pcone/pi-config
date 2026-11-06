@@ -18,10 +18,48 @@ refactor lands.
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
 | terminal-outcome vocabulary in the watch views | — (closed by WO-2026-080, `a8ff8be`) | **closed 2026-11-05** — 0 terminal word literals in the three viewers; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in `extensions/lib/subagent-state.ts`; the two live viewers had also been dead since pi-tui 1.4 (WO-2026-081) | — |
+| the viewers' text helpers (`plainLen`, `stripAnsi`, `padRight`, `timeAgo`, `truncate`) | — (closed by WO-2026-088) | **closed 2026-11-07** — one module, `extensions/lib/view-text.ts`, 5 exports: `rg -n 'function (plainLen|padRight|timeAgo|stripAnsi|truncate)' extensions/subagent-async/watch-session.cjs extensions/subagent-async/watch-session-v2.ts` → 0; `rg -n 'plainLine' extensions/` → 0 (the `.cjs`'s second name for `stripAnsi`). `watch-session.cjs` still *exports* `plainLen`, `padRight`, `timeAgo`, `truncate` — as re-exports of the module, because `test-viewer.cjs:51-53` imports them from the viewer, which is the harness's contract | — |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
 | session discovery in `/tmp` | — (observation only; no landing was flagged for it) | **closed 2026-11-06 by WO-2026-083** — the three viewers folded in WO-2026-082 (`7eeaeb6`), then the last production copy: `rg -n 'endsWith("\.sock")' extensions/subagent-async/index.ts` → 0, `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1 (the out-of-scope meta scan, `:429`), `rg -n '── Turn' extensions/subagent-async/index.ts` → 1 (`:2205`, a header print). `recoverOrphanedSubagents` now takes its sock list, meta and turn count from `discoverSessions()`. The adoption predicate did not move: `decideRecoveryAdoption` stays in `subagent-state.ts:162`, called from `index.ts` with `selfPid` / `selfSessionId` / `probe` (WO-2026-083's 027 section). One copy is named and left uncarried: `resolveSubagentMeta` (`index.ts:426-456`) globs `pi-subagent-*.meta.json` on a hardcoded `/tmp` where `listSubagentMetas(dir)` already does it — its partial-id matching and ambiguity error make it its own fold, not this one's | — |
 | `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
 | pre-refactor quota entry points (`renderQuotaSegment`, `renderGoUsageSegment`) | — (observation; no landing was flagged for it) | **open** — test-only and undeleted. No production caller: `rg -n 'renderQuotaSegment\|renderGoUsageSegment' --glob '!*.md'` → two definitions in `extensions/lib/quota.ts`, one comment and one re-export block in `extensions/footer-session-id.ts`, four test files; the footer renders via `quotaDescriptorFor(provider)?.render(...)`. **carrier: WO-2026-089** — blocked: the 35 goldens in `tests/footer-quota-characterisation.test.ts` (60 entry-point call sites across it, `footer-session-id-multiplier.test.ts` and `footer-opencode-usage.test.ts`) drive `renderQuotaSegment` with an already-normalised `QuotaData` and `renderGoUsageSegment` with a `GoUsage`, while the production door builds the snapshot through `fetchQuotaSnapshot` → `descriptor.parse` → `snapshotFor`; repointing them costs either four test-only exports (`tokenWindowParts`, `goParts`, `snapshotFor`, `goDescriptor`) or a raw-payload re-authoring of every fixture with all goldens re-proved byte-for-byte | delete both, repoint the goldens at the descriptor path (WO-2026-089) |
+
+## 2026-11-07 — chunk: WO-2026-088 the viewers' text helpers are one module
+
+**growth.** `extensions/subagent-async/watch-session.cjs` 606 → 574 (−32; `--numstat` 11 43),
+`extensions/subagent-async/watch-session-v2.ts` 1686 → 1642 (−44; `1 45`), new
+`extensions/lib/view-text.ts` 98. Each viewer lost five private helpers and gained one `require` / one
+`import`; the lib's 102 lines are the five bodies plus the doc block that carries the ruling. No branch
+was added to a function that already had one: `plainLen`'s scan and `truncate`'s walk moved verbatim, and
+`padRight` lost the `.cjs` copy's redundant `Math.max(0, …)` clamp (the early return already covers it).
+New `tests/view-text.test.ts` 137 (test-only; commit 1 pinned the `.cjs`'s answers, commit 2 the shared
+module's).
+
+**unification.** One idea, one home, counted at the landed tip: `rg -n 'function
+(plainLen|padRight|timeAgo|stripAnsi|truncate)' extensions/subagent-async/watch-session.cjs
+extensions/subagent-async/watch-session-v2.ts` → 0; `rg -c 'export function
+(plainLen|padRight|timeAgo|stripAnsi|truncate)' extensions/lib/view-text.ts` → 5; `rg -n
+'plainLine' extensions/` → 0, so `stripAnsi` is the only name for stripping. The module imports nothing
+(`rg -n '^import|require\(' extensions/lib/view-text.ts` → 0), which is what lets the `.cjs` viewer
+require it under plain `node`.
+
+**the ruling's table, corrected by measurement — an open owner question.** WO-2026-088 measured the two
+`plainLen` forms as differing "only on an escape sequence that never terminates". Exhaustively over the
+597,871 strings of length ≤ 6 from `ESC [ m 1 ; a ? < space`, 28,002 differ, and **every** divergent
+string contains an `ESC [` the regex could not strip — 0 diverge where every `ESC [` starts a matchable
+`ESC [ [0-9;]* <letter>`. The divergent class is therefore "what the regex fails to strip", one term
+wider than the table: a body byte outside `[0-9;]` counts too (`ESC[?25l` 6 → 0, `ESC[<64;3;5M` 10 → 0),
+and 42 of the 28,002 run the other way, the scan counting a stray `ESC` inside a sequence as a column
+(`ESC[ESC[0m` 4 where the regex gave 2). This is a behaviour change the ruling's "nothing else changes"
+did not name, so the order's own `PREMISE FALSIFIED` clause fires: the mechanism landed as ruled, the
+module's doc block and `tests/view-text.test.ts` state and pin the wider class, and acceptance waits on
+the owner's word. The `.cjs` cuts raw log lines (`watch-session.cjs:402`), so a line carrying a sequence
+neither viewer composed measures and cuts differently than it did; SGR-only content, which both viewers
+compose, is unaffected — the 100-row harness and 27 layout rows pass unchanged.
+
+**watch.** `truncate` is the one helper only one viewer calls: v2 cuts with pi-tui's `truncateToWidth`, so
+a v2 line that needs the ellipsis contract would add a second cutter unless it calls the lib's. Neither
+viewer is named in this chunk's duplication finding: the fold removed a copy from each.
 
 ## 2026-11-06 — chunk: WO-2026-086 discovery reads only what its caller uses
 

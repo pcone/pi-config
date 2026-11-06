@@ -21,6 +21,13 @@ const {
   discoverSessions: discoverSessionFacts,
   subagentPaths,
 } = require("../lib/subagent-discovery.ts");
+const {
+  plainLen,
+  padRight,
+  stripAnsi,
+  timeAgo,
+  truncate,
+} = require("../lib/view-text.ts");
 
 // Silently ignore stale-socket errors (subagent killed, socket file remains)
 process.on("uncaughtException", (err) => {
@@ -35,6 +42,9 @@ const arg = process.argv[2];
 const autoRecent = arg === "-r" || arg === "--recent";
 
 // ── Terminal helpers ────────────────────────────────────────────────────────
+// Measured text — `plainLen`, `stripAnsi`, `padRight`, `timeAgo`, `truncate` —
+// is shared with v2: `extensions/lib/view-text.ts`. The escapes below are this
+// viewer's own.
 
 const ESC = "\x1b";
 const HIDE_CURSOR = ESC + "[?25l";
@@ -48,48 +58,6 @@ const EXIT_ALT = ESC + "[?1049l";
 const INVERSE = (s) => ESC + "[7m" + s + ESC + "[27m";
 const BOLD = (s) => ESC + "[1m" + s + ESC + "[22m";
 const DIM = (s) => ESC + "[2m" + s + ESC + "[22m";
-
-function plainLen(s) {
-  return s.replace(/\[[0-9;]*[A-Za-z]/g, "").length;
-}
-
-function plainLine(s) {
-  return s.replace(/\[[0-9;]*[A-Za-z]/g, "");
-}
-
-function truncate(str, width) {
-  const visible = plainLen(str);
-  if (visible <= width) return str;
-  let out = "";
-  let v = 0;
-  let inAnsi = false;
-  for (let i = 0; i < str.length && v < width - 1; i++) {
-    if (str[i] === "\u001b" && str[i + 1] === "[") {
-      inAnsi = true;
-      out += str[i];
-    } else if (inAnsi) {
-      out += str[i];
-      if (/[A-Za-z]/.test(str[i])) inAnsi = false;
-    } else {
-      out += str[i];
-      v++;
-    }
-  }
-  return out + "\u2026\u001b[0m";
-}
-
-function padRight(s, width) {
-  const len = plainLen(s);
-  return s + " ".repeat(Math.max(0, width - len));
-}
-
-function timeAgo(ms) {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  return `${Math.floor(m / 60)}h ago`;
-}
 
 // ── Discover sessions ───────────────────────────────────────────────────────
 
@@ -269,7 +237,7 @@ function runMultiViewer(initialIds, initialSplitCount) {
     p.rl.on("line", (line) => {
       p.lines.push(line);
       // Match completion footer — the log line may carry an ANSI prefix
-      const footer = parseTerminalFooter(plainLine(line));
+      const footer = parseTerminalFooter(stripAnsi(line));
       if (footer) {
         p.done = true;
         p.exitCode = footer.exitCode;
