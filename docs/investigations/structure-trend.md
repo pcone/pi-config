@@ -19,6 +19,7 @@ refactor lands.
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
 | terminal-outcome vocabulary in the watch views | — (closed by WO-2026-080, `a8ff8be`) | **closed 2026-11-05** — 0 terminal word literals in the three viewers; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in `extensions/lib/subagent-state.ts`; the two live viewers had also been dead since pi-tui 1.4 (WO-2026-081) | — |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
+| session discovery in the watch viewers | — (observation only; no landing was flagged for it) | open — **two production copies**, no order and **no carrier**: the owner schedules. `rg -c 'readdirSync' ` → 2 in each of `watch-session-v2.ts` / `watch-session.cjs`, and each declares its own `RECENT_WINDOW_MS = 30 * 60 * 1000` (`:69`, `:92`) | one `discoverSessions` over the `/tmp` socket+log glob, its mtime window and the `pi-subagent-<id>.meta.json` load, shared by both viewers; `test-viewer.cjs` already exercises the `.cjs` copy's real function rather than a third one |
 
 ## 2026-11-05 — chunk: WO-2026-081 + WO-2026-080 the views read the vocabulary, and the viewers load again
 
@@ -37,8 +38,10 @@ repo that names a terminal word or matches a footer line.
 **observation for the next refactor needed here, not this chunk's:** only the vocabulary was folded.
 *Session discovery* — the `/tmp` socket scan, the `pi-subagent-*.log` glob, its own copy of
 `RECENT_WINDOW_MS = 30 * 60 * 1000` and the metadata load — is still two production copies
-(`watch-session-v2.ts`, `watch-session.cjs`; `rg -c 'readdirSync' ` → 2 each) plus the test harness's
-own scan over a temp dir in `test-viewer.cjs`. That cluster has no register row.
+(`watch-session-v2.ts`, `watch-session.cjs`; `rg -c 'readdirSync' ` → 2 each). `test-viewer.cjs` is not a
+third: it imports the `.cjs` viewer's real `discoverSessions` and writes fixtures into `/tmp` for it, and
+its only `readdirSync` hit is a comment. The register row states the pair as a fact; scheduling is the
+owner's.
 
 ## 2026-11-05 — chunk: WO-2026-078 abnormal terminal turns are labelled
 
