@@ -518,8 +518,8 @@ function minimaxParts(json: unknown, { now, warn }: { now: number; warn: QuotaWa
 		warn("response has no model_remains");
 		return undefined;
 	}
-	const bucket = buckets.find((b) => b.model_name === "general") ?? buckets[0];
-	if (!bucket) return undefined;
+	// `buckets` is non-empty here; the arm above returned otherwise.
+	const bucket = (buckets.find((b) => b.model_name === "general") ?? buckets[0])!;
 	const fivePct = bucket.current_interval_remaining_percent;
 	const weeklyPct = bucket.current_weekly_remaining_percent;
 	if (typeof fivePct !== "number" || typeof weeklyPct !== "number") {
@@ -652,11 +652,20 @@ export async function fetchQuotaSnapshot(
 }
 
 // ---------------------------------------------------------------------------
-// Pre-refactor entry points
+// Test seams
 //
-// Callers holding an already-normalised payload keep these signatures. Both
-// delegate to `renderQuotaSnapshot`, so their bytes are the shared renderer's
-// by construction; the characterisation suite pins them.
+// No production caller. The footer renders through
+// `quotaDescriptorFor(provider)?.render(...)` below, fed by
+// `fetchQuotaSnapshot` → `descriptor.parse` → `snapshotFor`; nothing outside
+// the tests holds an already-normalised payload. The characterisation goldens
+// in `tests/footer-quota-characterisation.test.ts` are the only users, and they
+// exist to pin bytes across a refactor, not to serve a caller.
+//
+// Deleting both is open, with carrier WO-2026-089
+// (`docs/investigations/structure-trend.md`): the 35 goldens must be repointed
+// at the descriptor path first, which costs either four test-only exports
+// (`tokenWindowParts`, `goParts`, `snapshotFor`, `goDescriptor`) or a
+// re-authored raw-payload fixture per row.
 // ---------------------------------------------------------------------------
 
 /**
