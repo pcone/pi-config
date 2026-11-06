@@ -27,8 +27,8 @@ refactor lands.
 **growth.** `extensions/subagent-async/index.ts` 4758 → 4752 (−6); `recoverOrphanedSubagents` 168 → 161
 lines (−7), replacing a readdir block, a meta `JSON.parse` and a log read + own turn regex with one
 `discoverSessions({ dir })` call and three field reads. No branch added, none removed from the
-adoption path. `tests/subagent-recovery-ownership.test.ts` 594 → 765 (+171, test-only, commit 1,
-additions only).
+adoption path. `tests/subagent-recovery-ownership.test.ts` 594 → 766 (+172, test-only — commit 1's
+rows plus the review round's one-line comment fix; additions only, `--numstat` → `172 0`).
 
 **unification.** One idea, one home, counted at the landed tip: `rg -n 'endsWith("\.sock")'
 extensions/subagent-async/index.ts` → 0; `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1
