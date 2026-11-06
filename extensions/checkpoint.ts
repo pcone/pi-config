@@ -779,15 +779,14 @@ export default function (pi: ExtensionAPI) {
 		if (customInstructions?.includes(CHECKPOINT_MARKER)) {
 			const pending = pendingCheckpoint;
 			if (!pending) {
-				// A marker with no pending state is the post-reload case: the authored
-				// text survives on the instructions, the machine facts do not.
-				return {
-					compaction: {
-						summary: customInstructions.replace(CHECKPOINT_MARKER, "").trim(),
-						firstKeptEntryId: preparation.firstKeptEntryId,
-						tokensBefore: preparation.tokensBefore,
-					},
-				};
+				// Decision 005 makes the stored summary the authored text followed by
+				// the machine block, and only the pending checkpoint carries that
+				// block's facts. Storing the text alone would be half a summary, so
+				// this state gets no fallback (owner 2026-11-06: panic naming it).
+				throw new Error(
+					"checkpoint: the checkpoint marker reached compaction with no pending checkpoint — " +
+						"the authored text cannot be stored without its machine block (decision 005)",
+				);
 			}
 
 			// Scope the scan to the entries being compacted: `getEntries()` also

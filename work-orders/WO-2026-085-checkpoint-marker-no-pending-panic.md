@@ -42,7 +42,12 @@ I4. Add the dated ruling note to `decisions/checkpoint/005-summary-ownership.md`
 2. **The message names the state and the broken rule** — a reader who hits it learns what happened
    without this order: a marker compaction with no pending checkpoint, whose stored summary would lack
    the machine block decision 005 requires.
-3. **I4 is the only test row edited.** Every other row in `tests/summary-ownership.test.ts` and in the
+3. **Two test rows change, not one — this prohibition was wrong and is corrected here.** I4 pinned the
+   half-summary and is rewritten; I2's yielding loop also dispatched marker shapes with nothing armed,
+   so it saw the panic the ruling creates and now calls `queueCheckpoint` first (its subject — the fleet
+   seat is bypassed — is unchanged, and its mutation now fails if the arming is removed). The blast
+   radius of "this arm has two dependants" was not enumerated when the order was written; the ruling
+   made the second one visible. Every other row in `tests/summary-ownership.test.ts` and in the
    four other `session_before_compact` suites passes unchanged.
 4. **The fleet-bearing paths still yield**: a marker with a *pending* checkpoint composes text plus
    block; a non-marker instruction still goes to the fleet seat. `rg -n 'CHECKPOINT_MARKER' tests/summary-ownership.test.ts` rows I2/I3 stay green.

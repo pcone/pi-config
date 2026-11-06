@@ -86,3 +86,15 @@ landing, and the state that armed the override, are in
 fleet path succeeds, which is what armed the override) and §7 Q1. Mechanism
 landed in WO-2026-061 (dispatch predicate) and WO-2026-062 (composition,
 machine block, field validation).
+
+**Amended (2026-11-06, owner): a marker with no pending checkpoint panics.** Owner, 2026-11-06:
+"Panic naming the state (Recommended)". `session_before_compact` used to store
+`customInstructions.replace(CHECKPOINT_MARKER, "").trim()` when `pendingCheckpoint` was null, calling
+it "the post-reload case" — authored text with no machine block, i.e. half of the summary this
+decision defines. Only the pending checkpoint carries the block's facts (git, fileOps, injection,
+tokens), so the arm had nothing to compose from. The state is also unreachable by reload:
+`session_start` clears both `pendingCheckpoint` and `compactRequested` (`checkpoint.ts:689-690`), so
+the arm was a fallback for a state no doc gives a meaning to. It now throws, naming the state and
+the rule it would break. Row I4 of `tests/summary-ownership.test.ts` constructed the state directly
+and pinned the half-summary; it now pins the panic, and row I2 arms a checkpoint before dispatching
+a marker shape (WO-2026-085).

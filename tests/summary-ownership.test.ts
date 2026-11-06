@@ -803,12 +803,18 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 				fleetCalls.length = 0;
 				await withCwd(async (cwd) => {
 					const h = makeCtx({ cwd });
+					// A real marker compaction is always armed: the tool stashes the
+					// pending checkpoint, then the request carries the marker. Since
+					// WO-2026-085 an unarmed one panics by design (row I4), so this row
+					// arms it and asserts what it is about — the fleet seat is bypassed.
+					await queueCheckpoint(h, {});
 					const dispatched = await dispatchBeforeCompact(
 						h.ctx,
 						beforeCompactEvent(customInstructions, { reason }),
 					);
 					expect(dispatched.errors).toEqual([]);
 					expect(fleetCalls).toHaveLength(0);
+					expect(String(dispatched.result?.compaction.summary)).toContain("### Machine facts");
 				});
 			}
 		}
@@ -831,28 +837,31 @@ describe("WO-2026-073: ownership is decided before the call, not after it", () =
 		}
 	});
 
-	it("I4: a marker with no pending checkpoint (post-reload) still yields, on the authored text alone", async () => {
+	it("I4: a marker with no pending checkpoint panics, naming the state", async () => {
 		await withoutTransport(async (requests) => {
 			await withCwd(async (cwd) => {
-				// The state a reload leaves is exactly "the instructions carry the
-				// marker, the process holds no pending checkpoint" — so the facts the
-				// machine block needs do not exist and the authored text is all there is.
+				// Decision 005 makes the stored summary the authored text FOLLOWED BY
+				// the machine block, and only the pending checkpoint carries that
+				// block's facts. This row pinned the half-summary until the owner ruled
+				// 2026-11-06: "Panic naming the state" (WO-2026-085) — a run must not
+				// store half of 005's definition, and no doc gives this state a meaning.
 				await resetCheckpointState();
 				const h = makeCtx({ cwd });
-				const authored = "Goal: survived a reload\nNext: RESUME-HERE";
 				const dispatched = await dispatchBeforeCompact(
 					h.ctx,
-					beforeCompactEvent(`${CHECKPOINT_MARKER}\n${authored}`),
+					beforeCompactEvent(`${CHECKPOINT_MARKER}\nGoal: no pending state`),
 				);
 
-				expect(dispatched.errors).toEqual([]);
+				// pi's runner records a handler throw and leaves the prior result
+				// standing, so the panic surfaces here rather than as a stored summary.
+				expect(dispatched.errors).toHaveLength(1);
+				const panic = dispatched.errors[0];
+				expect(panic.extension).toBe("checkpoint.ts");
+				expect(panic.message).toContain("no pending checkpoint");
+				expect(panic.message).toContain("machine block");
 				expect(fleetCalls).toHaveLength(0);
 				expect(requests).toEqual([]);
-				const stored = dispatched.result?.compaction;
-				expect(stored.summary).toBe(authored);
-				expect(stored.summary).not.toContain("### Machine facts");
-				expect(stored.firstKeptEntryId).toBe(BOUNDARY.firstKeptEntryId);
-				expect(stored.tokensBefore).toBe(BOUNDARY.tokensBefore);
+				expect(dispatched.result?.compaction.summary ?? "").not.toContain("Goal: no pending state");
 			});
 		});
 	});
