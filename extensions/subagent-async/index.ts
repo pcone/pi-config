@@ -3361,10 +3361,10 @@ export function recoverOrphanedSubagents(
 	try {
 		const sockDir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		const connect = deps.connect ?? ((p: string) => net.createConnection(p));
-		// One scan of the tmp dir in the repo's production code: the sock list,
-		// each socket's meta and its turn count all come from the discovery lib
-		// (WO-2026-083). The ownership predicate does NOT move with them —
-		// discovery reports disk facts and has no session identity.
+		// The tmp dir's SOCK scan, and only that: no readdir, meta read or turn
+		// regex of its own (WO-2026-083). The ownership predicate stays here —
+		// discovery reports disk facts and carries no session identity — and
+		// `resolveSubagentMeta`'s meta glob is a separate question, not folded.
 		const sessions = discoverSessions({ dir: sockDir }).filter((s) => s.running);
 		for (const s of sessions) {
 			const { id: sid, sockPath, logPath, meta } = s;

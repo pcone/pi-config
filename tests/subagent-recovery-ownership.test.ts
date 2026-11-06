@@ -35,8 +35,9 @@
 
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-// W1/W3 backdate a triplet and make a log unreadable; kept as a second
-// specifier so this commit is pure addition (WO-2026-083 commit 1).
+// W1/W3 backdate a triplet and make a log unreadable. A second specifier
+// rather than an addition to the line above: these rows are a pure-addition
+// diff (WO-2026-083 prohibition 4), and merging would delete a line.
 import { chmodSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as net from "node:net";
@@ -635,7 +636,7 @@ describe("recoverOrphanedSubagents — discovery fold (WO-2026-083)", () => {
 			},
 			"── Turn 1 ──\nfirst\n── Turn 2 ──\nsecond\n── Completed (2 turns, exit 0) ──\n",
 		);
-		backdateTriplet(dir, sid, Date.now() / 1000 - 3 * 60 * 60);
+		backdateTriplet(dir, sid, Date.now() / 1000 - THREE_HOURS);
 
 		const sockets: FakeSocket[] = [];
 		const connectPaths: string[] = [];
