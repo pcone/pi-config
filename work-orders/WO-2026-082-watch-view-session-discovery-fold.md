@@ -324,3 +324,65 @@ reason. If a prohibition cannot hold, that is a `PLAN MISMATCH` stop, not a note
 - **`REFACTOR FIRST`** — if you find the fold needs a second scan path, or the two viewers' `SessionInfo`
   shapes cannot share one `DiscoveredSession` without a per-viewer branch on the shared facts, stop and
   say what the preparatory refactor would be.
+
+---
+
+### Landing stamp (2026-11-06, merged `4c2e2fd`, commits `a526788` characterization + `7eeaeb6` fold + `06b8b44` hygiene)
+
+**Landed.** `extensions/lib/subagent-discovery.ts` holds the scan, the window, the metadata load and the
+id→path rule, built on the lib's existing `SUBAGENT_TMP_DIR` and `listSubagentMetas` rather than a second
+parser. All three viewers map its facts to their own display. Both production viewers **shrank** (v2
+1718 → 1686, `.cjs` 637 → 606, `watch-session.ts` 197 → 196) while gaining the shared facts.
+
+**Gated by me at the merged tip, with my own `rg`s:** `readdirSync`, `pi-subagent-` and `meta.json` are
+each **0** across the three viewers; `RECENT_WINDOW_MS = ` appears once, at
+`subagent-discovery.ts:29`; `subagent-discovery` appears **0** times in `index.ts`; the four frozen files
+(080's vocabulary rows, both characterization suites, `index.ts`, `subagent-state.ts`) are byte-identical
+to base. 32 new rows pass, `test-viewer.cjs` 100 (its 16 discover rows unedited), 080's 36 + state-vocab
+21, `test-layout.ts` 27, the hermeticity spawn-env row 2. `/tmp/pi-subagent-test-wo082-*` clean after the
+run.
+
+**My mutations:** the lib's sock arm `running: true → false` reds two D1 rows, two D2 rows and two D7 rows;
+the `.cjs` picker taking its status from the footer instead of `running` reds one row (`99 passed, 1
+failed`) — that is the trap the implementer found and pinned; `subagentPaths` dropping the bare-id prefix
+reds both D15 rows; `statusFromLogContent`'s unreadable arm `TERMINAL → EMPTY` reds D11.
+
+**My fourth mutation proved nothing, and that is the lesson.** I first inserted `content === null ||` into
+the *empty* arm of `statusFromLogContent` — a branch the unreadable arm above it already returns before.
+It changed no behaviour, so of course every row stayed green. I had written a non-discriminating mutation
+for the second time in this landing series; re-aimed one line up, D11 goes red. A mutation that leaves the
+program's behaviour identical is not evidence about a row.
+
+**Full suite, one `heavy --` slot: 1260 tests across 66 files** (base 1228 across 65 — the new file). Red
+set compared **by row name with WO-2026-080's run: identical in both directions** — the standing 5 credit,
+2 × 402, 2 × #15, 1 hermeticity cascade. Nothing new red.
+
+**Two defects in this order, both mine:**
+
+1. **D15's expectation cell is garbled.** It says `abc`/`abc`→`pi-subagent-subagent-abc` "only when
+   already prefixed" and then calls the same output "wrong" for a bare id. The row's own instruction —
+   "make it the union of what the three sites do" — is the coherent half, and all three base sites resolve
+   identically. The implementer pinned the base union; `review-code` compared 15 id shapes against all
+   three base spellings and found them identical on all 15. Cell corrected here, not in the matrix, because
+   the row as implemented is the right one.
+2. **D16's "`order` is 1 then 2" is unreachable through that viewer's export** — the `.cjs` has no `dir`
+   seam, so ambient `/tmp` owns `order: 1`. The row pins the invariant instead (`order === index + 1`
+   densely over the mtime sort, newer first), which `review-tests` accepted.
+
+**The one behaviour change, as disclosed before dispatch:** v2 now **keeps** a session whose log stats but
+cannot be read (`TERMINAL`, word null, turns 0) where it dropped it. The `.cjs` always kept it. Commit 1
+pinned v2's drop, commit 2 flipped that row with the reason in the diff — the characterization-first shape
+doing exactly the job it exists for: the change is visible in the diff as a row that moved, not as a
+silent divergence.
+
+**Register row left OPEN, against the implementer's "closed".** The three viewers are folded, but
+`extensions/subagent-async/index.ts:3365` (`recoverOrphanedSubagents`) still scans the same sock glob,
+slices the same id and owns a second turn regex at `:3392` — I verified each of those three facts at the
+landed tip. Marking the row closed would say the area is clean while a second copy of the same scan runs on
+every extension load. It is **unscheduled and uncarried**; folding it is not a viewer change, because it
+decides recovery adoption (027), not display.
+
+**Cost, recorded rather than optimised away:** the `.cjs` picker now reads each live session's log and the
+registry where it read neither (65 sessions / 0.3 MB / 46 ms warm, on a 5 s tick). That is the data shape
+D1 specifies; the number is in the register snapshot so the next person has a baseline before a
+fleet-sized `/tmp`.
