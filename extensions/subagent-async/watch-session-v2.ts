@@ -14,7 +14,7 @@
  *   q / esc                quit
  *   t                      toggle thinking lines
  *   c                      toggle auto-cycle
- *   r                      re-scan /tmp/pi-subagent-* and repopulate
+ *   r                      re-scan the session dir and repopulate
  *   g                      scroll focused pane to bottom
  *   tab / shift+tab        cycle focus between panes
  *   1..9                   set pane count to N (panes above N close)
@@ -56,17 +56,22 @@ type ThemeBg = "selectedBg" | "userMessageBg" | "customMessageBg" | "toolPending
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	listSubagentMetas,
 	outcomeFromFooter,
 	parseTerminalFooter,
 	readTerminalFooter,
 	type SubagentOutcome,
 } from "../lib/subagent-state.ts";
+import {
+	discoverSessions as discoverDiskSessions,
+	subagentPaths,
+	type DiscoveredSession,
+} from "../lib/subagent-discovery.ts";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const RECENT_WINDOW_MS = 30 * 60 * 1000;
 const MOUSE_SGR_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
 const MAX_PANES = 9;
 const POLL_INTERVAL_MS = 1000;
@@ -263,7 +268,7 @@ export type SessionStatus = "RUNNING" | "TERMINAL" | "EMPTY";
 export interface SessionMeta {
 	/** Agent type (implement, review-code, etc.) */
 	agentName: string;
-	/** Full task text from the meta.json */
+	/** Full task text from the session's registry entry */
 	task: string;
 	/** Extracted work order ID (e.g., "WO-C15b") or undefined */
 	workOrderId?: string;
@@ -287,7 +292,7 @@ export interface SessionInfo {
 	outcome: SubagentOutcome | null;
 	mtimeMs: number;
 	turns: number;
-	/** Rich metadata extracted from meta.json (if available) */
+	/** Rich metadata extracted from the registry entry (if available) */
 	meta?: SessionMeta;
 }
 
@@ -324,27 +329,29 @@ function extractWorkOrderId(task: string): string | undefined {
 }
 
 /**
- * Load session metadata from the meta.json file.
- * Returns undefined if the file doesn't exist or can't be parsed.
+ * A pane's subject line from the raw registry entry the lib loaded beside the
+ * session. The extraction is v2's own — the lib reports the entry, not a
+ * screen's shape.
  */
-function loadSessionMeta(id: string): SessionMeta | undefined {
-	// The meta.json file follows the same naming pattern as .log and .sock
-	const metaPath = `/tmp/pi-subagent-${id}.meta.json`;
-	try {
-		const raw = fs.readFileSync(metaPath, "utf8");
-		const data = JSON.parse(raw);
-		const task = data.task || "";
-		return {
-			agentName: data.agentName || "unknown",
-			task,
-			workOrderId: extractWorkOrderId(task),
-			subject: extractSubject(task),
-			model: data.model,
-			startedAt: data.startedAt,
-		};
-	} catch {
-		return undefined;
-	}
+function sessionMetaFrom(raw: Record<string, any> | undefined): SessionMeta | undefined {
+	if (!raw) return undefined;
+	// A truthy non-string task threw inside the old meta load, which dropped the
+	// whole entry; keep that answer instead of a half-filled pane header.
+	if (raw.task && typeof raw.task !== "string") return undefined;
+	const task = typeof raw.task === "string" ? raw.task : "";
+	return {
+		agentName: raw.agentName || "unknown",
+		task,
+		workOrderId: extractWorkOrderId(task),
+		subject: extractSubject(task),
+		model: raw.model,
+		startedAt: raw.startedAt,
+	};
+}
+
+/** The registry entry for one id, for the pane seeded from argv. */
+function sessionMetaFor(id: string): SessionMeta | undefined {
+	return sessionMetaFrom(listSubagentMetas().find((e) => e.sid === id)?.meta);
 }
 
 /**
@@ -361,76 +368,38 @@ function agentColor(agentName: string): (s: string) => string {
 
 /**
  * Derive a finished session's status from its log content: the terminal footer
- * the log wrote, if any. `EMPTY` is the no-content arm; a non-empty log with no
- * footer is a torn or legacy log — terminal, but naming no word.
+ * the log wrote, if any. `EMPTY` is the empty-log arm; a log that could not be
+ * read, and a non-empty log with no footer, are terminal but name no word.
  */
-export function statusFromLogContent(content: string): {
+export function statusFromLogContent(content: string | null): {
 	status: SessionStatus;
 	word: string | null;
 	outcome: SubagentOutcome | null;
 } {
+	// Unreadable is not empty: the run happened, the log just cannot be shown.
+	if (content === null) return { status: "TERMINAL", word: null, outcome: null };
 	if (content.trim().length === 0) return { status: "EMPTY", word: null, outcome: null };
 	const footer = readTerminalFooter(content);
 	if (!footer) return { status: "TERMINAL", word: null, outcome: null };
 	return { status: "TERMINAL", word: footer.word, outcome: outcomeFromFooter(footer) };
 }
 
+/** v2's screen over the shared discovery: a live socket is `RUNNING`, a
+ *  finished log reads through its footer, and a log that could not be read is
+ *  terminal with no word rather than absent from the list. */
+function sessionInfoFrom(s: DiscoveredSession): SessionInfo {
+	const { id, sockPath, logPath, mtimeMs, turns } = s;
+	const meta = sessionMetaFrom(s.meta);
+	if (s.running) {
+		return { id, sockPath, logPath, status: "RUNNING", word: null, outcome: null, mtimeMs, turns, meta };
+	}
+	const content = s.content;
+	const { status, word, outcome } = statusFromLogContent(content);
+	return { id, sockPath, logPath, status, word, outcome, mtimeMs, turns, meta };
+}
+
 export function discoverSessions(): SessionInfo[] {
-	const sessions: SessionInfo[] = [];
-	let sockFiles: string[] = [];
-	let logFiles: string[] = [];
-	try {
-		sockFiles = fs.readdirSync("/tmp").filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".sock"));
-	} catch {}
-	try {
-		logFiles = fs.readdirSync("/tmp").filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".log"));
-	} catch {}
-
-	const assignedLogPath = (id: string) => `/tmp/pi-subagent-${id}.log`;
-
-	for (const f of sockFiles) {
-		const id = f.slice("pi-subagent-".length, -".sock".length);
-		const sockPath = `/tmp/${f}`;
-		const logPath = assignedLogPath(id);
-		let mtime = 0;
-		try { mtime = fs.statSync(sockPath).mtimeMs; } catch {}
-		try { mtime = Math.max(mtime, fs.statSync(logPath).mtimeMs); } catch {}
-		const turns = countTurns(logPath);
-		const meta = loadSessionMeta(id);
-		sessions.push({ id, sockPath, logPath, status: "RUNNING", word: null, outcome: null, mtimeMs: mtime, turns, meta });
-	}
-
-	for (const f of logFiles) {
-		const id = f.slice("pi-subagent-".length, -".log".length);
-		const logPath = `/tmp/${f}`;
-		if (sessions.some((s) => s.id === id)) continue;
-		let stat: fs.Stats | null = null;
-		try { stat = fs.statSync(logPath); } catch { continue; }
-		if (Date.now() - stat.mtimeMs > RECENT_WINDOW_MS) continue;
-		let content = "";
-		try { content = fs.readFileSync(logPath, "utf8"); } catch { continue; }
-		const { status, word, outcome } = statusFromLogContent(content);
-		const meta = loadSessionMeta(id);
-		sessions.push({ id, sockPath: logPath.replace(/\.log$/, ".sock"), logPath, status, word, outcome, mtimeMs: stat.mtimeMs, turns: countTurns(logPath), meta });
-	}
-
-	sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
-	return sessions;
-}
-
-function countTurns(file: string): number {
-	try {
-		const content = fs.readFileSync(file, "utf8");
-		return (content.match(/── Turn \d+ ──/g) || []).length;
-	} catch {
-		return 0;
-	}
-}
-
-function resolveSockPath(id: string): string {
-	if (id.startsWith("/")) return id;
-	const clean = id.startsWith("subagent-") ? id : `subagent-${id}`;
-	return `/tmp/pi-subagent-${clean}.sock`;
+	return discoverDiskSessions().map(sessionInfoFrom);
 }
 
 // ── Live pane data ──────────────────────────────────────────────────────────
@@ -454,7 +423,7 @@ function openSessionSocket(
 	onLine: (line: string) => void,
 	onStatus: (state: "open" | "close" | "error") => void,
 ): { close: () => void } {
-	const sockPath = resolveSockPath(id);
+	const { sockPath } = subagentPaths(id);
 	const socket = net.createConnection(sockPath);
 	const rl = readline.createInterface({ input: socket, crlfDelay: Infinity });
 	rl.on("line", (line: string) => onLine(line));
@@ -1505,8 +1474,7 @@ async function runViewer(initialIds: string[], withPicker: boolean): Promise<voi
 	// Seed pane count for layout
 	viewer.layout.paneCount = withPicker ? 1 : Math.max(1, initialIds.length);
 	for (const id of initialIds.slice(0, MAX_PANES)) {
-		const meta = loadSessionMeta(id);
-		viewer.addPane(id, false, meta);
+		viewer.addPane(id, false, sessionMetaFor(id));
 	}
 	if (viewer.panes.length > 0) viewer.setFocused(0);
 

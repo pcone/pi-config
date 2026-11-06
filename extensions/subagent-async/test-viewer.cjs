@@ -303,6 +303,91 @@ test("empty /tmp (no sessions) returns empty array", () => {
   eq(Array.isArray(sessions), true);
 });
 
+// ── Tests: the shared discovery (WO-2026-082) ───────────────────────────────
+// Both viewers find sessions through `extensions/lib/subagent-discovery.ts`.
+// This file runs under plain `node`, so these rows also prove the new lib
+// loads through node's type stripping. They drive the module over a private
+// dir with a fixed clock, then check one `/tmp` fixture through both viewers.
+
+console.log("\nshared discovery:");
+
+const discovery = require("../lib/subagent-discovery.ts");
+
+const WO082_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "wo082-cjs-"));
+const WO082_NOW = 1_700_000_000_000;
+
+function placeInDir(name, content, ageMs) {
+  const p = path.join(WO082_DIR, name);
+  fs.writeFileSync(p, content);
+  const ts = (WO082_NOW - ageMs) / 1000;
+  fs.utimesSync(p, ts, ts);
+  return p;
+}
+
+process.on("exit", () => {
+  try { fs.rmSync(WO082_DIR, { recursive: true, force: true }); } catch {}
+});
+
+test("a socket session is running, joined by its log and footer", () => {
+  placeInDir("pi-subagent-test-wo082-20.sock", "", 10 * 1000);
+  placeInDir("pi-subagent-test-wo082-20.log", "── Turn 1 ──\n  text\n── Completed (1 turns, exit 0) ──\n", 10 * 1000);
+  const found = discovery.discoverSessions({ dir: WO082_DIR, now: WO082_NOW });
+  eq(found.length, 1);
+  eq(found[0].id, "test-wo082-20");
+  eq(found[0].running, true);
+  eq(found[0].turns, 1);
+  eq(found[0].footer, { word: "Completed", turns: 1, exitCode: 0 });
+  eq(found[0].sockPath, path.join(WO082_DIR, "pi-subagent-test-wo082-20.sock"));
+});
+
+test("a socket outlives the window; a stale log alone does not", () => {
+  placeInDir("pi-subagent-test-wo082-21.sock", "", 90 * 60 * 1000);
+  placeInDir("pi-subagent-test-wo082-21.log", "── Turn 1 ──\n", 90 * 60 * 1000);
+  placeInDir("pi-subagent-test-wo082-22.log", "── Turn 1 ──\n", 40 * 60 * 1000);
+  const ids = discovery.discoverSessions({ dir: WO082_DIR, now: WO082_NOW }).map((s) => s.id);
+  eq(ids.includes("test-wo082-21"), true);
+  eq(ids.includes("test-wo082-22"), false);
+});
+
+test("an unreadable log is kept, with no content, footer or turns", () => {
+  const logPath = placeInDir("pi-subagent-test-wo082-23.log", "── Completed (1 turns, exit 0) ──\n", 1000);
+  fs.chmodSync(logPath, 0o000);
+  const s = discovery.discoverSessions({ dir: WO082_DIR, now: WO082_NOW }).find((x) => x.id === "test-wo082-23");
+  eq(Boolean(s), true);
+  eq(s.content, null);
+  eq(s.footer, null);
+  eq(s.turns, 0);
+});
+
+test("a picked session with an unreadable log is kept as STOPPED", () => {
+  const f = createSessionFiles("test-wo082-25");
+  unlink(f.sock);
+  touchLog(f.log, "── Completed (1 turns, exit 0) ──\n", 60);
+  fs.chmodSync(f.log, 0o000);
+
+  const s = discoverSessions().find((x) => x.id === "test-wo082-25");
+  eq(Boolean(s), true);
+  eq(s.status, "STOPPED");
+  eq(s.word, null);
+  eq(s.outcome, null);
+});
+
+test("both viewers report the same facts for one session", () => {
+  const f = createSessionFiles("test-wo082-24");
+  unlink(f.sock);
+  touchLog(f.log, "── Turn 1 ──\n── Turn 2 ──\n── Errored (2 turns, exit 1) ──\n", 60);
+
+  const picked = discoverSessions().find((s) => s.id === "test-wo082-24");
+  const shared = discovery.discoverSessions().find((s) => s.id === "test-wo082-24");
+  eq(Boolean(picked), true);
+  eq(Boolean(shared), true);
+  eq(shared.footer, { word: "Errored", turns: 2, exitCode: 1 });
+  eq(picked.word, "Errored");
+  eq(picked.outcome, "errored");
+  eq(picked.mtimeMs, shared.mtimeMs);
+  eq(picked.status, "ERRORED");
+});
+
 // ── Tests: completion footer parser ─────────────────────────────────────────
 // The rows drive the shared parser; the fixtures are the lines the extension's
 // footer writer emits (`── <word> (<n> turns, exit <code|?>) ──`).
