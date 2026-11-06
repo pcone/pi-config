@@ -355,6 +355,54 @@ describe("descriptor table wiring", () => {
 		expect(parse("minimax-cn", MINIMAX_PAYLOAD)).toBe("5h:100% 12m 7d:8% 6.5d · exhausted");
 	});
 
+	it("minimax without a `general` bucket falls back to the first one", () => {
+		// The documented rule is "prefers the `general` bucket" (quota.ts:508);
+		// `?? buckets[0]` is that preference's fallback. Nothing else pins it —
+		// WO-2026-087's mutation deleted the fallback and every row stayed green —
+		// and the loss would surface as a swallowed `undefined is not an object`
+		// inside fetchQuotaSnapshot's catch, i.e. a blank row with no warning.
+		const videoOnly = {
+			base_resp: { status_code: 0 },
+			model_remains: [
+				{
+					model_name: "video",
+					current_interval_remaining_percent: 40,
+					current_weekly_remaining_percent: 70,
+					remains_time: 12 * MIN,
+					weekly_remains_time: 3 * DAY,
+				},
+			],
+		};
+		expect(parse("minimax", videoOnly)).toBe("5h:60% 12m 7d:30% 3.0d");
+	});
+
+	it("minimax takes the `general` bucket over an earlier one", () => {
+		// The preference half of the same rule: with `general` second, its numbers
+		// must win. Deleting the fallback alone leaves this green (the single-bucket
+		// row above covers that direction), so the two rows are a pair — neither
+		// mutation survives both.
+		const generalSecond = {
+			base_resp: { status_code: 0 },
+			model_remains: [
+				{
+					model_name: "video",
+					current_interval_remaining_percent: 10,
+					current_weekly_remaining_percent: 20,
+					remains_time: 12 * MIN,
+					weekly_remains_time: 3 * DAY,
+				},
+				{
+					model_name: "general",
+					current_interval_remaining_percent: 72,
+					current_weekly_remaining_percent: 91,
+					remains_time: 30 * MIN,
+					weekly_remains_time: 5 * DAY,
+				},
+			],
+		};
+		expect(parse("minimax", generalSecond)).toBe("5h:28% 30m 7d:9% 5.0d");
+	});
+
 	it("a payload from another provider yields no parts", () => {
 		for (const [provider, payload] of [
 			["zai", MINIMAX_PAYLOAD],

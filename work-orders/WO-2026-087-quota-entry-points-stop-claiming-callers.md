@@ -79,8 +79,12 @@ repoint). Do not claim the row is closed.
    `extensions/footer-session-id.ts` is comments and the one `bucket` line; no signature, no export
    addition or removal, no reordering of the descriptor table.
 2. **Both entry points stay exported from both modules.** `rg -c 'renderQuotaSegment|renderGoUsageSegment' extensions/lib/quota.ts extensions/footer-session-id.ts` → unchanged counts (definition + use, re-export).
-3. **Every row in the four quota test files passes unchanged**, `tests/footer-quota-characterisation.test.ts`
-   included and **unedited** (`git diff` empty for all four).
+3. **Every *existing* row in the four quota test files passes unchanged, and no existing row is edited.**
+   Corrected after landing: "unedited" was wrong, because this order's own mutation result required a
+   new row. Deleting `?? buckets[0]` left every row green — the fallback was unpinned — so the arm this
+   order turned into an assertion was load-bearing and untested. Two rows are appended (a payload with
+   no `general` bucket falls back to the first; a payload with `general` second prefers it), each red
+   under its own mutation and green under the other's. Nothing existing was touched.
 4. **The unreachable arm is gone, and nothing replaced it as a silent fallback**:
    `rg -n 'if \(!bucket\)' extensions/lib/quota.ts` → no output.
 5. **No test row spawns**; if one does, it passes `env: childEnv()`.
@@ -110,3 +114,36 @@ and the assertion is not decorative. Revert; rows green again.
   missed it), or `buckets` can be empty at the `bucket` line.
 - **`PLAN MISMATCH`** — a test row depends on the comment text, or the register file has no such section
   to add a row to.
+
+---
+
+### Landing stamp (2026-11-06, merged `791614a`)
+
+**Landed.** The comment blocks in `extensions/lib/quota.ts:654-670` and `footer-session-id.ts:691-698`
+now say what is true: no production caller, the characterisation goldens are the users, deletion is open
+with carrier WO-2026-089 and its blocking fact. `minimaxParts`' unreachable `if (!bucket) return
+undefined;` is an assertion with the reason on the line above.
+
+**The order's own mutation check found a hole, which is the whole reason the check exists.** Deleting
+`?? buckets[0]` left every row green: the fallback was load-bearing ("prefers the `general` bucket",
+`quota.ts:508`) and nothing pinned it — a future edit would have surfaced as a swallowed
+`undefined is not an object` inside `fetchQuotaSnapshot`'s catch, i.e. a blank quota row with no warning.
+The implementer reported the null result instead of hiding it, and prohibition 3 ("unedited") was mine
+and wrong. Two rows are appended at the gate:
+- a payload whose only bucket is `video` → renders its numbers (reds when the fallback is deleted);
+- a payload with `video` first and `general` second → the `general` numbers win (reds when the
+  preference is dropped for `buckets[0]`).
+Each mutation reds one row and leaves the other green, so the pair pins both halves.
+
+**Gated by me:** export counts unchanged (2 in `quota.ts`, 4 in `footer-session-id.ts`); `rg -n 'if
+\(!bucket\)'` → no output; `git diff -- tests/` was empty on the branch (the two rows are the gate's
+addition); 41 rows in the characterisation file and 16 across the two footer files the criteria omitted,
+all green; no production behaviour change in the diff.
+
+**Count correction, theirs:** the order said "~50 golden rows"; measured 35 goldens and 60 entry-point
+call sites across three files. They wrote the measured numbers into the comment and the register row
+rather than copying my estimate.
+
+**No chunk snapshot appended, deliberately.** This landing is 36 lines of comment, one assertion and two
+rows — no growth or unification delta to measure. An entry claiming otherwise would be noise in a file
+whose counts are claims.
