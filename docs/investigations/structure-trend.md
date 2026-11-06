@@ -19,7 +19,33 @@ refactor lands.
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
 | terminal-outcome vocabulary in the watch views | — (closed by WO-2026-080, `a8ff8be`) | **closed 2026-11-05** — 0 terminal word literals in the three viewers; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in `extensions/lib/subagent-state.ts`; the two live viewers had also been dead since pi-tui 1.4 (WO-2026-081) | — |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
-| session discovery in the watch viewers | — (observation only; no landing was flagged for it) | **open — the three viewers folded in WO-2026-082** (`7eeaeb6`): `rg -c 'readdirSync'` over them → 0, `rg -c 'RECENT_WINDOW_MS = ' extensions/` → 1 (`subagent-discovery.ts:29`), `rg -c 'pi-subagent-'` over them → 0. **One copy survives outside them** — `extensions/subagent-async/index.ts:3365` (`recoverOrphanedSubagents`: the same sock glob, the same id slice, its own turn regex at `:3397`) — **carrier: WO-2026-083** (owner 2026-11-06, via the planning seat: "Order it next"). The order settles 027's placement question in its own text: the adoption predicate stays in `subagent-state.ts:162` and the scan folds. A **second, separate** copy is named and left uncarried: `resolveSubagentMeta` (`index.ts:424-450`) globs `pi-subagent-*.meta.json` on a hardcoded `/tmp` where `listSubagentMetas(dir)` already does it — its partial-id matching and ambiguity error make it its own fold, not this one's | fold `recoverOrphanedSubagents` onto `discoverSessions`; `resolveSubagentMeta` needs an order of its own |
+| session discovery in `/tmp` | — (observation only; no landing was flagged for it) | **closed 2026-11-06 by WO-2026-083** — the three viewers folded in WO-2026-082 (`7eeaeb6`), then the last production copy: `rg -n 'endsWith("\.sock")' extensions/subagent-async/index.ts` → 0, `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1 (the out-of-scope meta scan, `:429`), `rg -n '── Turn' extensions/subagent-async/index.ts` → 1 (`:2205`, a header print). `recoverOrphanedSubagents` now takes its sock list, meta and turn count from `discoverSessions()`. The adoption predicate did not move: `decideRecoveryAdoption` stays in `subagent-state.ts:162`, called from `index.ts` with `selfPid` / `selfSessionId` / `probe` (WO-2026-083's 027 section). One copy is named and left uncarried: `resolveSubagentMeta` (`index.ts:426-456`) globs `pi-subagent-*.meta.json` on a hardcoded `/tmp` where `listSubagentMetas(dir)` already does it — its partial-id matching and ambiguity error make it its own fold, not this one's | — |
+| `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | open — carried; no order scheduled, so this row is the carrier. `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 1 (`:430`): a second `/tmp` listing where `listSubagentMetas(dir)` (`subagent-state.ts:187`) already returns the same entries | fold `resolveSubagentMeta` onto `listSubagentMetas(dir)`; its partial-id matching and ambiguity error make it its own order |
+
+## 2026-11-06 — chunk: WO-2026-083 the recovery scan is discovery's last copy
+
+**growth.** `extensions/subagent-async/index.ts` 4758 → 4752 (−6); `recoverOrphanedSubagents` 168 → 161
+lines (−7), replacing a readdir block, a meta `JSON.parse` and a log read + own turn regex with one
+`discoverSessions({ dir })` call and three field reads. No branch added, none removed from the
+adoption path. `tests/subagent-recovery-ownership.test.ts` 594 → 766 (+172, test-only — commit 1's
+rows plus the review round's one-line comment fix; additions only, `--numstat` → `172 0`).
+
+**unification.** One idea, one home, counted at the landed tip: `rg -n 'endsWith("\.sock")'
+extensions/subagent-async/index.ts` → 0; `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1
+(the out-of-scope meta scan); `rg -n '── Turn' extensions/subagent-async/index.ts` → 1 (a header
+print, not a parse). The 027 predicate stayed put deliberately: discovery reports disk facts and has
+no session identity, so an `ownership` option would have put one caller's policy into the lib and
+returned a verdict anyway.
+
+**cost.** Every log in the directory is read, and so is every meta (`readLog` runs unconditionally in
+the lib's sock arm, `listSubagentMetas` in the scan's), where the pre-fold scan read a log only for a
+socket it had already decided to adopt and a meta only for sockets. In-window log-only sessions are
+read before the `running` filter drops them too. Once per `session_start`, over `/tmp`; the viewers
+already pay the same reads on a 5 s tick.
+
+**residue, named not carried.** `resolveSubagentMeta` (`index.ts:426-456`) still globs
+`pi-subagent-*.meta.json` on a hardcoded `/tmp`. Different question (partial-id matching, an ambiguity
+error), so it is its own order.
 
 ## 2026-11-06 — chunk: WO-2026-082 session discovery is one function
 

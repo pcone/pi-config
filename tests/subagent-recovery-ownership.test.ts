@@ -35,6 +35,10 @@
 
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// W1/W3 backdate a triplet and make a log unreadable. A second specifier
+// rather than an addition to the line above: these rows are a pure-addition
+// diff (WO-2026-083 prohibition 4), and merging would delete a line.
+import { chmodSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as net from "node:net";
 import * as path from "node:path";
@@ -590,5 +594,173 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 			_testRunning.clear();
 			server.close();
 		}
+	});
+});
+
+// ── Discovery fold (WO-2026-083) ───────────────────────────────────────────
+//
+// `recoverOrphanedSubagents` takes its sock list, its meta and its turn count
+// from `discoverSessions()`. These rows pin the ANSWERS the fold must keep, not
+// the mechanism: each one passes against the pre-fold scan too, which is what
+// makes a red row during the fold a behaviour change rather than a test edit.
+describe("recoverOrphanedSubagents — discovery fold (WO-2026-083)", () => {
+	const THREE_HOURS = (3 * 60 * 60 * 1000) / 1000;
+
+	/** Age a whole `.sock`/`.log`/`.meta.json` triplet, in seconds since epoch. */
+	function backdateTriplet(dir: string, sid: string, seconds: number): void {
+		for (const ext of [".sock", ".log", ".meta.json"]) {
+			utimesSync(path.join(dir, `pi-subagent-${sid}${ext}`), seconds, seconds);
+		}
+	}
+
+	// W1: the lib's RECENT_WINDOW_MS is a VIEWER display rule — a log older than
+	// 30 minutes is not worth a picker row. Recovery is the opposite: an orphaned
+	// socket from three hours ago still needs its child tracked or its stale file
+	// unlinked. The lib's sock arm already ignores the window; this row stops a
+	// later "just reuse the viewer's filtered list" from quietly dropping old
+	// orphans.
+	it("W1: adopts a three-hour-old socket and reads its turns — the 30-minute viewer window never applies to recovery", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-recovery-"));
+		tempDirs.push(dir);
+		const sid = "subagent-old-orphan";
+		writeTriplet(
+			dir,
+			sid,
+			{
+				agentName: "scout-code",
+				task: "t",
+				cwd: dir,
+				ownerPid: 4242,
+				ownerStartToken: "gone",
+				parentSessionId: SELF_SESSION,
+			},
+			"── Turn 1 ──\nfirst\n── Turn 2 ──\nsecond\n── Completed (2 turns, exit 0) ──\n",
+		);
+		backdateTriplet(dir, sid, Date.now() / 1000 - THREE_HOURS);
+
+		const sockets: FakeSocket[] = [];
+		const connectPaths: string[] = [];
+		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
+			dir,
+			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
+			probe: probeFrom(new Map()), // owner process gone, session is ours
+			connect: (p) => {
+				connectPaths.push(p);
+				const s = makeFakeSocket();
+				sockets.push(s);
+				return s as any;
+			},
+		});
+
+		expect(sockets.length).toBe(1);
+		expect(connectPaths).toEqual([path.join(dir, `pi-subagent-${sid}.sock`)]);
+		expect(_testRunning.has(sid)).toBe(true);
+		expect(_testRunning.get(sid)!.progress.turns).toBe(2);
+	});
+
+	// W2: a socket with no readable meta is unattributable. Base skipped it
+	// before opening anything and left the file alone (only a failed `connect`
+	// unlinks). The folded path sees `meta: undefined` and the predicate's
+	// "skip-legacy" reaches the same outcome — but by a different route, so the
+	// explicit skip stays and neither half may regress.
+	it("W2: a socket with no meta file opens no connection and keeps the sock file", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-recovery-"));
+		tempDirs.push(dir);
+		const base = path.join(dir, "pi-subagent-subagent-no-meta");
+		writeFileSync(`${base}.sock`, "");
+		writeFileSync(`${base}.log`, "── Turn 1 ──\n");
+
+		let connectCalls = 0;
+		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
+			dir,
+			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
+			connect: () => {
+				connectCalls++;
+				return makeFakeSocket() as any;
+			},
+		});
+
+		expect(connectCalls).toBe(0);
+		expect(_testRunning.size).toBe(0);
+		expect(existsSync(`${base}.sock`)).toBe(true);
+	});
+
+	// W3: an unreadable log is a missing reading, not a missing session. Base's
+	// `catch` left `turns` at 0 and adopted; the lib reports `content: null` and
+	// `turns: 0` for the same file, so the fold must not dereference `content`.
+	it("W3: a socket whose log cannot be read is adopted with zero turns and no throw", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-recovery-"));
+		tempDirs.push(dir);
+		const sid = "subagent-unreadable-log";
+		writeTriplet(
+			dir,
+			sid,
+			{
+				agentName: "scout-code",
+				task: "t",
+				cwd: dir,
+				ownerPid: 4242,
+				ownerStartToken: "gone",
+				parentSessionId: SELF_SESSION,
+			},
+			"── Turn 1 ──\nfirst\n── Turn 2 ──\nsecond\n",
+		);
+		chmodSync(path.join(dir, `pi-subagent-${sid}.log`), 0o000);
+
+		const sockets: FakeSocket[] = [];
+		expect(() =>
+			recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
+				dir,
+				selfPid: SELF_PID,
+				selfSessionId: SELF_SESSION,
+				probe: probeFrom(new Map()),
+				connect: () => {
+					const s = makeFakeSocket();
+					sockets.push(s);
+					return s as any;
+				},
+			}),
+		).not.toThrow();
+
+		expect(sockets.length).toBe(1);
+		expect(_testRunning.get(sid)!.progress.turns).toBe(0);
+	});
+
+	// W4: a session with a log and no socket is a FINISHED run, not an orphan —
+	// however fresh its log is. Recovery scans sockets; the log-only arm of the
+	// lib exists for the viewers' picker and must not become an adoption source.
+	it("W4: a fresh log with no socket is not adopted", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-recovery-"));
+		tempDirs.push(dir);
+		const sid = "subagent-log-only";
+		writeFileSync(path.join(dir, `pi-subagent-${sid}.log`), "── Turn 1 ──\nfirst\n── Completed (1 turns, exit 0) ──\n");
+		writeFileSync(
+			path.join(dir, `pi-subagent-${sid}.meta.json`),
+			JSON.stringify({
+				agentName: "scout-code",
+				task: "t",
+				cwd: dir,
+				ownerPid: 4242,
+				ownerStartToken: "gone",
+				parentSessionId: SELF_SESSION,
+			}),
+		);
+
+		let connectCalls = 0;
+		recoverOrphanedSubagents(makePi().pi as any, makeCtx(), {
+			dir,
+			selfPid: SELF_PID,
+			selfSessionId: SELF_SESSION,
+			probe: probeFrom(new Map()), // adoptable if it were ever offered
+			connect: () => {
+				connectCalls++;
+				return makeFakeSocket() as any;
+			},
+		});
+
+		expect(connectCalls).toBe(0);
+		expect(_testRunning.size).toBe(0);
 	});
 });

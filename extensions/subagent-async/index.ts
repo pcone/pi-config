@@ -21,6 +21,7 @@ import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
 import { registerWaitSource } from "../lib/waits.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
 import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
+import { discoverSessions } from "../lib/subagent-discovery.ts";
 import {
 	EXITED_FOOTER_WORD,
 	OUTCOME_WORD,
@@ -3360,23 +3361,19 @@ export function recoverOrphanedSubagents(
 	try {
 		const sockDir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		const connect = deps.connect ?? ((p: string) => net.createConnection(p));
-		let files: string[];
-		try {
-			files = fs.readdirSync(sockDir).filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".sock"));
-		} catch {
-			return;
-		}
-		for (const f of files) {
-			const sid = f.replace("pi-subagent-", "").replace(".sock", "");
+		// The tmp dir's SOCK scan, and only that: no readdir, meta read or turn
+		// regex of its own (WO-2026-083). The ownership predicate stays here —
+		// discovery reports disk facts and carries no session identity — and
+		// `resolveSubagentMeta`'s meta glob is a separate question, not folded.
+		const sessions = discoverSessions({ dir: sockDir }).filter((s) => s.running);
+		for (const s of sessions) {
+			const { id: sid, sockPath, logPath, meta } = s;
 			if (running.has(sid)) continue; // already tracked
 
-			const sockPath = path.join(sockDir, f);
-			const logPath = sockPath.replace(".sock", ".log");
-			const metaPath = sockPath.replace(".sock", ".meta.json");
-
-			// Read metadata written at spawn time
-			let meta: any = null;
-			try { meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch { continue; }
+			// An unreadable or missing meta is not a session we can attribute. The
+			// predicate would answer the same (`skip-legacy`), but the explicit skip
+			// is what keeps the sock file: only a failed `connect` unlinks.
+			if (!meta) continue;
 
 			// Decision 027: adopt only if the owner is this process (session
 			// reload / new in the same process) or the owner process is gone.
@@ -3390,12 +3387,9 @@ export function recoverOrphanedSubagents(
 				continue;
 			}
 
-			// Parse current turns from log
-			let turns = 0;
-			try {
-				const log = fs.readFileSync(logPath, "utf-8");
-				turns = (log.match(/── Turn (\d+) ──/g) || []).length;
-			} catch {}
+			// Turns as discovery counted them: the same turn-header lines from the
+			// same single log read, `0` when the log could not be read.
+			const turns = s.turns;
 
 			const rs: RunningSubagent = {
 				proc: null as any,
