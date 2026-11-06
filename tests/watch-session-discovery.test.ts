@@ -29,10 +29,30 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverSessions } from "../extensions/subagent-async/watch-session-v2.ts";
-import { discoverSessions as discoverCjsSessions } from "../extensions/subagent-async/watch-session.cjs";
 import { RECENT_WINDOW_MS, discoverSessions as discoverFacts, subagentPaths } from "../extensions/lib/subagent-discovery.ts";
 
 const MINUTE = 60_000;
+
+interface CjsSession {
+	id: string;
+	sockPath: string;
+	logPath: string;
+	status: string;
+	word: string | null;
+	outcome: string | null;
+	mtimeMs: number;
+	order: number;
+}
+
+/**
+ * The `.cjs` viewer installs a process-wide `uncaughtException` handler when it
+ * loads (it guards stale-socket `ECONNREFUSED`), so it is required inside the
+ * rows that need it rather than at module load, where it would outlive this file
+ * and swallow another test file's stray throw.
+ */
+function cjsViewer(): { discoverSessions: () => CjsSession[] } {
+	return require("../extensions/subagent-async/watch-session.cjs");
+}
 
 interface Fixture {
 	id: string;
@@ -466,7 +486,7 @@ describe("both viewers over one fixture (D12, D16)", () => {
 		log(f, logBody(3, "── Errored (3 turns, exit 1) ──"), MINUTE);
 
 		const v2 = listed(12)!;
-		const cjs = discoverCjsSessions().find((s) => s.id === "test-wo082-12")!;
+		const cjs = cjsViewer().discoverSessions().find((s) => s.id === "test-wo082-12")!;
 		expect(cjs).toBeDefined();
 		expect(cjs.id).toBe(v2.id);
 		expect(cjs.mtimeMs).toBe(v2.mtimeMs);
@@ -493,7 +513,7 @@ describe("both viewers over one fixture (D12, D16)", () => {
 		expect(v2Older).toBeGreaterThanOrEqual(0);
 		expect(v2Newer).toBeLessThan(v2Older);
 
-		const cjs = discoverCjsSessions();
+		const cjs = cjsViewer().discoverSessions();
 		const newerEntry = cjs.find((s) => s.id === newer.id);
 		const olderEntry = cjs.find((s) => s.id === older.id);
 		expect(Boolean(newerEntry)).toBe(true);
