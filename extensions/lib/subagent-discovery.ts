@@ -94,8 +94,15 @@ function readLog(logPath: string): LogReading {
  * Every subagent session in `dir` — sockets first, then log-only sessions
  * inside the window — sorted by `mtimeMs` descending. `dir` and `now` are the
  * seam the rows use to run against a temp dir and a fixed clock.
+ *
+ * `socketsOnly` omits the log-only arm: a caller that can only act on a socket
+ * (recovery) reads no recent log left with no socket beside it. The registry
+ * scan is limited to the ids this call reports either way, so a meta for a
+ * session nobody asked for is never parsed.
  */
-export function discoverSessions(opts: { dir?: string; now?: number } = {}): DiscoveredSession[] {
+export function discoverSessions(
+	opts: { dir?: string; now?: number; socketsOnly?: boolean } = {},
+): DiscoveredSession[] {
 	const dir = opts.dir ?? SUBAGENT_TMP_DIR;
 	const now = opts.now ?? Date.now();
 
@@ -115,7 +122,6 @@ export function discoverSessions(opts: { dir?: string; now?: number } = {}): Dis
 	}
 
 	const metas = new Map<string, Record<string, any>>();
-	for (const entry of listSubagentMetas(dir)) metas.set(entry.sid, entry.meta);
 
 	const sessions: DiscoveredSession[] = [];
 	const seen = new Set<string>();
@@ -147,35 +153,38 @@ export function discoverSessions(opts: { dir?: string; now?: number } = {}): Dis
 			turns: reading.turns,
 			content: reading.content,
 			footer: reading.footer,
-			meta: metas.get(id),
 		});
 	}
 
-	for (const name of logNames) {
-		const id = name.slice(FILE_PREFIX.length, -".log".length);
-		if (!id || seen.has(id)) continue;
-		const logPath = path.join(dir, name);
-		const sockPath = logPath.replace(/\.log$/, ".sock");
-		let mtimeMs: number;
-		try {
-			mtimeMs = fs.statSync(logPath).mtimeMs;
-		} catch {
-			continue;
+	if (!opts.socketsOnly) {
+		for (const name of logNames) {
+			const id = name.slice(FILE_PREFIX.length, -".log".length);
+			if (!id || seen.has(id)) continue;
+			const logPath = path.join(dir, name);
+			const sockPath = logPath.replace(/\.log$/, ".sock");
+			let mtimeMs: number;
+			try {
+				mtimeMs = fs.statSync(logPath).mtimeMs;
+			} catch {
+				continue;
+			}
+			if (now - mtimeMs > RECENT_WINDOW_MS) continue;
+			const reading = readLog(logPath);
+			sessions.push({
+				id,
+				sockPath,
+				logPath,
+				running: false,
+				mtimeMs,
+				turns: reading.turns,
+				content: reading.content,
+				footer: reading.footer,
+			});
 		}
-		if (now - mtimeMs > RECENT_WINDOW_MS) continue;
-		const reading = readLog(logPath);
-		sessions.push({
-			id,
-			sockPath,
-			logPath,
-			running: false,
-			mtimeMs,
-			turns: reading.turns,
-			content: reading.content,
-			footer: reading.footer,
-			meta: metas.get(id),
-		});
 	}
+
+	for (const entry of listSubagentMetas(dir, new Set(sessions.map((s) => s.id)))) metas.set(entry.sid, entry.meta);
+	for (const s of sessions) s.meta = metas.get(s.id);
 
 	sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
 	return sessions;

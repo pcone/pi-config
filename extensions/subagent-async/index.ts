@@ -3297,11 +3297,12 @@ export function recoverOrphanedSubagents(
 	try {
 		const sockDir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		const connect = deps.connect ?? ((p: string) => net.createConnection(p));
-		// The tmp dir's SOCK scan, and only that: no readdir, meta read or turn
-		// regex of its own (WO-2026-083). The ownership predicate stays here —
-		// discovery reports disk facts and carries no session identity — and
-		// `resolveSubagentMeta`'s meta glob is a separate question, not folded.
-		const sessions = discoverSessions({ dir: sockDir }).filter((s) => s.running);
+		// The tmp dir's SOCK scan, and only that (`socketsOnly`): no log-only
+		// arm, and no readdir, meta read or turn regex of its own (WO-2026-083).
+		// The ownership predicate stays here — discovery reports disk facts and
+		// carries no session identity — and `resolveSubagentMeta`'s meta glob is a
+		// separate question, not folded.
+		const sessions = discoverSessions({ dir: sockDir, socketsOnly: true }).filter((s) => s.running);
 		for (const s of sessions) {
 			const { id: sid, sockPath, logPath, meta } = s;
 			if (running.has(sid)) continue; // already tracked
