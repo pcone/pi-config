@@ -507,7 +507,7 @@ describe("discovery reads only what its caller uses (X1–X6)", () => {
 
 	// The no-throw half is structural, not pinned here: the parse's catch already
 	// swallows a malformed meta. `b`'s valid meta is what reds without the filter.
-	it("X4: `listSubagentMetas` returns only the asked ids, and an unasked malformed meta cannot throw", () => {
+	it("X4: `listSubagentMetas` returns only the asked ids; an unasked malformed meta raises nothing", () => {
 		const dir = tempDir();
 		const a = fixture(34);
 		const b = fixture(35);

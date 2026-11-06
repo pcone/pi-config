@@ -128,8 +128,8 @@ The matrix says "metas for `a` and `b` … a *malformed* meta for `b` does not m
 and the Acceptance rows clause says "each with the mutation that reds it". A malformed meta for an
 unasked `b` is already swallowed by the parse's `try`/`catch` (`subagent-state.ts:263-266`), so that
 row answers `[a]` with or without the id filter — it pins nothing, and it is also green at `ae9dd71`,
-against the "X1/X4 cannot pass at base" line in the dispatch note. Landed shape (branch
-`wo-2026-086`, commit 1): `a` and `b` get valid metas (the valid `b` is what reds without the filter)
+against the "X1/X4 cannot pass at base" line in the dispatch note. Landed shape (commit
+`dc0503f`): `a` and `b` get valid metas (the valid `b` is what reds without the filter)
 and a third id `c` gets a malformed one for the no-throw clause. Options: (1) keep the landed row;
 (2) restore the literal fixture and record in the row that it pins nothing. Option 1 is the
 implementer's recommendation; the choice is the owner's because it changes an acceptance row's fixture.

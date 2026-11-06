@@ -44,12 +44,13 @@ comment (`index.ts:3300`, `:3305`); the two viewers and `test-viewer.cjs` call t
 `skip()` convention (an `__piSkip` throw, counted in the summary line) rather than a second one:
 `rg -n '__piSkip = true' extensions/` → 5, one `skip(msg)` per `.cjs` harness.
 
-**cost, measured at the landed tip on this box.** `/tmp` held 60 `.sock`, 888 `.log` and 194
+**cost, measured at the landed tip on this box.** `/tmp` held 60 `.sock`, 890 `.log` and 194
 `.meta.json` files; `discoverSessions('/tmp')` reported 71 sessions (60 socket, 11 in-window log-only).
-Warm: 13.9 ms and 194 meta parses for the no-option call, 7.9 ms and 60 parses with `socketsOnly`.
-The other 828 logs cost nothing — the log-only arm only stats in-window candidates — so the win is the
-parse plus those 11 reads; it scales with the number of finished sessions left behind, which is the
-case `/tmp` grows into. Viewer ticks also drop to the ids they report.
+Warm: 13.9 ms and **7** meta parses for the no-option call, 7.9 ms and **2** with `socketsOnly` — the
+scan parses only the metas whose ids it reports, where before it parsed all 194. The 830 log-only
+candidates still cost one `statSync` each (the window check follows the stat,
+`subagent-discovery.ts:163-173`); only the 11 in-window ones are read. Viewer ticks likewise drop to
+the ids they report. Parse counts are instrumented, not file counts.
 
 **not taken here.** The socket arm still reads a socket's whole log for `content` and `footer`, which
 recovery reads neither of: it wants `turns` only. Splitting that returns a different `DiscoveredSession`
