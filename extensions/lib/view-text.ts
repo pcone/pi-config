@@ -19,7 +19,11 @@
  * The `.cjs` cuts raw log lines, so a line carrying a sequence neither viewer
  * composed measures differently here than it did through the regex — and cuts
  * differently where the two measurements fall either side of the width. SGR
- * bodies, which both viewers compose, measure the same.
+ * bodies, which both viewers compose, measure the same. Every control code
+ * counts as zero width, not only the SGR-shaped ones — owner 2026-11-07 (Q-B1,
+ * `work-orders/WO-2026-088-view-text-shared-helpers.md`), which is what stops a
+ * line carrying a hide-cursor sequence from being cut as though it were ten
+ * columns wider than it looks.
  *
  * Importable from plain `node`: the `.cjs` viewer requires this module, so it
  * takes no dependencies and no non-erasable TypeScript syntax.

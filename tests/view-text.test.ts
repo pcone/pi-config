@@ -107,6 +107,31 @@ describe("truncate cuts at width - 1 visible characters and appends the reset (Y
 	});
 });
 
+// Q-B1 (owner 2026-11-07): every terminal control code counts as zero width, not
+// only the SGR-shaped ones. These are the rows the ruling added — the base regex
+// counted a hide-cursor sequence as ten columns and cut lines that fit.
+describe("truncate against a non-SGR sequence the regex could not strip (Q-B1)", () => {
+	it("does not cut a line that only looked too wide", () => {
+		// Four visible characters, width 8. Base truncated this because ESC[?25l
+		// measured 6 on top of the text.
+		expect(truncate("\x1b[?25labcd", 8)).toBe("\x1b[?25labcd");
+	});
+
+	it("counts an SGR mouse report as zero width too", () => {
+		expect(truncate("\x1b[<64;3;5Mabcd", 8)).toBe("\x1b[<64;3;5Mabcd");
+	});
+
+	it("still cuts the visible text after a hide-cursor sequence", () => {
+		// The other direction: 10 visible characters, width 5 — the sequence is
+		// kept whole and the text is cut at four, with the ellipsis and reset.
+		expect(truncate("\x1b[?25labcdefghij", 5)).toBe("\x1b[?25labcd\u2026\x1b[0m");
+	});
+
+	it("pads to the visible width across a hide-cursor sequence", () => {
+		expect(padRight("\x1b[?25lab", 6)).toBe("\x1b[?25lab    ");
+	});
+});
+
 describe("padRight pads to the visible width (Y4)", () => {
 	it("pads plain text", () => {
 		expect(padRight("ab", 5)).toBe("ab   ");

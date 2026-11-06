@@ -74,7 +74,10 @@ viewer row, `extensions/lib/subagent-discovery.ts`, and the two helpers' *behavi
 3. **`test-viewer.cjs` is unedited** and still imports `plainLen`, `padRight`, `timeAgo` from the `.cjs`.
 4. **One name for one thing**: the `.cjs`'s `plainLine` becomes `stripAnsi` at both its call sites; no alias of a second name survives (`rg -n 'plainLine' extensions/` → no output).
 5. **The shared module imports nothing** but its own types — no `@earendil-works/*`, no viewer, no fs. It must load under plain `node` (the `.cjs` viewer does).
-6. **`truncate` keeps its exact output**, including the `…` and the reset sequence it appends — its rows in the `.cjs` harness pin that, and `plainLen`'s change must not alter any output for a *complete* escape sequence.
+6. **`truncate` keeps its exact output for a complete SGR sequence**, including the `…` and the reset
+   sequence it appends — its rows in the `.cjs` harness pin that. For a complete *non-SGR* sequence the
+   output changes by ruling (Q-B1, owner 2026-11-07: every control code counts as zero width), and the
+   rows added at the gate pin that direction in both of its forms.
 7. **No spawn in a new test file without `env: childEnv()`.**
 
 ### Verification Criteria
@@ -152,4 +155,48 @@ base *truncated a line that fits*, because it counted a hide-cursor sequence as 
   keeps counting hide-cursor sequences as columns.
 - **(c) Land as it is** — the mechanism as ruled, the wider class documented and pinned, no further rows.
 
-**Status: blocked, awaiting the owner.** The branch is green, unpushed, and touching no merged file.
+**Ruled 2026-11-07 (owner, session 8f90746f) — option (a):**
+
+> "Yes, all codes (Recommended)". Question asked: "When the two `plainLen` copies merge, should every
+> terminal control code count as zero width? Lines containing codes like hide-cursor would then stop
+> being wrongly cut off; colour codes behave exactly as before."
+
+Recorder's reading: (a). **Prohibition 6 is narrowed** to "no output moves for a complete **SGR**
+sequence" — an output change on a complete *non-SGR* sequence is now the ruled behaviour, not a stop
+condition. The two rendering rows and the doc line are added; the class statement stands.
+
+**Status: ruled, landing.**
+
+---
+
+### Landing stamp (2026-11-07, merged `2f998c2`, commits `5c65ca5` rows → `6dfb404` fold → `ace2f08`/`6e74f37` review notes)
+
+**Landed after Q-B1.** `extensions/lib/view-text.ts` (102 lines) holds `plainLen`, `stripAnsi`,
+`padRight`, `timeAgo`, `truncate`; both viewers import them; the `.cjs` re-exports the three names
+`test-viewer.cjs` imports, so the harness is unedited (100/100). Viewers shrank: `.cjs` 606 → 574, v2
+1686 → 1642. `rg -n 'function (plainLen|padRight|timeAgo|stripAnsi|truncate)' <both viewers>` → no
+output; `rg -n 'plainLine' extensions/` → no output.
+
+**Q-B1 was a real falsification, and the implementer's handling of it was right.** My ruling claimed the
+two forms differ only on an unterminated escape; classifying the input space (597,871 strings) found
+28,002 divergences, every one a sequence the regex cannot strip — a *complete* `ESC[?25l` included. The
+order's second stop trigger fired with it: base truncated a four-column line because it counted the
+hide-cursor sequence as six columns. It stopped, pinned nothing it was not authorised to pin, and both
+reviewer seats independently called the disposition the owner's. Owner 2026-11-07: all control codes
+count as zero width.
+
+**Gate additions:** four rows (hide-cursor fits, mouse report fits, text cut after a hide-cursor
+sequence, `padRight` across one), each value measured before it was written rather than assumed; the
+module header now cites the ruling. Mutations: counting a `?` body byte as a column reds three rows;
+cutting at `width` instead of `width - 1` reds three others. Every existing row unchanged — 29 in the
+new file, 36/23/21/30/38 in the five suites, layout 27, harness 100, `node --check`, `bun build`.
+
+**Two process findings worth carrying:**
+1. **A "fixed in X" claim made from memory is how a landing ships a regression.** The implementer's own
+   mutation-revert (`git checkout --`) wiped its uncommitted doc rewrite, and its summary reported the
+   prose as landed; both reviewers caught it in `ace2f08`, fixed in `6e74f37`. Same failure mode as my
+   own three deltas-count errors tonight — the fix is mechanical (re-read the file at the tip, never
+   recall it), not attitudinal.
+2. **The premise's class statement is what should have carried the stop clause.** "Any other divergence
+   is `PREMISE FALSIFIED`" was measurable past by sampling; writing the *class* into §Ruling ("any
+   escape sequence the regex fails to strip") would have made the sampling gap visible before dispatch.
