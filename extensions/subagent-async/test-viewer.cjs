@@ -13,23 +13,30 @@ const os = require("node:os");
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 
 function test(name, fn) {
   try {
-    const skipped = fn();
-    // A row that cannot build its fixture returns a reason instead of passing
-    // on assertions it never made.
-    if (typeof skipped === "string") {
-      console.log(`  ⏭️  ${name} (skipped: ${skipped})`);
-      return;
-    }
+    fn();
     console.log(`  ✅ ${name}`);
     passed++;
   } catch (e) {
+    if (e && e.__piSkip) {
+      console.log(`  ⏭  ${name} (skipped: ${e.message})`);
+      skipped++;
+      return;
+    }
     console.log(`  ❌ ${name}`);
     console.log(`     ${e.message}`);
     failed++;
   }
+}
+
+// A row whose fixture another user name can build throws this instead.
+function skip(msg) {
+  const e = new Error(msg);
+  e.__piSkip = true;
+  throw e;
 }
 
 function eq(actual, expected, msg) {
@@ -367,7 +374,7 @@ test("an unreadable log is kept, with no content, footer or turns", () => {
 
 test("a picked session with an unreadable log is kept as STOPPED", () => {
   // 0000 is readable to root, so the fixture is not unreadable there.
-  if (process.getuid?.() === 0) return "root reads a 0000 file";
+  if (process.getuid?.() === 0) skip("root reads a 0000 file");
   const f = createSessionFiles("test-wo082-25");
   unlink(f.sock);
   touchLog(f.log, "── Completed (1 turns, exit 0) ──\n", 60);
@@ -600,7 +607,7 @@ process.on("exit", () => {
   for (const p of CLEANUP) {
     try { fs.unlinkSync(p); } catch {}
   }
-  console.log(`\n${passed} passed, ${failed} failed`);
+  console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""}`);
   if (failed > 0) process.exitCode = 1;
 });
 

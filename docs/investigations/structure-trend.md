@@ -29,23 +29,27 @@ refactor lands.
 the arms so it can name the ids the call reports. `extensions/lib/subagent-state.ts` 631 → 636 (+5):
 `listSubagentMetas` 21 → 22, one skip on the file name. `extensions/subagent-async/index.ts` 4688 →
 4689 (+1): the recovery call passes the option. Test-only: `tests/watch-session-discovery.test.ts`
-525 → 598 (+73; `--numstat` 75 2, the two minus lines being the two D11 rows gaining `.skipIf`),
-`extensions/subagent-async/test-viewer.cjs` 605 → 610 (`--numstat` 9 1). No function gained a branch
-on an already-duplicated structure; the arm's body is the same code under a guard.
+525 → 621 (+96; `--numstat` 98 2, the two minus lines being the two D11 rows gaining `.skipIf`),
+`extensions/subagent-async/test-viewer.cjs` 605 → 620 (+15; `--numstat` 16 1, the row's skip guard,
+the harness's `__piSkip` arm and the skipped count in the summary). No function gained a branch on an
+already-duplicated structure; the arm's body is the same code under a guard.
 
 **unification.** Still one registry scan and one log read: `rg -c 'readdirSync'
 extensions/lib/subagent-discovery.ts extensions/lib/subagent-state.ts extensions/subagent-async/index.ts`
 → 1 / 1 / 0 (unchanged); `rg -n 'meta\.json' extensions/lib/subagent-discovery.ts` → 0, so discovery
-never names a registry file itself. `rg -n 'socketsOnly' extensions/` → the option's doc comment, its
-definition, its one use and one call site (`index.ts:3305`); the two viewers and `test-viewer.cjs`
-call the no-option form, and `git diff` on `watch-session.cjs` / `watch-session-v2.ts` is empty.
+never names a registry file itself. `rg -n 'socketsOnly' extensions/` → 5 hits: one doc paragraph
+(`subagent-discovery.ts:98`), the definition (`:104`), its one use (`:159`), and one call site with its
+comment (`index.ts:3300`, `:3305`); the two viewers and `test-viewer.cjs` call the no-option form, and
+`git diff` on `watch-session.cjs` / `watch-session-v2.ts` is empty. The chmod skip reuses the repo's
+`skip()` convention (an `__piSkip` throw, counted in the summary line) rather than a second one:
+`rg -n '__piSkip = true' extensions/` → 5, one `skip(msg)` per `.cjs` harness.
 
-**cost, measured at the landed tip on this box.** `/tmp` held 60 `.sock`, 888 `.log` and 192
-`.meta.json` files; `discoverSessions('/tmp')` reported 70 sessions (60 socket, 10 in-window log-only).
-Warm: 12.1 ms and 192 meta parses for the no-option call, 8.0 ms and 60 parses with `socketsOnly`.
-The 888 logs still cost nothing here — the log-only arm only stats in-window candidates — so the win
-is the parse plus those 10 reads; it scales with the number of finished sessions left behind, which is
-the case `/tmp` grows into. Viewer ticks also drop from 192 parses to 70 (the ids they report).
+**cost, measured at the landed tip on this box.** `/tmp` held 60 `.sock`, 888 `.log` and 194
+`.meta.json` files; `discoverSessions('/tmp')` reported 71 sessions (60 socket, 11 in-window log-only).
+Warm: 13.9 ms and 194 meta parses for the no-option call, 7.9 ms and 60 parses with `socketsOnly`.
+The other 828 logs cost nothing — the log-only arm only stats in-window candidates — so the win is the
+parse plus those 11 reads; it scales with the number of finished sessions left behind, which is the
+case `/tmp` grows into. Viewer ticks also drop to the ids they report.
 
 **not taken here.** The socket arm still reads a socket's whole log for `content` and `footer`, which
 recovery reads neither of: it wants `turns` only. Splitting that returns a different `DiscoveredSession`
