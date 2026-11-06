@@ -43,14 +43,19 @@ extensions/subagent-async/watch-session-v2.ts` → 0; `rg -c 'export function
 (`rg -n '^import|require\(' extensions/lib/view-text.ts` → 0), which is what lets the `.cjs` viewer
 require it under plain `node`.
 
-**the ruling's table, corrected by measurement.** WO-2026-088 measured the two `plainLen` forms as
-differing "only on an escape sequence that never terminates". Exhaustively over 597,870 strings
-(alphabet `ESC [ m 1 ; a ? < space`, length ≤ 6), 28,002 differ, and **every** divergent string contains
-an `ESC [` the regex could not strip — 0 diverge where every `ESC [` starts a matchable
+**the ruling's table, corrected by measurement — an open owner question.** WO-2026-088 measured the two
+`plainLen` forms as differing "only on an escape sequence that never terminates". Exhaustively over the
+597,871 strings of length ≤ 6 from `ESC [ m 1 ; a ? < space`, 28,002 differ, and **every** divergent
+string contains an `ESC [` the regex could not strip — 0 diverge where every `ESC [` starts a matchable
 `ESC [ [0-9;]* <letter>`. The divergent class is therefore "what the regex fails to strip", one term
-wider than the table: a body byte outside `[0-9;]` counts too (`ESC[?25l` 6 → 0, `ESC[<64;3;5M` 10 → 0).
-Both viewers compose their own escapes from SGR bodies, so no rendered line moves on that account; the
-module's doc block states the wider class and `tests/view-text.test.ts` pins it.
+wider than the table: a body byte outside `[0-9;]` counts too (`ESC[?25l` 6 → 0, `ESC[<64;3;5M` 10 → 0),
+and 42 of the 28,002 run the other way, the scan counting a stray `ESC` inside a sequence as a column
+(`ESC[ESC[0m` 4 where the regex gave 2). This is a behaviour change the ruling's "nothing else changes"
+did not name, so the order's own `PREMISE FALSIFIED` clause fires: the mechanism landed as ruled, the
+module's doc block and `tests/view-text.test.ts` state and pin the wider class, and acceptance waits on
+the owner's word. The `.cjs` cuts raw log lines (`watch-session.cjs:402`), so a line carrying a sequence
+neither viewer composed measures and cuts differently than it did; SGR-only content, which both viewers
+compose, is unaffected — the 100-row harness and 27 layout rows pass unchanged.
 
 **watch.** `truncate` is the one helper only one viewer calls: v2 cuts with pi-tui's `truncateToWidth`, so
 a v2 line that needs the ellipsis contract would add a second cutter unless it calls the lib's. Neither

@@ -10,9 +10,10 @@
  * unterminated one measures 0.
  *
  * The ruling's table also measured `"\x1b["` (2 → 0) and `"\x1b[31"` (4 → 0), so
- * those rows flip with it, and the last block pins the wider class the same
- * reason covers: an escape body outside `[0-9;]` is a sequence the regex could
- * not strip either.
+ * those rows flip with it, and one block pins the wider class the same reason
+ * covers: an escape body outside `[0-9;]` is a sequence the regex could not strip
+ * either. One row measures through the `.cjs` viewer's own export, because that
+ * is the answer the shipped viewer now gives and the harness's boundary.
  *
  * Run: bun test tests/view-text.test.ts
  */
@@ -64,6 +65,23 @@ describe("plainLen on the sequences the regex could not strip (same ruling)", ()
 
 	it("keeps measuring the text around them", () => {
 		expect(plainLen("a\x1b[?25lb")).toBe(2);
+	});
+
+	it("counts a stray ESC inside a sequence as a column, so the scan is not always smaller", () => {
+		// The scan's `inEscape` arm ends a sequence at a fresh ESC and counts it;
+		// the regex measured 2 here. Pre-existing in v2, and why the module's class
+		// statement does not claim the scan always measures less.
+		expect(plainLen("\x1b[\x1b[0m")).toBe(4);
+	});
+});
+
+describe("the shipped .cjs viewer answers 2 for a truncated escape (Y2)", () => {
+	it("measures through the viewer's own export, as the harness imports it", () => {
+		// The `.cjs` installs a process-wide `uncaughtException` handler at load, so it
+		// is required inside the row — WO-2026-082's seam, `tests/watch-session-discovery.test.ts`.
+		// Its other re-exports are pinned by `test-viewer.cjs`'s 100 rows.
+		const viewer = require("../extensions/subagent-async/watch-session.cjs");
+		expect(viewer.plainLen("ab\x1b[")).toBe(2);
 	});
 });
 
