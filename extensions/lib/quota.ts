@@ -611,7 +611,9 @@ export function resetQuotaWarnings(): void {
 	warned.clear();
 }
 
-function warnOnce(provider: string, detail: string): void {
+/** Warn once per provider per process (exported so a caller that resolves a key
+ *  outside the fetch path reports through the same dedupe). */
+export function warnOnce(provider: string, detail: string): void {
 	if (warned.has(provider)) return;
 	warned.add(provider);
 	console.warn(`[footer-session-id] ${provider} quota: ${detail}`);

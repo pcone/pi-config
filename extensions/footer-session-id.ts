@@ -45,6 +45,7 @@ import {
 	quotaDescriptorFor,
 	renderQuotaSnapshot,
 	resetQuotaWarnings,
+	warnOnce,
 	type QuotaSnapshot,
 } from "./lib/quota.ts";
 
@@ -379,16 +380,20 @@ let cachedQuota: QuotaSnapshot | undefined;
 const quotaKeys = new Map<string, string>();
 
 /** Resolve and memoize a provider's key. The endpoint's response is the
- * authority on whether the key carries a coding plan, never a key prefix. */
-async function quotaKey(fc: FooterFactoryCtx, provider: string): Promise<string | undefined> {
+ * authority on whether the key carries a coding plan, never a key prefix.
+ * @for-testing-only — the memo is process-wide, so tests use unique providers */
+export async function quotaKey(fc: FooterFactoryCtx, provider: string): Promise<string | undefined> {
 	const memo = quotaKeys.get(provider);
 	if (memo !== undefined) return memo || undefined;
 	try {
 		const key = await fc.modelRegistry?.getApiKeyForProvider?.(provider);
 		quotaKeys.set(provider, key ?? "");
 		return key || undefined;
-	} catch {
-		quotaKeys.set(provider, "");
+	} catch (err) {
+		// A throw is a missing reading, not a missing key: memoising "" would
+		// disable this provider's row for the rest of the process on one transient
+		// failure, and say nothing. Warn once and let the 60 s cycle retry.
+		warnOnce(provider, `key lookup threw: ${err instanceof Error ? err.message : String(err)}`);
 		return undefined;
 	}
 }
@@ -692,6 +697,7 @@ export function renderTimelineRow(
  */
 export {
 	getZaiMultiplier,
+	warnOnce,
 	renderQuotaSegment,
 	renderGoUsageSegment,
 	formatResetDuration,
