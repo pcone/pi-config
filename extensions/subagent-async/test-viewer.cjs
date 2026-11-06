@@ -16,7 +16,13 @@ let failed = 0;
 
 function test(name, fn) {
   try {
-    fn();
+    const skipped = fn();
+    // A row that cannot build its fixture returns a reason instead of passing
+    // on assertions it never made.
+    if (typeof skipped === "string") {
+      console.log(`  ⏭️  ${name} (skipped: ${skipped})`);
+      return;
+    }
     console.log(`  ✅ ${name}`);
     passed++;
   } catch (e) {
@@ -360,6 +366,8 @@ test("an unreadable log is kept, with no content, footer or turns", () => {
 });
 
 test("a picked session with an unreadable log is kept as STOPPED", () => {
+  // 0000 is readable to root, so the fixture is not unreadable there.
+  if (process.getuid?.() === 0) return "root reads a 0000 file";
   const f = createSessionFiles("test-wo082-25");
   unlink(f.sock);
   touchLog(f.log, "── Completed (1 turns, exit 0) ──\n", 60);
