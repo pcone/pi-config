@@ -21,12 +21,8 @@
  * without pretending the clock is injectable.
  */
 import { describe, expect, it } from "bun:test";
-import {
-	quotaDescriptorFor,
-	renderGoUsageSegment,
-	renderQuotaSegment,
-	renderQuotaSnapshot,
-} from "../extensions/footer-session-id";
+import { quotaDescriptorFor, renderQuotaSnapshot } from "../extensions/footer-session-id";
+import { renderGoUsageSegment, renderQuotaSegment } from "./helpers/quota-render";
 
 /** Theme stub that wraps text in markers, so colour choices are part of the golden. */
 const marked = { fg: (color: string, text: string) => `[${color}:${text}]` };

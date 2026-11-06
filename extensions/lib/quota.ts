@@ -383,8 +383,11 @@ export function normalizeGoUsage(json: unknown): GoUsage | undefined {
 const GO_PROVIDER = "opencode-go";
 
 /** Go's three windows as segments — the display spec is decisions/external-tools/006:
- *  rolling percent + time left; weekly and monthly percent + %-through + time left. */
-function goParts(usage: GoUsage): QuotaPart[] {
+ *  rolling percent + time left; weekly and monthly percent + %-through + time left.
+ *  @for-testing the Go rows hand it an already-normalised `GoUsage`
+ *  (`tests/helpers/quota-render.ts`); production reaches it through
+ *  `goDescriptor.parse`. */
+export function goParts(usage: GoUsage): QuotaPart[] {
 	const parts: QuotaPart[] = [];
 	if (usage.rolling) {
 		parts.push({
@@ -649,59 +652,4 @@ export async function fetchQuotaSnapshot(
 	} finally {
 		clearTimeout(timeoutId);
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Test seams
-//
-// No production caller. The footer renders through
-// `quotaDescriptorFor(provider)?.render(...)` below, fed by
-// `fetchQuotaSnapshot` → `descriptor.parse` → `snapshotFor`; nothing outside
-// the tests holds an already-normalised payload. The characterisation goldens
-// in `tests/footer-quota-characterisation.test.ts` are the only users, and they
-// exist to pin bytes across a refactor, not to serve a caller.
-//
-// Deleting both is open, with carrier WO-2026-089
-// (`docs/investigations/structure-trend.md`): the 35 goldens must be repointed
-// at the descriptor path first, which costs either four test-only exports
-// (`tokenWindowParts`, `goParts`, `snapshotFor`, `goDescriptor`) or a
-// re-authored raw-payload fixture per row.
-// ---------------------------------------------------------------------------
-
-/**
- * Render the token-window shape. `now` drives the z.ai peak/off-peak prefix
- * only — reset durations come from the real clock, as they always have.
- */
-export function renderQuotaSegment(
-	quota: QuotaData | undefined,
-	modelProvider: string | undefined,
-	modelId: string | undefined,
-	width: number,
-	theme: QuotaTheme,
-	now?: Date,
-): string {
-	if (!quota) return "";
-	const descriptor = quotaDescriptorFor(modelProvider);
-	const parts = descriptor?.fromQuotaData?.(quota);
-	if (!descriptor || !parts) return "";
-	return descriptor.render(snapshotFor(descriptor, parts), modelProvider, modelId, width, theme, {
-		now: now ?? new Date(),
-		resetNow: new Date(),
-	});
-}
-
-/** Render the OpenCode Go window shape. */
-export function renderGoUsageSegment(
-	usage: GoUsage | undefined,
-	modelProvider: string | undefined,
-	width: number,
-	theme: QuotaTheme,
-	now?: number,
-): string {
-	if (!usage || modelProvider !== GO_PROVIDER) return "";
-	const at = new Date(now ?? Date.now());
-	return goDescriptor.render(snapshotFor(goDescriptor, goParts(usage)), modelProvider, undefined, width, theme, {
-		now: at,
-		resetNow: at,
-	});
 }
