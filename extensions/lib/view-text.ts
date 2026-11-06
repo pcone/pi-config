@@ -4,17 +4,22 @@
  * so the measurement that decides where a line is cut lives here once.
  *
  * `plainLen` is a manual scan, not a regex (WO-2026-088 §Ruling). The regex it
- * replaces matched `ESC [ [0-9;]* <letter>`, so an escape sequence it could not
- * strip was counted as columns: `"abESC["` measured 4, `"ESC[31"` 4, `"ESC["` 2.
- * An escape sequence moves the cursor and occupies no column, so the scan
- * measures 0 for each. `.cjs`'s `truncate` already assumed that reading when it
- * walks the string a byte at a time.
+ * replaces matched `ESC [ [0-9;]* <letter>`, so a sequence it could not strip was
+ * counted as columns: `"abESC["` measured 4, `"ESC[31"` 4, `"ESC["` 2. The scan
+ * reads those bytes as a sequence the terminal never completes, and measures 0.
  *
- * The scan and the regex differ wherever the regex fails to strip: on an
- * unterminated tail (`ESC[`, `ESC[31`), and equally on a body byte outside
- * `[0-9;]` — `ESC[?25l`, `ESC[<64;3;5M` — where the scan drops the sequence and
- * the regex counts its bytes. Both viewers build their own escapes from SGR
- * bodies only, so their rendered lines are unaffected by the wider class.
+ * The two forms differ on every escape sequence the regex fails to strip, which
+ * is wider than the unterminated tail: a body byte outside `[0-9;]` is left
+ * unstripped too, so `ESC[?25l` measures 0 where it measured 6. Both directions
+ * occur — the scan counts a stray `ESC` inside a sequence as one visible column,
+ * so `ESC[ESC[0m` measures 4 where the regex measured 2 — and the scan is not
+ * always the smaller count. Measured over WO-2026-088's alphabet: 28,002
+ * divergent strings, 42 of them running that way.
+ *
+ * The `.cjs` cuts raw log lines, so a line carrying a sequence neither viewer
+ * composed measures differently here than it did through the regex — and cuts
+ * differently where the two measurements fall either side of the width. SGR
+ * bodies, which both viewers compose, measure the same.
  *
  * Importable from plain `node`: the `.cjs` viewer requires this module, so it
  * takes no dependencies and no non-erasable TypeScript syntax.
@@ -73,8 +78,7 @@ export function timeAgo(ms: number): string {
 /**
  * `str` cut to `width` visible columns, ending in an ellipsis and a reset:
  * `width - 1` visible characters plus `…ESC[0m`. Escape sequences on the kept
- * prefix are preserved, an escape sequence straddling the cut is completed, and
- * input that already fits is returned untouched.
+ * prefix are preserved whole; input that already fits is returned untouched.
  */
 export function truncate(str: string, width: number): string {
 	const visible = plainLen(str);

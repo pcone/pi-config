@@ -29,10 +29,10 @@ refactor lands.
 **growth.** `extensions/subagent-async/watch-session.cjs` 606 → 574 (−32; `--numstat` 11 43),
 `extensions/subagent-async/watch-session-v2.ts` 1686 → 1642 (−44; `1 45`), new
 `extensions/lib/view-text.ts` 98. Each viewer lost five private helpers and gained one `require` / one
-`import`; the lib's 98 lines are the five bodies plus the doc block that carries the ruling. No branch
+`import`; the lib's 102 lines are the five bodies plus the doc block that carries the ruling. No branch
 was added to a function that already had one: `plainLen`'s scan and `truncate`'s walk moved verbatim, and
 `padRight` lost the `.cjs` copy's redundant `Math.max(0, …)` clamp (the early return already covers it).
-New `tests/view-text.test.ts` 119 (test-only; commit 1 pinned the `.cjs`'s answers, commit 2 the shared
+New `tests/view-text.test.ts` 137 (test-only; commit 1 pinned the `.cjs`'s answers, commit 2 the shared
 module's).
 
 **unification.** One idea, one home, counted at the landed tip: `rg -n 'function
