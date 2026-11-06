@@ -17,6 +17,9 @@ const path = require("node:path");
 const os = require("node:os");
 const { execSync, spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
+// The resolver under test is the extension's, not a copy: id matching,
+// prefix normalisation and the ambiguity error are its rules to keep.
+const { resolveSubagentMeta } = require("../lib/subagent-state.ts");
 
 // ── Test harness ────────────────────────────────────────────────────────────
 
@@ -93,39 +96,6 @@ function buildSubagentArgs(config) {
     args.push("--session", config.sessionFile);
   }
   return args;
-}
-
-/**
- * Resolve a subagent session ID from a full or partial identifier.
- * Same logic as resolveSubagentMeta in index.ts.
- */
-function resolveSubagentMeta(sessionId) {
-  let files;
-  try {
-    files = fs.readdirSync("/tmp").filter(
-      (f) => f.startsWith("pi-subagent-") && f.endsWith(".meta.json")
-    );
-  } catch {
-    return null;
-  }
-
-  const candidates = [];
-  for (const f of files) {
-    const sid = f.replace("pi-subagent-", "").replace(".meta.json", "");
-    if (sid === sessionId || sid.endsWith(sessionId)) {
-      const meta = readMetaJson(sid);
-      if (meta) candidates.push({ sid, meta });
-    }
-  }
-
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) return candidates[0];
-
-  const ids = candidates.map((c) => c.sid).join(", ");
-  throw new Error(
-    `Ambiguous partial session id "${sessionId}" matches multiple sessions: ${ids}. ` +
-      `Use a longer suffix or the full id.`
-  );
 }
 
 /**

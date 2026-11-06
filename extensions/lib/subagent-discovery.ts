@@ -1,5 +1,8 @@
 /**
- * Session discovery: the one place that finds the subagent sessions on disk.
+ * Session discovery: the one scan of the tmp dir for subagent sessions.
+ *
+ * A single session looked up by (partial) id is `resolveSubagentMeta` in
+ * `subagent-state.ts`, next to the registry scan it reads.
  *
  * Both watch viewers (`.cjs` and v2) scan the tmp dir, apply the same
  * freshness window, build the same `pi-subagent-<id>.{sock,log}` paths and

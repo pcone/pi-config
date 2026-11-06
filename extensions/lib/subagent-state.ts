@@ -183,6 +183,62 @@ export interface SubagentMetaEntry {
 	meta: Record<string, any>;
 }
 
+// ── Id-query lookup ────────────────────────────────────────────────────────
+//
+// Handles are shown and typed in four shapes: `subagent-<uuid>`, a bare
+// `<uuid>`, or either truncated to an 8+ character tail. One definition of what
+// a query means, shared by the tools and the meta lookup, so `/watch`,
+// `/attach` and `subagent_resume` cannot drift apart.
+
+/**
+ * Strip the display prefix from a session-id query.
+ *
+ * Matching is a suffix test against the stored full id, so the prefix must go
+ * first: `subagent-c3587cc8c12e` was not a suffix of
+ * `subagent-ac5fe548-…-c3587cc8c12e` while the bare `c3587cc8c12e` was, and the
+ * miss surfaced as "No running subagent found" — read as death, which cost two
+ * live worktrees to a peer's force-reap (2026-10-07).
+ */
+export function normalizeIdQuery(s: string): string {
+	return s.replace(/^subagent-/, "");
+}
+
+/**
+ * True when a stored session id matches a user-supplied query. Both stores key
+ * by the full `subagent-<uuid>` handle — the running map directly, and meta
+ * files named `pi-subagent-<handle>.meta.json` — so a query matches when it is
+ * a suffix of the handle (`-ac5fe548-…-c3587cc8c12e`, a `subagent-`-prefixed
+ * tail) or of the handle with that prefix stripped (a bare tail). Surrounding
+ * whitespace is ignored; an empty query matches nothing, since every id is a
+ * superset of the empty string.
+ */
+export function idMatchesQuery(storedId: string, query: string): boolean {
+	const q = query.trim();
+	const needle = normalizeIdQuery(q);
+	if (needle.length === 0) return false; // empty query must not match every id
+	return storedId.endsWith(q) || normalizeIdQuery(storedId).endsWith(needle);
+}
+
+/**
+ * Resolve a session id from a full or partial identifier by reading the meta
+ * registry. Returns the single match, `null` for none, and throws listing the
+ * candidates when a partial id is ambiguous.
+ */
+export function resolveSubagentMeta(
+	sessionId: string,
+): { sid: string; meta: Record<string, any> } | null {
+	const candidates = listSubagentMetas(SUBAGENT_TMP_DIR).filter((e) => idMatchesQuery(e.sid, sessionId));
+	if (candidates.length === 0) return null;
+	const [only] = candidates;
+	if (candidates.length === 1) return { sid: only.sid, meta: only.meta };
+
+	const ids = candidates.map((c) => c.sid).join(", ");
+	throw new Error(
+		`Ambiguous partial session id "${sessionId}" matches multiple sessions: ${ids}. ` +
+			`Use a longer suffix or the full id.`,
+	);
+}
+
 /** Every readable `pi-subagent-<sid>.meta.json` in `dir`. */
 export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR): SubagentMetaEntry[] {
 	let files: string[];

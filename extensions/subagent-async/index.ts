@@ -34,7 +34,10 @@ import {
 	isKnownStopReason,
 	isOwnerAlive,
 	listInFlightSubagents,
+	idMatchesQuery,
 	listSubagentMetas,
+	normalizeIdQuery,
+	resolveSubagentMeta,
 	MAX_TURNS_HARD,
 	outcomeFromExitCode,
 	outcomeFromFooterWord,
@@ -56,8 +59,11 @@ export {
 	SUBAGENT_STALE_TURN_MS,
 	decideRecoveryAdoption,
 	defaultOwnerProbe,
+	idMatchesQuery,
 	isOwnerAlive,
+	normalizeIdQuery,
 	processStartToken,
+	resolveSubagentMeta,
 	selfStartToken,
 	type OwnerProbe,
 	type RecoveryAdoption,
@@ -370,37 +376,6 @@ export function reportDeclaresOwnerAsks(systemPrompt: string | null | undefined)
 }
 
 /**
- * Strip the display prefix from a session-id query. Callers pass ids in four
- * shapes — `subagent-<uuid>`, a bare `<uuid>`, or either truncated to an 8+
- * character tail. Matching is a suffix test against the stored full id, so the
- * prefix must go first: `subagent-c3587cc8c12e` was not a suffix of
- * `subagent-ac5fe548-…-c3587cc8c12e` while the bare `c3587cc8c12e` was, and the
- * miss surfaced as "No running subagent found" — read as death, which cost two
- * live worktrees to a peer's force-reap (2026-10-07).
- * Exported for unit testing.
- */
-export function normalizeIdQuery(s: string): string {
-	return s.replace(/^subagent-/, "");
-}
-
-/**
- * True when a stored session id matches a user-supplied query. Both stores key
- * by the full `subagent-<uuid>` handle — the running map directly, and meta
- * files named `pi-subagent-<handle>.meta.json` — so a query matches when it is
- * a suffix of the handle (`-ac5fe548-…-c3587cc8c12e`, a `subagent-`-prefixed
- * tail) or of the handle with that prefix stripped (a bare tail). Surrounding
- * whitespace is ignored; an empty query matches nothing, since every id is a
- * superset of the empty string.
- * @for-testing-only — pure
- */
-export function idMatchesQuery(storedId: string, query: string): boolean {
-	const q = query.trim();
-	const needle = normalizeIdQuery(q);
-	if (needle.length === 0) return false; // empty query must not match every id
-	return storedId.endsWith(q) || normalizeIdQuery(storedId).endsWith(needle);
-}
-
-/**
  * Match a session query against the running map. Shared by /watch and /attach
  * so both accept the same forms, and backed by `idMatchesQuery` — the one
  * definition of what an id query means (the /tmp meta scan uses it too).
@@ -414,45 +389,6 @@ export function findRunningByQuery(
 		if (idMatchesQuery(id, query)) return rs;
 	}
 	return undefined;
-}
-
-/**
- * Resolve a subagent session ID from a full or partial (last 8+ chars)
- * identifier. Scans /tmp/pi-subagent-*.meta.json and matches on the
- * session id portion (the part between "pi-subagent-" and ".meta.json").
- * Returns the full session ID and meta if exactly one match; null if none;
- * throws with an ambiguity list if multiple match.
- */
-export function resolveSubagentMeta(sessionId: string): { sid: string; meta: Record<string, any> } | null {
-	let files: string[];
-	try {
-		files = fs.readdirSync("/tmp").filter(
-			(f) => f.startsWith("pi-subagent-") && f.endsWith(".meta.json"),
-		);
-	} catch {
-		return null;
-	}
-
-	// Extract the session id portion from the filename. `idMatchesQuery` owns the
-	// empty-query guard, so this loop needs no separate one.
-	const candidates: Array<{ sid: string; meta: Record<string, any> }> = [];
-	for (const f of files) {
-		const sid = f.replace("pi-subagent-", "").replace(".meta.json", "");
-		if (idMatchesQuery(sid, sessionId)) {
-			const meta = readMetaJson(sid);
-			if (meta) candidates.push({ sid, meta });
-		}
-	}
-
-	if (candidates.length === 0) return null;
-	if (candidates.length === 1) return candidates[0];
-
-	// Ambiguous partial match — list candidates
-	const ids = candidates.map((c) => c.sid).join(", ");
-	throw new Error(
-		`Ambiguous partial session id "${sessionId}" matches multiple sessions: ${ids}. ` +
-			`Use a longer suffix or the full id.`,
-	);
 }
 
 /**

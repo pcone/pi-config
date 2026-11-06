@@ -14,7 +14,7 @@
 
 import { describe, expect, it, afterEach } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { writeFileSync, unlinkSync, existsSync, readFileSync } from "node:fs";
 import {
 	resolveTrackerKey,
 	resolveSubagentMeta,
@@ -319,6 +319,31 @@ describe("id query normalization (2026-10-07 incident)", () => {
 		const msg = describeUnknownSession(tail);
 		expect(msg).toMatch(/Ambiguous partial session id/);
 		expect(msg).not.toMatch(/last 8\+ characters/);
+	});
+
+	it("13: a meta file whose JSON is not an object is not a session", () => {
+		// The registry scan rejects a scalar or array: a meta is a record of the
+		// spawn. Before the fold onto `listSubagentMetas` the resolver read the
+		// file itself and returned the scalar as a match.
+		const sid = `subagent-${randomUUID()}`;
+		trackCleanup(sid);
+		writeFileSync(metaPath(sid), "42");
+
+		expect(resolveSubagentMeta(sid)).toBeNull();
+	});
+
+	it("14: the resume harness runs this resolver, not a copy of it", () => {
+		// test-resume.cjs is a plain-node harness: it cannot require index.ts (the
+		// extension uses TS parameter properties). Its copy is gone because the
+		// resolver lives in the lib, where node's type stripping loads it — the
+		// copy's own matcher lacked the trim and the prefix rule, so its rows
+		// pinned the copy rather than production (WO-2026-084).
+		const src = readFileSync(
+			new URL("../extensions/subagent-async/test-resume.cjs", import.meta.url),
+			"utf-8",
+		);
+		expect(src).not.toMatch(/function resolveSubagentMeta/);
+		expect(src).toMatch(/require\("\.\.\/lib\/subagent-state\.ts"\)/);
 	});
 });
 
