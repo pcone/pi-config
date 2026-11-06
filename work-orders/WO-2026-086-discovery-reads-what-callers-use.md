@@ -119,7 +119,21 @@ node extensions/subagent-async/test-viewer.cjs
 - **`PLAN MISMATCH`** — the option cannot be added without changing `DiscoveredSession`, or an existing row changes answer.
 - **`REFACTOR FIRST`** — the meta map cannot be built lazily without a second registry path.
 
-### Questions (raised 2026-11-06 by the implementer, awaiting an owner ruling)
+### Questions (raised 2026-11-06 by the implementer; both ruled by the orchestrator, neither was an owner question)
+
+**Ruled 2026-11-06 — Q-A1: keep the landed row (their option 1).** This order's matrix cell and its
+"each with the mutation that reds it" clause contradict each other: a malformed meta for an unasked id
+is already swallowed by the parse's `try`/`catch`, so the literal fixture pins nothing. The landed row
+is strictly stronger — a *valid* meta for `b` is what reds without the id filter, and a malformed `c`
+keeps the no-throw clause. Repairing an under-specified acceptance fixture to make the order's own
+acceptance clause hold is not a departure from what the row accepts; it is what the row was for.
+**Status: resolved, no owner involvement.**
+
+**Ruled 2026-11-06 — Q-A2: sweep it (their option 2, done at the gate).** The owner's ruling covers
+*the chmod rows*, and this order touched that file; this order's enumeration of "three" was the defect,
+not the scope. `extensions/subagent-async/test-viewer.cjs:365` now skips under root like the other
+three (`node -e 'process.getuid = () => 0; require(...)'` → 98 passed, 2 skipped).
+**Status: resolved, no owner involvement.**
 
 Rows are numbered the way WO-2026-078's are; each cites the order text it reads against.
 
@@ -139,3 +153,45 @@ The sweep names three rows. `extensions/subagent-async/test-viewer.cjs:365-372` 
 is kept, with no content, footer or turns", `chmod` at `:367`) builds the same `chmod 0o000` fixture and fails under a
 real root user at `eq(s.content, null)`. It is outside the three, so it was left untouched. Options:
 (1) leave it (compliant with this order); (2) sweep it in the same style as the other three.
+
+---
+
+### Landing stamp (2026-11-06, merged `4d1c695`, commits `dc0503f` rows + `36a29be` change + `867351f`/`3526d9d` review notes)
+
+**Landed.** `discoverSessions({dir, now, socketsOnly})`; recovery is the only caller that passes it
+(`index.ts:3305`), so the 30-minute log-only arm — the picker's concern — is never entered on session
+start. The registry scan is limited to the ids the call reports (`listSubagentMetas(dir, onlySids?)`
+filters on the file name, above the parse), so a meta for an unreported id costs no read.
+
+**Gated by me at the merged tip:** `readdirSync` **1 / 1 / 0** across the three modules (unchanged);
+`socketsOnly` appears 5 times — doc, signature, gate, one call site with its comment; both viewers
+untouched (`git diff --stat` empty); the seven targeted suites green (38 / 30 / 21 / 36 / 47 / 3 / 2);
+`test-viewer.cjs` 100 passed, and **98 passed / 2 skipped under a forced root uid**.
+
+**My mutations:** the arm gate forced on reds X1; a socket's `turns` taken from the footer reds X2
+(3 vs 9 — the fixture separates marker count from footer count); deleting the registry id filter reds
+X4; dropping the per-session `meta` assignment reds X6 *and* the pre-existing D8 rows, i.e. the fold
+did not leave the old meta coverage behind.
+
+**Two escalations, neither of which reached the owner — that is the finding of this landing.** The
+implementer filed both as owner questions and marked the order `partial`. Q-A1 was an
+acceptance-fixture contradiction in my own order: the matrix asked for a malformed meta on an unasked id,
+which the parse swallows either way, so the fixture could not discriminate — the fix is the landed row
+(a valid unasked id is what the filter changes, a malformed third id keeps the no-throw clause), and
+choosing a stronger fixture for a clause the order already required is the orchestrator's call, not a
+ruling. Q-A2 was my under-count of the chmod rows (two in `test-viewer.cjs`, not one), against an owner
+ruling that named the class, not the count — so it was in scope and I swept it at the gate.
+
+**Two order defects, both mine:** (a) the matrix's X4 fixture was under-specified, as above; (b) the
+cleanup line's glob (`pi-subagent-test-wo082-*`) names a fixture *id*, not a `mkdtemp` prefix — the real
+ones are `wo082-` and `wo082-cjs-`, and `/tmp/wo082-d15.txt` is a leftover **file** from 082, still
+there. Also `[moved-citation]`: the recovery call site is `:3305`, not the order's `:3368` (084 moved it).
+
+**Disclosed limit, kept:** X1 cannot prove "no read happened" — the lib has no read seam and this order
+adds none. The evidence is the omission plus the arm skip in the diff. Recorded in the row's own comment
+rather than papered over.
+
+**Review calibration:** three of four review rounds were about doc arithmetic — the implementer counted
+*files* where the code parses *ids*, twice. The final snapshot's numbers are instrumented (7 parses with
+no options, 2 with `socketsOnly`, 194 meta files, 830 log-only stat candidates on this box). Carry that
+instruction into any order whose deliverable includes a `structure-trend.md` entry.

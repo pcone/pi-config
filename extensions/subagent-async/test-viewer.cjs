@@ -363,6 +363,8 @@ test("a socket outlives the window; a stale log alone does not", () => {
 });
 
 test("an unreadable log is kept, with no content, footer or turns", () => {
+  // 0000 is readable to root, so the fixture is not unreadable there.
+  if (process.getuid?.() === 0) skip("root reads a 0000 file");
   const logPath = placeInDir("pi-subagent-test-wo082-23.log", "── Completed (1 turns, exit 0) ──\n", 1000);
   fs.chmodSync(logPath, 0o000);
   const s = discovery.discoverSessions({ dir: WO082_DIR, now: WO082_NOW }).find((x) => x.id === "test-wo082-23");
