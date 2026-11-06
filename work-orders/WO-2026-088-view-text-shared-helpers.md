@@ -117,3 +117,39 @@ the call-site census you enumerated for each helper; the exact diff of the one f
 - **`PLAN MISMATCH`** — `test-viewer.cjs` cannot keep its imports without editing it.
 - **`REFACTOR FIRST`** — a helper turns out to depend on viewer state (an injected theme, a width from a
   TUI object) and cannot be a pure function.
+
+### Q-B1 — raised 2026-11-06 by the implementer's `PREMISE FALSIFIED`; **needs an owner ruling**
+
+**The stop clause fired, and the evidence is sound.** This order's §Ruling said the two `plainLen`
+forms differ *only* on an escape sequence that never terminates, and that "any other divergence is a
+`PREMISE FALSIFIED`". The implementer classified the input space instead of sampling it: over 597,871
+strings of length ≤ 6 from `ESC [ m 1 ; a ? < space`, **28,002 differ**, and every one contains an
+`ESC [` the regex cannot strip. Zero diverge where every `ESC [` starts a matchable
+`ESC [ [0-9;]* <letter>`. I re-derived the classification independently over a smaller alphabet (7,380
+strings, 219 differing, **0 unexplained**), so the claim holds at both sizes.
+
+**The true class is "every escape sequence the regex fails to strip"**, one term wider than my table:
+a CSI body byte outside `[0-9;]`, e.g. `ESC[?25l` (cursor hide) and `ESC[<64;3;5M` (mouse report), which
+real terminals do emit. Measured by me, base vs branch tip, `truncate(…, 8)`:
+
+| input | visible (base, regex) | base output | visible (tip, scan) | tip output |
+|---|---|---|---|---|
+| `ESC[?25labcd` | 10 | `ESC[?25labcd…ESC[0m` | 4 | `ESC[?25labcd` (fits, unchanged) |
+| `abcESC[?25l` | 9 | `abcESC[?25l…ESC[0m` | 3 | `abcESC[?25l` |
+| `ESC[31mabcdefghijESC[0m` | 10 | `ESC[31mabcdefg…ESC[0m` | 10 | identical |
+
+So the second stop trigger ("`truncate`'s output changes for a complete escape sequence") is real: the
+base *truncated a line that fits*, because it counted a hide-cursor sequence as ten columns.
+
+**Options, for the owner:**
+- **(a) In scope — the class is the ruling's intent** (recommended). "An escape sequence occupies no
+  column" applies to any sequence, not only the SGR-shaped ones my table happened to sample; the regex
+  was wrong for every body byte outside `[0-9;]`. Prohibition 6 narrows to "no output moves for a
+  complete **SGR** sequence". Remaining work: two rendering rows (the `truncate`/`padRight` output for a
+  non-SGR sequence) and one doc line. ~10 turns.
+- **(b) Out of scope** — revert `6dfb404..6e74f37`, keep `5c65ca5`'s pins, and the scan needs a rule for
+  bodies outside `[0-9;]` (what to do with a sequence it does not recognise). ~15 turns, and the `.cjs`
+  keeps counting hide-cursor sequences as columns.
+- **(c) Land as it is** — the mechanism as ruled, the wider class documented and pinned, no further rows.
+
+**Status: blocked, awaiting the owner.** The branch is green, unpushed, and touching no merged file.
