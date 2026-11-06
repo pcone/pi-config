@@ -691,17 +691,13 @@ export function renderTimelineRow(
 /**
  * Quota surface, re-exported from `extensions/lib/quota.ts`.
  *
- * The two pre-refactor entry points (`renderQuotaSegment`,
- * `renderGoUsageSegment`) have no production caller — the footer renders via
- * `quotaDescriptorFor(provider)?.render(...)` — and the characterisation
- * goldens are their only users. Deleting them is open, with carrier
- * WO-2026-089 (`docs/investigations/structure-trend.md`).
+ * One renderer (`renderQuotaSnapshot`) behind one descriptor per provider: the
+ * footer renders via `quotaDescriptorFor(provider)?.render(...)`, fed by
+ * `fetchQuotaSnapshot` → `descriptor.parse` → `snapshotFor`.
  */
 export {
 	getZaiMultiplier,
 	warnOnce,
-	renderQuotaSegment,
-	renderGoUsageSegment,
 	formatResetDuration,
 	normalizeGoUsage,
 	normalizeKimiUsage,

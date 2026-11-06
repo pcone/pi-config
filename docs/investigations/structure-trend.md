@@ -22,7 +22,28 @@ refactor lands.
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
 | session discovery in `/tmp` | — (observation only; no landing was flagged for it) | **closed 2026-11-06 by WO-2026-083** — the three viewers folded in WO-2026-082 (`7eeaeb6`), then the last production copy: `rg -n 'endsWith("\.sock")' extensions/subagent-async/index.ts` → 0, `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1 (the out-of-scope meta scan, `:429`), `rg -n '── Turn' extensions/subagent-async/index.ts` → 1 (`:2205`, a header print). `recoverOrphanedSubagents` now takes its sock list, meta and turn count from `discoverSessions()`. The adoption predicate did not move: `decideRecoveryAdoption` stays in `subagent-state.ts:162`, called from `index.ts` with `selfPid` / `selfSessionId` / `probe` (WO-2026-083's 027 section). One copy is named and left uncarried: `resolveSubagentMeta` (`index.ts:426-456`) globs `pi-subagent-*.meta.json` on a hardcoded `/tmp` where `listSubagentMetas(dir)` already does it — its partial-id matching and ambiguity error make it its own fold, not this one's | — |
 | `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
-| pre-refactor quota entry points (`renderQuotaSegment`, `renderGoUsageSegment`) | — (observation; no landing was flagged for it) | **open** — test-only and undeleted. No production caller: `rg -n 'renderQuotaSegment\|renderGoUsageSegment' --glob '!*.md'` → two definitions in `extensions/lib/quota.ts`, one comment and one re-export block in `extensions/footer-session-id.ts`, four test files; the footer renders via `quotaDescriptorFor(provider)?.render(...)`. **carrier: WO-2026-089** — blocked: the 35 goldens in `tests/footer-quota-characterisation.test.ts` (60 entry-point call sites across it, `footer-session-id-multiplier.test.ts` and `footer-opencode-usage.test.ts`) drive `renderQuotaSegment` with an already-normalised `QuotaData` and `renderGoUsageSegment` with a `GoUsage`, while the production door builds the snapshot through `fetchQuotaSnapshot` → `descriptor.parse` → `snapshotFor`; repointing them costs either four test-only exports (`tokenWindowParts`, `goParts`, `snapshotFor`, `goDescriptor`) or a raw-payload re-authoring of every fixture with all goldens re-proved byte-for-byte | delete both, repoint the goldens at the descriptor path (WO-2026-089) |
+| pre-refactor quota entry points (`renderQuotaSegment`, `renderGoUsageSegment`) | — (observation; no landing was flagged for it) | **closed 2026-11-07 by WO-2026-089** — both deleted; `rg -n 'renderQuotaSegment|renderGoUsageSegment' --glob '!*.md' extensions/` → 0. The three rendering files reach the one renderer through `tests/helpers/quota-render.ts` (one shared adapter, 82 lines), which assembles the snapshot the private `snapshotFor` used to build from `descriptor.fromQuotaData` / `goParts`; `goParts` is the one internal export added, marked `@for-testing` and still called by `goDescriptor.parse`. `fromQuotaData` stays: descriptor metadata the adapter reads. No golden moved — every `expected:` string in the four files is byte-identical | — |
+
+## 2026-11-07 — chunk: WO-2026-089 the test-only quota entry points are gone
+
+**growth.** `extensions/lib/quota.ts` 707 → 655 (−52; `--numstat` 5 57): the 55-line tail deleted
+(blank, the 16-line "Test seams" block, then `renderQuotaSegment`'s 21 lines and
+`renderGoUsageSegment`'s 15), less 3 lines added to `goParts`' doc block.
+`extensions/footer-session-id.ts` 1115 → 1111 (−4; `3 7`): two names out of a re-export block and its
+comment. `tests/helpers/quota-render.ts` is new at 82, of which ~30 are the doc block. The test files
+moved 0 lines of fixtures: 7 in, 10 out, all imports plus one export-name assertion in
+`activity-timeline.test.ts`.
+
+**unification.** One adapter, not four: `rg -n 'function renderQuotaSegment|function
+renderGoUsageSegment' tests/` → 2, both in `tests/helpers/quota-render.ts`, and the three files that
+call them import it. No production surface gained but one internal export: `rg -n 'export function
+goParts' extensions/` → 1. Provider gating in the Go arm is the renderer's own `snapshot.provider !==
+provider` guard rather than a second copy of it. The goldens are unchanged because the parts still
+come from `fromQuotaData` / `goParts`, the conversions `descriptor.parse` uses.
+
+**not taken here.** Re-authoring the fixtures as raw API payloads (the review's other reading) would
+move every golden and change what the rows pin from renderer bytes to the parse-plus-render pipeline,
+which the descriptor-wiring block already covers against `ZAI_PAYLOAD` / `MINIMAX_PAYLOAD`.
 
 ## 2026-11-07 — chunk: WO-2026-088 the viewers' text helpers are one module
 

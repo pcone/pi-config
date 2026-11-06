@@ -11,7 +11,8 @@
  * time testing, avoiding time-dependent flaky tests.
  */
 import { describe, it, expect } from "bun:test";
-import { getZaiMultiplier, renderQuotaSegment } from "../extensions/footer-session-id";
+import { getZaiMultiplier } from "../extensions/footer-session-id";
+import { renderQuotaSegment } from "./helpers/quota-render";
 
 // ---------------------------------------------------------------------------
 // Helpers

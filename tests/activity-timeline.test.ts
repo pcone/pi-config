@@ -706,10 +706,10 @@ describe("defensive parsing", () => {
 // ---------------------------------------------------------------------------
 
 describe("existing exports unchanged", () => {
-	it("getZaiMultiplier and renderQuotaSegment are still importable", async () => {
+	it("getZaiMultiplier and renderQuotaSnapshot are still importable", async () => {
 		const mod = await import("../extensions/footer-session-id");
 		expect(typeof mod.getZaiMultiplier).toBe("function");
-		expect(typeof mod.renderQuotaSegment).toBe("function");
+		expect(typeof mod.renderQuotaSnapshot).toBe("function");
 		expect(typeof mod.rgbToHsl).toBe("function");
 		expect(typeof mod.darkenAccentFg).toBe("function");
 	});

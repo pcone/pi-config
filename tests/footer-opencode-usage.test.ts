@@ -15,9 +15,9 @@ import {
 	normalizeGoUsage,
 	weeklyThroughPercent,
 	monthlyThroughPercent,
-	renderGoUsageSegment,
 	type GoUsage,
 } from "../extensions/footer-session-id";
+import { renderGoUsageSegment } from "./helpers/quota-render";
 
 /** Minimal theme stub that wraps text in markers for color detection. */
 const testTheme = {
