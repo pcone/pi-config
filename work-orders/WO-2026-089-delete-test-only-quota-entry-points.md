@@ -120,3 +120,45 @@ adapter's final text; the register row's closing text.
   `renderQuotaSnapshot` to reproduce a golden.
 - **`REFACTOR FIRST`** — the three test files cannot share one adapter without restructuring their
   fixtures.
+
+---
+
+## Landing stamp — 2026-11-07
+
+**Merged** `c99cd67` (branch `pi-subagent-5fe120740a3a`, tip `59924fe`). **84 turns against a 50-turn
+budget** — the overrun that motivated the turn-cap order; the work finished, but no stop-report was
+raised at 75.
+
+**Prohibitions verified at the branch, not from the report.** `git grep
+'renderQuotaSegment\|renderGoUsageSegment' <branch> -- extensions/` → none; whole-tree hits are the four
+`tests/` files, two older work orders and the register. `git diff -U0 <base> <branch> -- tests/ | rg -c
+'^[+-].*expected'` → 0. The two hunks in `extensions/lib/quota.ts` are `-386,2 +386,5` (`goParts`'s
+export) and `-653,55 +655,0` (the tail), so `renderQuotaSnapshot:184` and `fromQuotaData:95` are outside
+them. Register arithmetic re-measured at the tip: 655 / 1111 / 82.
+
+**Mutation 3 re-run at the gate** (`goParts` → `return []`): 18 fail, 46 pass. The reported 18 is right;
+the reviewer's first 19 counted a `visibleWidth(s) <= 6` row that an empty segment satisfies.
+
+**Two order defects, corrected here rather than departed from.**
+1. Prohibition 1 said the four test files show "only the adapter and import lines", while §Scope named
+   `activity-timeline.test.ts`'s "still importable" row as expected to change. That row asserts
+   `typeof mod.renderQuotaSegment === "function"`, which cannot survive the deletion: Scope governs, and
+   the row now asserts `renderQuotaSnapshot` with `expected` unchanged. The operative rule — no golden
+   moves — held at 0 diff lines.
+2. The specified mutation 2 ("drop `overflow` → a MiniMax clip-vs-truncate row reds") cannot fire. Both
+   MiniMax descriptors are `overflow: "clip"` and the renderer tests `snapshot.overflow === "truncate"`,
+   so `undefined ≡ "clip"`; dropping `overflow` reds the two Go rows instead. The discriminating
+   direction is forcing the token-window arm to `"truncate"`, which reds the three clip rows. Use that
+   form in future quota-wiring mutations.
+
+**Suite:** 1306 tests / 68 files, 9 fail — the standing set in `/tmp/f088.txt`, none new, none gone. Run
+from the repo root: from a depth-3 worktree bun's discovery also sweeps `~/Developer/baba-pi/test/`,
+which is why the first run read 1277 tests / 11 fail and is not a regression signal.
+
+**Process note:** `invariant_exhaustiveness: explicit` was wrong. Two invariants — the Go body's
+redundant `modelProvider !== GO_PROVIDER` check, and `resetNow` taken from the real clock — were only
+describable from the deleted bodies, so the order was `implicit`.
+
+**Left standing, deliberately:** the `@for-testing` marker where the repo uses `@for-testing-only` in 15
+places (the order named the short form; both reviewers rated it LOW), and the `"opencode-go"` literal in
+the adapter, whose clean fix — exporting `snapshotFor` — is the option Ruling 2 rejected.

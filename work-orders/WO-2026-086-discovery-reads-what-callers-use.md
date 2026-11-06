@@ -195,3 +195,7 @@ rather than papered over.
 *files* where the code parses *ids*, twice. The final snapshot's numbers are instrumented (7 parses with
 no options, 2 with `socketsOnly`, 194 meta files, 830 log-only stat candidates on this box). Carry that
 instruction into any order whose deliverable includes a `structure-trend.md` entry.
+
+**Turn count, for the ledger (2026-11-07):** 116 child turns against a 70-turn budget and a 100-turn hard
+stop, with no stop-report. Nothing was red; the overshoot was invisible until the completion report
+arrived.
