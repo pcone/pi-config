@@ -118,3 +118,24 @@ node extensions/subagent-async/test-viewer.cjs
 - **`PREMISE FALSIFIED`** — a viewer depends on the log-only arm's *content* for a socket session, or the recovery caller needs `content`/`footer` after all.
 - **`PLAN MISMATCH`** — the option cannot be added without changing `DiscoveredSession`, or an existing row changes answer.
 - **`REFACTOR FIRST`** — the meta map cannot be built lazily without a second registry path.
+
+### Questions (raised 2026-11-06 by the implementer, awaiting an owner ruling)
+
+Rows are numbered the way WO-2026-078's are; each cites the order text it reads against.
+
+**Q-A1 — the X4 fixture cannot both match this order's wording and red without the filter.**
+The matrix says "metas for `a` and `b` … a *malformed* meta for `b` does not make the call throw",
+and the Acceptance rows clause says "each with the mutation that reds it". A malformed meta for an
+unasked `b` is already swallowed by the parse's `try`/`catch` (`subagent-state.ts:263-266`), so that
+row answers `[a]` with or without the id filter — it pins nothing, and it is also green at `ae9dd71`,
+against the "X1/X4 cannot pass at base" line in the dispatch note. Landed shape (commit
+`dc0503f`): `a` and `b` get valid metas (the valid `b` is what reds without the filter)
+and a third id `c` gets a malformed one for the no-throw clause. Options: (1) keep the landed row;
+(2) restore the literal fixture and record in the row that it pins nothing. Option 1 is the
+implementer's recommendation; the choice is the owner's because it changes an acceptance row's fixture.
+
+**Q-A2 — widen the chmod sweep to the fourth `0o000` row?**
+The sweep names three rows. `extensions/subagent-async/test-viewer.cjs:365-372` ("an unreadable log
+is kept, with no content, footer or turns", `chmod` at `:367`) builds the same `chmod 0o000` fixture and fails under a
+real root user at `eq(s.content, null)`. It is outside the three, so it was left untouched. Options:
+(1) leave it (compliant with this order); (2) sweep it in the same style as the other three.

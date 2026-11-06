@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverSessions } from "../extensions/subagent-async/watch-session-v2.ts";
 import { RECENT_WINDOW_MS, discoverSessions as discoverFacts, subagentPaths } from "../extensions/lib/subagent-discovery.ts";
+import { listSubagentMetas } from "../extensions/lib/subagent-state.ts";
 
 const MINUTE = 60_000;
 
@@ -248,7 +249,8 @@ describe("v2 session discovery (D1–D11, today's answers)", () => {
 		expect(s!.meta).toBeUndefined();
 	});
 
-	it("D11: a log it cannot read is kept, terminal and wordless — not dropped", () => {
+	// 0000 is readable to root, so the row cannot build its fixture there.
+	it.skipIf(process.getuid?.() === 0)("D11: a log it cannot read is kept, terminal and wordless — not dropped", () => {
 		const f = fixture(11);
 		const logPath = log(f, logBody(1, "── Completed (1 turns, exit 0) ──"), MINUTE);
 		chmodSync(logPath, 0o000);
@@ -408,7 +410,8 @@ describe("the shared discovery (D1–D11 at the lib boundary)", () => {
 		expect(s.meta).toBeUndefined();
 	});
 
-	it("D11: a statable unreadable log is kept with no content, footer or turns", () => {
+	// 0000 is readable to root, so the row cannot build its fixture there.
+	it.skipIf(process.getuid?.() === 0)("D11: a statable unreadable log is kept with no content, footer or turns", () => {
 		const dir = tempDir();
 		const f = placeSession(dir, 11, { log: [logBody(1, "── Completed (1 turns, exit 0) ──"), MINUTE] });
 		chmodSync(join(dir, `pi-subagent-${f.id}.log`), 0o000);
@@ -452,6 +455,99 @@ describe("the shared discovery (D1–D11 at the lib boundary)", () => {
 
 		expect(discoverFacts({ dir, now: NOW }).map((s) => s.id)).toEqual([]);
 		expect(discoverFacts({ dir, now: mtimeMs + RECENT_WINDOW_MS }).map((s) => s.id)).toEqual(["test-wo082-15"]);
+	});
+});
+
+// ── `socketsOnly` and the meta-map filter (WO-2026-086) ─────────────────────
+//
+// Recovery acts on sockets only, so `socketsOnly` drops the log-only arm and
+// the registry scan is limited to the ids the call reports. The absence of a
+// read is not observable here — the lib has no read seam — so X1 pins the
+// reported list and the arm skip in the source is its evidence.
+describe("discovery reads only what its caller uses (X1–X6)", () => {
+	it("X1: `socketsOnly` reports sockets only — a fresh log with no sock is not listed", () => {
+		const dir = tempDir();
+		const f = placeSession(dir, 30, { sock: 10_000, log: [logBody(1), 10_000] });
+		placeSession(dir, 31, { log: [logBody(2, "── Completed (2 turns, exit 0) ──"), MINUTE] });
+		// A socket's registry entry must survive the filtered scan: the id set is
+		// the socket arm's own ids, not some other subset.
+		place(dir, `pi-subagent-${f.id}.meta.json`, JSON.stringify({ agentName: "socket" }), 10_000);
+
+		const found = discoverFacts({ dir, now: NOW, socketsOnly: true });
+		expect(found.map((s) => s.id)).toEqual(["test-wo082-30"]);
+		expect(found.find((s) => s.id === "test-wo082-31")).toBeUndefined();
+		expect(found[0].meta).toEqual({ agentName: "socket" });
+	});
+
+	it("X2: `socketsOnly` keeps a socket's turns, read from its log", () => {
+		const dir = tempDir();
+		// The footer claims 9 turns over 3 markers: `turns` counts markers in the
+		// log text, so a footer-derived count answers 9 here.
+		placeSession(dir, 32, { sock: 10_000, log: [logBody(3, "── Completed (9 turns, exit 0) ──"), 10_000] });
+
+		// The turns are the recovery tracker's baseline: skipping the log-only arm
+		// must not zero them.
+		const [s] = discoverFacts({ dir, now: NOW, socketsOnly: true });
+		expect(s.turns).toBe(3);
+	});
+
+	// 0000 is readable to root, so the row cannot build its fixture there.
+	it.skipIf(process.getuid?.() === 0)("X3: `socketsOnly` keeps a socket whose log cannot be read, at zero turns", () => {
+		const dir = tempDir();
+		const f = placeSession(dir, 33, { sock: 10_000, log: [logBody(1, "── Completed (1 turns, exit 0) ──"), 10_000] });
+		chmodSync(join(dir, `pi-subagent-${f.id}.log`), 0o000);
+
+		const [s] = discoverFacts({ dir, now: NOW, socketsOnly: true });
+		expect(s).toBeDefined();
+		expect(s.running).toBe(true);
+		expect(s.turns).toBe(0);
+		expect(s.content).toBeNull();
+		expect(s.footer).toBeNull();
+	});
+
+	// The no-throw half is structural, not pinned here: the parse's catch already
+	// swallows a malformed meta. `b`'s valid meta is what reds without the filter.
+	it("X4: `listSubagentMetas` returns only the asked ids; an unasked malformed meta raises nothing", () => {
+		const dir = tempDir();
+		const a = fixture(34);
+		const b = fixture(35);
+		const c = fixture(36);
+		place(dir, `pi-subagent-${a.id}.meta.json`, JSON.stringify({ agentName: "a" }), 10_000);
+		// `b`'s meta is valid and out of the set: that is what tells a filtered
+		// scan from an unfiltered one, since a malformed meta is already swallowed
+		// by the parse's catch either way.
+		place(dir, `pi-subagent-${b.id}.meta.json`, JSON.stringify({ agentName: "b" }), 10_000);
+		place(dir, `pi-subagent-${c.id}.meta.json`, '{"agentName":', 10_000);
+
+		expect(listSubagentMetas(dir, new Set([a.id]))).toEqual([{ sid: a.id, meta: { agentName: "a" } }]);
+	});
+
+	// The same answer as D3 and D5, over the default: this is the row that reds if
+	// the option ever defaults to on.
+	it("X5: no options keeps the log-only arm, with its content, footer and turns", () => {
+		const dir = tempDir();
+		const body = logBody(2, "── Completed (2 turns, exit 0) ──");
+		placeSession(dir, 37, { log: [body, MINUTE] });
+
+		const [s] = discoverFacts({ dir, now: NOW });
+		expect(s.id).toBe("test-wo082-37");
+		expect(s.running).toBe(false);
+		expect(s.content).toBe(body);
+		expect(s.footer).toEqual({ word: "Completed", turns: 2, exitCode: 0 });
+		expect(s.turns).toBe(2);
+	});
+
+	// The log-only arm's meta is reachable only through the post-arm scan, so this
+	// is the row a set built from sockets alone would lose.
+	it("X6: a log-only session keeps its registry entry", () => {
+		const dir = tempDir();
+		const f = placeSession(dir, 38, { log: [logBody(2, "── Completed (2 turns, exit 0) ──"), MINUTE] });
+		place(dir, `pi-subagent-${f.id}.meta.json`, JSON.stringify({ agentName: "log-only" }), MINUTE);
+
+		const [s] = discoverFacts({ dir, now: NOW });
+		expect(s.id).toBe("test-wo082-38");
+		expect(s.running).toBe(false);
+		expect(s.meta).toEqual({ agentName: "log-only" });
 	});
 });
 

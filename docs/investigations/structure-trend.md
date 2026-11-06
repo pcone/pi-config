@@ -22,6 +22,40 @@ refactor lands.
 | session discovery in `/tmp` | — (observation only; no landing was flagged for it) | **closed 2026-11-06 by WO-2026-083** — the three viewers folded in WO-2026-082 (`7eeaeb6`), then the last production copy: `rg -n 'endsWith("\.sock")' extensions/subagent-async/index.ts` → 0, `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1 (the out-of-scope meta scan, `:429`), `rg -n '── Turn' extensions/subagent-async/index.ts` → 1 (`:2205`, a header print). `recoverOrphanedSubagents` now takes its sock list, meta and turn count from `discoverSessions()`. The adoption predicate did not move: `decideRecoveryAdoption` stays in `subagent-state.ts:162`, called from `index.ts` with `selfPid` / `selfSessionId` / `probe` (WO-2026-083's 027 section). One copy is named and left uncarried: `resolveSubagentMeta` (`index.ts:426-456`) globs `pi-subagent-*.meta.json` on a hardcoded `/tmp` where `listSubagentMetas(dir)` already does it — its partial-id matching and ambiguity error make it its own fold, not this one's | — |
 | `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
 
+## 2026-11-06 — chunk: WO-2026-086 discovery reads only what its caller uses
+
+**growth.** `extensions/lib/subagent-discovery.ts` 182 → 191 (+9; `--numstat` 35 26): `discoverSessions`
+85 → 89 lines, the log-only arm behind one `if (!opts.socketsOnly)` and the registry scan moved below
+the arms so it can name the ids the call reports. `extensions/lib/subagent-state.ts` 631 → 636 (+5):
+`listSubagentMetas` 21 → 22, one skip on the file name. `extensions/subagent-async/index.ts` 4688 →
+4689 (+1): the recovery call passes the option. Test-only: `tests/watch-session-discovery.test.ts`
+525 → 621 (+96; `--numstat` 98 2, the two minus lines being the two D11 rows gaining `.skipIf`),
+`extensions/subagent-async/test-viewer.cjs` 605 → 620 (+15; `--numstat` 16 1, the row's skip guard,
+the harness's `__piSkip` arm and the skipped count in the summary). No function gained a branch on an
+already-duplicated structure; the arm's body is the same code under a guard.
+
+**unification.** Still one registry scan and one log read: `rg -c 'readdirSync'
+extensions/lib/subagent-discovery.ts extensions/lib/subagent-state.ts extensions/subagent-async/index.ts`
+→ 1 / 1 / 0 (unchanged); `rg -n 'meta\.json' extensions/lib/subagent-discovery.ts` → 0, so discovery
+never names a registry file itself. `rg -n 'socketsOnly' extensions/` → 5 hits: one doc paragraph
+(`subagent-discovery.ts:98`), the definition (`:104`), its one use (`:159`), and one call site with its
+comment (`index.ts:3300`, `:3305`); the two viewers and `test-viewer.cjs` call the no-option form, and
+`git diff` on `watch-session.cjs` / `watch-session-v2.ts` is empty. The chmod skip reuses the repo's
+`skip()` convention (an `__piSkip` throw, counted in the summary line) rather than a second one:
+`rg -n '__piSkip = true' extensions/` → 5, one `skip(msg)` per `.cjs` harness.
+
+**cost, measured at the landed tip on this box.** `/tmp` held 60 `.sock`, 890 `.log` and 194
+`.meta.json` files; `discoverSessions('/tmp')` reported 71 sessions (60 socket, 11 in-window log-only).
+Warm: 13.9 ms and **7** meta parses for the no-option call, 7.9 ms and **2** with `socketsOnly` — the
+scan parses only the metas whose ids it reports, where before it parsed all 194. The 830 log-only
+candidates still cost one `statSync` each (the window check follows the stat,
+`subagent-discovery.ts:163-173`); only the 11 in-window ones are read. Viewer ticks likewise drop to
+the ids they report. Parse counts are instrumented, not file counts.
+
+**not taken here.** The socket arm still reads a socket's whole log for `content` and `footer`, which
+recovery reads neither of: it wants `turns` only. Splitting that returns a different `DiscoveredSession`
+shape, which this order forbids, so it stays a separate question with its own order.
+
 ## 2026-11-06 — chunk: review triage, the meta lookup and the memoised key
 
 **growth.** `extensions/subagent-async/index.ts` 4752 → 4688 (−64): `normalizeIdQuery`,

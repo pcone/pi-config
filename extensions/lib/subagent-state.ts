@@ -239,8 +239,12 @@ export function resolveSubagentMeta(
 	);
 }
 
-/** Every readable `pi-subagent-<sid>.meta.json` in `dir`. */
-export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR): SubagentMetaEntry[] {
+/**
+ * Every readable `pi-subagent-<sid>.meta.json` in `dir`, restricted to
+ * `onlySids` when given. The filter runs on the file name, before the parse:
+ * an id nobody asked for costs no read and cannot fail the scan.
+ */
+export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR, onlySids?: ReadonlySet<string>): SubagentMetaEntry[] {
 	let files: string[];
 	try {
 		files = fs.readdirSync(dir);
@@ -252,6 +256,7 @@ export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR): SubagentMetaE
 		if (!f.startsWith("pi-subagent-") || !f.endsWith(".meta.json")) continue;
 		const sid = f.slice("pi-subagent-".length, -".meta.json".length);
 		if (!sid) continue;
+		if (onlySids && !onlySids.has(sid)) continue;
 		try {
 			const meta = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
 			if (meta && typeof meta === "object") entries.push({ sid, meta });
