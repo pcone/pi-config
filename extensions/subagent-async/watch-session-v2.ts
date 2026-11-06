@@ -67,6 +67,7 @@ import {
 	subagentPaths,
 	type DiscoveredSession,
 } from "../lib/subagent-discovery.ts";
+import { padRight, stripAnsi, timeAgo } from "../lib/view-text.ts";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -212,51 +213,6 @@ const TS = {
 	// turn boundary — muted accent (turn headers are a pi extension concept)
 	turnHdr: tok("muted", (s) => `${DIM_ON}\x1b[36m${s}${RESET}`),
 };
-
-// ── Pure utilities ──────────────────────────────────────────────────────────
-
-export function plainLen(s: string): number {
-	let len = 0;
-	let inEscape = false;
-	for (let i = 0; i < s.length; i++) {
-		const ch = s[i];
-		if (inEscape) {
-			if (ch === "\x1b") {
-				len++;
-				inEscape = false;
-				continue;
-			}
-			if (ch && /[A-Za-z]/.test(ch)) inEscape = false;
-			continue;
-		}
-		if (ch === "\x1b" && s[i + 1] === "[") {
-			inEscape = true;
-			i++;
-			continue;
-		}
-		len++;
-	}
-	return len;
-}
-
-/** Return `s` with all ANSI escape sequences removed. */
-function stripAnsi(s: string): string {
-	return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
-}
-
-function padRight(s: string, width: number): string {
-	const len = plainLen(s);
-	if (len >= width) return s;
-	return s + " ".repeat(width - len);
-}
-
-function timeAgo(ms: number): string {
-	const s = Math.round(ms / 1000);
-	if (s < 60) return `${s}s ago`;
-	const m = Math.floor(s / 60);
-	if (m < 60) return `${m}m ago`;
-	return `${Math.floor(m / 60)}h ago`;
-}
 
 // ── Session discovery ───────────────────────────────────────────────────────
 
