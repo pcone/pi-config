@@ -22,6 +22,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
+import { subagentPaths } from "../lib/subagent-discovery.ts";
 import {
 	STOPPED_FOOTER_WORD,
 	outcomeFromFooter,
@@ -37,9 +38,7 @@ if (!sid) {
 }
 
 // Resolve session ID — accepts full ID, short suffix, or full path
-const sockPath = sid.startsWith("/")
-	? sid
-	: `/tmp/pi-subagent-${sid.startsWith("subagent-") ? sid : `subagent-${sid}`}.sock`;
+const { sockPath } = subagentPaths(sid);
 
 // ── Component ───────────────────────────────────────────────────────────────
 

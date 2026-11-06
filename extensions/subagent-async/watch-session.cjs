@@ -15,8 +15,12 @@ const {
   STOPPED_FOOTER_WORD,
   outcomeFromFooter,
   parseTerminalFooter,
-  readTerminalFooter,
 } = require("../lib/subagent-state.ts");
+const {
+  RECENT_WINDOW_MS,
+  discoverSessions: discoverSessionFacts,
+  subagentPaths,
+} = require("../lib/subagent-discovery.ts");
 
 // Silently ignore stale-socket errors (subagent killed, socket file remains)
 process.on("uncaughtException", (err) => {
@@ -89,60 +93,29 @@ function timeAgo(ms) {
 
 // ── Discover sessions ───────────────────────────────────────────────────────
 
-const RECENT_WINDOW_MS = 30 * 60 * 1000;
-
+/**
+ * The picker's view over the shared discovery.
+ *
+ * The status string stays the footer's own word here (unlike v2): this viewer
+ * prints and pads it. A finished log carrying no footer — unreadable, torn or
+ * legacy — reads STOPPED, as it always has; an unreadable log is kept rather
+ * than dropped, because a run that happened is shown.
+ */
 function discoverSessions() {
   /**
    * @type {Array<{id:string, sockPath:string, logPath:string, status:string,
    *   word:string|null, outcome:string|null, mtimeMs:number, order:number}>}
    */
-  const sessions = [];
-
-  // Active sessions (have a socket)
-  let sockFiles = [];
-  try { sockFiles = fs.readdirSync("/tmp").filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".sock")); } catch {}
-
-  for (const f of sockFiles) {
-    const id = f.replace("pi-subagent-", "").replace(".sock", "");
-    const sockPath = `/tmp/${f}`;
-    const logPath = sockPath.replace(".sock", ".log");
-    let mtimeMs = 0;
-    try { mtimeMs = fs.statSync(logPath).mtimeMs; } catch {}
-    try { mtimeMs = Math.max(mtimeMs, fs.statSync(sockPath).mtimeMs); } catch {}
-    sessions.push({ id, sockPath, logPath, status: "RUNNING", word: null, outcome: null, mtimeMs, order: 0 });
-  }
-
-  // Recently finished (log file exists, no socket, modified in last 30 min)
-  let logFiles = [];
-  try { logFiles = fs.readdirSync("/tmp").filter((f) => f.startsWith("pi-subagent-") && f.endsWith(".log")); } catch {}
-
-  for (const f of logFiles) {
-    const id = f.replace("pi-subagent-", "").replace(".log", "");
-    const logPath = `/tmp/${f}`;
-    const sockPath = logPath.replace(".log", ".sock");
-    if (sessions.some((s) => s.id === id)) continue; // already via socket
-    let stat = null;
-    try { stat = fs.statSync(logPath); } catch { continue; }
-    const age = Date.now() - stat.mtimeMs;
-    if (age > RECENT_WINDOW_MS) continue;
-    let content = null;
-    try { content = fs.readFileSync(logPath, "utf-8"); } catch {}
-    // The status string stays the footer's own word here (unlike v2): this
-    // viewer prints and pads it. A log carrying no footer — unreadable, torn or
-    // legacy — reads STOPPED, as it always has.
-    const footer = content === null ? null : readTerminalFooter(content);
-    const word = footer ? footer.word : null;
-    sessions.push({
-      id,
-      sockPath,
-      logPath,
-      status: (word || STOPPED_FOOTER_WORD).toUpperCase(),
-      word,
-      outcome: footer ? outcomeFromFooter(footer) : null,
-      mtimeMs: stat.mtimeMs,
-      order: 0,
-    });
-  }
+  const sessions = discoverSessionFacts().map((s) => ({
+    id: s.id,
+    sockPath: s.sockPath,
+    logPath: s.logPath,
+    status: s.running ? "RUNNING" : (s.footer ? s.footer.word : STOPPED_FOOTER_WORD).toUpperCase(),
+    word: s.running ? null : (s.footer ? s.footer.word : null),
+    outcome: s.running || !s.footer ? null : outcomeFromFooter(s.footer),
+    mtimeMs: s.mtimeMs,
+    order: 0,
+  }));
 
   // Sort by mtime descending, then add order
   sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
@@ -220,9 +193,7 @@ function pickSession(sessions) {
 async function main() {
   // Fast path: explicit session ID — single pane
   if (arg && !autoRecent) {
-    const sockPath = arg.startsWith("/")
-      ? arg
-      : `/tmp/pi-subagent-${arg.startsWith("subagent-") ? arg : `subagent-${arg}`}.sock`;
+    const { sockPath } = subagentPaths(arg);
     return runSingleViewer(sockPath, arg);
   }
 
@@ -257,9 +228,7 @@ function runMultiViewer(initialIds, initialSplitCount) {
   const panes = [];
 
   function createPane(sid) {
-    const sockPath = sid.startsWith("/")
-      ? sid
-      : `/tmp/pi-subagent-${sid.startsWith("subagent-") ? sid : `subagent-${sid}`}.sock`;
+    const { sockPath } = subagentPaths(sid);
     const p = {
       sid,
       sockPath,

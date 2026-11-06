@@ -19,7 +19,34 @@ refactor lands.
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
 | terminal-outcome vocabulary in the watch views | — (closed by WO-2026-080, `a8ff8be`) | **closed 2026-11-05** — 0 terminal word literals in the three viewers; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in `extensions/lib/subagent-state.ts`; the two live viewers had also been dead since pi-tui 1.4 (WO-2026-081) | — |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
-| session discovery in the watch viewers | — (observation only; no landing was flagged for it) | open — **two production copies**, **carrier: WO-2026-082** (owner 2026-11-06, via the planning seat: "Order it next") `rg -c 'readdirSync' ` → 2 in each of `watch-session-v2.ts` / `watch-session.cjs`, and each declares its own `RECENT_WINDOW_MS = 30 * 60 * 1000` (`:69`, `:92`) | one `discoverSessions` over the `/tmp` socket+log glob, its mtime window and the `pi-subagent-<id>.meta.json` load, shared by both viewers; `test-viewer.cjs` already exercises the `.cjs` copy's real function rather than a third one |
+| session discovery in the watch viewers | — (observation only; no landing was flagged for it) | **closed 2026-11-06 by WO-2026-082** (`7eeaeb6`) for the three viewers: `rg -c 'readdirSync' <the three viewers>` → 0, `rg -c 'RECENT_WINDOW_MS = ' extensions/` → 1 (`subagent-discovery.ts:29`), `rg -c 'pi-subagent-' <the three viewers>` → 0. One copy survives outside the viewers — `extensions/subagent-async/index.ts:3365` (`recoverOrphanedSubagents`, the same sock glob plus its own turn regex), excluded by that order as a different question (027 owner classification) and **no carrier scheduled** | — (the fold itself; the `index.ts` copy needs its own order) |
+
+## 2026-11-06 — chunk: WO-2026-082 session discovery is one function
+
+**growth.** Deltas at the landed tip: `watch-session-v2.ts` 1718 → 1686 (−32), `watch-session.cjs`
+637 → 606 (−31), `watch-session.ts` 197 → 196 (−1), new `extensions/lib/subagent-discovery.ts` 179,
+`test-viewer.cjs` 520 → 605 (+85, test-only), new `tests/watch-session-discovery.test.ts` 525
+(test-only). Both production viewers shrank: the fold deleted discovery, `countTurns`, `loadSessionMeta`,
+`resolveSockPath`, `RECENT_WINDOW_MS` and two `readdirSync` passes and added a 10-line and a 12-line map.
+No branch was added to a long function. No candidate extraction is left in the viewers.
+
+**unification.** One idea, one home, counted at the landed tip: `rg -c 'readdirSync' ` over the three
+viewers → 0; `rg -c 'RECENT_WINDOW_MS = ' extensions/` → 1; `rg -c 'pi-subagent-' ` over the three
+viewers → 0; `rg -c 'meta\.json' ` over the three viewers → 0. Three things folded, not one: the scan, the
+freshness window and the id→path rule. The window and the scan had drifted into two copies that agreed;
+the path rule existed three times (v2's `resolveSockPath`, the `.cjs`'s two inline builders,
+`watch-session.ts:42`) and had not.
+
+**cost.** The `.cjs` picker now reads every live session's tail facts where it previously read neither the
+log nor the registry: on this box 65 live sessions, 0.3 MB, 46 ms warm, on a 5 s tick. That is the data
+shape the order specifies (a socket session carries `turns` and its footer), so the number belongs in the
+snapshot rather than in a follow-up: re-check it before a fleet-sized `/tmp`.
+
+**remaining copy, not this chunk's.** `extensions/subagent-async/index.ts:3355-3395`
+(`recoverOrphanedSubagents`) scans the same sock glob, slices the same id and owns a second turn regex
+(`:3392`). The order forbids the extension entry from importing discovery, and that function answers the
+owner-classification question (027), so folding it is a separate order with its own premise. The register
+row above records it as unscheduled.
 
 ## 2026-11-05 — chunk: WO-2026-081 + WO-2026-080 the views read the vocabulary, and the viewers load again
 
