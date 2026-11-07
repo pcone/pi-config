@@ -39,16 +39,25 @@ import {
 	normalizeIdQuery,
 	resolveSubagentMeta,
 	MAX_TURNS_HARD,
+	STALL_TURNS,
+	TURN_CAP_DEFAULT,
+	TURN_CAP_GRACE,
+	decideTurnAction,
+	nextStallState,
 	outcomeFromExitCode,
 	outcomeFromFooterWord,
 	processStartToken,
 	readSubagentState,
 	readTerminalFooter,
+	resolveTurnCap,
 	resumeCallFor,
 	selfStartToken,
 	stopReasonOutcome,
 	type OwnerProbe,
+	type StallObservation,
 	type SubagentOutcome,
+	type TurnAction,
+	type TurnCapState,
 } from "../lib/subagent-state.ts";
 
 // The 027 ownership gate and the R3-3 state vocabulary live in
@@ -73,6 +82,19 @@ import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const TURN_NUDGE_SOFT = 450; // warn once before the hard 500-turn kill
+
+// Child-facing texts for the two turn-cap arm messages (decision 046). No
+// number appears in either: the implementer learns of its cap only from the
+// wind-down, and a ledger-calibrated number in the child's context would leak
+// how much room it has left (owner ruling 2026-11-07, "hide it").
+const TURN_CAP_WIND_DOWN_STEER =
+	"[Turn limit] This run has reached its turn limit. Commit what is green, leave the rest as a " +
+	"clearly-marked WIP commit, then report: status partial or blocked, naming what is done, what is not, " +
+	"the evidence you have, and what you would do next. You will be stopped shortly if you have not exited. " +
+	"Do not thin tests, skip mutations or skip checks to finish.";
+const STALL_STEER =
+	"[No-progress check] No new commit for a long stretch of turns. Stop and check whether your current " +
+	"approach is working: if it is, carry on; if it is not, change approach or report what is blocking you.";
 const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const HARD_KILL_DELAY_MS = 5000;
 // Stalled-turn watchdog: if a subagent hasn't completed a turn in
@@ -337,6 +359,10 @@ export interface SpawnMetaFields {
 	excludeTools: string[];
 	/** Set when the spawn opened a work-order record; resume and recovery complete it. */
 	workRecord?: WorkRecord;
+	/** Decision 046: the resolved turn cap, stored in the spawn's own input
+	 *  convention so a resume can hand it straight back to `resolveTurnCap` —
+	 *  `0` is the disabled state. */
+	turnCap: number;
 }
 
 /**
@@ -643,6 +669,24 @@ interface RunningSubagent {
 	// so a stopped result is never gated on either.
 	stoppedExplicitly: boolean;
 	turnNudged: boolean; // one-shot flag: soft 450-turn wrap-up nudge already sent
+	// Decision 046: the per-dispatch turn cap. Resolved through resolveTurnCap
+	// at spawn/resume (0 disables → Infinity); the decision itself lives in
+	// extensions/lib/subagent-state.ts, never at this file's call sites.
+	turnCap: number;
+	// Turns used by the earlier runs of this same logical dispatch (0 for a fresh
+	// spawn, the recorded count on a resume). The cap compares against
+	// turnsUsed() — see the helper.
+	turnsBefore: number;
+	// The wind-down steer was injected; the grace is running. Not persisted: a
+	// resume re-trips it (decision 046).
+	turnCapReached: boolean;
+	// Commit-free turns observed on the child's branch, and whether the advisory
+	// stall steer was delivered for the current stall. Folded by nextStallState.
+	stallTurns: number;
+	stallSteered: boolean;
+	// Last branch tip observed by `git rev-parse`; null when the run has no
+	// isolation branch to watch (non-isolated dispatch or resume).
+	stallLastTip: string | null;
 	logPath: string;   // live human-readable event log
 	logLines: string[];     // in-memory buffer for live TUI widget
 	stderrLines: string[];  // captured stderr from the child pi process;
@@ -709,9 +753,10 @@ interface RunningSubagent {
 	// 0/negative/NaN → disabled). Per-spawn; no global setting.
 	silenceTimeoutMs: number;
 	// Kill source for the delivered marker: "kill-tool" (subagent_kill),
-	// "progress-timeout" (stage-2 auto-kill), or "turn-limit" (the
-	// MAX_TURNS_HARD stop). Null until killedExplicitly.
-	killedVia: "kill-tool" | "progress-timeout" | "turn-limit" | null;
+	// "progress-timeout" (stage-2 auto-kill), "turn-limit" (the MAX_TURNS_HARD
+	// stop), or "turn-cap" (decision 046's cap + grace exhausted). Null until
+	// killedExplicitly.
+	killedVia: "kill-tool" | "progress-timeout" | "turn-limit" | "turn-cap" | null;
 }
 
 const running = new Map<string, RunningSubagent>();
@@ -1464,6 +1509,111 @@ function formatTokens(count: number): string {
 	return `${Math.round(count / 1000000)}M`;
 }
 
+// ── Turn cap and stall tripwire (decision 046) ─────────────────────────────
+
+/** Turns used by this logical dispatch: this run's own count plus the runs it
+ *  continues. The cap compares against this, so a resume continues the count
+ *  the previous run recorded. */
+function turnsUsed(rs: RunningSubagent): number {
+	return rs.turnsBefore + rs.progress.turns;
+}
+
+/** The cap as the parent sees it. `Infinity` is the disabled state. */
+function formatTurnCap(cap: number): string {
+	return Number.isFinite(cap) ? String(cap) : "none (disabled)";
+}
+
+/**
+ * The parent-facing budget line for a spawn/resume result: the cap, the turns
+ * counted so far, and — when the run has no branch to watch — the fact that the
+ * stall arm is skipped. Never reaches the child.
+ */
+function turnBudgetLine(cap: number, turns: number, hasBranch: boolean): string {
+	return (
+		`turn_cap: ${formatTurnCap(cap)} | turns_used: ${turns}` +
+		(hasBranch ? "" : " | stall_watch: none (no isolation branch)")
+	);
+}
+
+/**
+ * True when the child's branch tip moved since the last observation. One
+ * `git rev-parse` spawn per turn — a command, not a ref-file read: a linked
+ * worktree's `.git` is a file pointing at the gitdir, so the refs live in the
+ * common dir and no file under the worktree holds the branch tip (decision 046).
+ * False when there is no branch to watch (non-isolated dispatch or a resume).
+ */
+function observeCommitChange(rs: RunningSubagent): boolean {
+	if (!rs.isolationBranch) return false;
+	let tip: string;
+	try {
+		tip = execFileSync("git", ["rev-parse", rs.isolationBranch], {
+			cwd: rs.parentCwd,
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
+		}).trim();
+	} catch (e) {
+		debugLog(`stall-watch: git rev-parse ${rs.isolationBranch} failed: ${e instanceof Error ? e.message : String(e)}`);
+		return false;
+	}
+	if (!tip) return false;
+	const changed = rs.stallLastTip !== null && tip !== rs.stallLastTip;
+	rs.stallLastTip = tip;
+	return changed;
+}
+
+/**
+ * One assistant turn's turn accounting: fold the commit observation into the
+ * stall counters, ask the pure decider, then execute exactly the action it
+ * named. Nothing here re-derives a cap or stall condition — the decisions live
+ * in extensions/lib/subagent-state.ts (decision 046), and this function is
+ * exported only so the wiring can be driven without a long-lived child.
+ */
+export function turnCapStep(rs: RunningSubagent, commitChanged: boolean): TurnAction {
+	const stall = nextStallState(rs, commitChanged);
+	rs.stallTurns = stall.stallTurns;
+	rs.stallSteered = stall.stallSteered;
+	const action = decideTurnAction({
+		turns: turnsUsed(rs),
+		cap: rs.turnCap,
+		capTripped: rs.turnCapReached,
+		...stall,
+		commitChanged,
+	});
+
+	switch (action.kind) {
+		case "none":
+			return action;
+		case "wind-down":
+			rs.turnCapReached = true;
+			rs.progress.currentActivity = "turn cap reached, winding down";
+			if (steerChild(rs, TURN_CAP_WIND_DOWN_STEER)) {
+				appendRunningLogLine(
+					rs,
+					`[turn-cap] wind-down injected at ${turnsUsed(rs)} turns ` +
+						`(cap ${formatTurnCap(rs.turnCap)}, grace ${TURN_CAP_GRACE})`,
+				);
+			} else {
+				debugLog(`turn-cap: wind-down for ${rs.sessionId} not delivered (child gone)`);
+			}
+			return action;
+		case "stall-steer":
+			if (steerChild(rs, STALL_STEER)) {
+				// Marked delivered only now, so a steer that could not land is
+				// retried on the next turn instead of being lost silently.
+				rs.stallSteered = true;
+				appendRunningLogLine(rs, `[stall] no new commit for ${stall.stallTurns} turns — advisory steer injected`);
+			}
+			return action;
+		case "kill":
+			rs.progress.currentActivity = "turn cap and grace exhausted, stopping";
+			rs.progress.errors.push(`Turn cap reached (${formatTurnCap(rs.turnCap)} + ${TURN_CAP_GRACE} grace)`);
+			debugLog(`turn-cap: dispatching kill at ${turnsUsed(rs)} turns (cap ${rs.turnCap})`);
+			dispatchKillSignals(rs, "turn-cap");
+			return action;
+	}
+}
+
 function formatProgress(rs: RunningSubagent): string {
 	const p = rs.progress;
 	const elapsed = Math.round((Date.now() - rs.startedAt) / 1000);
@@ -1478,7 +1628,9 @@ function formatProgress(rs: RunningSubagent): string {
 		`Agent: ${rs.agentName}`,
 		`Session: ${rs.sessionId}`,
 		state,
-		`Turns: ${p.turns}`,
+		`Turns: ${turnsUsed(rs)}`,
+		`Turn cap: ${formatTurnCap(rs.turnCap)}`,
+		rs.turnCapReached ? "Turn cap reached: true" : null,
 		`Elapsed: ${mins}m ${secs}s`,
 		`Activity: ${p.currentActivity}`,
 		p.filesRead.size > 0 ? `Files read: ${p.filesRead.size}` : null,
@@ -1519,13 +1671,6 @@ function buildPromptPayload(text: string): { type: "prompt"; message: string; st
 	return { type: "prompt", message: text, streamingBehavior: "steer" };
 }
 
-/**
- * Send a steering prompt to a live child — the one steer path (decision 046).
- * Every caller that injects text into a child shares these guards, so a write
- * into a dead pipe can neither buffer silently nor be reported as delivered.
- * Returns false when the child could not receive it; the caller decides what
- * that means for its own reporting.
- */
 /** Why a steer cannot reach the child, or null when it can. The one definition
  *  of "steerable": `rpcSend` alone is not enough (a destroyed stream can still
  *  read `destroyed: false` for a moment after the child exits), and a write
@@ -1929,6 +2074,13 @@ async function spawnSubagent(
 	// after `silenceTimeoutMs` with no activity (no tool calls AND no
 	// assistant messages). Default 30 min; 0 or negative disables.
 	silenceTimeoutMs?: number,
+	// Decision 046: the per-dispatch turn cap, already resolved by the caller
+	// through `resolveTurnCap` (0 → disabled → Infinity). Required: a caller that
+	// forgets it would silently run uncapped.
+	resolvedTurnCap?: number,
+	// Decision 046: turns used by the earlier runs of this same dispatch (the
+	// recorded count on a resume, 0 on a fresh spawn).
+	turnsBefore?: number,
 ): Promise<RunningSubagent> {
 	// Message actually delivered to the child process. `task` stays the clean
 	// identity (commit subject / "Task:" display); the preamble and
@@ -1994,6 +2146,13 @@ async function spawnSubagent(
 		? SILENCE_TIMEOUT_DEFAULT_MS
 		: (Number.isFinite(silenceTimeoutMs) && silenceTimeoutMs > 0 ? silenceTimeoutMs : 0);
 
+	// Neither can be guessed: an absent cap would run uncapped and an absent turn
+	// count would restart the count a resume is supposed to continue — the exact
+	// safe-default failures decision 046 refuses.
+	if (resolvedTurnCap === undefined || turnsBefore === undefined) {
+		throw new Error("spawnSubagent: resolvedTurnCap and turnsBefore are required (decision 046)");
+	}
+
 	const rs: RunningSubagent = {
 		proc: null as any,
 		sessionId,
@@ -2011,6 +2170,14 @@ async function spawnSubagent(
 		killedExplicitly: false,
 		stoppedExplicitly: false,
 		turnNudged: false,
+		turnCap: resolvedTurnCap,
+		turnsBefore,
+		turnCapReached: false,
+		stallTurns: 0,
+		stallSteered: false,
+		// The isolation branch starts at the parent's HEAD, so that commit is the
+		// baseline the first turn's observation compares against.
+		stallLastTip: isolationBranch ? parentHeadCommit : null,
 		logPath,
 		logLines: [],
 		stderrLines: [],
@@ -2321,6 +2488,12 @@ async function spawnSubagent(
 					return;
 				}
 
+				// Per-dispatch turn cap and stall tripwire (decision 046). The hard
+				// ceiling above stays first so it keeps its own reason when a cap's
+				// grace would overrun it. This site only builds the state and executes
+				// the action: both conditions live in decideTurnAction.
+				if (turnCapStep(rs, observeCommitChange(rs)).kind === "kill") return;
+
 				// Detect completion: text-only message (no tool calls) means the
 				// model is done. RPC mode keeps stdin open so we must close it to
 				// trigger process exit and fire the close handler.
@@ -2536,6 +2709,9 @@ async function spawnSubagent(
 		// for a session that has completed.
 		running.delete(sessionId);
 		updateFooter();
+		// Decision 046: record the dispatch's cumulative turn count so a resume
+		// continues it instead of restarting the count the cap compares against.
+		updateMetaJson(sessionId, { turnsUsed: turnsUsed(rs) });
 
 		// PRE-DELIVERY: commit-producing git steps (add, diff, commit, rev-parse).
 		// Split from post-delivery cleanup so the result reaches the parent
@@ -3019,7 +3195,7 @@ function fireSilenceKill(rs: RunningSubagent): void {
  *  (recovered/pre-reload session) — callers must distinguish that from a
  *  raced exit. Exported as an @internal test hook so the kill paths can be
  *  exercised with stubbed procs. */
-export function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "progress-timeout" | "turn-limit"): { alreadyDead: boolean; noProcess?: boolean } {
+export function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "progress-timeout" | "turn-limit" | "turn-cap"): { alreadyDead: boolean; noProcess?: boolean } {
 	// Order matters: set the flags BEFORE any proc access or signal so the
 	// close handler observes them on entry — including the null-proc
 	// (recovered/pre-reload) path below.
@@ -3176,14 +3352,17 @@ export function terminalOutcome(rs: RunningSubagent, exitCode: number | null): {
 }
 
 /** Marker prefix for a delivered kill result. Mirrors the `subagent_kill`
- *  marker; the stage-2 variant is greppable as `[Killed via progress-timeout]`
- *  and the turn-limit variant as `[Killed via turn-limit]`. */
+ *  marker; the stage-2 variant is greppable as `[Killed via progress-timeout]`,
+ *  the turn-limit variant as `[Killed via turn-limit]` and decision 046's cap
+ *  variant as `[Killed via turn-cap]`. */
 function killedMarker(rs: RunningSubagent): string | null {
 	if (!rs.killedExplicitly) return null;
 	if (rs.killedVia === "progress-timeout")
 		return "[Killed via progress-timeout — process terminated, work in this subagent is lost]";
 	if (rs.killedVia === "turn-limit")
 		return "[Killed via turn-limit — process terminated, work in this subagent is lost]";
+	if (rs.killedVia === "turn-cap")
+		return "[Killed via turn-cap — process terminated, work in this subagent is lost]";
 	return "[Killed via subagent_kill — process terminated, work in this subagent is lost]";
 }
 
@@ -3250,6 +3429,10 @@ export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: n
 		`${prefix} — session: ${rs.sessionId}`,
 		`Task: ${rs.task.slice(0, 200)}${rs.task.length > 200 ? "..." : ""}`,
 		`Turns: ${rs.progress.turns} | Files read: ${rs.progress.filesRead.size} | Files modified: ${rs.progress.filesModified.size}`,
+		// Decision 046: the ledger reads the cap flag and the dispatch's turn
+		// count off the delivered result. Both are parent-facing; the child never
+		// sees either.
+		rs.turnCapReached ? `turn_cap_reached: true | turns_used: ${turnsUsed(rs)}` : null,
 		rs.progress.errors.length > 0
 			? `Errors: ${rs.progress.errors.slice(0, 3).join("; ")}`
 			: null,
@@ -3386,6 +3569,15 @@ export function recoverOrphanedSubagents(
 				killedExplicitly: false,
 				stoppedExplicitly: false,
 				turnNudged: false,
+				// Decision 046: display-only on a recovered handle — the turn accounting
+				// runs in the child's own spawning process, not here. The cap comes from
+				// the meta and the count continues the recorded one.
+				turnCap: resolveTurnCap(meta.turnCap),
+				turnsBefore: meta.turnsUsed ?? 0,
+				turnCapReached: false,
+				stallTurns: 0,
+				stallSteered: false,
+				stallLastTip: null,
 				toolInFlight: 0,
 				logPath,
 				logLines: [],
@@ -3834,6 +4026,12 @@ export default function (pi: ExtensionAPI) {
 				default: 1800000,
 			}),
 		),
+		turn_cap: Type.Optional(
+			Type.Number({
+				description: `Turns this dispatch may run before the harness ends it: at the cap the child gets one wind-down steer carrying no number, then a flat ${TURN_CAP_GRACE}-turn grace, then it is killed through the shared kill path. Default ${TURN_CAP_DEFAULT}. 0 or negative disables the cap. Above ${MAX_TURNS_HARD} is rejected — the global hard kill would fire first.`,
+				default: TURN_CAP_DEFAULT,
+			}),
+		),
 	});
 
 	const StatusParams = Type.Object({
@@ -3888,6 +4086,20 @@ export default function (pi: ExtensionAPI) {
 			// searchable in /resume and joinable via `pi --session-id <id>`.
 			const sessionId = `subagent-${randomUUID()}`;
 			const cwd = params.cwd ?? ctx.cwd;
+
+			// Decision 046: the per-dispatch turn cap. Resolved before any worktree
+			// or process exists, so an invalid cap spawns nothing — and a cap whose
+			// grace would overrun the global hard kill is refused rather than
+			// accepted as a cap that misreports what stopped the run.
+			let resolvedTurnCap: number;
+			try {
+				resolvedTurnCap = resolveTurnCap(params.turn_cap);
+			} catch (e) {
+				return {
+					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+					isError: true,
+				};
+			}
 
 			const agents = discoverAgents(cwd, "user").agents;
 			const agent = agents.find((a) => a.name === params.agent);
@@ -4040,6 +4252,8 @@ export default function (pi: ExtensionAPI) {
 				carriedSnapshot, // completion-filter snapshot (WO-2026-035)
 				workOrderPolicy, // decision 014: parsed WO review_policy (undefined when no WO)
 				params.silenceTimeoutMs, // decision 015: stage-2 silence-kill timeout (undefined → 30-min default)
+				resolvedTurnCap, // decision 046: per-dispatch turn cap
+				0, // decision 046: a fresh spawn starts the dispatch's turn count at zero
 			);
 
 			running.set(sessionId, rs);
@@ -4086,6 +4300,9 @@ export default function (pi: ExtensionAPI) {
 			allowedSubagents: agent.allowedSubagents ?? [],
 			excludeTools: agent.excludeTools ?? [],
 			workRecord: dispatch.record,
+			// Stored in the spawn's own input convention (`0` = disabled) so a
+			// resume hands it straight back to `resolveTurnCap`.
+			turnCap: Number.isFinite(resolvedTurnCap) ? resolvedTurnCap : 0,
 		}, { pid: process.pid, startToken: selfStartToken(), sessionId: ctx.sessionManager.getSessionId() }));
 
 			// Reviewer-spawn tracker: if the spawned agent is a declared reviewer
@@ -4121,6 +4338,7 @@ export default function (pi: ExtensionAPI) {
 						text: [
 							`Subagent started: ${agent.name} (session: ${sessionId})${isolationStatus}`,
 							`Task: ${params.task.slice(0, 200)}${params.task.length > 200 ? "..." : ""}`,
+							turnBudgetLine(resolvedTurnCap, 0, isolationBranch !== null),
 							...dispatch.notes,
 							"",
 							"The session id is the subagent's real pi session id — search it in /resume",
@@ -4336,6 +4554,13 @@ export default function (pi: ExtensionAPI) {
 
 			// 5. Spawn the resumed RPC process under the SAME subagent-<UUID> key.
 			// No worktree isolation — resumed sessions run in the recorded parentCwd.
+			// Decision 046: the cap and the turn count carry over. The cap is read
+			// back in its own input convention, so a meta without a recorded cap (a
+			// resume of a session spawned before this decision) resolves to the
+			// default rather than to "uncapped".
+			const resumeTurnCap = resolveTurnCap(resolvedMeta.turnCap);
+			// Absent on a meta written before decision 046: that run counted from zero.
+			const resumeTurnsBefore = resolvedMeta.turnsUsed ?? 0;
 			const rs = await spawnSubagent(
 				pi,
 				ctx,
@@ -4357,6 +4582,13 @@ export default function (pi: ExtensionAPI) {
 				cwd,
 				null, // cargoTargetDir — resumed runs are not isolated
 				resolvedMeta.sessionFile, // resumeSessionFile
+				undefined, // reviewPolicy — a resume keeps the recorded gate
+				undefined, // promptMessage — the follow-up task is the whole prompt
+				undefined, // carriedSnapshot
+				undefined, // workOrderPolicy
+				undefined, // silenceTimeoutMs — a resumed run takes the 30-min default
+				resumeTurnCap, // decision 046: the recorded cap, carried over
+				resumeTurnsBefore, // decision 046: continue the recorded turn count
 			);
 			// The resumed run completes the same work-order record (decisions/work-order-records/001).
 			rs.workRecord = resolvedMeta.workRecord;
@@ -4374,6 +4606,7 @@ export default function (pi: ExtensionAPI) {
 						text: [
 							`Subagent resumed: ${syntheticAgent.name} (session: ${sid})`,
 							`Task: ${params.task.slice(0, 200)}${params.task.length > 200 ? "..." : ""}`,
+							turnBudgetLine(resumeTurnCap, resumeTurnsBefore, false),
 							"",
 							"Watch live:",
 							"```bash",

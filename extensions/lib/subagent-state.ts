@@ -634,3 +634,107 @@ export function listInFlightSubagents(
 	}
 	return out;
 }
+
+// ── Turn cap and stall tripwire (decision 046) ─────────────────────────────
+//
+// A dispatch carries a turn budget: at the cap the child gets one wind-down
+// steer, then a flat grace in turns, then the harness kills it through the one
+// kill dispatch. A second, advisory arm watches the child's branch and steers
+// once when a long stretch of turns produced no commit. It never kills.
+//
+// Both arms are decided here, purely, from the state the event site assembles;
+// the site executes the action and re-derives nothing. The cap number never
+// reaches the child (owner ruling 2026-11-07, "hide it"): the wind-down text
+// lives at the call site and carries no number.
+
+/** Assistant turns a dispatch may run when its spawn names no cap. */
+export const TURN_CAP_DEFAULT = 150;
+
+/** Turns between the wind-down and the kill. Flat, and counted on the same
+ *  `message_end` path as the turns themselves, so no timer is involved. */
+export const TURN_CAP_GRACE = 10;
+
+/** Commit-free turns before the advisory stall steer. */
+export const STALL_TURNS = 30;
+
+/** What the event site does about a turn. `kill` means the run is being
+ *  stopped: the site returns and leaves delivery to the close handler. */
+export type TurnAction =
+	| { kind: "none" }
+	| { kind: "wind-down" }
+	| { kind: "kill" }
+	| { kind: "stall-steer" };
+
+/** The commit-observation counters of the stall arm. */
+export interface StallObservation {
+	/** Turns observed without a new commit on the child's branch. */
+	stallTurns: number;
+	/** The advisory steer was already delivered for the current stall. */
+	stallSteered: boolean;
+}
+
+/** Everything the turn decision rests on — the caller supplies all of it. */
+export interface TurnCapState extends StallObservation {
+	/** Turns used by this logical dispatch, carried over on resume. */
+	turns: number;
+	/** Resolved cap in turns; `Infinity` when the cap is disabled. */
+	cap: number;
+	/** The wind-down was injected and the grace is running. */
+	capTripped: boolean;
+	/** This turn observed a new commit on the child's branch. */
+	commitChanged: boolean;
+}
+
+/**
+ * Resolve a spawn's `turn_cap` into the number the decision compares against.
+ *
+ * `undefined` takes the default. `0` or negative disables the cap (precedent:
+ * `silenceTimeoutMs`, decision 015). Above `MAX_TURNS_HARD` is rejected rather
+ * than clamped: the global hard kill would fire first, so accepting the number
+ * would make the cap a lie about what stopped the run (decision 046).
+ */
+export function resolveTurnCap(raw: number | undefined): number {
+	if (raw !== undefined && raw > MAX_TURNS_HARD) {
+		throw new Error(
+			`turn_cap ${raw} is above the ${MAX_TURNS_HARD}-turn hard limit — the hard kill would fire first. ` +
+				`Pass a cap at or below ${MAX_TURNS_HARD}, or 0 to disable the cap.`,
+		);
+	}
+	if (raw === undefined) return TURN_CAP_DEFAULT;
+	if (raw <= 0) return Infinity;
+	if (Number.isNaN(raw)) {
+		throw new Error(`turn_cap ${raw} is not a turn count — pass a number, or 0 to disable the cap.`);
+	}
+	return raw;
+}
+
+/**
+ * The turn's cap and stall decision. Pure: every input is in `state`, and the
+ * caller performs whatever the returned action names.
+ *
+ * The cap arm outranks the stall arm, so a run at its cap gets the wind-down
+ * and never a second advisory message (U8). Grace is measured from the cap, so
+ * the kill lands at `cap + TURN_CAP_GRACE` regardless of which turn tripped it.
+ */
+export function decideTurnAction(state: TurnCapState): TurnAction {
+	if (state.turns >= state.cap) {
+		if (!state.capTripped) return { kind: "wind-down" };
+		return state.turns >= state.cap + TURN_CAP_GRACE ? { kind: "kill" } : { kind: "none" };
+	}
+	// A new commit ends the stall, so the turn that observed one cannot steer on
+	// it — the counter and the steer flag were reset by `nextStallState`.
+	if (!state.commitChanged && !state.stallSteered && state.stallTurns >= STALL_TURNS) {
+		return { kind: "stall-steer" };
+	}
+	return { kind: "none" };
+}
+
+/**
+ * Fold one turn's commit observation into the stall counters. A new commit ends
+ * the stall: the counter and the steer flag both clear, so a long healthy run
+ * gets one message per stall at most. Pure.
+ */
+export function nextStallState(prior: StallObservation, commitChanged: boolean): StallObservation {
+	if (commitChanged) return { stallTurns: 0, stallSteered: false };
+	return { stallTurns: prior.stallTurns + 1, stallSteered: prior.stallSteered };
+}

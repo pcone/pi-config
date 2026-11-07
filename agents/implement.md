@@ -56,6 +56,13 @@ in this prompt. It contains:
 9. **`invariant_exhaustiveness`** — `explicit` or `implicit`; both route
    to you now
 
+### Commits and the turn limit
+
+Commit at every green step. A green step is any point where the build and the rows you touched pass: make the commit, keep going. Work in progress on your branch is a deliverable, not a mess to hide.
+- If the run reaches its turn limit you get one wind-down message. Commit what is green, leave the rest as a clearly-marked WIP commit, and report.
+- Report `status: partial` (or `blocked`) naming what is done, what is not, the evidence you have (rows run, mutations, `rg` counts) and what you would do next. That report is the deliverable.
+- Never thin a test, skip a mutation, skip a structural check or shorten a review to fit. If the work does not fit the run, say so.
+
 ---
 
 ## Implementation procedure

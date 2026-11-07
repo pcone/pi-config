@@ -157,6 +157,8 @@ Growth findings are delta-based, never absolute thresholds. A repo may set a sma
 
 **The review tier is a different lab from the implementer (decisions/subagents/020, 041).** Reviewers run `glm-5.3-flash` while the implementer runs DeepSeek, so their misses are not the generator's misses — and their false positives cost a round. Check cited evidence against the diff, watch for missed defects and false-positive pushback, and surface findings that should feed the seat call. Decision 023's MiMo trial was overtaken by 020/041: the decorrelation axis held, the specific tier did not.
 
+**A turn cap is a tripwire, not a finish line.** A dispatch may carry one. Reaching it ends the run with a stop-report, and a capped run lands nothing by itself: its work in progress is input to the next decision, never "done enough". Estimates have no baseline, so treat a cap as a flag that something may need a sanity check, not as a measurement. Do not thin tests, skip mutations, skip checks or shorten a review to fit under it — a stop-report is a successful outcome. Acceptance criteria never depend on turns used. Raising a cap mid-run, or re-dispatching after one, states a one-line reason to whoever set the original.
+
 ## Sessions
 
 Sessions are unlimited. Never stop mid-task to suggest continuing in a new session or wrapping up.

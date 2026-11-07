@@ -187,6 +187,16 @@ gate + merge cycle — sequential chunks qualify exactly as much as
 parallel ones. Don't add an orchestrator layer for a mechanical
 sub-chunk that a work order covers directly.
 
+### Dispatch budgets
+
+Set `turn_cap` from the size class, not from a fresh guess: **S** (one file, no E2E rows) 40, **M** (multi-file, targeted rows) 120, **L** (mechanism plus E2E rows) 180. Recalibrate from the ledger's p90 per class as it fills; today's numbers are a handful of data points, not a baseline.
+- **Probe first.** When an order's mechanism is unproven, run a short probe before the build run: the smallest dispatch that shows the mechanism works at all. A probe that comes back wrong costs a fraction of the build run it saves.
+- **Resume by default after a cap.** Continue the same session with the next step; re-dispatch from scratch only with a stated reason, because a resume keeps the context the cap interrupted.
+- Record **planned / cap / actual** turns in the completion report or the work order's stamp. An unmeasured number is worse than none.
+- A capped run lands nothing by itself: its WIP is input to the next decision — continue, re-scope, or stop-report to the seat.
+- Raising a cap mid-run, or re-dispatching after one, sends the seat a one-line reason.
+- Acceptance criteria are independent of turns used. Never lower a bar to fit a cap.
+
 ### 4. Gate each implementer's completion
 
 When an implementer reports `complete`, you must mechanically verify

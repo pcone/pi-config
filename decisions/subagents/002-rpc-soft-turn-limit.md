@@ -42,3 +42,14 @@ Key difference from current chunking: the agent does NOT checkpoint automaticall
 - At ~280 turns: send `{"type": "prompt", "message": "<warning>", "streamingBehavior": "steer"}` to inject a soft warning.
 - At ~350 turns: fall back to SIGTERM hard kill as safety net.
 - Richer progress: use `turn_start`/`turn_end` events to track tool usage patterns and produce better intermediate summaries for the parent.
+
+> **Superseded in part (2026-11-07): the soft turn limit is built, as decision
+> 046.** The sketch's "soft turn-limit warning … then fall back to a hard kill"
+> shipped as a per-dispatch turn cap: a pure `decideTurnAction`/
+> `resolveTurnCap` in `extensions/lib/subagent-state.ts`, one wind-down steer at
+> the cap, a flat 10-turn grace counted in turns, then the existing kill
+> dispatch marked `[Killed via turn-cap]`. The numbers differ from the sketch
+> (default 150 rather than 280/350) because the cap is per dispatch and sized by
+> class, and the child is told no number at all. What remains deferred here is
+> the rest of parent-driven multi-invocation supervision: the parent still
+> cannot send input mid-invocation. (Owner rulings quoted in 046, 2026-11-07.)
