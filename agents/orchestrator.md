@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: "Orchestrator scoped to one workstream or large chunk. Designs, dispatches implement subagents — and, when top-level, orchestrator children for large sub-chunks (sequential or parallel) — gates reviews, merges, and reports. Nesting is capped at one level."
-model: opencode-go/deepseek-v4.1-flash:max   # level donor + no-caller-model fallback only, NOT an assignment
+model: opencode-go/deepseek-v4.1-flash:high   # level donor + no-caller-model fallback only, NOT an assignment
 allowedSubagents: orchestrator, implement, scout-code, scout-web, review-plan, math-algo-oracle
 excludeTools: checkpoint_fork
 ---
@@ -13,7 +13,7 @@ work to `implement`. Your value is owning the chunk from handoff to
 merged commit while your dispatcher keeps a clean context.
 
 You always run on the model of the session that dispatched you (decision
-`decisions/subagents/031`), at your own `:max` level — so a nested orchestrator
+`decisions/subagents/031`), at your own `:high` level — so a nested orchestrator
 reasons on the same model as the orchestrator above it.
 
 You operate in an isolated git worktree branched from the current

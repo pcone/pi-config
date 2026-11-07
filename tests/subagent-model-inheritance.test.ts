@@ -42,7 +42,13 @@ import subagentFactory, {
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 
 // What agents/orchestrator.md pins (the seat's own audited level, decision 022).
-const ORCHESTRATOR_SEAT = "opencode-go/deepseek-v4.1-flash:max";
+const ORCHESTRATOR_SEAT = /^model:\s*(\S+)/m.exec(
+	readFileSync(new URL("../agents/orchestrator.md", import.meta.url), "utf8"),
+)![1];
+// The seat's level suffix: the rows below pin "the caller's model at the seat's
+// own level", not a literal that rots when the seat's effort changes
+// (decision 047 moved this seat `:max` → `:high`).
+const SEAT_LEVEL = ORCHESTRATOR_SEAT.slice(ORCHESTRATOR_SEAT.lastIndexOf(":"));
 // A caller that is deliberately NOT on the seat's model — that is the whole
 // point of the rule; on today's single-slug fleet this is the no-op case.
 const OTHER_CALLER = "openrouter/xiaomi/mimo-v2.6-flash";
@@ -55,7 +61,7 @@ describe("resolveChildModel — the orchestrator seat tracks its caller", () => 
 				agentModel: ORCHESTRATOR_SEAT,
 				parentModel: OTHER_CALLER,
 			}),
-		).toBe(`${OTHER_CALLER}:max`);
+		).toBe(`${OTHER_CALLER}${SEAT_LEVEL}`);
 	});
 
 	it("inherits regardless of inheritParentModel (its default is false, so `false` cannot mean opt-out)", () => {
@@ -66,7 +72,7 @@ describe("resolveChildModel — the orchestrator seat tracks its caller", () => 
 				parentModel: OTHER_CALLER,
 				inheritParentModel: false,
 			}),
-		).toBe(`${OTHER_CALLER}:max`);
+		).toBe(`${OTHER_CALLER}${SEAT_LEVEL}`);
 	});
 
 	it("adds no level when the seat pins none", () => {
@@ -452,10 +458,10 @@ describe("subagent tool boundary — the resolved model really is what runs", ()
 			const child = await spawnChild("orchestrator", { provider: "openrouter", id: "xiaomi/mimo-v2.6-flash" });
 
 			// Written by the same execute() that launched the child…
-			expect((readMetaJson(child.sid) as any)?.model).toBe(`${OTHER_CALLER}:max`);
+			expect((readMetaJson(child.sid) as any)?.model).toBe(`${OTHER_CALLER}${SEAT_LEVEL}`);
 			// …and handed to the child process as its model.
-			expect(argvModelOf(child.sid), diagnose(child, `argv --model: expected ${OTHER_CALLER}:max`)).toBe(
-				`${OTHER_CALLER}:max`,
+			expect(argvModelOf(child.sid), diagnose(child, `argv --model: expected ${OTHER_CALLER}${SEAT_LEVEL}`)).toBe(
+				`${OTHER_CALLER}${SEAT_LEVEL}`,
 			);
 		},
 		// Subprocess-spawning test: explicit budget, never bun's implicit 5s (#3).
@@ -479,7 +485,7 @@ describe("subagent tool boundary — the resolved model really is what runs", ()
 		"keeps the recorded model on resume, even when the resuming caller runs another model",
 		async () => {
 			const child = await spawnChild("orchestrator", { provider: "openrouter", id: "xiaomi/mimo-v2.6-flash" });
-			expect((readMetaJson(child.sid) as any)?.model).toBe(`${OTHER_CALLER}:max`);
+			expect((readMetaJson(child.sid) as any)?.model).toBe(`${OTHER_CALLER}${SEAT_LEVEL}`);
 
 			// Let it answer its one-turn task and exit; the transcript exists now.
 			await waitUntilDetached(child);

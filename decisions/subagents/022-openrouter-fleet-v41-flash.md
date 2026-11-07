@@ -59,3 +59,8 @@ Per-seat conclusions: implementer/reviewers `:high` = the vendor's everyday-agen
 > subscription” bound in Why item 1 describes the z.ai-subscription era only. `z-ai/glm-5.3-flash`
 > runs on OpenRouter pay-per-token and serves the three review seats from 2026-10-22 (041); the
 > DeepSeek seats' OpenRouter routing this decision chose is itself superseded by 036.
+
+> **Superseded in part (2026-11-07, [decision 047](047-every-seat-on-high.md)):** the seat-level suffix
+> rows — orchestrator `:max`, implement/reviewers `:high`, scouts/compaction `:low` — are replaced by
+> "every reasoning seat `:high`; scouts and compaction `:low`; oracle untouched at `v4-pro:max`". The
+> model choice, the correctness-guard routing pin, and the `/fleet-model` deletion stand.

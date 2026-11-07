@@ -51,3 +51,4 @@ date: 2026-07-14
 | 042 | OpenCode Go is a coupon: fill it with DeepSeek fleet traffic only; `xiaomi/mimo-v2.6-pro` routing preference pin | done |
 | 043 | Owner state by row id (`owner_asks` gate, `nextSteps` bar) + checkpoint recoverability (in-flight record, worktree lock/reap, four-state status) | done |
 | 044 | Review seats → `opencode-go/deepseek-v4.1-flash:high` (OpenRouter credits exhausted; 041 suspended, decorrelation loss named) | done |
+| 047 | Every reasoning seat `:high` (orchestrator drops `:max`; scouts/compaction `:low`; oracle untouched) | done |

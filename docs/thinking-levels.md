@@ -23,7 +23,8 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
   `model:` uses the `provider/id:<level>` shorthand (e.g.
   `opencode-go/deepseek-v4.1-flash:high`). The fleet sets effort per agent this
   way (decision 022, after the 2026-10-01 effort audit: implement/reviewers
-  `:high`, scouts `:low`, oracle/orchestrator `:max`, compaction `:low`). The `/fleet-model`
+  `:high`, scouts `:low`, oracle `:max`, compaction `:low`; the orchestrator moved
+  `:max`→`:high` in 2026-11-07, [047](../decisions/subagents/047-every-seat-on-high.md)). The `/fleet-model`
   toggle and its suffix-preserving substitution were deleted 2026-10-01 — one
   model, no substitution (decision 022).
 - Provider mappings: **DeepSeek V4.1 Flash via OpenRouter** (pi catalog
@@ -42,7 +43,7 @@ articles, vendor API docs (Z.ai, Moonshot, OpenAI, Xiaomi). Research date:
 
 | Model | Fleet roles | Real levels | Sweet spot | Evidence |
 |---|---|---|---|---|
-| **DeepSeek V4.1 Flash** | **all seats** (decision 022) | low, high, max | ✅ **per seat:** orchestrator/oracle `:max`, implement/reviewers `:high`, scouts/compaction `:low`. `:medium` silently clamps up to high — scouts were mis-set to it, then moved to the real discount tier. Vendor: 60–80 recovers most max accuracy at <half the tokens; final step to 100 costs 1.6–1.8× trajectory for marginal gain; curve is smooth (no GLM-style `low` cliff) | [HF card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), tech report §5.3 |
+| **DeepSeek V4.1 Flash** | **all seats** (decision 022) | low, high, max | ✅ **per seat:** every reasoning seat `:high` (implement, three reviewers, orchestrator — 047), oracle `:max` on `v4-pro`, scouts/compaction `:low`. `:medium` silently clamps up to high — scouts were mis-set to it, then moved to the real discount tier. Vendor: 60–80 recovers most max accuracy at <half the tokens; final step to 100 costs 1.6–1.8× trajectory for marginal gain; curve is smooth (no GLM-style `low` cliff) | [HF card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), tech report §5.3 |
 | **GLM-5.3-Flash** | `review-code`, `review-plan`, `review-tests` (037) | graded (`low`/`high`/`max` in pi's catalogue) | `:high` = the everyday-agentic band; Z.ai exposes a single thinking toggle, pi maps levels onto it | OpenCode Go endpoints (036); `x-opencode-session` affinity for caching |
 | **DeepSeek V4 Pro** | *(former oracle)* | high, max | ✅ **`high`** — AA Index 43 vs 44 at max (**~98%** of max quality); high variant is also faster | [AA comparison](https://artificialanalysis.ai/models/comparisons/deepseek-v4-pro-high-vs-deepseek-v4-pro) |
 | **DeepSeek V4 Flash / 0731** | *(former toggle target)* | high, max | ✅ **`high`** (presumed — same AA variant structure as V4 Pro; exact scores behind JS-rendered pages, single-source) | [AA flash-high](https://artificialanalysis.ai/models/deepseek-v4-flash-high) |
@@ -122,7 +123,7 @@ seat split 037/041)
   `openrouter/z-ai/glm-5.3-flash:high` (Zhipu lab since
   [037](../decisions/subagents/037-reviewer-oracle-repick.md), first-party route pin per
   [041](../decisions/subagents/041-glm-review-seats-openrouter.md)); oracle on
-  `opencode-go/deepseek-v4-pro:max` (037); orchestrator on its caller's model at `:max`
+  `opencode-go/deepseek-v4-pro:max` (037); orchestrator on its caller's model at `:high`
   ([031](../decisions/subagents/031-orchestrator-model-inheritance.md)); main session per
   `settings.json`. The z.ai subscription is gone; the `/fleet-model` toggle and
   `~/.pi/fleet-model.json` override were deleted.
@@ -166,8 +167,9 @@ seat split 037/041)
    implementer; `:high` stands on 021's flash high-vs-max token/quality delta.
 3. **Oracle — `opencode-go/deepseek-v4-pro:max`** (decision 037, 2026-10-18): the only
    solid math/algo row on the Go menu (LCB 93.5, IMO 89.8).
-4. **Orchestrator — inherits its caller's model at `:max`** (decision 031). Its
-   frontmatter `opencode-go/deepseek-v4.1-flash:max` is the **level donor and the
+4. **Orchestrator — inherits its caller's model at `:high`** (decision 031; level
+   `:max`→`:high` per 047). Its
+   frontmatter `opencode-go/deepseek-v4.1-flash:high` is the **level donor and the
    no-caller-model fallback only**, not an assignment — the `INHERITING_AGENT` branch
    in `extensions/subagent-async/index.ts` wins at spawn. 021's max-for-the-hard-tail
    call carries over: the seat owns planning/instructions.

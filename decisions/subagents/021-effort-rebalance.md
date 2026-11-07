@@ -53,3 +53,9 @@ No config uses `:low` today (verified: zero `:low` matches in `agents/`, `extens
 **Files changed:** `agents/{review-code,review-plan,review-tests,orchestrator}.md` (model lines), `settings.json` (`defaultThinkingLevel: "max"`), `docs/thinking-levels.md`, `docs/model-role-scores.md`, `README.md`, decisions index, this decision. No code changes — `extensions/lib/fleet-model.ts` is level-agnostic (suffix-preserving) and `tests/fleet-model.test.ts` uses level strings generically.
 
 > **Superseded in part (2026-10-01):** the GLM per-effort evidence behind this rebalance no longer applies — all seats moved to `deepseek/deepseek-v4.1-flash` (decision 022). The level assignments survive as seat policy (`:max` orchestrator/oracle, `:high` implement/reviewers), not as a re-derived result — and the same-day 022 effort audit moved scouts `:medium`→`:low` and pinned compaction `:low`, scoping this decision's fleet-wide `low` ban to code/hard-tail seats.
+
+> **Superseded in part (2026-11-07, [decision 047](047-every-seat-on-high.md)):** the orchestrator
+> seat drops `:max` → `:high`, so the level rows this decision set are superseded in full. Owner
+> 2026-11-07: *"yeah lets put all the seats on high"*, on a V4.1 Flash effort study (3,738 jobs) whose
+> `:high` and `:max` results it could not separate, and on `:max` producing more runaways. This
+> decision's fleet-wide ban on `low` for reasoning seats, and scouts/compaction at `:low`, stand.
