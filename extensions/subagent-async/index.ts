@@ -54,6 +54,7 @@ import {
 	selfStartToken,
 	stopReasonOutcome,
 	type OwnerProbe,
+	type CommitObservation,
 	type StallObservation,
 	type SubagentOutcome,
 	type TurnAction,
@@ -687,6 +688,9 @@ interface RunningSubagent {
 	// Last branch tip observed by `git rev-parse`; null when the run has no
 	// isolation branch to watch (non-isolated dispatch or resume).
 	stallLastTip: string | null;
+	// Whether the last turn's commit was observable at all. False for a run with
+	// no branch: the stall arm is skipped, not counted as commit-free.
+	stallObserved: boolean;
 	logPath: string;   // live human-readable event log
 	logLines: string[];     // in-memory buffer for live TUI widget
 	stderrLines: string[];  // captured stderr from the child pi process;
@@ -1536,14 +1540,18 @@ function turnBudgetLine(cap: number, turns: number, hasBranch: boolean): string 
 }
 
 /**
- * True when the child's branch tip moved since the last observation. One
- * `git rev-parse` spawn per turn — a command, not a ref-file read: a linked
- * worktree's `.git` is a file pointing at the gitdir, so the refs live in the
- * common dir and no file under the worktree holds the branch tip (decision 046).
- * False when there is no branch to watch (non-isolated dispatch or a resume).
+ * Observe the child's branch tip for this turn. One `git rev-parse` spawn per
+ * turn — a command, not a ref-file read: a linked worktree's `.git` is a file
+ * pointing at the gitdir, so the refs live in the common dir and no file under
+ * the worktree holds the branch tip (decision 046).
+ *
+ * A run with no branch (non-isolated dispatch or a resume) and an observation
+ * the command cannot resolve both report `observed: false`, which skips the
+ * stall arm: a child with nothing to watch must never be told it stalled.
+ * Exported as an @internal test hook, like `turnCapStep`.
  */
-function observeCommitChange(rs: RunningSubagent): boolean {
-	if (!rs.isolationBranch) return false;
+export function observeCommit(rs: RunningSubagent): CommitObservation {
+	if (!rs.isolationBranch) return { observed: false, changed: false };
 	let tip: string;
 	try {
 		tip = execFileSync("git", ["rev-parse", rs.isolationBranch], {
@@ -1554,12 +1562,12 @@ function observeCommitChange(rs: RunningSubagent): boolean {
 		}).trim();
 	} catch (e) {
 		debugLog(`stall-watch: git rev-parse ${rs.isolationBranch} failed: ${e instanceof Error ? e.message : String(e)}`);
-		return false;
+		return { observed: false, changed: false };
 	}
-	if (!tip) return false;
+	if (!tip) return { observed: false, changed: false };
 	const changed = rs.stallLastTip !== null && tip !== rs.stallLastTip;
 	rs.stallLastTip = tip;
-	return changed;
+	return { observed: true, changed };
 }
 
 /**
@@ -1569,16 +1577,17 @@ function observeCommitChange(rs: RunningSubagent): boolean {
  * in extensions/lib/subagent-state.ts (decision 046), and this function is
  * exported only so the wiring can be driven without a long-lived child.
  */
-export function turnCapStep(rs: RunningSubagent, commitChanged: boolean): TurnAction {
-	const stall = nextStallState(rs, commitChanged);
+export function turnCapStep(rs: RunningSubagent, obs: CommitObservation): TurnAction {
+	const stall = nextStallState(rs, obs);
 	rs.stallTurns = stall.stallTurns;
 	rs.stallSteered = stall.stallSteered;
+	rs.stallObserved = stall.stallObserved;
 	const action = decideTurnAction({
 		turns: turnsUsed(rs),
 		cap: rs.turnCap,
 		capTripped: rs.turnCapReached,
 		...stall,
-		commitChanged,
+		commitChanged: obs.changed,
 	});
 
 	switch (action.kind) {
@@ -2178,6 +2187,8 @@ async function spawnSubagent(
 		// The isolation branch starts at the parent's HEAD, so that commit is the
 		// baseline the first turn's observation compares against.
 		stallLastTip: isolationBranch ? parentHeadCommit : null,
+		// No branch to watch until the first observation says otherwise.
+		stallObserved: false,
 		logPath,
 		logLines: [],
 		stderrLines: [],
@@ -2492,7 +2503,7 @@ async function spawnSubagent(
 				// ceiling above stays first so it keeps its own reason when a cap's
 				// grace would overrun it. This site only builds the state and executes
 				// the action: both conditions live in decideTurnAction.
-				if (turnCapStep(rs, observeCommitChange(rs)).kind === "kill") return;
+				if (turnCapStep(rs, observeCommit(rs)).kind === "kill") return;
 
 				// Detect completion: text-only message (no tool calls) means the
 				// model is done. RPC mode keeps stdin open so we must close it to
@@ -3578,6 +3589,7 @@ export function recoverOrphanedSubagents(
 				stallTurns: 0,
 				stallSteered: false,
 				stallLastTip: null,
+				stallObserved: false,
 				toolInFlight: 0,
 				logPath,
 				logLines: [],

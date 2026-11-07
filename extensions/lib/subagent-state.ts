@@ -671,6 +671,18 @@ export interface StallObservation {
 	stallTurns: number;
 	/** The advisory steer was already delivered for the current stall. */
 	stallSteered: boolean;
+	/** This turn's commit was actually observed. False for a run with no branch
+	 *  to watch (non-isolated dispatch, resume) or an observation the command
+	 *  could not resolve — no stall accrues on nothing to watch. */
+	stallObserved: boolean;
+}
+
+/** One turn's commit observation: whether there was a branch to watch, and
+ *  whether its tip moved. The stall arm has no decision to make when nothing
+ *  was observed, so "unobserved" is a state, not a `changed: false`. */
+export interface CommitObservation {
+	observed: boolean;
+	changed: boolean;
 }
 
 /** Everything the turn decision rests on — the caller supplies all of it. */
@@ -722,8 +734,9 @@ export function decideTurnAction(state: TurnCapState): TurnAction {
 		return state.turns >= state.cap + TURN_CAP_GRACE ? { kind: "kill" } : { kind: "none" };
 	}
 	// A new commit ends the stall, so the turn that observed one cannot steer on
-	// it — the counter and the steer flag were reset by `nextStallState`.
-	if (!state.commitChanged && !state.stallSteered && state.stallTurns >= STALL_TURNS) {
+	// it — the counter and the steer flag were reset by `nextStallState`. A run
+	// with no branch to watch has no stall to report at all.
+	if (state.stallObserved && !state.commitChanged && !state.stallSteered && state.stallTurns >= STALL_TURNS) {
 		return { kind: "stall-steer" };
 	}
 	return { kind: "none" };
@@ -732,9 +745,11 @@ export function decideTurnAction(state: TurnCapState): TurnAction {
 /**
  * Fold one turn's commit observation into the stall counters. A new commit ends
  * the stall: the counter and the steer flag both clear, so a long healthy run
- * gets one message per stall at most. Pure.
+ * gets one message per stall at most. An unobserved turn is not a commit-free
+ * turn: nothing accrues and the counters clear. Pure.
  */
-export function nextStallState(prior: StallObservation, commitChanged: boolean): StallObservation {
-	if (commitChanged) return { stallTurns: 0, stallSteered: false };
-	return { stallTurns: prior.stallTurns + 1, stallSteered: prior.stallSteered };
+export function nextStallState(prior: StallObservation, obs: CommitObservation): StallObservation {
+	if (!obs.observed) return { stallTurns: 0, stallSteered: false, stallObserved: false };
+	if (obs.changed) return { stallTurns: 0, stallSteered: false, stallObserved: true };
+	return { stallTurns: prior.stallTurns + 1, stallSteered: prior.stallSteered, stallObserved: true };
 }

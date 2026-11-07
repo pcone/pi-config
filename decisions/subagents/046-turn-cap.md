@@ -83,18 +83,33 @@ long healthy run loses one message and nothing else.
   run's result carries it again when it reaches the cap.
 - **The stall arm is skipped where there is no branch to watch.** A non-isolated
   dispatch and every resumed run report `stall_watch: none (no isolation branch)`
-  in the spawn/resume result rather than pretending to observe commits.
-- **One spawn per turn.** `git rev-parse <branch>` costs a process spawn per
-  assistant turn (measured: mean ≈19 ms, p95 ≈21 ms on an idle-ish box, far
-  above the 5 ms estimate; see the work order's stamp for the E2E comparison).
+  in the spawn/resume result, and the observation reports *unobserved* rather
+  than "unchanged": no stall accrues on nothing to watch, so no child is ever
+  told it stalled on a branch it does not have.
+- **One spawn per turn, synchronously.** `git rev-parse <branch>` costs a process
+  spawn per assistant turn on the `message_end` path, so it blocks the extension's
+  event loop (every concurrent child's stream, and the TUI) for its duration.
+  Measured on this box: mean 6.6 ms, p95 7.2 ms quiet; mean 286 ms, p95 1329 ms
+  under load, against a `true`-spawn control of 1.6 ms. The before/after
+  ~60-turn E2E wall-time comparison was not run — the provider was returning
+  HTTP 429 throughout, so a delta would have measured the provider — and the
+  per-turn cost above is the bound this change adds.
+- **Two turn counters, on purpose.** The hard ceiling counts this run's turns
+  (`rs.progress.turns`, which `outcomeFromExitCode` also reads); the cap counts
+  the dispatch's turns, carried over on resume. On a resumed dispatch they can
+  disagree, so "the hard ceiling wins at 500" holds for a fresh spawn; a resumed
+  run past its cap is ended by the cap first.
 - **`killedVia` gained a fourth value.** `turn-cap` joins `kill-tool`,
   `progress-timeout` and `turn-limit`; the marker table and the outcome
   classifier read it the same way they read the others.
-- **`steerChild` is the one steer path.** Extracted first, in its own commit: the
-  cap's wind-down would otherwise have been a fourth copy of the
-  `isDone`/`procExited`/`stdin` guard block. `steerBlockedReason` is the one
-  definition of "steerable", which the `subagent_steer` tool also uses to name
-  why a message was not delivered.
+- **`steerChild` is the one path for the harness-initiated steers.** Extracted
+  first, in its own commit: the cap's wind-down would otherwise have been a
+  fourth copy of the `isDone`/`procExited`/`stdin` guard block. It serves the 450
+  nudge, `subagent_stop`, the `steer` tool and the two cap/stall arms.
+  `steerBlockedReason` is the one definition of "steerable", which the
+  `subagent_steer` tool also uses to name why a message was not delivered. The
+  review-gate and owner-asks corrective sends still call `rpcSend` inline and
+  carry no guard; they are not part of this refactor.
 
 ## Upheld by
 

@@ -16,7 +16,12 @@
  *    renders the flag.
  *  - E rows are real child dispatches and the git mechanism they depend on.
  *
- * Run: bun test tests/turn-cap.test.ts
+ * LIVE-NETWORK: the four E rows spawn real `pi` children and make billed LLM calls;
+ * the deterministic U/W/E3a rows make none. A full-file run is non-deterministic by
+ * default because of the E rows only.
+ *
+ * Run: bun test tests/turn-cap.test.ts            (everything, minutes)
+ *      bun test tests/turn-cap.test.ts -t "U"     (deterministic rows only)
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
@@ -33,12 +38,16 @@ import {
 	decideTurnAction,
 	nextStallState,
 	resolveTurnCap,
+	type CommitObservation,
 	type TurnCapState,
 } from "../extensions/lib/subagent-state.ts";
 import subagentFactory, {
 	_testRunning,
 	_testSetLiveSessionCtx,
 	deliverCloseResult,
+	deliverResult,
+	metaPath,
+	observeCommit,
 	readMetaJson,
 	resolveRunningSession,
 	turnCapStep,
@@ -115,7 +124,14 @@ afterEach(() => {
 		}
 	}
 	logsToClean.length = 0;
-	for (const sid of sidsToClean) _testRunning.delete(sid);
+	for (const sid of sidsToClean) {
+		_testRunning.delete(sid);
+		try {
+			if (existsSync(metaPath(sid))) unlinkSync(metaPath(sid));
+		} catch {
+			// best-effort
+		}
+	}
 	sidsToClean.length = 0;
 	for (const d of dirsToClean) rmSync(d, { recursive: true, force: true });
 	dirsToClean.length = 0;
@@ -201,6 +217,11 @@ function steeredTexts(rs: any): string[] {
 
 // ── U: the pure decision ───────────────────────────────────────────────────
 
+/** The three commit observations a turn can carry. */
+const UNCHANGED: CommitObservation = { observed: true, changed: false };
+const CHANGED: CommitObservation = { observed: true, changed: true };
+const NO_BRANCH: CommitObservation = { observed: false, changed: false };
+
 /** A cap/stall state; each row overrides only the axes it is about. */
 function state(over: Partial<TurnCapState> = {}): TurnCapState {
 	return {
@@ -209,6 +230,7 @@ function state(over: Partial<TurnCapState> = {}): TurnCapState {
 		capTripped: false,
 		stallTurns: 0,
 		stallSteered: false,
+		stallObserved: true,
 		commitChanged: false,
 		...over,
 	};
@@ -256,6 +278,12 @@ describe("decideTurnAction: the cap arm", () => {
 });
 
 describe("decideTurnAction: the stall arm", () => {
+	it("U5b: the ruled numbers are pinned, not just symbolically referenced", () => {
+		expect(TURN_CAP_DEFAULT).toBe(150);
+		expect(TURN_CAP_GRACE).toBe(10);
+		expect(STALL_TURNS).toBe(30);
+	});
+
 	it("U6: a full stall with an unchanged commit steers", () => {
 		expect(decideTurnAction(state({ stallTurns: STALL_TURNS }))).toEqual({ kind: "stall-steer" });
 	});
@@ -263,17 +291,26 @@ describe("decideTurnAction: the stall arm", () => {
 	it("U7: one turn short is nothing; a new commit cannot steer, and the fold resets the counter", () => {
 		expect(decideTurnAction(state({ stallTurns: STALL_TURNS - 1 }))).toEqual({ kind: "none" });
 		expect(decideTurnAction(state({ stallTurns: 40, commitChanged: true }))).toEqual({ kind: "none" });
-		expect(nextStallState({ stallTurns: 40, stallSteered: true }, true)).toEqual({
+		expect(nextStallState({ stallTurns: 40, stallSteered: true, stallObserved: true }, CHANGED)).toEqual({
 			stallTurns: 0,
 			stallSteered: false,
+			stallObserved: true,
 		});
 		// An unchanged commit advances the counter and keeps the steer flag.
-		expect(nextStallState({ stallTurns: 40, stallSteered: true }, false)).toEqual({
+		expect(nextStallState({ stallTurns: 40, stallSteered: true, stallObserved: true }, UNCHANGED)).toEqual({
 			stallTurns: 41,
 			stallSteered: true,
+			stallObserved: true,
 		});
 		// The steer already delivered for this stall is not repeated.
 		expect(decideTurnAction(state({ stallTurns: 40, stallSteered: true }))).toEqual({ kind: "none" });
+		// A run with nothing to watch has no stall to report, however long it runs.
+		expect(decideTurnAction(state({ stallTurns: 40, stallObserved: false }))).toEqual({ kind: "none" });
+		expect(nextStallState({ stallTurns: 40, stallSteered: true, stallObserved: true }, NO_BRANCH)).toEqual({
+			stallTurns: 0,
+			stallSteered: false,
+			stallObserved: false,
+		});
 	});
 
 	it("U8: a run at its cap gets the cap's one message, not the stall's", () => {
@@ -290,10 +327,11 @@ describe("decideTurnAction: the stall arm", () => {
 		// row pins the structure that decides it: the hard ceiling's block precedes
 		// the turn-cap step and dispatches "turn-limit", and a cap above the hard
 		// limit is refused rather than clamped. At 500 the run is killed as
-		// turn-limit, never as turn-cap.
+		// turn-limit, never as turn-cap. This holds for a fresh spawn: the ceiling
+		// counts this run's turns, the cap counts the dispatch's (decision 046).
 		const src = readFileSync("extensions/subagent-async/index.ts", "utf-8");
 		const hardAt = src.indexOf("if (rs.progress.turns >= MAX_TURNS_HARD) {");
-		const capStepAt = src.indexOf("turnCapStep(rs, observeCommitChange(rs))");
+		const capStepAt = src.indexOf("turnCapStep(rs, observeCommit(rs))");
 		expect(hardAt).toBeGreaterThan(0);
 		expect(capStepAt).toBeGreaterThan(hardAt);
 		expect(src.slice(hardAt, capStepAt)).toContain('dispatchKillSignals(rs, "turn-limit")');
@@ -313,7 +351,7 @@ describe("turnCapStep: the executed action", () => {
 	it("W1: crossing the cap wind-downs once, with the exact text and no number in it", () => {
 		const rs = stubChild({ progress: progressStub(TURN_CAP_DEFAULT) });
 
-		expect(turnCapStep(rs, false)).toEqual({ kind: "wind-down" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "wind-down" });
 		expect(rs.turnCapReached).toBe(true);
 		expect(steeredTexts(rs)).toEqual([WIND_DOWN]);
 		// Prohibition 2: no cap, no turn count, no digits at all.
@@ -321,7 +359,7 @@ describe("turnCapStep: the executed action", () => {
 
 		// The next turn inside the grace neither re-steers nor kills.
 		rs.progress.turns = TURN_CAP_DEFAULT + 1;
-		expect(turnCapStep(rs, false)).toEqual({ kind: "none" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "none" });
 		expect(steeredTexts(rs)).toHaveLength(1);
 		expect(rs.proc.signals).toEqual([]);
 	});
@@ -330,7 +368,7 @@ describe("turnCapStep: the executed action", () => {
 		setTimeoutSpy = spyOn(globalThis, "setTimeout");
 		const rs = stubChild({ progress: progressStub(TURN_CAP_DEFAULT + TURN_CAP_GRACE), turnCapReached: true });
 
-		expect(turnCapStep(rs, false)).toEqual({ kind: "kill" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "kill" });
 		expect(rs.killedVia).toBe("turn-cap");
 		expect(rs.killedExplicitly).toBe(true);
 		expect(rs.proc.signals).toEqual(["SIGTERM"]);
@@ -342,7 +380,7 @@ describe("turnCapStep: the executed action", () => {
 	it("W3: the stall steer lands once, never kills, and repeats only after a new stall", () => {
 		const rs = stubChild({ stallTurns: STALL_TURNS - 1 });
 
-		expect(turnCapStep(rs, false)).toEqual({ kind: "stall-steer" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "stall-steer" });
 		expect(rs.stallSteered).toBe(true);
 		expect(steeredTexts(rs)).toEqual([STALL_STEER]);
 		expect(STALL_STEER).not.toMatch(/[0-9]/);
@@ -351,12 +389,12 @@ describe("turnCapStep: the executed action", () => {
 		expect(rs.proc.signals).toEqual([]);
 
 		// Same stall, next turns: silence.
-		expect(turnCapStep(rs, false)).toEqual({ kind: "none" });
-		expect(turnCapStep(rs, false)).toEqual({ kind: "none" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "none" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "none" });
 		expect(steeredTexts(rs)).toHaveLength(1);
 
 		// A new commit resets the stall: the counter and the flag both clear.
-		expect(turnCapStep(rs, true)).toEqual({ kind: "none" });
+		expect(turnCapStep(rs, CHANGED)).toEqual({ kind: "none" });
 		expect(rs.stallTurns).toBe(0);
 		expect(rs.stallSteered).toBe(false);
 	});
@@ -367,9 +405,9 @@ describe("turnCapStep: the executed action", () => {
 			stdin: { destroyed: true, write: () => true },
 		});
 
-		expect(turnCapStep(rs, false)).toEqual({ kind: "stall-steer" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "stall-steer" });
 		expect(rs.stallSteered).toBe(false);
-		expect(turnCapStep(rs, false)).toEqual({ kind: "stall-steer" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "stall-steer" });
 	});
 
 	it("W5: a tripped cap suppresses a pending stall steer", () => {
@@ -379,8 +417,25 @@ describe("turnCapStep: the executed action", () => {
 			stallTurns: 40,
 		});
 
-		expect(turnCapStep(rs, false)).toEqual({ kind: "none" });
+		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "none" });
 		expect(steeredTexts(rs)).toHaveLength(0);
+	});
+
+	it("W5b: the step counts a resumed dispatch's earlier turns, and a no-branch run never stalls", () => {
+		// The cap compares cumulative turns: 137 from the earlier run + 13 here.
+		const resumed = stubChild({ progress: progressStub(13), turnsBefore: 137 });
+		expect(turnCapStep(resumed, UNCHANGED)).toEqual({ kind: "wind-down" });
+		// …and the grace is measured on the same number.
+		const grace = stubChild({ progress: progressStub(23), turnsBefore: 137, turnCapReached: true });
+		expect(turnCapStep(grace, UNCHANGED)).toEqual({ kind: "kill" });
+
+		// A run with no branch to watch skips the stall arm, however long it runs:
+		// every reviewer defaults to non-isolated, and every resume has no branch.
+		const noBranch = stubChild({ progress: progressStub(25), stallTurns: 40 });
+		expect(turnCapStep(noBranch, NO_BRANCH)).toEqual({ kind: "none" });
+		expect(steeredTexts(noBranch)).toHaveLength(0);
+		expect(noBranch.stallTurns).toBe(0);
+		expect(noBranch.stallObserved).toBe(false);
 	});
 
 	it("W6: a run killed at its cap carries the turn-cap marker in the delivered result", () => {
@@ -392,6 +447,26 @@ describe("turnCapStep: the executed action", () => {
 
 		expect(deliverCloseResult({} as any, rs, 0)).toBe("stop");
 		expect(delivered).toStartWith("[Killed via turn-cap — process terminated");
+	});
+});
+
+describe("the delivered result carries the flag", () => {
+	it("W6b: deliverResult names turn_cap_reached and the dispatch's turn count", () => {
+		const sent: string[] = [];
+		const pi: any = { sendUserMessage: (m: string) => { sent.push(m); } };
+		_testSetLiveSessionCtx({ ui: { setStatus: () => {}, notify: () => {} } });
+		const rs = stubChild({
+			task: "test task",
+			progress: progressStub(4),
+			turnsBefore: 148,
+			turnCapReached: true,
+			messages: [{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "stop" }],
+		});
+
+		deliverResult(pi, rs, 0);
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toContain("turn_cap_reached: true | turns_used: 152");
 	});
 });
 
@@ -472,8 +547,11 @@ describe("a resume carries the cap and the turn count over", () => {
 			);
 			return { text: String(res.content[0].text), rs: _testRunning.get(sid) };
 		} finally {
-			await tools.subagent_kill.execute("w9k", { session_id: sid }, undefined, undefined, {} as any);
-			process.argv[1] = realPi!;
+			try {
+				await tools.subagent_kill.execute("w9k", { session_id: sid }, undefined, undefined, {} as any);
+			} finally {
+				process.argv[1] = realPi!;
+			}
 		}
 	}
 
@@ -533,21 +611,6 @@ function readLog(sid: string): string {
 	} catch {
 		return "";
 	}
-}
-
-/** Sample the live tracker every 100ms until the session leaves it, keeping
- *  every observation — a row that needs the value *at* the moment something
- *  happened cannot read it after the close handler removed the entry. */
-async function watchUntilUntracked<T>(sid: string, sample: (rs: any) => T, ms: number): Promise<T[]> {
-	const out: T[] = [];
-	const deadline = Date.now() + ms;
-	while (Date.now() < deadline) {
-		const rs = _testRunning.get(sid);
-		if (!rs) return out;
-		out.push(sample(rs));
-		await new Promise((r) => setTimeout(r, 100));
-	}
-	return out;
 }
 
 async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
@@ -631,7 +694,7 @@ describe("real dispatch: the cap arm", () => {
 
 		const log = readLog(sid);
 		expect(log.split("\n").filter((l) => l.includes("[turn-cap] wind-down injected"))).toHaveLength(1);
-		expect(log).not.toContain("[turn-cap] dispatching kill");
+		expect(log).not.toContain("Killed via turn-cap");
 
 		const delivered = sent.find((m) => m.includes("turn_cap_reached")) ?? "";
 		expect(delivered).toContain("turn_cap_reached: true");
@@ -661,54 +724,59 @@ describe("real dispatch: the cap arm", () => {
 		const sid = sidOf(res);
 		track(sid, sid);
 
-		expect(await waitFor(() => readLog(sid).includes("[turn-cap] dispatching kill"), 420_000)).toBe(true);
-		expect(await waitUntilUntracked(sid, 240_000)).toBe(true);
+		expect(await waitFor(() => readLog(sid).includes("Killed via turn-cap"), 420_000)).toBe(true);
+		expect(await waitUntilUntracked(sid, 120_000)).toBe(true);
 
 		const delivered = sent.find((m) => m.startsWith("[Killed via turn-cap")) ?? "";
 		expect(delivered).toStartWith("[Killed via turn-cap — process terminated");
-		// A killed run keeps its session file, so it stays resumable.
-		expect(typeof readMetaJson(sid)?.sessionFile).toBe("string");
-	}, 300_000);
+		// Killed at cap + grace, and its session file survives, so it stays resumable.
+		const killed = readLog(sid).split("\n").find((l) => l.includes("Killed via turn-cap")) ?? "";
+		expect(killed).toContain("── Killed");
+		expect(existsSync(String(readMetaJson(sid)?.sessionFile))).toBe(true);
+	}, 600_000);
 
-	it("E3: a child's commit in a linked worktree is visible to the parent-side observation", async () => {
-		const root = process.cwd();
-		const { tools, ctx } = harness(root);
+	it("E3: the observation sees a linked worktree's commit and resets the stall counter", () => {
+		// The production observation, driven directly: a real repo, a real linked
+		// worktree branch, and a stub child whose parentCwd is that repo. This is
+		// the seat's real-case row — the branch tip moves, so the counter resets —
+		// without needing a live sampling window inside a dispatched child.
+		const dir = mkdtempSync(join(tmpdir(), "wo090-observe-"));
+		dirsToClean.push(dir);
+		const repo = join(dir, "repo");
+		const tree = join(dir, "wt");
+		const branch = "pi-subagent-observe";
+		const git = (cwd: string, args: string[]) =>
+			execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+		const commit = (cwd: string, msg: string) =>
+			execFileSync("git", ["commit", "-q", "--allow-empty", "-m", msg], {
+				cwd,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "ignore"],
+				env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+			});
 
-		const res = await tools.subagent.execute(
-			"e3",
-			{
-				agent: "implement",
-				task: "In your worktree, run `git commit --allow-empty -m wip` with the bash tool, then reply with the word committed.",
-				cwd: root,
-				review_policy: "skip",
-			},
-			undefined,
-			undefined,
-			ctx,
-		);
-		const text = String(res.content[0].text);
-		const sid = sidOf(res);
-		track(sid, sid);
-		expect(text).toContain("turn_cap:");
-		expect(text).not.toContain("stall_watch: none");
-		expect(await waitUntilUntracked(sid, 240_000)).toBe(true);
+		execFileSync("mkdir", ["-p", repo]);
+		git(repo, ["init", "-q", "-b", "main"]);
+		commit(repo, "base");
+		git(repo, ["worktree", "add", "-q", tree, "-b", branch]);
+		const baseline = git(repo, ["rev-parse", branch]).trim();
 
-		// The observation the stall arm reads, replayed after the run: the branch
-		// the spawn recorded, resolved from the parent's cwd. A linked worktree's
-		// `.git` is a file, so this is the only shape that can see the child's sha
-		// (E3a pins the reason). The child's commit moved it off the spawn point.
-		const meta = readMetaJson(sid)!;
-		expect(typeof meta.isolationBranch).toBe("string");
-		const tip = execFileSync("git", ["rev-parse", meta.isolationBranch], {
-			cwd: root,
-			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "ignore"],
-		}).trim();
-		expect(tip).toMatch(/^[0-9a-f]{40}$/);
-		expect(tip).not.toBe(meta.parentHeadCommit);
-		// The short run never produced a stall, so the arm stayed silent.
-		expect(readLog(sid)).not.toContain("[stall]");
-	}, 300_000);
+		const rs = stubChild({ isolationBranch: branch, parentCwd: repo, stallLastTip: baseline, stallTurns: 12 });
+		expect(observeCommit(rs)).toEqual({ observed: true, changed: false });
+		expect(rs.stallTurns).toBe(12);
+
+		commit(tree, "wip");
+		const change = observeCommit(rs);
+		expect(change).toEqual({ observed: true, changed: true });
+		expect(rs.stallLastTip).toBe(git(repo, ["rev-parse", branch]).trim());
+		expect(rs.stallLastTip).not.toBe(baseline);
+		// The turn that observed the commit resets the stall counter.
+		expect(turnCapStep(rs, change)).toEqual({ kind: "none" });
+		expect(rs.stallTurns).toBe(0);
+
+		// A run with no branch is unobserved, not "no commit".
+		expect(observeCommit(stubChild({ isolationBranch: null }))).toEqual({ observed: false, changed: false });
+	});
 
 	it("E4: a resume continues the recorded turn count, carries the cap over, and re-trips it", async () => {
 		const root = process.cwd();
@@ -749,7 +817,7 @@ describe("real dispatch: the cap arm", () => {
 		expect(
 			await waitFor(() => readLog(sid).split("[turn-cap] wind-down injected").length > 2, 240_000),
 		).toBe(true);
-		expect(await waitUntilUntracked(sid, 300_000)).toBe(true);
+		expect(await waitUntilUntracked(sid, 180_000)).toBe(true);
 		expect(sent.filter((m) => m.includes("turn_cap_reached: true")).length).toBeGreaterThanOrEqual(2);
-	}, 900_000);
+	}, 1_200_000);
 });
