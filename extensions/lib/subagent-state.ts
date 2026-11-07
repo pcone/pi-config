@@ -657,6 +657,18 @@ export const TURN_CAP_GRACE = 10;
 /** Commit-free turns before the advisory stall steer. */
 export const STALL_TURNS = 30;
 
+/** Turns between commit observations. The observation is a process spawn on the
+ *  turn path, so it is sampled rather than run every turn, and it is applied on
+ *  a later sample turn than the one that started it (owner ruling 2026-11-07:
+ *  "async + don't call every turn - every 10 is probably fine"). */
+export const STALL_SAMPLE_TURNS = 10;
+
+/** Whether this turn takes a commit observation. Pure; the turn count is the
+ *  dispatch's cumulative one, so a resumed run samples on the same grid. */
+export function stallSampleDue(turn: number): boolean {
+	return turn > 0 && turn % STALL_SAMPLE_TURNS === 0;
+}
+
 /** What the event site does about a turn. `kill` means the run is being
  *  stopped: the site returns and leaves delivery to the close handler. */
 export type TurnAction =
@@ -683,6 +695,28 @@ export interface StallObservation {
 export interface CommitObservation {
 	observed: boolean;
 	changed: boolean;
+}
+
+/** A completed commit observation and the sample turn that started it. */
+export interface PendingStallObservation {
+	obs: CommitObservation;
+	atTurn: number;
+}
+
+/**
+ * The stall arm's whole state: the fold's counters plus the sampled
+ * observation's bookkeeping. One value, because the parts always move
+ * together — the sampled arm adds nothing the fold cannot read.
+ */
+export interface StallTracker extends StallObservation {
+	/** The branch tip the last comparison used; null before any observation. */
+	lastTip: string | null;
+	/** A completed observation, waiting for the next sample turn to fold it. */
+	pending: PendingStallObservation | null;
+	/** The sample turn of the last folded observation. */
+	foldedTurn: number;
+	/** An observation is running. Guards against overlapping spawns. */
+	inFlight: boolean;
 }
 
 /** Everything the turn decision rests on — the caller supplies all of it. */
@@ -743,13 +777,25 @@ export function decideTurnAction(state: TurnCapState): TurnAction {
 }
 
 /**
- * Fold one turn's commit observation into the stall counters. A new commit ends
- * the stall: the counter and the steer flag both clear, so a long healthy run
- * gets one message per stall at most. An unobserved turn is not a commit-free
- * turn: nothing accrues and the counters clear. Pure.
+ * Fold one commit observation into the stall counters. A new commit ends the
+ * stall: the counter and the steer flag both clear, so a long healthy run gets
+ * one message per stall at most. An unobserved turn is not a commit-free turn:
+ * nothing accrues and the counters clear. Pure.
+ *
+ * `elapsedTurns` is how many turns this observation settles — 1 for a per-turn
+ * observation, the sample interval for a sampled one. The counter stays in
+ * turns, so `STALL_TURNS` means the same thing at either sampling rate.
  */
-export function nextStallState(prior: StallObservation, obs: CommitObservation): StallObservation {
+export function nextStallState(
+	prior: StallObservation,
+	obs: CommitObservation,
+	elapsedTurns = 1,
+): StallObservation {
 	if (!obs.observed) return { stallTurns: 0, stallSteered: false, stallObserved: false };
 	if (obs.changed) return { stallTurns: 0, stallSteered: false, stallObserved: true };
-	return { stallTurns: prior.stallTurns + 1, stallSteered: prior.stallSteered, stallObserved: true };
+	return {
+		stallTurns: prior.stallTurns + elapsedTurns,
+		stallSteered: prior.stallSteered,
+		stallObserved: true,
+	};
 }

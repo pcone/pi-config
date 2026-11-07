@@ -6,7 +6,7 @@
  * at any time. Results are delivered as injected user messages.
  */
 
-import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -52,10 +52,13 @@ import {
 	resolveTurnCap,
 	resumeCallFor,
 	selfStartToken,
+	stallSampleDue,
 	stopReasonOutcome,
 	type OwnerProbe,
 	type CommitObservation,
+	type PendingStallObservation,
 	type StallObservation,
+	type StallTracker,
 	type SubagentOutcome,
 	type TurnAction,
 	type TurnCapState,
@@ -681,16 +684,9 @@ interface RunningSubagent {
 	// The wind-down steer was injected; the grace is running. Not persisted: a
 	// resume re-trips it (decision 046).
 	turnCapReached: boolean;
-	// Commit-free turns observed on the child's branch, and whether the advisory
-	// stall steer was delivered for the current stall. Folded by nextStallState.
-	stallTurns: number;
-	stallSteered: boolean;
-	// Last branch tip observed by `git rev-parse`; null when the run has no
-	// isolation branch to watch (non-isolated dispatch or resume).
-	stallLastTip: string | null;
-	// Whether the last turn's commit was observable at all. False for a run with
-	// no branch: the stall arm is skipped, not counted as commit-free.
-	stallObserved: boolean;
+	// The whole stall arm — the fold's counters, the last observed tip, and the
+	// sampled observation's bookkeeping. One value: they always move together.
+	stall: StallTracker;
 	logPath: string;   // live human-readable event log
 	logLines: string[];     // in-memory buffer for live TUI widget
 	stderrLines: string[];  // captured stderr from the child pi process;
@@ -1539,55 +1535,106 @@ function turnBudgetLine(cap: number, turns: number, hasBranch: boolean): string 
 	);
 }
 
+/** How the commit observation runs its command. Injectable so the rows can
+ *  drive a slow or scripted observation without a git repository. */
+export type CommitRunner = (branch: string, cwd: string) => Promise<string>;
+
+/** The production runner: one asynchronous `git rev-parse <branch>`. */
+function gitRevParse(branch: string, cwd: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile(
+			"git",
+			["rev-parse", branch],
+			{ cwd, encoding: "utf-8", timeout: 5000 },
+			(err, stdout) => {
+				if (err) reject(err);
+				else resolve(String(stdout).trim());
+			},
+		);
+	});
+}
+
 /**
- * Observe the child's branch tip for this turn. One `git rev-parse` spawn per
- * turn — a command, not a ref-file read: a linked worktree's `.git` is a file
- * pointing at the gitdir, so the refs live in the common dir and no file under
- * the worktree holds the branch tip (decision 046).
+ * Observe the child's branch tip — a command, not a ref-file read: a linked
+ * worktree's `.git` is a file pointing at the gitdir, so the refs live in the
+ * common dir and no file under the worktree holds the branch tip (decision 046).
  *
- * A run with no branch (non-isolated dispatch or a resume) and an observation
- * the command cannot resolve both report `observed: false`, which skips the
- * stall arm: a child with nothing to watch must never be told it stalled.
+ * Asynchronous, and never awaited on the turn path (owner ruling 2026-11-07:
+ * the spawn is off the parent's event loop; the measurement was a 286 ms mean
+ * block per turn under load). A run with no branch (non-isolated dispatch or a
+ * resume) and a command the observation cannot resolve both report
+ * `observed: false`, which skips the stall arm: a child with nothing to watch
+ * must never be told it stalled.
  * Exported as an @internal test hook, like `turnCapStep`.
  */
-export function observeCommit(rs: RunningSubagent): CommitObservation {
+export async function observeCommit(
+	rs: RunningSubagent,
+	run: CommitRunner = gitRevParse,
+): Promise<CommitObservation> {
 	if (!rs.isolationBranch) return { observed: false, changed: false };
 	let tip: string;
 	try {
-		tip = execFileSync("git", ["rev-parse", rs.isolationBranch], {
-			cwd: rs.parentCwd,
-			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "ignore"],
-			timeout: 5000,
-		}).trim();
+		tip = await run(rs.isolationBranch, rs.parentCwd);
 	} catch (e) {
 		debugLog(`stall-watch: git rev-parse ${rs.isolationBranch} failed: ${e instanceof Error ? e.message : String(e)}`);
 		return { observed: false, changed: false };
 	}
 	if (!tip) return { observed: false, changed: false };
-	const changed = rs.stallLastTip !== null && tip !== rs.stallLastTip;
-	rs.stallLastTip = tip;
+	const changed = rs.stall.lastTip !== null && tip !== rs.stall.lastTip;
+	rs.stall.lastTip = tip;
 	return { observed: true, changed };
 }
 
 /**
- * One assistant turn's turn accounting: fold the commit observation into the
+ * Start this sample turn's observation, if the child has a branch to watch and
+ * no observation is still outstanding. The result lands in `stall.pending` and
+ * is folded by a later sample turn — nothing on the turn path waits for it.
+ */
+function scheduleStallObservation(rs: RunningSubagent, run?: CommitRunner): void {
+	if (!rs.isolationBranch || rs.stall.inFlight || rs.stall.pending) return;
+	const atTurn = turnsUsed(rs);
+	rs.stall.inFlight = true;
+	void observeCommit(rs, run)
+		.then((obs) => {
+			rs.stall.pending = { obs, atTurn };
+		})
+		// The flag means "a spawn is outstanding", so it clears whenever the
+		// promise settles. A rejection here would surface as an unhandled
+		// rejection — observeCommit turns its own failures into `observed: false`.
+		.finally(() => {
+			rs.stall.inFlight = false;
+		});
+}
+
+/**
+ * One assistant turn's turn accounting: fold a commit observation into the
  * stall counters, ask the pure decider, then execute exactly the action it
  * named. Nothing here re-derives a cap or stall condition — the decisions live
  * in extensions/lib/subagent-state.ts (decision 046), and this function is
  * exported only so the wiring can be driven without a long-lived child.
+ *
+ * `obs` is null on a turn with no observation to fold: the counters and the
+ * decider then run on what is already known, which is every non-sample turn.
  */
-export function turnCapStep(rs: RunningSubagent, obs: CommitObservation): TurnAction {
-	const stall = nextStallState(rs, obs);
-	rs.stallTurns = stall.stallTurns;
-	rs.stallSteered = stall.stallSteered;
-	rs.stallObserved = stall.stallObserved;
+export function turnCapStep(
+	rs: RunningSubagent,
+	obs: CommitObservation | null,
+	elapsedTurns = 1,
+): TurnAction {
+	if (obs) {
+		const fold = nextStallState(rs.stall, obs, elapsedTurns);
+		rs.stall.stallTurns = fold.stallTurns;
+		rs.stall.stallSteered = fold.stallSteered;
+		rs.stall.stallObserved = fold.stallObserved;
+	}
 	const action = decideTurnAction({
 		turns: turnsUsed(rs),
 		cap: rs.turnCap,
 		capTripped: rs.turnCapReached,
-		...stall,
-		commitChanged: obs.changed,
+		stallTurns: rs.stall.stallTurns,
+		stallSteered: rs.stall.stallSteered,
+		stallObserved: rs.stall.stallObserved,
+		commitChanged: obs?.changed ?? false,
 	});
 
 	switch (action.kind) {
@@ -1610,8 +1657,8 @@ export function turnCapStep(rs: RunningSubagent, obs: CommitObservation): TurnAc
 			if (steerChild(rs, STALL_STEER)) {
 				// Marked delivered only now, so a steer that could not land is
 				// retried on the next turn instead of being lost silently.
-				rs.stallSteered = true;
-				appendRunningLogLine(rs, `[stall] no new commit for ${stall.stallTurns} turns — advisory steer injected`);
+				rs.stall.stallSteered = true;
+				appendRunningLogLine(rs, `[stall] no new commit for ${rs.stall.stallTurns} turns — advisory steer injected`);
 			}
 			return action;
 		case "kill":
@@ -1621,6 +1668,34 @@ export function turnCapStep(rs: RunningSubagent, obs: CommitObservation): TurnAc
 			dispatchKillSignals(rs, "turn-cap");
 			return action;
 	}
+}
+
+/**
+ * One assistant turn on the `message_end` path: fold the previous sample's
+ * observation if one is waiting, start this turn's observation when the sample
+ * grid says so, then execute the turn's action. The observation is asynchronous
+ * and its result is only ever applied on a later sample turn, so nothing here
+ * blocks on a spawn (owner ruling 2026-11-07).
+ *
+ * A stall of `STALL_TURNS` is therefore noticed within one sample interval of
+ * it: the turn that starts an observation cannot act on it, and the next one
+ * that folds it can. The cap arm still decides every turn, which is what keeps
+ * the grace and the kill at exact turn numbers.
+ */
+export function turnCapTurn(rs: RunningSubagent, run?: CommitRunner): TurnAction {
+	const sampled = stallSampleDue(turnsUsed(rs));
+	let pending: PendingStallObservation | null = null;
+	if (sampled) {
+		pending = rs.stall.pending;
+		rs.stall.pending = null;
+	}
+	const elapsed = pending ? pending.atTurn - rs.stall.foldedTurn : 1;
+	if (pending) rs.stall.foldedTurn = pending.atTurn;
+	const action = turnCapStep(rs, pending?.obs ?? null, elapsed);
+	// A killing turn has nothing left to watch, and its observation would land
+	// on a handle nobody reads.
+	if (sampled && action.kind !== "kill") scheduleStallObservation(rs, run);
+	return action;
 }
 
 function formatProgress(rs: RunningSubagent): string {
@@ -2182,13 +2257,19 @@ async function spawnSubagent(
 		turnCap: resolvedTurnCap,
 		turnsBefore,
 		turnCapReached: false,
-		stallTurns: 0,
-		stallSteered: false,
-		// The isolation branch starts at the parent's HEAD, so that commit is the
-		// baseline the first turn's observation compares against.
-		stallLastTip: isolationBranch ? parentHeadCommit : null,
-		// No branch to watch until the first observation says otherwise.
-		stallObserved: false,
+		stall: {
+			stallTurns: 0,
+			stallSteered: false,
+			// No branch to watch until the first observation says otherwise.
+			stallObserved: false,
+			// The isolation branch starts at the parent's HEAD, so that commit is
+			// the baseline the first turn's observation compares against.
+			lastTip: isolationBranch ? parentHeadCommit : null,
+			pending: null,
+			// The first fold settles every turn since spawn.
+			foldedTurn: turnsBefore,
+			inFlight: false,
+		},
 		logPath,
 		logLines: [],
 		stderrLines: [],
@@ -2502,8 +2583,10 @@ async function spawnSubagent(
 				// Per-dispatch turn cap and stall tripwire (decision 046). The hard
 				// ceiling above stays first so it keeps its own reason when a cap's
 				// grace would overrun it. This site only builds the state and executes
-				// the action: both conditions live in decideTurnAction.
-				if (turnCapStep(rs, observeCommit(rs)).kind === "kill") return;
+				// the action: both conditions live in decideTurnAction. The commit
+				// observation is sampled and asynchronous, so nothing here waits on a
+				// spawn.
+				if (turnCapTurn(rs).kind === "kill") return;
 
 				// Detect completion: text-only message (no tool calls) means the
 				// model is done. RPC mode keeps stdin open so we must close it to
@@ -3586,10 +3669,17 @@ export function recoverOrphanedSubagents(
 				turnCap: resolveTurnCap(meta.turnCap),
 				turnsBefore: meta.turnsUsed ?? 0,
 				turnCapReached: false,
-				stallTurns: 0,
-				stallSteered: false,
-				stallLastTip: null,
-				stallObserved: false,
+				stall: {
+					stallTurns: 0,
+					stallSteered: false,
+					// A recovered handle watches nothing: the accounting ran in the
+					// child's spawning process (decision 046).
+					stallObserved: false,
+					lastTip: null,
+					pending: null,
+					foldedTurn: meta.turnsUsed ?? 0,
+					inFlight: false,
+				},
 				toolInFlight: 0,
 				logPath,
 				logLines: [],

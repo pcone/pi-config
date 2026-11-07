@@ -14,6 +14,9 @@
  *    the grace path reaches `dispatchKillSignals` with the `turn-cap` reason,
  *    the stall steer repeats only after a new stall, and `subagent_status`
  *    renders the flag.
+ *  - S rows drive the sampled, asynchronous commit observation: no spawn off
+ *    the sample grid, a slow observation off the turn path, and the one-sample
+ *    lag between a stall of N and the steer.
  *  - E rows are real child dispatches and the git mechanism they depend on.
  *
  * LIVE-NETWORK: the four E rows spawn real `pi` children and make billed LLM calls;
@@ -32,12 +35,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	MAX_TURNS_HARD,
+	STALL_SAMPLE_TURNS,
 	STALL_TURNS,
 	TURN_CAP_DEFAULT,
 	TURN_CAP_GRACE,
 	decideTurnAction,
 	nextStallState,
 	resolveTurnCap,
+	stallSampleDue,
 	type CommitObservation,
 	type TurnCapState,
 } from "../extensions/lib/subagent-state.ts";
@@ -50,9 +55,11 @@ import subagentFactory, {
 	readMetaJson,
 	resolveRunningSession,
 	turnCapStep,
+	turnCapTurn,
 	writeMetaJson,
+	type CommitRunner,
 } from "../extensions/subagent-async/index.ts";
-import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { removeSpawnArtifacts, waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 
 // The harness injects PI_SUBAGENT_* into every subagent; a row that spawns a
@@ -189,9 +196,7 @@ function stubChild(over: Record<string, any> = {}): any {
 		turnCap: TURN_CAP_DEFAULT,
 		turnsBefore: 0,
 		turnCapReached: false,
-		stallTurns: 0,
-		stallSteered: false,
-		stallLastTip: null,
+		stall: stallOf(),
 		killedExplicitly: false,
 		killedVia: null,
 		staleTimer: null,
@@ -201,6 +206,20 @@ function stubChild(over: Record<string, any> = {}): any {
 		sockClients: new Set<any>(),
 		watchHandle: null,
 		written,
+		...over,
+	};
+}
+
+/** A stub child's stall tracker with only the axes a row is about overridden. */
+function stallOf(over: Record<string, any> = {}): any {
+	return {
+		stallTurns: 0,
+		stallSteered: false,
+		stallObserved: false,
+		lastTip: null,
+		pending: null,
+		foldedTurn: 0,
+		inFlight: false,
 		...over,
 	};
 }
@@ -272,6 +291,19 @@ describe("decideTurnAction: the cap arm", () => {
 	});
 });
 
+describe("stallSampleDue: the observation grid", () => {
+	it("U10: the grid is every tenth turn, and turn zero is not a turn", () => {
+		expect(stallSampleDue(0)).toBe(false);
+		expect(stallSampleDue(1)).toBe(false);
+		expect(stallSampleDue(STALL_SAMPLE_TURNS - 1)).toBe(false);
+		expect(stallSampleDue(STALL_SAMPLE_TURNS)).toBe(true);
+		expect(stallSampleDue(STALL_SAMPLE_TURNS + 1)).toBe(false);
+		expect(stallSampleDue(STALL_SAMPLE_TURNS * 2)).toBe(true);
+		// Cumulative, so a resumed dispatch lands on the same grid.
+		expect(stallSampleDue(137 + 3)).toBe(true);
+	});
+});
+
 describe("decideTurnAction: the stall arm", () => {
 	it("U5b: the ruled numbers are pinned, not just symbolically referenced", () => {
 		expect(TURN_CAP_DEFAULT).toBe(150);
@@ -326,7 +358,7 @@ describe("decideTurnAction: the stall arm", () => {
 		// counts this run's turns, the cap counts the dispatch's (decision 046).
 		const src = readFileSync("extensions/subagent-async/index.ts", "utf-8");
 		const hardAt = src.indexOf("if (rs.progress.turns >= MAX_TURNS_HARD) {");
-		const capStepAt = src.indexOf("turnCapStep(rs, observeCommit(rs))");
+		const capStepAt = src.indexOf("if (turnCapTurn(rs).kind === \"kill\") return;");
 		expect(hardAt).toBeGreaterThan(0);
 		expect(capStepAt).toBeGreaterThan(hardAt);
 		expect(src.slice(hardAt, capStepAt)).toContain('dispatchKillSignals(rs, "turn-limit")');
@@ -373,10 +405,10 @@ describe("turnCapStep: the executed action", () => {
 	});
 
 	it("W3: the stall steer lands once, never kills, and repeats only after a new stall", () => {
-		const rs = stubChild({ stallTurns: STALL_TURNS - 1 });
+		const rs = stubChild({ stall: stallOf({ stallTurns: STALL_TURNS - 1 }) });
 
 		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "stall-steer" });
-		expect(rs.stallSteered).toBe(true);
+		expect(rs.stall.stallSteered).toBe(true);
 		expect(steeredTexts(rs)).toEqual([STALL_STEER]);
 		expect(STALL_STEER).not.toMatch(/[0-9]/);
 		// It never kills.
@@ -390,18 +422,18 @@ describe("turnCapStep: the executed action", () => {
 
 		// A new commit resets the stall: the counter and the flag both clear.
 		expect(turnCapStep(rs, CHANGED)).toEqual({ kind: "none" });
-		expect(rs.stallTurns).toBe(0);
-		expect(rs.stallSteered).toBe(false);
+		expect(rs.stall.stallTurns).toBe(0);
+		expect(rs.stall.stallSteered).toBe(false);
 	});
 
 	it("W4: an undelivered stall steer is retried rather than marked delivered", () => {
 		const rs = stubChild({
-			stallTurns: STALL_TURNS - 1,
+			stall: stallOf({ stallTurns: STALL_TURNS - 1 }),
 			stdin: { destroyed: true, write: () => true },
 		});
 
 		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "stall-steer" });
-		expect(rs.stallSteered).toBe(false);
+		expect(rs.stall.stallSteered).toBe(false);
 		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "stall-steer" });
 	});
 
@@ -409,7 +441,7 @@ describe("turnCapStep: the executed action", () => {
 		const rs = stubChild({
 			progress: progressStub(TURN_CAP_DEFAULT + 1),
 			turnCapReached: true,
-			stallTurns: 40,
+			stall: stallOf({ stallTurns: 40, stallObserved: true }),
 		});
 
 		expect(turnCapStep(rs, UNCHANGED)).toEqual({ kind: "none" });
@@ -428,11 +460,31 @@ describe("turnCapStep: the executed action", () => {
 
 		// A run with no branch to watch skips the stall arm, however long it runs:
 		// every reviewer defaults to non-isolated, and every resume has no branch.
-		const noBranch = stubChild({ progress: progressStub(25), stallTurns: 40 });
+		const noBranch = stubChild({
+			progress: progressStub(25),
+			stall: stallOf({ stallTurns: 40, stallObserved: true }),
+		});
 		expect(turnCapStep(noBranch, NO_BRANCH)).toEqual({ kind: "none" });
 		expect(steeredTexts(noBranch)).toHaveLength(0);
-		expect(noBranch.stallTurns).toBe(0);
-		expect(noBranch.stallObserved).toBe(false);
+		expect(noBranch.stall.stallTurns).toBe(0);
+		expect(noBranch.stall.stallObserved).toBe(false);
+	});
+
+	it("W5c: a run handle carrying decoy cap fields cannot steer the decision", () => {
+		// The decider's input is exactly the fields TurnCapState names. A handle
+		// spread into it would let an unrelated `turns`/`cap`/`capTripped` on the
+		// run silently re-time the wind-down or the kill.
+		const rs = stubChild({
+			progress: progressStub(4),
+			turns: 9_999,
+			cap: 1,
+			capTripped: true,
+			commitChanged: true,
+		});
+
+		expect(turnCapStep(rs, null)).toEqual({ kind: "none" });
+		expect(steeredTexts(rs)).toHaveLength(0);
+		expect(rs.proc.signals).toEqual([]);
 	});
 
 	it("W6: a run killed at its cap carries the turn-cap marker in the delivered result", () => {
@@ -445,6 +497,209 @@ describe("turnCapStep: the executed action", () => {
 		expect(deliverCloseResult({} as any, rs, 0)).toBe("stop");
 		expect(delivered).toStartWith("[Killed via turn-cap — process terminated");
 	});
+});
+
+describe("the sampled, asynchronous commit observation", () => {
+	/** A stub child with a branch to watch and a baseline tip. */
+	function observingChild(over: Record<string, any> = {}): any {
+		return stubChild({
+			isolationBranch: "pi-subagent-sampled",
+			parentCwd: process.cwd(),
+			stall: stallOf({ lastTip: "tip-unchanged" }),
+			...over,
+		});
+	}
+
+	it("S1: only a sample turn starts an observation", async () => {
+		let spawns = 0;
+		const run: CommitRunner = async () => {
+			spawns++;
+			return "tip-unchanged";
+		};
+		const rs = observingChild();
+
+		// No spawn on any non-sample turn, however many turns run.
+		for (let turn = 1; turn < STALL_SAMPLE_TURNS; turn++) {
+			rs.progress.turns = turn;
+			expect(turnCapTurn(rs, run).kind).toBe("none");
+			await flush();
+		}
+		expect(spawns).toBe(0);
+
+		// The sample turn starts exactly one, and the turn after it starts none.
+		rs.progress.turns = STALL_SAMPLE_TURNS;
+		turnCapTurn(rs, run);
+		await flush();
+		expect(spawns).toBe(1);
+		rs.progress.turns = STALL_SAMPLE_TURNS + 1;
+		turnCapTurn(rs, run);
+		await flush();
+		expect(spawns).toBe(1);
+
+		// The grid is cumulative: a resumed dispatch at 137 earlier turns samples
+		// on the same grid, even though this run has only made three turns.
+		const resumed = observingChild({ turnsBefore: 137, progress: progressStub(3), stall: stallOf({ foldedTurn: 137 }) });
+		let resumedSpawns = 0;
+		turnCapTurn(resumed, async () => {
+			resumedSpawns++;
+			return "tip-unchanged";
+		});
+		await flush();
+		expect(resumedSpawns).toBe(1);
+	}, 30_000);
+
+	it("S5: a killing turn starts no observation", () => {
+		setTimeoutSpy = spyOn(globalThis, "setTimeout");
+		let spawns = 0;
+		const rs = observingChild({ turnCap: 20, turnCapReached: true, progress: progressStub(30) });
+
+		expect(turnCapTurn(rs, async () => {
+			spawns++;
+			return "tip-unchanged";
+		}).kind).toBe("kill");
+		expect(spawns).toBe(0);
+		expect(rs.proc.signals.length).toBeGreaterThan(0);
+		for (const r of setTimeoutSpy!.mock.results as any[]) if (r.value) clearTimeout(r.value);
+	}, 30_000);
+
+	it("S6: a stall that begins after a commit is steered later than a fresh one", async () => {
+		// Decision 046 states this number, so it is pinned rather than asserted in
+		// prose: the fold that first sees the commit resets the counter, and the
+		// steer then needs three more sample folds.
+		//
+		// Worst observed lag: 50 commit-free turns. The dispatch brief's bound is
+		// 39 ("within one sample interval after N"), and no phase reaches it —
+		// 41 is the best mid-run case. The band is ruled-and-not-met pending an
+		// owner answer (decision 046 §Why); this row pins the miss rather than
+		// proving the bound was satisfied.
+		async function commitFreeTurns(commitAt: number): Promise<number> {
+			const rs = observingChild();
+			for (let turn = 1; turn <= STALL_TURNS * 6; turn++) {
+				rs.progress.turns = turn;
+				const tip = turn > commitAt ? "tip-moved" : "tip-unchanged";
+				const action = turnCapTurn(rs, async () => tip);
+				while (rs.stall.inFlight) await flush();
+				if (action.kind === "stall-steer") return turn - commitAt;
+			}
+			return 0;
+		}
+
+		// Both ends of the band, because 41 is the number in dispute: it is the
+		// best mid-run case and it already exceeds the brief's 39.
+		expect(await commitFreeTurns(9)).toBe(41);
+		expect(await commitFreeTurns(10)).toBe(50);
+		// An interior phase and a commit before the first sample.
+		expect(await commitFreeTurns(25)).toBe(45);
+		expect(await commitFreeTurns(0)).toBe(50);
+	}, 60_000);
+
+	it("S4: a sample turn that arrives mid-observation starts no second spawn", async () => {
+		let spawns = 0;
+		let release: (tip: string) => void = () => {};
+		const rs = observingChild();
+
+		rs.progress.turns = STALL_SAMPLE_TURNS;
+		turnCapTurn(rs, () => {
+			spawns++;
+			return new Promise<string>((resolve) => {
+				release = resolve;
+			});
+		});
+		await flush();
+		expect(spawns).toBe(1);
+		expect(rs.stall.inFlight).toBe(true);
+
+		// The next sample turn arrives while the first observation is still out.
+		rs.progress.turns = STALL_SAMPLE_TURNS * 2;
+		turnCapTurn(rs, async () => {
+			spawns++;
+			return "tip-unchanged";
+		});
+		await flush();
+		expect(spawns).toBe(1);
+
+		// The outstanding observation still lands, and the next sample turn folds
+		// it — the skipped sample costs nothing but the wait.
+		release("tip-unchanged");
+		expect(await waitFor(() => rs.stall.pending !== null, 5_000)).toBe(true);
+		expect(rs.stall.pending.atTurn).toBe(STALL_SAMPLE_TURNS);
+		expect(rs.stall.inFlight).toBe(false);
+	}, 30_000);
+
+	it("S2: a slow observation does not hold up the turn path", async () => {
+		const rs = observingChild();
+		rs.progress.turns = STALL_SAMPLE_TURNS;
+
+		const started = Date.now();
+		turnCapTurn(rs, () => new Promise<string>((resolve) => setTimeout(() => resolve("tip-unchanged"), 2000)));
+		const turnMs = Date.now() - started;
+
+		// The turn returns on its own; a two-second spawn is nowhere on it.
+		expect(turnMs).toBeLessThan(500);
+		expect(rs.stall.inFlight).toBe(true);
+		expect(rs.stall.pending).toBe(null);
+
+		// It lands afterwards, off the turn path, for a later turn to fold.
+		expect(await waitFor(() => rs.stall.pending !== null, 10_000)).toBe(true);
+		expect(rs.stall.pending.obs).toEqual({ observed: true, changed: false });
+		expect(rs.stall.pending.atTurn).toBe(STALL_SAMPLE_TURNS);
+		expect(rs.stall.inFlight).toBe(false);
+	}, 30_000);
+
+	it("S3: a stall is caught within one sample interval after N, and never before it", async () => {
+		// A real branch that never moves, driven through the production command:
+		// the sampling grid, the async spawn and the fold are all in play.
+		const dir = mkdtempSync(join(tmpdir(), "wo090-stall-"));
+		dirsToClean.push(dir);
+		const repo = join(dir, "repo");
+		const branch = "pi-subagent-stall";
+		const git = (args: string[], author = false) =>
+			execFileSync("git", args, {
+				cwd: repo,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "ignore"],
+				env: author
+					? childEnv({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" })
+					: childEnv(),
+			});
+		execFileSync("mkdir", ["-p", repo], { env: childEnv() });
+		git(["init", "-q", "-b", "main"]);
+		git(["commit", "-q", "--allow-empty", "-m", "base"], true);
+		git(["branch", branch]);
+		const rs = observingChild({
+			isolationBranch: branch,
+			parentCwd: repo,
+			stall: stallOf({ lastTip: git(["rev-parse", branch]).trim() }),
+		});
+
+		let steeredAt = 0;
+		for (let turn = 1; turn <= STALL_TURNS + STALL_SAMPLE_TURNS; turn++) {
+			rs.progress.turns = turn;
+			const action = turnCapTurn(rs);
+			// The sample's spawn lands before the next turn: the row is about
+			// where the result is applied, not about how long the spawn takes.
+			while (rs.stall.inFlight) await flush();
+			if (action.kind === "stall-steer") {
+				steeredAt = turn;
+				break;
+			}
+			await flush();
+		}
+
+		// A stall of N is not reported before N commit-free turns...
+		expect(steeredAt).toBeGreaterThan(STALL_TURNS);
+		// ...and the sample lag is the whole delay: one interval at most.
+		expect(steeredAt).toBeLessThanOrEqual(STALL_TURNS + STALL_SAMPLE_TURNS);
+		// The fold happens on a sample turn, not on the turn the observation
+		// lands: folding on arrival would steer at 31, inside the window above.
+		expect(steeredAt % STALL_SAMPLE_TURNS).toBe(0);
+		expect(steeredTexts(rs)).toEqual([STALL_STEER]);
+		// Still advisory: the observation never kills, and never re-steers.
+		expect(rs.proc.signals).toEqual([]);
+		while (rs.stall.inFlight) await flush();
+		expect(turnCapTurn(rs).kind).toBe("none");
+		expect(steeredTexts(rs)).toHaveLength(1);
+	}, 60_000);
 });
 
 describe("the delivered result carries the flag", () => {
@@ -467,16 +722,43 @@ describe("the delivered result carries the flag", () => {
 	});
 });
 
+describe("the close path delivers through the fake pi", () => {
+	it("W11: a finished child's result reaches the fake's sendUserMessage", async () => {
+		const root = process.cwd();
+		const { tools, sent, ctx } = harness(root);
+
+		// The stand-in never runs a turn, so no billed call; SIGTERM directly
+		// (not the kill tool, whose `resolveOnStop` path resolves the waiter
+		// instead of delivering) is what makes the close handler deliver.
+		process.argv[1] = standIn!;
+		try {
+			const res = await tools.subagent.execute(
+				"w11",
+				{ agent: "implement", task: "noop", cwd: root, isolate: false, review_policy: "skip" },
+				undefined,
+				undefined,
+				ctx,
+			);
+			const sid = sidOf(res);
+			track(sid, sid);
+
+			const rs = _testRunning.get(sid);
+			expect(rs).toBeTruthy();
+			rs.proc.kill("SIGTERM");
+
+			// Delivery runs through the spawn-time `pi`; a fake without
+			// `sendUserMessage` throws here instead of skipping silently.
+			expect(await waitFor(() => sent.some((m) => m.includes(`session: ${sid}`)), 30_000)).toBe(true);
+			expect(sent.filter((m) => m.includes(`session: ${sid}`))).toHaveLength(1);
+		} finally {
+			process.argv[1] = realPi!;
+		}
+	}, 60_000);
+});
+
 describe("the flag reaches the parent's status surface", () => {
 	it("W7: subagent_status renders the cap, the turns used, and the reached flag", async () => {
-		const tools: Record<string, any> = {};
-		subagentFactory({
-			on: () => {},
-			registerTool: (t: any) => {
-				tools[t.name] = t;
-			},
-			registerCommand: () => {},
-		} as any);
+		const { tools } = fakePi();
 		const rs = stubChild({ progress: progressStub(4), turnsBefore: 148, turnCapReached: true });
 		_testRunning.set(rs.sessionId, rs);
 		sidsToClean.push(rs.sessionId);
@@ -490,20 +772,36 @@ describe("the flag reaches the parent's status surface", () => {
 	});
 
 	it("W8: a disabled cap renders as disabled, not as a number", async () => {
-		const tools: Record<string, any> = {};
-		subagentFactory({
-			on: () => {},
-			registerTool: (t: any) => {
-				tools[t.name] = t;
-			},
-			registerCommand: () => {},
-		} as any);
+		const { tools } = fakePi();
 		const rs = stubChild({ turnCap: resolveTurnCap(0) });
 		_testRunning.set(rs.sessionId, rs);
 		sidsToClean.push(rs.sessionId);
 
 		const res = await tools.subagent_status.execute("c1", { session_id: rs.sessionId });
 		expect(String(res.content[0].text)).toContain("Turn cap: none (disabled)");
+	});
+});
+
+describe("a cap the tool cannot honour is refused before anything spawns", () => {
+	it("W10: turn_cap above the hard limit is an error naming both numbers, and no child is spawned", async () => {
+		const { tools, ui } = fakePi();
+		const before = _testRunning.size;
+
+		const res = await tools.subagent.execute(
+			"w10",
+			{ agent: "implement", task: "noop", cwd: process.cwd(), turn_cap: 600 },
+			undefined,
+			undefined,
+			liveCtx(process.cwd(), ui),
+		);
+
+		expect(res.isError).toBe(true);
+		const text = String(res.content[0].text);
+		// Both numbers, so the caller sees why 600 is not a cap it can have.
+		expect(text).toContain("600");
+		expect(text).toContain(String(MAX_TURNS_HARD));
+		// Refused before any worktree or process exists (decision 046).
+		expect(_testRunning.size).toBe(before);
 	});
 });
 
@@ -519,14 +817,7 @@ describe("a resume carries the cap and the turn count over", () => {
 	}
 
 	async function resumeRow(fields: Record<string, any>): Promise<{ text: string; rs: any }> {
-		const tools: Record<string, any> = {};
-		subagentFactory({
-			on: () => {},
-			registerTool: (t: any) => {
-				tools[t.name] = t;
-			},
-			registerCommand: () => {},
-		} as any);
+		const { tools, ui } = fakePi();
 		const sid = `subagent-${randomUUID()}`;
 		sidsToClean.push(sid);
 		logsToClean.push(`/tmp/pi-subagent-${sid}.log`, `/tmp/pi-subagent-${sid}.sock`);
@@ -540,12 +831,16 @@ describe("a resume carries the cap and the turn count over", () => {
 				{ session_id: sid, task: "continue" },
 				undefined,
 				undefined,
-				{ cwd: process.cwd(), sessionManager: { getSessionId: () => `w9-${randomUUID()}` }, ui: {} } as any,
+				{ cwd: process.cwd(), sessionManager: { getSessionId: () => `w9-${randomUUID()}` }, ui } as any,
 			);
 			return { text: String(res.content[0].text), rs: _testRunning.get(sid) };
 		} finally {
 			try {
 				await tools.subagent_kill.execute("w9k", { session_id: sid }, undefined, undefined, {} as any);
+				// Artifact hygiene only: `running.delete` fires before the close
+				// handler's commit steps and delivery, so this is not a wait on
+				// delivery. W11 is the row that waits on delivery itself.
+				await waitUntilUntracked(sid, 30_000);
 			} finally {
 				process.argv[1] = realPi!;
 			}
@@ -574,8 +869,14 @@ describe("a resume carries the cap and the turn count over", () => {
 
 // ── E: the mechanism and real dispatches ───────────────────────────────────
 
-/** Spawn a real child through the extension's own tool surface. */
-function harness(root: string) {
+/**
+ * The `ExtensionAPI` the factory registers against. Every tool-surface row uses
+ * this one: the close handler delivers through the spawn-time `pi`, so a fake
+ * without `sendUserMessage` throws from inside the child's close path — in the
+ * full suite that lands after the row that caused the close has finished, and
+ * reds whatever row happens to be running.
+ */
+function fakePi() {
 	const tools: Record<string, any> = {};
 	const sent: string[] = [];
 	const ui = { setStatus: () => {}, notify: () => {}, setWidget: () => {}, setEditorComponent: () => {} };
@@ -592,6 +893,11 @@ function harness(root: string) {
 		ui,
 	};
 	subagentFactory(pi);
+	return { pi, tools, sent, ui };
+}
+
+/** The ctx a tool call runs under, with a live session so delivery reaches `sent`. */
+function liveCtx(root: string, ui: Record<string, unknown>) {
 	const ctx: any = {
 		cwd: root,
 		sessionManager: { getSessionId: () => `turn-cap-test-${randomUUID()}` },
@@ -599,7 +905,18 @@ function harness(root: string) {
 		ui,
 	};
 	_testSetLiveSessionCtx(ctx);
-	return { tools, sent, ctx };
+	return ctx;
+}
+
+/** Spawn a real child through the extension's own tool surface. */
+function harness(root: string) {
+	const { tools, sent, ui } = fakePi();
+	return { tools, sent, ctx: liveCtx(root, ui) };
+}
+
+/** Let every settled promise's continuations run — the observation is async. */
+function flush(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function readLog(sid: string): string {
@@ -658,11 +975,12 @@ describe("E3b: a real isolated spawn publishes what the observation resolves", (
 				cwd: rs?.parentCwd,
 				encoding: "utf-8",
 				stdio: ["ignore", "pipe", "ignore"],
+				env: childEnv(),
 			}).trim();
 			expect(tip).toBe(rs?.parentHeadCommit);
 			// The live handle's own observation agrees, and it now has a baseline.
-			expect(observeCommit(rs)).toEqual({ observed: true, changed: false });
-			expect(rs?.stallLastTip).toBe(tip);
+			expect(await observeCommit(rs)).toEqual({ observed: true, changed: false });
+			expect(rs?.stall.lastTip).toBe(tip);
 			expect(readMetaJson(sid)?.isolationBranch).toBe(rs?.isolationBranch);
 			expect(readMetaJson(sid)?.parentCwd).toBe(rs?.parentCwd);
 		} finally {
@@ -692,16 +1010,16 @@ describe("E3a: the commit observation", () => {
 		const tree = join(dir, "wt");
 		const branch = "pi-subagent-testcase";
 		const git = (cwd: string, args: string[]) =>
-			execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+			execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], env: childEnv() }).trim();
 		const sh = (cwd: string, args: string[]) =>
 			execFileSync("git", args, {
 				cwd,
 				encoding: "utf-8",
 				stdio: ["ignore", "pipe", "ignore"],
-				env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+				env: childEnv({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }),
 			});
 
-		execFileSync("mkdir", ["-p", repo]);
+		execFileSync("mkdir", ["-p", repo], { env: childEnv() });
 		git(repo, ["init", "-q", "-b", "main"]);
 		sh(repo, ["commit", "-q", "--allow-empty", "-m", "base"]);
 		git(repo, ["worktree", "add", "-q", tree, "-b", branch]);
@@ -789,7 +1107,7 @@ describe("real dispatch: the cap arm", () => {
 		expect(existsSync(String(readMetaJson(sid)?.sessionFile))).toBe(true);
 	}, 600_000);
 
-	it("E3: the observation sees a linked worktree's commit and resets the stall counter", () => {
+	it("E3: the observation sees a linked worktree's commit and resets the stall counter", async () => {
 		// The production observation, driven directly: a real repo, a real linked
 		// worktree branch, and a stub child whose parentCwd is that repo. This is
 		// the seat's real-case row — the branch tip moves, so the counter resets —
@@ -800,41 +1118,50 @@ describe("real dispatch: the cap arm", () => {
 		const tree = join(dir, "wt");
 		const branch = "pi-subagent-observe";
 		const git = (cwd: string, args: string[]) =>
-			execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+			execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], env: childEnv() });
 		const commit = (cwd: string, msg: string) =>
 			execFileSync("git", ["commit", "-q", "--allow-empty", "-m", msg], {
 				cwd,
 				encoding: "utf-8",
 				stdio: ["ignore", "pipe", "ignore"],
-				env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+				env: childEnv({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }),
 			});
 
-		execFileSync("mkdir", ["-p", repo]);
+		execFileSync("mkdir", ["-p", repo], { env: childEnv() });
 		git(repo, ["init", "-q", "-b", "main"]);
 		commit(repo, "base");
 		git(repo, ["worktree", "add", "-q", tree, "-b", branch]);
 		const baseline = git(repo, ["rev-parse", branch]).trim();
 
-		const rs = stubChild({ isolationBranch: branch, parentCwd: repo, stallLastTip: baseline, stallTurns: 12 });
-		expect(observeCommit(rs)).toEqual({ observed: true, changed: false });
-		expect(rs.stallTurns).toBe(12);
+		const rs = stubChild({
+			isolationBranch: branch,
+			parentCwd: repo,
+			stall: stallOf({ lastTip: baseline, stallTurns: 12, stallObserved: true }),
+		});
+		expect(await observeCommit(rs)).toEqual({ observed: true, changed: false });
+		expect(rs.stall.stallTurns).toBe(12);
 
 		commit(tree, "wip");
-		const change = observeCommit(rs);
+		const change = await observeCommit(rs);
 		expect(change).toEqual({ observed: true, changed: true });
-		expect(rs.stallLastTip).toBe(git(repo, ["rev-parse", branch]).trim());
-		expect(rs.stallLastTip).not.toBe(baseline);
+		expect(rs.stall.lastTip).toBe(git(repo, ["rev-parse", branch]).trim());
+		expect(rs.stall.lastTip).not.toBe(baseline);
 		// The turn that observed the commit resets the stall counter.
 		expect(turnCapStep(rs, change)).toEqual({ kind: "none" });
-		expect(rs.stallTurns).toBe(0);
+		expect(rs.stall.stallTurns).toBe(0);
 
 		// A run with no branch is unobserved, not "no commit". So is a branch the
 		// command cannot resolve — both skip the stall arm rather than count it.
-		expect(observeCommit(stubChild({ isolationBranch: null }))).toEqual({ observed: false, changed: false });
+		expect(await observeCommit(stubChild({ isolationBranch: null }))).toEqual({ observed: false, changed: false });
 		expect(
-			observeCommit(stubChild({ isolationBranch: "no-such-branch", parentCwd: repo, stallLastTip: baseline })),
+			await observeCommit(
+				stubChild({ isolationBranch: "no-such-branch", parentCwd: repo, stall: stallOf({ lastTip: baseline }) }),
+			),
 		).toEqual({ observed: false, changed: false });
-	});
+		// A real git repo, real worktree, real commits — the default 5 s bun
+		// timeout reds this row in a full suite on a loaded box while it passes
+		// alone. The row's own work is a handful of git spawns.
+	}, 60_000);
 
 	it("E4: a resume continues the recorded turn count, carries the cap over, and re-trips it", async () => {
 		const root = process.cwd();
