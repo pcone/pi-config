@@ -123,7 +123,8 @@ seat split 037/041)
   `openrouter/z-ai/glm-5.3-flash:high` (Zhipu lab since
   [037](../decisions/subagents/037-reviewer-oracle-repick.md), first-party route pin per
   [041](../decisions/subagents/041-glm-review-seats-openrouter.md)); oracle on
-  `opencode-go/deepseek-v4-pro:max` (037); orchestrator on its caller's model at `:high`
+  `openrouter/deepseek/deepseek-v4-pro:xhigh` (037; routed per 047); orchestrator on its
+  caller's model at `:high`
   ([031](../decisions/subagents/031-orchestrator-model-inheritance.md)); main session per
   `settings.json`. The z.ai subscription is gone; the `/fleet-model` toggle and
   `~/.pi/fleet-model.json` override were deleted.
@@ -165,8 +166,9 @@ seat split 037/041)
    decision 041: off OpenCode Go extra-usage billing, same model; route pinned to
    Z.AI first-party). Zhipu lab since 037, so decorrelated from the DeepSeek
    implementer; `:high` stands on 021's flash high-vs-max token/quality delta.
-3. **Oracle — `opencode-go/deepseek-v4-pro:max`** (decision 037, 2026-10-18): the only
-   solid math/algo row on the Go menu (LCB 93.5, IMO 89.8).
+3. **Oracle — `openrouter/deepseek/deepseek-v4-pro:xhigh`** (037, 2026-10-18; routing
+   and level per 047): the only solid math/algo row (LCB 93.5, IMO 89.8). OpenRouter's
+   top level for v4-pro is `xhigh`; `:max` returns 400 there (pi #4055).
 4. **Orchestrator — inherits its caller's model at `:high`** (decision 031; level
    `:max`→`:high` per 047). Its
    frontmatter `opencode-go/deepseek-v4.1-flash:high` is the **level donor and the
