@@ -252,3 +252,38 @@ inside the noise. A surprise here is a finding, not a failure.
   steer helper's guards differ between the four call sites in a way one helper cannot carry.
 - **`REFACTOR FIRST`** — the 450 nudge block and `subagent_stop` cannot share the steer helper without
   changing either's behaviour.
+
+---
+
+## Gate-back record — 2026-11-07
+
+**Owner 2026-11-07**, on the commit observation: *"async + don't call every turn - every 10 is
+probably fine"* → the observation samples every `STALL_SAMPLE_TURNS = 10` turns, is asynchronous, and
+its result is folded on a later sample turn. Nothing synchronous remains on `message_end`
+(`execFileSync` in the extension: 0).
+
+**Owner 2026-11-07**, the stall bound, twice in one session: *"Amend to 49 (Recommended)"*, superseded
+by *"Two intervals, (50) (Recommended)"* — **"A stall is caught at most two sample intervals after N
+(worst case 50 commit-free turns at today's settings)."** 49 is unreachable: a commit landing on its
+own sample turn misses that turn's `git rev-parse`, so it is first seen one interval later and folded
+one after that (30 + 10 + 10). Measured by sweeping every commit turn against the production
+`turnCapTurn`: max 50, at every multiple of ten. Both rulings are recorded in
+`decisions/subagents/046-turn-cap.md` §Rulings.
+
+**Departures accepted by the owner 2026-11-07**, both recorded in 046: the E3 → E3/E3a/E3b reshape
+(narrowed by the orchestrator's dispatch brief, not by an owner record — the record says so), and the
+internal test seams beyond this order's API block (`turnCapTurn`, `stallSampleDue`, `nextStallState`,
+`CommitRunner`, `StallTracker`), with the block itself stamped under-specified.
+
+**Suite defects the gate caught that the targeted rows could not:** every spawn site in
+`tests/turn-cap.test.ts` omitted `env: childEnv()` (the hermeticity inventory row was red), the fake
+`pi` lacked `sendUserMessage` so the close path threw in-suite only, and `E3` did real git work with
+no explicit timeout, tripping bun's 5 s default under load.
+
+**Not verified live:** `E2` (kill marker at cap+grace) and `E4` (resume carries the cap) — the
+provider returned 429 / upstream-overloaded on every attempt across both runs. Their contracts are
+pinned hermetically (W2 with its mutation, W5b, W9); the end-to-end marker delivery remains unrun.
+
+**Budget: planned 120 / cap 180 (the first dispatch), then planned 60 / cap 100 (gate-back) /
+actual 180 + ~95.** Neither run's cap was enforceable in its own harness — that is what this order
+builds.

@@ -634,3 +634,168 @@ export function listInFlightSubagents(
 	}
 	return out;
 }
+
+// ── Turn cap and stall tripwire (decision 046) ─────────────────────────────
+//
+// A dispatch carries a turn budget: at the cap the child gets one wind-down
+// steer, then a flat grace in turns, then the harness kills it through the one
+// kill dispatch. A second, advisory arm watches the child's branch and steers
+// once when a long stretch of turns produced no commit. It never kills.
+//
+// Both arms are decided here, purely, from the state the event site assembles;
+// the site executes the action and re-derives nothing. The cap number never
+// reaches the child (owner ruling 2026-11-07, "hide it"): the wind-down text
+// lives at the call site and carries no number.
+
+/** Assistant turns a dispatch may run when its spawn names no cap. */
+export const TURN_CAP_DEFAULT = 150;
+
+/** Turns between the wind-down and the kill. Flat, and counted on the same
+ *  `message_end` path as the turns themselves, so no timer is involved. */
+export const TURN_CAP_GRACE = 10;
+
+/** Commit-free turns before the advisory stall steer. */
+export const STALL_TURNS = 30;
+
+/** Turns between commit observations. The observation is a process spawn on the
+ *  turn path, so it is sampled rather than run every turn, and it is applied on
+ *  a later sample turn than the one that started it (owner ruling 2026-11-07:
+ *  "async + don't call every turn - every 10 is probably fine"). */
+export const STALL_SAMPLE_TURNS = 10;
+
+/** Whether this turn takes a commit observation. Pure; the turn count is the
+ *  dispatch's cumulative one, so a resumed run samples on the same grid. */
+export function stallSampleDue(turn: number): boolean {
+	return turn > 0 && turn % STALL_SAMPLE_TURNS === 0;
+}
+
+/** What the event site does about a turn. `kill` means the run is being
+ *  stopped: the site returns and leaves delivery to the close handler. */
+export type TurnAction =
+	| { kind: "none" }
+	| { kind: "wind-down" }
+	| { kind: "kill" }
+	| { kind: "stall-steer" };
+
+/** The commit-observation counters of the stall arm. */
+export interface StallObservation {
+	/** Turns observed without a new commit on the child's branch. */
+	stallTurns: number;
+	/** The advisory steer was already delivered for the current stall. */
+	stallSteered: boolean;
+	/** This turn's commit was actually observed. False for a run with no branch
+	 *  to watch (non-isolated dispatch, resume) or an observation the command
+	 *  could not resolve — no stall accrues on nothing to watch. */
+	stallObserved: boolean;
+}
+
+/** One turn's commit observation: whether there was a branch to watch, and
+ *  whether its tip moved. The stall arm has no decision to make when nothing
+ *  was observed, so "unobserved" is a state, not a `changed: false`. */
+export interface CommitObservation {
+	observed: boolean;
+	changed: boolean;
+}
+
+/** A completed commit observation and the sample turn that started it. */
+export interface PendingStallObservation {
+	obs: CommitObservation;
+	atTurn: number;
+}
+
+/**
+ * The stall arm's whole state: the fold's counters plus the sampled
+ * observation's bookkeeping. One value, because the parts always move
+ * together — the sampled arm adds nothing the fold cannot read.
+ */
+export interface StallTracker extends StallObservation {
+	/** The branch tip the last comparison used; null before any observation. */
+	lastTip: string | null;
+	/** A completed observation, waiting for the next sample turn to fold it. */
+	pending: PendingStallObservation | null;
+	/** The sample turn of the last folded observation. */
+	foldedTurn: number;
+	/** An observation is running. Guards against overlapping spawns. */
+	inFlight: boolean;
+}
+
+/** Everything the turn decision rests on — the caller supplies all of it. */
+export interface TurnCapState extends StallObservation {
+	/** Turns used by this logical dispatch, carried over on resume. */
+	turns: number;
+	/** Resolved cap in turns; `Infinity` when the cap is disabled. */
+	cap: number;
+	/** The wind-down was injected and the grace is running. */
+	capTripped: boolean;
+	/** This turn observed a new commit on the child's branch. */
+	commitChanged: boolean;
+}
+
+/**
+ * Resolve a spawn's `turn_cap` into the number the decision compares against.
+ *
+ * `undefined` takes the default. `0` or negative disables the cap (precedent:
+ * `silenceTimeoutMs`, decision 015). Above `MAX_TURNS_HARD` is rejected rather
+ * than clamped: the global hard kill would fire first, so accepting the number
+ * would make the cap a lie about what stopped the run (decision 046).
+ */
+export function resolveTurnCap(raw: number | undefined): number {
+	if (raw !== undefined && raw > MAX_TURNS_HARD) {
+		throw new Error(
+			`turn_cap ${raw} is above the ${MAX_TURNS_HARD}-turn hard limit — the hard kill would fire first. ` +
+				`Pass a cap at or below ${MAX_TURNS_HARD}, or 0 to disable the cap.`,
+		);
+	}
+	if (raw === undefined) return TURN_CAP_DEFAULT;
+	if (raw <= 0) return Infinity;
+	if (Number.isNaN(raw)) {
+		throw new Error(`turn_cap ${raw} is not a turn count — pass a number, or 0 to disable the cap.`);
+	}
+	return raw;
+}
+
+/**
+ * The turn's cap and stall decision. Pure: every input is in `state`, and the
+ * caller performs whatever the returned action names.
+ *
+ * The cap arm outranks the stall arm, so a run at its cap gets the wind-down
+ * and never a second advisory message (U8). Grace is measured from the cap, so
+ * the kill lands at `cap + TURN_CAP_GRACE` regardless of which turn tripped it.
+ */
+export function decideTurnAction(state: TurnCapState): TurnAction {
+	if (state.turns >= state.cap) {
+		if (!state.capTripped) return { kind: "wind-down" };
+		return state.turns >= state.cap + TURN_CAP_GRACE ? { kind: "kill" } : { kind: "none" };
+	}
+	// A new commit ends the stall, so the turn that observed one cannot steer on
+	// it — the counter and the steer flag were reset by `nextStallState`. A run
+	// with no branch to watch has no stall to report at all.
+	if (state.stallObserved && !state.commitChanged && !state.stallSteered && state.stallTurns >= STALL_TURNS) {
+		return { kind: "stall-steer" };
+	}
+	return { kind: "none" };
+}
+
+/**
+ * Fold one commit observation into the stall counters. A new commit ends the
+ * stall: the counter and the steer flag both clear, so a long healthy run gets
+ * one message per stall at most. An unobserved turn is not a commit-free turn:
+ * nothing accrues and the counters clear. Pure.
+ *
+ * `elapsedTurns` is how many turns this observation settles — 1 for a per-turn
+ * observation, the sample interval for a sampled one. The counter stays in
+ * turns, so `STALL_TURNS` means the same thing at either sampling rate.
+ */
+export function nextStallState(
+	prior: StallObservation,
+	obs: CommitObservation,
+	elapsedTurns = 1,
+): StallObservation {
+	if (!obs.observed) return { stallTurns: 0, stallSteered: false, stallObserved: false };
+	if (obs.changed) return { stallTurns: 0, stallSteered: false, stallObserved: true };
+	return {
+		stallTurns: prior.stallTurns + elapsedTurns,
+		stallSteered: prior.stallSteered,
+		stallObserved: true,
+	};
+}
