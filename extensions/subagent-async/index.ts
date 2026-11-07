@@ -1519,6 +1519,43 @@ function buildPromptPayload(text: string): { type: "prompt"; message: string; st
 	return { type: "prompt", message: text, streamingBehavior: "steer" };
 }
 
+/**
+ * Send a steering prompt to a live child — the one steer path (decision 046).
+ * Every caller that injects text into a child shares these guards, so a write
+ * into a dead pipe can neither buffer silently nor be reported as delivered.
+ * Returns false when the child could not receive it; the caller decides what
+ * that means for its own reporting.
+ */
+/** Why a steer cannot reach the child, or null when it can. The one definition
+ *  of "steerable": `rpcSend` alone is not enough (a destroyed stream can still
+ *  read `destroyed: false` for a moment after the child exits), and a write
+ *  into a dead pipe buffers silently while the caller reports success. */
+function steerBlockedReason(rs: RunningSubagent): "completed" | "process exited" | "stdin closed" | null {
+	if (rs.isDone) return "completed";
+	if (rs.procExited) return "process exited";
+	if (!rs.stdin || rs.stdin.destroyed) return "stdin closed";
+	return null;
+}
+
+/**
+ * Send a steering prompt to a live child — the one steer path (decision 046).
+ * Returns false when the child could not receive it; the caller decides what
+ * that means for its own reporting (`steerBlockedReason` names the guard case,
+ * and a false with no blocked reason is a write that could not land).
+ */
+function steerChild(rs: RunningSubagent, message: string): boolean {
+	const blocked = steerBlockedReason(rs);
+	if (blocked) {
+		debugLog(`steerChild: not delivered to ${rs.sessionId} (${blocked})`);
+		return false;
+	}
+	if (!rpcSend(rs.stdin, buildPromptPayload(message))) {
+		debugLog(`steerChild: rpcSend failed for ${rs.sessionId}`);
+		return false;
+	}
+	return true;
+}
+
 // ── RPC communication ──────────────────────────────────────────────────────
 
 export function rpcSend(stdin: NodeJS.WritableStream | null, command: Record<string, any>): boolean {
@@ -2264,12 +2301,9 @@ async function spawnSubagent(
 						`current step, then emit your completion report with **status: partial** (or blocked) — ` +
 						`summarize what was completed, what remains, and any open issues. Your next text-only ` +
 						`message is your final output.`;
-					try {
-						rpcSend(rs.stdin, { type: "prompt", message: nudge, streamingBehavior: "steer" });
+					if (steerChild(rs, nudge)) {
 						logEntry(`\x1b[33m[turn-limit] soft nudge injected at ${rs.progress.turns} turns\x1b[0m`);
 						debugLog(`turn-nudge: soft nudge at turns=${rs.progress.turns} child=${rs.sessionId}`);
-					} catch (e) {
-						debugLog(`turn-nudge: rpcSend failed: ${e instanceof Error ? e.message : String(e)}`);
 					}
 				}
 
@@ -4473,32 +4507,13 @@ export default function (pi: ExtensionAPI) {
 			// A stopped session must not be "steered" — a write into a dead
 			// child's pipe would buffer and be silently lost while the tool
 			// reported success. Reflect the true state instead.
-			if (rs.isDone || rs.procExited || !rs.stdin || rs.stdin.destroyed) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Subagent ${rs.agentName} (${params.session_id}) is no longer running (${rs.isDone ? "completed" : "process exited"}) — steering message not delivered: "${params.message}"`,
-						},
-					],
-				};
-			}
-
-			const sent = rpcSend(rs.stdin, {
-				type: "prompt",
-				message: params.message,
-				streamingBehavior: "steer",
-			});
-
-			if (!sent) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Steering message NOT delivered to ${rs.agentName} (${params.session_id}) — stdin closed (session may have just stopped): "${params.message}"`,
-						},
-					],
-				};
+			if (!steerChild(rs, params.message)) {
+				const blocked = steerBlockedReason(rs);
+				const text = blocked === null
+					// No guard tripped, so the write itself could not land.
+					? `Steering message NOT delivered to ${rs.agentName} (${params.session_id}) — stdin closed (session may have just stopped): "${params.message}"`
+					: `Subagent ${rs.agentName} (${params.session_id}) is no longer running (${blocked}) — steering message not delivered: "${params.message}"`;
+				return { content: [{ type: "text", text }] };
 			}
 
 			return {
@@ -4546,14 +4561,8 @@ export default function (pi: ExtensionAPI) {
 			// skip the steer; the wait below resolves via the close handler
 			// regardless.
 			const finalMsg = params.final_message || "Wrap up your current work and return a summary. Do not start new tasks.";
-			if (rs.isDone || rs.procExited || !rs.stdin || rs.stdin.destroyed) {
+			if (!steerChild(rs, finalMsg)) {
 				debugLog(`subagent_stop: wrap-up steer skipped for ${params.session_id} (session already stopped)`);
-			} else {
-				rpcSend(rs.stdin, {
-					type: "prompt",
-					message: finalMsg,
-					streamingBehavior: "steer",
-				});
 			}
 
 		// Wait for subagent to finish, with timeout
