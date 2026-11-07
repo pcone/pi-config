@@ -132,6 +132,7 @@ afterEach(() => {
 	logsToClean.length = 0;
 	for (const sid of sidsToClean) {
 		_testRunning.delete(sid);
+		if (keepOnFailure.has(sid)) continue; // a failed live row keeps its evidence
 		removeSpawnArtifacts(sid);
 	}
 	sidsToClean.length = 0;
@@ -740,7 +741,7 @@ describe("the close path delivers through the fake pi", () => {
 				ctx,
 			);
 			const sid = sidOf(res);
-			track(sid, sid);
+			trackLive(sid, sid);
 
 			const rs = _testRunning.get(sid);
 			expect(rs).toBeTruthy();
@@ -753,6 +754,7 @@ describe("the close path delivers through the fake pi", () => {
 		} finally {
 			process.argv[1] = realPi!;
 		}
+		cleanupOnPass();
 	}, 60_000);
 });
 
@@ -942,6 +944,35 @@ function track(sid: string, text: string): typeof text {
 	return text;
 }
 
+/** Sids whose child log is the only record of why a row failed. Owner
+ *  2026-11-08: keep a failing live row's artifacts, delete them only on a pass. */
+const keepOnFailure = new Set<string>();
+
+/** Track a row that spawned a real child; `cleanupOnPass` removes it. */
+function trackLive(sid: string, text: string): typeof text {
+	keepOnFailure.add(sid);
+	return track(sid, text);
+}
+
+/** Delete this row's spawn artifacts. Called as the row's last statement: a
+ *  failed expectation above it throws past this call, so the child's log and
+ *  meta survive for the gate. */
+function cleanupOnPass(): void {
+	for (const f of logsToClean) {
+		try {
+			unlinkSync(f);
+		} catch {
+			// already gone
+		}
+	}
+	logsToClean.length = 0;
+	for (const sid of sidsToClean) {
+		_testRunning.delete(sid);
+		removeSpawnArtifacts(sid);
+	}
+	sidsToClean.length = 0;
+}
+
 function sidOf(res: any): string {
 	return /session: (subagent-[0-9a-f-]+)/.exec(String(res.content[0].text))![1];
 }
@@ -964,7 +995,7 @@ describe("E3b: a real isolated spawn publishes what the observation resolves", (
 			);
 			const text = String(res.content[0].text);
 			const sid = sidOf(res);
-			track(sid, sid);
+			trackLive(sid, sid);
 			expect(text).not.toContain("stall_watch: none");
 
 			const rs = _testRunning.get(sid);
@@ -999,6 +1030,7 @@ describe("E3b: a real isolated spawn publishes what the observation resolves", (
 			}
 			process.argv[1] = realPi!;
 		}
+		cleanupOnPass();
 	}, 120_000);
 });
 
@@ -1056,7 +1088,7 @@ describe("real dispatch: the cap arm", () => {
 			ctx,
 		);
 		const sid = sidOf(res);
-		track(sid, sid);
+		trackLive(sid, sid);
 		expect(String(res.content[0].text)).toContain("turn_cap: 1 | turns_used: 0");
 
 		expect(await waitFor(() => readLog(sid).includes("[turn-cap] wind-down injected"), 90_000)).toBe(true);
@@ -1069,43 +1101,8 @@ describe("real dispatch: the cap arm", () => {
 		const delivered = sent.find((m) => m.includes("turn_cap_reached")) ?? "";
 		expect(delivered).toContain("turn_cap_reached: true");
 		expect(delivered).toMatch(/turns_used: \d+/);
+		cleanupOnPass();
 	}, 480_000);
-
-	it("E2: a child that ignores the wind-down is killed at cap + grace, through the shared kill path", async () => {
-		const root = process.cwd();
-		const { tools, sent, ctx } = harness(root);
-
-		const res = await tools.subagent.execute(
-			"e2",
-			{
-				agent: "implement",
-				task:
-					"Run the bash tool once per turn: `echo step` — one single bash call per message, then send another, " +
-					"and keep going until you have run it at least fifteen times. Only then reply with the word done.",
-				cwd: root,
-				isolate: false,
-				review_policy: "skip",
-				turn_cap: 2,
-			},
-			undefined,
-			undefined,
-			ctx,
-		);
-		const sid = sidOf(res);
-		track(sid, sid);
-
-		expect(await waitFor(() => readLog(sid).includes("Killed via turn-cap"), 420_000)).toBe(true);
-		expect(await waitUntilUntracked(sid, 120_000)).toBe(true);
-
-		const delivered = sent.find((m) => m.startsWith("[Killed via turn-cap")) ?? "";
-		expect(delivered).toStartWith("[Killed via turn-cap — process terminated");
-		// Killed at cap + grace — turn_cap 2 + 10 — and its session file survives,
-		// so it stays resumable.
-		const killedResult = sent.find((m) => m.startsWith("[Killed via turn-cap")) ?? "";
-		expect(killedResult).toContain(`Turns: ${2 + TURN_CAP_GRACE} |`);
-		expect(killedResult).toContain("turn_cap_reached: true");
-		expect(existsSync(String(readMetaJson(sid)?.sessionFile))).toBe(true);
-	}, 600_000);
 
 	it("E3: the observation sees a linked worktree's commit and resets the stall counter", async () => {
 		// The production observation, driven directly: a real repo, a real linked
@@ -1182,7 +1179,7 @@ describe("real dispatch: the cap arm", () => {
 			ctx,
 		);
 		const sid = sidOf(first);
-		track(sid, sid);
+		trackLive(sid, sid);
 		expect(await waitFor(() => readLog(sid).includes("[turn-cap] wind-down injected"), 180_000)).toBe(true);
 		expect(await waitUntilUntracked(sid, 300_000)).toBe(true);
 		const recorded = readMetaJson(sid)?.turnsUsed;
@@ -1204,5 +1201,6 @@ describe("real dispatch: the cap arm", () => {
 		).toBe(true);
 		expect(await waitUntilUntracked(sid, 180_000)).toBe(true);
 		expect(sent.filter((m) => m.includes("turn_cap_reached: true")).length).toBeGreaterThanOrEqual(2);
+		cleanupOnPass();
 	}, 1_200_000);
 });

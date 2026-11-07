@@ -72,6 +72,16 @@ assistant turn and re-derives nothing.
   later and folded one interval after that — 30 + 10 + 10 = 50. Measured, not
   derived: sweeping every commit turn `0-60` against the production `turnCapTurn`
   peaks at 50, at every multiple of ten.
+- **Owner 2026-11-08** (gate): *"Delete E2 (Recommended)"* — the live row that
+  asserted a child ignoring the wind-down is killed at cap + grace. It cannot be
+  held: the wind-down instructs a child to commit and report, the shipped guidance
+  tells implementers that a stop-report is a successful outcome, and the child
+  obeyed the harness over the fixture's instruction to ignore it. The kill arm's
+  cover is W2 (it drives `turnCapStep` and asserts the kill dispatch) plus mutation
+  M6, which reds W2 when `dispatchKillSignals` is replaced by a bare `proc.kill()`.
+- **Owner 2026-11-08** (gate): a failing live row keeps its child artifacts; only a
+  passing row deletes them. The child's log is the only record of why a live row
+  failed, and `afterEach` deleting it hid exactly that evidence.
 - **Owner 2026-11-07** (gate): accepted the two departures raised against
   WO-2026-090 — the E3 → E3/E3a/E3b reshape (narrowed further by the
   orchestrator's dispatch brief), and the internal test seams (`stallSteered`,

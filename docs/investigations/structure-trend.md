@@ -27,7 +27,7 @@ refactor lands.
 ## 2026-11-07 — chunk: WO-2026-090 the harness enforces a turn cap
 
 **growth.** `extensions/subagent-async/index.ts` 4689 → **5033** (+344), `extensions/lib/subagent-state.ts`
-636 → **801** (+165), new `tests/turn-cap.test.ts` **1208**. The growth is one mechanism in two halves:
+636 → **801** (+165), new `tests/turn-cap.test.ts` **1206** (1208 before the E2 deletion). The growth is one mechanism in two halves:
 pure decisions in the lib, IO and one `message_end` entry in the extension (`turnCapTurn`, 1 production
 call site). Candidate extraction, when the area is next opened: `extensions/lib/turn-cap.ts` holding the
 constants, the decider, the fold and the budget line, leaving `index.ts` with the closure over `rs`.

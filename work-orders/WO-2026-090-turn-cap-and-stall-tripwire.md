@@ -287,3 +287,14 @@ pinned hermetically (W2 with its mutation, W5b, W9); the end-to-end marker deliv
 **Budget: planned 120 / cap 180 (the first dispatch), then planned 60 / cap 100 (gate-back) /
 actual 180 + ~95.** Neither run's cap was enforceable in its own harness — that is what this order
 builds.
+
+**Owner 2026-11-08 — E2 deleted.** *"Delete E2 (Recommended)"*. The row asserted a child that ignores
+the wind-down is killed at cap + grace; no compliant child does that (the child read the conflict and
+obeyed the harness: "the harness ended the run. Report tersely"), and one text-only message ends the run
+regardless of intent, so the kill arm is reachable only by a child that emits tool calls on every turn
+past the grace. Its cover is W2 plus mutation M6. Same ruling: a failing live row keeps its child
+artifacts, a passing row deletes them — `cleanupOnPass()` is each live row's last statement, so a throw
+skips it, and `afterEach` skips sids in `keepOnFailure`.
+
+**E2/E4 re-run at `dd168e6`, 2026-11-08:** E4 passes (20 s, 8 expects — resume carries the cap and
+re-trips it). E2 deleted by ruling.
