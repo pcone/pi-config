@@ -24,6 +24,29 @@ refactor lands.
 | `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
 | pre-refactor quota entry points (`renderQuotaSegment`, `renderGoUsageSegment`) | — (observation; no landing was flagged for it) | **closed 2026-11-07 by WO-2026-089** — both deleted; `rg -n 'renderQuotaSegment|renderGoUsageSegment' --glob '!*.md' extensions/` → 0. The three rendering files reach the one renderer through `tests/helpers/quota-render.ts` (one shared adapter, 82 lines), which assembles the snapshot the private `snapshotFor` used to build from `descriptor.fromQuotaData` / `goParts`; `goParts` is the one internal export added, marked `@for-testing` and still called by `goDescriptor.parse`. `fromQuotaData` stays: descriptor metadata the adapter reads. No golden moved — every `expected:` string in the four files is byte-identical | — |
 
+## 2026-11-07 — chunk: WO-2026-090 the harness enforces a turn cap
+
+**growth.** `extensions/subagent-async/index.ts` 4689 → **5033** (+344), `extensions/lib/subagent-state.ts`
+636 → **801** (+165), new `tests/turn-cap.test.ts` **1208**. The growth is one mechanism in two halves:
+pure decisions in the lib, IO and one `message_end` entry in the extension (`turnCapTurn`, 1 production
+call site). Candidate extraction, when the area is next opened: `extensions/lib/turn-cap.ts` holding the
+constants, the decider, the fold and the budget line, leaving `index.ts` with the closure over `rs`.
+Not done here — `index.ts` grew by a mechanism, not by duplication.
+
+**unification.** The steer send is one helper with **five** callers (450 nudge, `subagent_stop`, the
+`steer` tool, the wind-down, the stall steer) — it was three copies of the same `isDone`/`procExited`/
+`stdin` guard block before the preparatory refactor. The stall state is one `StallTracker` value rather
+than six sibling fields on `RunningSubagent` (`rg -n 'rs\.stall(Turns|Steered|Observed|LastTip|Pending|FoldedTurn|InFlight)'`
+→ 0). Kill paths unchanged at 9 `proc.kill` sites.
+
+**cost.** The commit observation was synchronous per turn (286 ms mean, 1.3 s p95 under load) and is now
+one async `git rev-parse` every 10 turns: a 10× reduction in spawns and no blocking on `message_end`
+(`rg -c 'execFileSync' extensions/subagent-async/index.ts` → 0).
+
+**not taken.** Folding the observation on the turn it lands instead of on a later sample — it would
+tidy the detected-latency number and change acceptance row U7; the owner ruled the bound instead
+(two sample intervals, worst case 50).
+
 ## 2026-11-07 — chunk: WO-2026-089 the test-only quota entry points are gone
 
 **growth.** `extensions/lib/quota.ts` 707 → 655 (−52; `--numstat` 5 57): the 55-line tail deleted
