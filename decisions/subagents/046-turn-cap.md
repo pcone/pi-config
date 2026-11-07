@@ -94,6 +94,16 @@ long healthy run loses one message and nothing else.
   ~60-turn E2E wall-time comparison was not run — the provider was returning
   HTTP 429 throughout, so a delta would have measured the provider — and the
   per-turn cost above is the bound this change adds.
+- **An unobservable commit is a skip, not an accusation.** No branch, or a
+  `git rev-parse` that cannot resolve one, reports *unobserved*: the counters
+  clear and the stall steer never fires. The failure is logged under
+  `PI_ASYNC_DEBUG` only — a broken probe must not tell a child it stalled, so
+  nothing parent-visible is written. A turned-off advisory arm is the safe
+  direction of that trade.
+- **The synchronous observation has no named carrier yet.** An async
+  `git rev-parse` needs the `message_end` handler restructured; no order carries
+  that work, so it is stated here as a fact rather than deferred to a carrier
+  that does not exist.
 - **Two turn counters, on purpose.** The hard ceiling counts this run's turns
   (`rs.progress.turns`, which `outcomeFromExitCode` also reads); the cap counts
   the dispatch's turns, carried over on resume. On a resumed dispatch they can

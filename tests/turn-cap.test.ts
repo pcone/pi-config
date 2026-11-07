@@ -46,7 +46,6 @@ import subagentFactory, {
 	_testSetLiveSessionCtx,
 	deliverCloseResult,
 	deliverResult,
-	metaPath,
 	observeCommit,
 	readMetaJson,
 	resolveRunningSession,
@@ -54,7 +53,7 @@ import subagentFactory, {
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
 import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
-import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
+import { removeSpawnArtifacts, waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 
 // The harness injects PI_SUBAGENT_* into every subagent; a row that spawns a
 // real child must not inherit a parent's allowlist or depth.
@@ -126,11 +125,7 @@ afterEach(() => {
 	logsToClean.length = 0;
 	for (const sid of sidsToClean) {
 		_testRunning.delete(sid);
-		try {
-			if (existsSync(metaPath(sid))) unlinkSync(metaPath(sid));
-		} catch {
-			// best-effort
-		}
+		removeSpawnArtifacts(sid);
 	}
 	sidsToClean.length = 0;
 	for (const d of dirsToClean) rmSync(d, { recursive: true, force: true });
@@ -426,8 +421,10 @@ describe("turnCapStep: the executed action", () => {
 		const resumed = stubChild({ progress: progressStub(13), turnsBefore: 137 });
 		expect(turnCapStep(resumed, UNCHANGED)).toEqual({ kind: "wind-down" });
 		// …and the grace is measured on the same number.
+		setTimeoutSpy = spyOn(globalThis, "setTimeout");
 		const grace = stubChild({ progress: progressStub(23), turnsBefore: 137, turnCapReached: true });
 		expect(turnCapStep(grace, UNCHANGED)).toEqual({ kind: "kill" });
+		for (const r of setTimeoutSpy!.mock.results as any[]) if (r.value) clearTimeout(r.value);
 
 		// A run with no branch to watch skips the stall arm, however long it runs:
 		// every reviewer defaults to non-isolated, and every resume has no branch.
@@ -632,6 +629,61 @@ function sidOf(res: any): string {
 	return /session: (subagent-[0-9a-f-]+)/.exec(String(res.content[0].text))![1];
 }
 
+describe("E3b: a real isolated spawn publishes what the observation resolves", () => {
+	it("the recorded branch resolves from the recorded parent cwd, and the live handle observes it", async () => {
+		const root = process.cwd();
+		const { tools, ctx } = harness(root);
+
+		// A real isolated spawn — real worktree, real branch, real meta — with a
+		// child that never runs a turn, so no billed call and nothing racy.
+		process.argv[1] = standIn!;
+		try {
+			const res = await tools.subagent.execute(
+				"e3b",
+				{ agent: "implement", task: "noop", cwd: root, review_policy: "skip", isolate: true },
+				undefined,
+				undefined,
+				ctx,
+			);
+			const text = String(res.content[0].text);
+			const sid = sidOf(res);
+			track(sid, sid);
+			expect(text).not.toContain("stall_watch: none");
+
+			const rs = _testRunning.get(sid);
+			expect(rs?.isolationBranch).toBeTruthy();
+			// The branch the spawn recorded is one git can resolve from the cwd the
+			// spawn recorded — the join that makes the tripwire fire at all.
+			const tip = execFileSync("git", ["rev-parse", String(rs?.isolationBranch)], {
+				cwd: rs?.parentCwd,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim();
+			expect(tip).toBe(rs?.parentHeadCommit);
+			// The live handle's own observation agrees, and it now has a baseline.
+			expect(observeCommit(rs)).toEqual({ observed: true, changed: false });
+			expect(rs?.stallLastTip).toBe(tip);
+			expect(readMetaJson(sid)?.isolationBranch).toBe(rs?.isolationBranch);
+			expect(readMetaJson(sid)?.parentCwd).toBe(rs?.parentCwd);
+		} finally {
+			try {
+				await tools.subagent_kill.execute("e3bk", { session_id: `subagent-placeholder` }, undefined, undefined, {} as any);
+			} catch {
+				// nothing tracked under the placeholder
+			}
+			for (const sid of sidsToClean) {
+				try {
+					await tools.subagent_kill.execute("e3bk", { session_id: sid }, undefined, undefined, {} as any);
+				} catch {
+					// already gone
+				}
+				await waitUntilUntracked(sid, 10_000);
+			}
+			process.argv[1] = realPi!;
+		}
+	}, 120_000);
+});
+
 describe("E3a: the commit observation", () => {
 	it("git rev-parse from the parent sees a commit made in a linked worktree, and no ref file under it does", () => {
 		const dir = mkdtempSync(join(tmpdir(), "wo090-git-"));
@@ -729,9 +781,11 @@ describe("real dispatch: the cap arm", () => {
 
 		const delivered = sent.find((m) => m.startsWith("[Killed via turn-cap")) ?? "";
 		expect(delivered).toStartWith("[Killed via turn-cap — process terminated");
-		// Killed at cap + grace, and its session file survives, so it stays resumable.
-		const killed = readLog(sid).split("\n").find((l) => l.includes("Killed via turn-cap")) ?? "";
-		expect(killed).toContain("── Killed");
+		// Killed at cap + grace — turn_cap 2 + 10 — and its session file survives,
+		// so it stays resumable.
+		const killedResult = sent.find((m) => m.startsWith("[Killed via turn-cap")) ?? "";
+		expect(killedResult).toContain(`Turns: ${2 + TURN_CAP_GRACE} |`);
+		expect(killedResult).toContain("turn_cap_reached: true");
 		expect(existsSync(String(readMetaJson(sid)?.sessionFile))).toBe(true);
 	}, 600_000);
 
@@ -774,8 +828,12 @@ describe("real dispatch: the cap arm", () => {
 		expect(turnCapStep(rs, change)).toEqual({ kind: "none" });
 		expect(rs.stallTurns).toBe(0);
 
-		// A run with no branch is unobserved, not "no commit".
+		// A run with no branch is unobserved, not "no commit". So is a branch the
+		// command cannot resolve — both skip the stall arm rather than count it.
 		expect(observeCommit(stubChild({ isolationBranch: null }))).toEqual({ observed: false, changed: false });
+		expect(
+			observeCommit(stubChild({ isolationBranch: "no-such-branch", parentCwd: repo, stallLastTip: baseline })),
+		).toEqual({ observed: false, changed: false });
 	});
 
 	it("E4: a resume continues the recorded turn count, carries the cap over, and re-trips it", async () => {
