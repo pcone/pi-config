@@ -63,6 +63,15 @@ assistant turn and re-derives nothing.
 - Seat rulings: default 150, flat 10-turn grace, `N = 30` for the stall steer, no
   mid-run raise parameter, commits observed with `git rev-parse <branch>` rather
   than a ref-file read or a packed-ref fallback.
+- **Owner 2026-11-07** (gate, the stall bound): *"Amend to 49 (Recommended)"* — the
+  first answer to the measured 41-50 band. **Superseded the same day** by *"Two
+  intervals, (50) (Recommended)"*: *"A stall is caught at most two sample intervals
+  after N (worst case 50 commit-free turns at today's settings)."* The second
+  ruling stands because 49 is unreachable: a commit landing on its own sample turn
+  is invisible to that turn's `git rev-parse`, so it is first seen one interval
+  later and folded one interval after that — 30 + 10 + 10 = 50. Measured, not
+  derived: sweeping every commit turn `0-60` against the production `turnCapTurn`
+  peaks at 50, at every multiple of ten.
 - **Owner 2026-11-07** (gate): accepted the two departures raised against
   WO-2026-090 — the E3 → E3/E3a/E3b reshape (narrowed further by the
   orchestrator's dispatch brief), and the internal test seams (`stallSteered`,
@@ -132,16 +141,19 @@ long healthy run loses one message and nothing else.
 - **A sampled observation is applied a sample later.** The counter is in turns,
   and a fold is charged the turns between sample turns, so a stall is measured
   one sample behind the child. Measured on `turnCapTurn` (S3, S6): a fresh run's
-  first steer lands at turn 40, i.e. 40 commit-free turns; a stall that begins
-  after a commit the sampler saw lands at 41-50 commit-free turns (commit at turn
-  25 → steer at 70, 45 commit-free; commit at 10 → steer at 60, 50), or 40 when
-  the observation at the commit's own sample turn catches it. The extra interval
-  is the fold that sees the change: it resets the counter to zero (U7), so the
-  count cannot include the turns between the commit and that fold.
-  **This misses the dispatch brief's stated worst case of 39 commit-free turns**
-  (S6 pins the measured 41-50). No fold timing closes the gap: the reset-to-zero
-  fold is an acceptance row (U7), and folding on the arrival turn instead still
-  leaves 41. Amending the bound is an owner question, not a gate call.
+  first steer lands at turn 40, i.e. 40 commit-free turns, because there is no
+  commit to miss; a stall that begins after a commit lands at 41-50 (commit at
+  turn 25 → steer at 70, 45; commit at 10 → steer at 60, 50; 41 is the best case,
+  a commit one turn before its sample). Two intervals are in play, and both are
+  needed to reach 50:
+  the fold that sees the change resets the counter to zero (U7), so the turns
+  between the commit and that fold are not counted; and a commit landing on its
+  own sample turn misses that turn's `git rev-parse`, pushing its first sighting
+  one interval out. The accepted bound is therefore *"at most two sample intervals
+  after N (worst case 50 commit-free turns at today's settings)"* (owner
+  2026-11-07, §Rulings), not the dispatch brief's earlier 39. No fold timing
+  restores a tighter number: the reset-to-zero fold is an acceptance row (U7), and
+  folding on the arrival turn instead still leaves 41.
 - **A steer can lag a commit the sampler has not seen.** A commit landing inside
   the last sample interval is invisible when the steer fires (measured: a commit
   at turn 30, with the steer at 40). The steer is advisory, so the cost is one
