@@ -69,6 +69,15 @@ this box's shared dirs by 2.2× (17.7 GiB against du's 8.2 GiB for
 own target, and `du` counts a shared extent once. A bound stated in `du`'s unit
 must be measured in it, or it fires at half the size the owner named.
 
+- **Q-091-b — route 1 is widened, not deleted.** Owner 2026-11-08 (session 8f90746f):
+  *"Widen the scan (Recommended). Route 1 also scans `<profile>/*.d` and
+  `<profile>/examples/*.d`."* Route 1 fires where cargo absolutizes a source path outside
+  the workspace root it built (a checkout that nests its workspace, with a path dep
+  elsewhere in the checkout); the earlier note read its inertness here as a property of
+  cargo rather than of the scan's scope. Carrier: **WO-2026-096**. The named gap stays
+  documented: a nested-workspace checkout with no out-of-workspace dep gets neither route
+  and leaks either way.
+
 ## Route 1 is inert for workspace-root builds
 
 Cargo writes dep-info paths relative to the workspace root it built
