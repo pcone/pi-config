@@ -121,6 +121,8 @@ A claim that a path is the only one ("one X", "zero residue", "no other site", "
 
 The same implementer does the refactor then the change, and asks for one standard review, preferably as two commits. Tests passing unchanged at the refactor commit prove it preserves behaviour. No landing adds a second implementation of an existing mechanism, a copied block, or one more branch on a structure already known to be duplicated.
 
+**A roadblock replans the plan, not the stage.** When a ruling changes built code, or the work exposes a gap the plan did not foresee, stop the stage in progress and rework the plan from that point. Keep the original stage list as an overview, mark where it stopped and why, and write the reworked stages below it. Never absorb the change as substages of a planned stage: a string of substages hides how far the design moved, and files work under a stage planned for something else (owner 2026-11-09, tfd R53).
+
 **Deferred debt names its carrier.** Debt recorded "for a later order" is not mitigation unless that order lands first. Deferral wording ("a later order", "the next extraction") must name the work order or register row that carries it. Unnamed, the debt is dropped, not deferred.
 
 **Refuse with `REFACTOR FIRST`.** Refuse when work would build on an area that strongly needs a refactor: parallel mechanisms, copied blocks, or a file or function that each change makes harder to work in.
