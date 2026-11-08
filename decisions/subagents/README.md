@@ -53,3 +53,4 @@ date: 2026-07-14
 | 044 | Review seats → `opencode-go/deepseek-v4.1-flash:high` (OpenRouter credits exhausted; 041 suspended, decorrelation loss named) | done |
 | 046 | Per-dispatch turn cap (wind-down, 10-turn grace, `turn-cap` kill) + advisory no-progress tripwire; the cap number never reaches the child | done |
 | 047 | Every reasoning seat `:high` (orchestrator drops `:max`; scouts/compaction `:low`; oracle untouched) | done |
+| 048 | Build output dies with its worktree; shared cargo dir bounded at 20 GiB | done |

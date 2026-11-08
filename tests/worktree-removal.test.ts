@@ -93,13 +93,26 @@ describe("removeWorktreeTree (real git)", () => {
 		const { worktreePath, branch, parentHeadCommit } = makeWorktree(repo, "forced-1");
 		writeFileSync(join(worktreePath, "scratch.txt"), "uncommitted\n");
 
-		const outcome = await removeWorktreeTree({}, { worktreePath, isolationBranch: branch, parentHeadCommit, parentCwd: repo }, {
-			force: true,
-			finalCommit: parentHeadCommit,
-			relockReason: `pi-subagent forced-1 (cleanup failed)`,
-		});
+		// The build-output pass is the same call for both sites (WO-2026-091):
+		// one removal, one place to prune.
+		const disposed: Array<[string, string]> = [];
+		const outcome = await removeWorktreeTree(
+			{
+				disposeBuildOutput: async (path, parent) => {
+					disposed.push([path, parent]);
+					return { targetRemoved: true, problems: [] };
+				},
+			},
+			{ worktreePath, isolationBranch: branch, parentHeadCommit, parentCwd: repo },
+			{
+				force: true,
+				finalCommit: parentHeadCommit,
+				relockReason: `pi-subagent forced-1 (cleanup failed)`,
+			},
+		);
 
-		expect(outcome).toEqual({ ok: true });
+		expect(outcome).toMatchObject({ ok: true, buildOutput: { targetRemoved: true } });
+		expect(disposed).toEqual([[worktreePath, repo]]);
 		expect(existsSync(worktreePath)).toBe(false);
 		expect(worktreeEntry(repo, worktreePath)).toBeNull();
 	});
@@ -136,7 +149,7 @@ describe("removeWorktreeTree (real git)", () => {
 			{ worktreePath: unmoved.worktreePath, isolationBranch: unmoved.branch, parentHeadCommit: unmoved.parentHeadCommit, parentCwd: repo },
 			{ force: true, finalCommit: unmoved.parentHeadCommit, relockReason: "t" },
 		);
-		expect(dropped).toEqual({ ok: true });
+		expect(dropped.ok).toBe(true);
 		expect(branchExists(repo, unmoved.branch)).toBe(false);
 
 		// Moved: the subagent committed its own work, so the branch is the only
@@ -152,7 +165,7 @@ describe("removeWorktreeTree (real git)", () => {
 			{ worktreePath: moved.worktreePath, isolationBranch: moved.branch, parentHeadCommit: moved.parentHeadCommit, parentCwd: repo },
 			{ force: true, finalCommit: tip, relockReason: "t" },
 		);
-		expect(kept).toEqual({ ok: true });
+		expect(kept.ok).toBe(true);
 		expect(branchExists(repo, moved.branch)).toBe(true);
 		expect(git(repo, ["rev-parse", moved.branch]).out.trim()).toBe(tip);
 
@@ -164,7 +177,7 @@ describe("removeWorktreeTree (real git)", () => {
 			{ worktreePath: unknown.worktreePath, isolationBranch: unknown.branch, parentHeadCommit: unknown.parentHeadCommit, parentCwd: repo },
 			{ force: false, finalCommit: null, relockReason: "t" },
 		);
-		expect(keptUnknown).toEqual({ ok: true });
+		expect(keptUnknown.ok).toBe(true);
 		expect(branchExists(repo, unknown.branch)).toBe(true);
 	});
 
@@ -201,7 +214,7 @@ describe("removeWorktreeTree (real git)", () => {
 			relockReason: "t",
 		});
 
-		expect(outcome).toEqual({ ok: true });
+		expect(outcome.ok).toBe(true);
 		expect(existsSync(worktreePath)).toBe(false);
 		expect(worktreeEntry(repo, worktreePath)).toBeNull();
 	});

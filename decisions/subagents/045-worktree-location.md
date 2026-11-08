@@ -63,7 +63,10 @@ the repo name from the path.
 - The first build in a clone after this change is still cold; the shared dir
   warms on the first build and then serves every worktree of that clone.
 - `~/.cache/cargo-target/` grows to the size of a full build per clone, and is
-  no longer reclaimed by deleting a worktree.
+  no longer reclaimed by deleting a worktree. **Superseded 2026-11-08 (owner,
+  WO-2026-091):** deleting or reaping a worktree now drops its share of the
+  shared dir, and each clone's dir is bounded at 20 GiB — decision
+  `048-build-output-reaper.md`.
 - An unisolated child (`isolate: false`, resumed sessions) gets no
   `CARGO_TARGET_DIR` and keeps building in the parent checkout, the one place
   its artifacts are already warm.

@@ -48,3 +48,30 @@ export function subagentWorktreePath(repoName: string, suffix: string, home: str
 export function cargoTargetDirFor(repoName: string, home: string = homedir()): string {
 	return join(home, ".cache", "cargo-target", repoName);
 }
+
+/** The parent of every clone's shared dir — what the bound walks. */
+export function cargoTargetRoot(home: string = homedir()): string {
+	return join(home, ".cache", "cargo-target");
+}
+
+/** The 12-char session tail `subagentWorktreePath` appends, plus its separator. */
+const WORKTREE_SUFFIX_LEN = 13;
+
+/**
+ * The clone name a subagent worktree path was built from, or null when the path
+ * is not a direct child of the subagent namespace.
+ *
+ * The split is positional, not `-`-delimited: a repo name may itself contain
+ * dashes (`tfd-d-487`), and the suffix is exactly the session id's last 12
+ * characters. Anything else under `~/Developer/wt` (a hand-made worktree) or a
+ * pre-namespace path (`/var/folders/.../pi-subagent-wt-<suffix>`) is not a
+ * subagent worktree this harness owns and answers null.
+ */
+export function repoNameFromWorktreePath(worktreePath: string, home: string = homedir()): string | null {
+	const base = subagentWorktreeBase(home);
+	if (!worktreePath.startsWith(base + "/")) return null;
+	const name = worktreePath.slice(base.length + 1);
+	if (name.length <= WORKTREE_SUFFIX_LEN || name.includes("/")) return null;
+	if (name[name.length - WORKTREE_SUFFIX_LEN] !== "-") return null;
+	return name.slice(0, name.length - WORKTREE_SUFFIX_LEN);
+}

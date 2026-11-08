@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, {
+	_testSetCargoHome,
 	_testSetLiveSessionCtx,
 	_testSetRecoveryScanDir,
 	metaPath,
@@ -44,6 +45,8 @@ function makeRepo(): string {
 	git(repo, ["config", "user.email", "test@example.com"]);
 	git(repo, ["config", "user.name", "Test"]);
 	writeFileSync(join(repo, "seed.txt"), "seed\n");
+	// A cargo repo ignores its build output; a tree carrying one is clean.
+	writeFileSync(join(repo, ".gitignore"), "target/\n");
 	git(repo, ["add", "-A"]);
 	git(repo, ["commit", "-q", "-m", "init"]);
 	return repo;
@@ -120,9 +123,15 @@ setInterval(() => {}, 1 << 30);
 	writeFileSync(join(agentsDir, "worker.md"), "---\nname: worker\ndescription: lock fixture\n---\n\nDo the work.\n");
 	agentDirBefore = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = join(fixtureRoot, "agent");
+	// WO-2026-091: the reap's bound walks `~/.cache/cargo-target` and, over the
+	// bound, runs `cargo clean -p`. No row here is about the bound (that is
+	// tests/build-output-reaper.test.ts), and no row may measure or clean the
+	// box's real shared dirs.
+	_testSetCargoHome(join(fixtureRoot, "home"));
 });
 
 afterAll(() => {
+	_testSetCargoHome(undefined);
 	restoreSubagentEnv();
 	if (argv1Before !== undefined) process.argv[1] = argv1Before;
 	if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -278,40 +287,58 @@ describe("worktree lock lifecycle (real git)", () => {
 
 // ── Reap ───────────────────────────────────────────────────────────────────
 
-describe("reapFinishedWorktrees (real git, injected registry)", () => {
-	/** A meta + log pair wired to a real locked worktree. */
-	function makeEntry(
-		repo: string,
-		sid: string,
-		opts: { logLastLine?: string; ownerPid?: number | null; ownerStartToken?: string | null; sessionFile?: string; dirty?: boolean },
-	): { dir: string; worktreePath: string } {
-		const worktreePath = join(tempDir("pi-reap-wt-"), "tree");
-		const add = git(repo, ["worktree", "add", "-q", worktreePath, "-b", `pi-subagent-${sid}`]);
-		if (add.code !== 0) throw new Error(`worktree add failed: ${add.err}`);
-		git(repo, ["worktree", "lock", "--reason", `pi-subagent ${sid}`, worktreePath]);
-		if (opts.dirty) writeFileSync(join(worktreePath, "uncommitted.txt"), "bytes\n");
-
-		const dir = tempDir("pi-reap-registry-");
-		writeMetaJson(sid, {
-			agentName: "worker",
-			task: "wait for the signal",
-			worktreePath,
-			isolationBranch: `pi-subagent-${sid}`,
-			ownerPid: opts.ownerPid === undefined ? process.pid : opts.ownerPid,
-			ownerStartToken: opts.ownerStartToken ?? null,
-			sessionFile: opts.sessionFile,
-		});
-		// writeMetaJson writes to /tmp; relocate the fixture into the injected dir.
-		const tmpMeta = metaPath(sid);
-		writeFileSync(join(dir, `pi-subagent-${sid}.meta.json`), readFileSync(tmpMeta, "utf8"));
-		unlinkSync(tmpMeta);
-		writeFileSync(join(dir, `pi-subagent-${sid}.log`), opts.logLastLine ?? "── Turn 1 ──\nwork\n");
-		return { dir, worktreePath };
+/** A meta + log pair wired to a real locked worktree. */
+function makeEntryFor(
+	repo: string,
+	sid: string,
+	opts: {
+		logLastLine?: string;
+		ownerPid?: number | null;
+		ownerStartToken?: string | null;
+		sessionFile?: string;
+		dirty?: boolean;
+		/** Exact path to create the tree at (rows about the namespace). */
+		worktreePath?: string;
+		/** Recorded parent checkout (rows about M4's branch check). */
+		parentCwd?: string;
+		/** Give the tree a `target/` dir with a file in it. */
+		target?: boolean;
+	},
+): { dir: string; worktreePath: string } {
+	const worktreePath = opts.worktreePath ?? join(tempDir("pi-reap-wt-"), "tree");
+	if (opts.worktreePath) mkdirSync(join(opts.worktreePath, ".."), { recursive: true });
+	const add = git(repo, ["worktree", "add", "-q", worktreePath, "-b", `pi-subagent-${sid}`]);
+	if (add.code !== 0) throw new Error(`worktree add failed: ${add.err}`);
+	git(repo, ["worktree", "lock", "--reason", `pi-subagent ${sid}`, worktreePath]);
+	if (opts.dirty) writeFileSync(join(worktreePath, "uncommitted.txt"), "bytes\n");
+	if (opts.target) {
+		mkdirSync(join(worktreePath, "target", "debug"), { recursive: true });
+		writeFileSync(join(worktreePath, "target", "debug", "artifact"), "bytes\n");
 	}
 
+	const dir = tempDir("pi-reap-registry-");
+	writeMetaJson(sid, {
+		agentName: "worker",
+		task: "wait for the signal",
+		worktreePath,
+		isolationBranch: `pi-subagent-${sid}`,
+		parentCwd: opts.parentCwd,
+		ownerPid: opts.ownerPid === undefined ? process.pid : opts.ownerPid,
+		ownerStartToken: opts.ownerStartToken ?? null,
+		sessionFile: opts.sessionFile,
+	});
+	// writeMetaJson writes to /tmp; relocate the fixture into the injected dir.
+	const tmpMeta = metaPath(sid);
+	writeFileSync(join(dir, `pi-subagent-${sid}.meta.json`), readFileSync(tmpMeta, "utf8"));
+	unlinkSync(tmpMeta);
+	writeFileSync(join(dir, `pi-subagent-${sid}.log`), opts.logLastLine ?? "── Turn 1 ──\nwork\n");
+	return { dir, worktreePath };
+}
+
+describe("reapFinishedWorktrees (real git, injected registry)", () => {
 	it("removes a clean finished tree (unlock-then-remove, no --force)", async () => {
 		const repo = makeRepo();
-		const { dir, worktreePath } = makeEntry(repo, "clean-1", {
+		const { dir, worktreePath } = makeEntryFor(repo, "clean-1", {
 			logLastLine: "── Completed (3 turns, exit 0) ──\n",
 		});
 
@@ -323,7 +350,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 	it("keeps a finished tree with uncommitted work and marks it (meta)", async () => {
 		const repo = makeRepo();
-		const { dir, worktreePath } = makeEntry(repo, "dirty-1", {
+		const { dir, worktreePath } = makeEntryFor(repo, "dirty-1", {
 			logLastLine: "── Exited (3 turns, exit 1) ──\n",
 			dirty: true,
 		});
@@ -337,7 +364,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 	it("leaves a tree whose child has no terminal footer (could still be running)", async () => {
 		const repo = makeRepo();
-		const { dir, worktreePath } = makeEntry(repo, "unfinished-1", { logLastLine: "── Turn 1 ──\nworking…\n" });
+		const { dir, worktreePath } = makeEntryFor(repo, "unfinished-1", { logLastLine: "── Turn 1 ──\nworking…\n" });
 
 		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 		expect(results).toEqual([]);
@@ -347,13 +374,13 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 	it("skips a live foreign owner's tree and a legacy meta (027)", async () => {
 		const repo = makeRepo();
-		const foreign = makeEntry(repo, "foreign-1", {
+		const foreign = makeEntryFor(repo, "foreign-1", {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 			ownerPid: process.pid === 1 ? 2 : process.ppid,
 			ownerStartToken: "not-our-token",
 		});
 		// A legacy meta: no owner fields at all.
-		const legacy = makeEntry(repo, "legacy-1", { logLastLine: "── Completed (1 turns, exit 0) ──\n", ownerPid: null });
+		const legacy = makeEntryFor(repo, "legacy-1", { logLastLine: "── Completed (1 turns, exit 0) ──\n", ownerPid: null });
 		const legacyPath = join(legacy.dir, "pi-subagent-legacy-1.meta.json");
 		const legacyMeta = JSON.parse(readFileSync(legacyPath, "utf8"));
 		delete legacyMeta.ownerPid;
@@ -371,7 +398,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 	it("does not touch a tree the running map still tracks", async () => {
 		const repo = makeRepo();
-		const { dir, worktreePath } = makeEntry(repo, "tracked-1", {
+		const { dir, worktreePath } = makeEntryFor(repo, "tracked-1", {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 		const { _testRunning } = await import("../extensions/subagent-async/index.ts");
@@ -394,7 +421,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		git(repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub"]);
 		git(repo, ["commit", "-q", "-m", "add submodule"]);
 
-		const { dir, worktreePath } = makeEntry(repo, "submod-1", {
+		const { dir, worktreePath } = makeEntryFor(repo, "submod-1", {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 		git(worktreePath, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]);
@@ -414,7 +441,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 	it("the real session_start handler runs the reap (wiring)", async () => {
 		const repo = makeRepo();
-		const { dir, worktreePath } = makeEntry(repo, "wiring-1", {
+		const { dir, worktreePath } = makeEntryFor(repo, "wiring-1", {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 
@@ -442,6 +469,145 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		} finally {
 			_testSetRecoveryScanDir(undefined);
 		}
+	});
+});
+
+// ── Reap: build output (WO-2026-091) ───────────────────────────────────────
+
+describe("reap build output (real git, injected registry)", () => {
+	/** A meta + log pair, as `makeEntryFor` builds them, at an exact tree path. */
+	function entryAt(
+		repo: string,
+		sid: string,
+		worktreePath: string,
+		opts: { dirty?: boolean; target?: boolean; logLastLine?: string; parentCwd?: string; branch?: string } = {},
+	): { dir: string; worktreePath: string } {
+		const entry = makeEntryFor(repo, sid, {
+			worktreePath,
+			dirty: opts.dirty,
+			target: opts.target,
+			parentCwd: opts.parentCwd,
+			logLastLine: opts.logLastLine,
+		});
+		if (opts.branch !== undefined) {
+			const metaFile = join(entry.dir, `pi-subagent-${sid}.meta.json`);
+			const meta = JSON.parse(readFileSync(metaFile, "utf8"));
+			meta.isolationBranch = opts.branch;
+			writeFileSync(metaFile, JSON.stringify(meta));
+		}
+		return entry;
+	}
+
+	it("a reaped worktree leaves no target/ and no attributed shared artifacts (R1)", async () => {
+		const home = tempDir("pi-reap-home-");
+		const repo = makeRepo();
+		const repoName = repo.split("/").pop()!;
+		const worktreePath = join(home, "Developer", "wt", "subagents", `${repoName}-4add98737109`);
+		const shared = join(home, ".cache", "cargo-target", repoName);
+		const deps = join(shared, "debug", "deps");
+		mkdirSync(deps, { recursive: true });
+		writeFileSync(join(deps, `${repoName}-abc123.d`), `${join(deps, `lib${repoName}-abc123.rlib`)}: ${worktreePath}/src/lib.rs\n`);
+		writeFileSync(join(deps, `lib${repoName}-abc123.rlib`), "dead\n");
+		mkdirSync(join(shared, "debug", ".fingerprint", `${repoName}-abc123`), { recursive: true });
+
+		const { dir } = entryAt(repo, "reaped-target", worktreePath, {
+			target: true,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+
+		_testSetCargoHome(home);
+		try {
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+			expect(results.map((r) => r.outcome)).toEqual(["removed"]);
+			// R1: neither the tree nor its target survives.
+			expect(existsSync(worktreePath)).toBe(false);
+			expect(existsSync(join(worktreePath, "target"))).toBe(false);
+			// ... and the worktree's share of the clone's shared dir goes too.
+			expect(existsSync(join(deps, `${repoName}-abc123.d`))).toBe(false);
+			expect(existsSync(join(deps, `lib${repoName}-abc123.rlib`))).toBe(false);
+			expect(existsSync(join(shared, "debug", ".fingerprint", `${repoName}-abc123`))).toBe(false);
+			// The row reports what it dropped and by which route. `target/` is not
+			// in the line because `git worktree remove` already deletes an ignored
+			// target/ with the tree — see the row's note in the report.
+			expect(results[0].detail).toContain("(exact)");
+		} finally {
+			_testSetCargoHome(join(fixtureRoot, "home"));
+		}
+	});
+
+	it("a live worktree keeps its target/ (R2)", async () => {
+		const repo = makeRepo();
+		// No terminal footer: the child may still be running, so nothing about its
+		// tree — its build output least of all — is the reap's to touch.
+		const { dir, worktreePath } = entryAt(repo, "live-target", join(tempDir("pi-reap-wt-"), "tree"), {
+			target: true,
+			logLastLine: "── Turn 1 ──\nworking…\n",
+		});
+
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+		expect(results).toEqual([]);
+		expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
+	});
+
+	it("a kept tree whose branch is merged into the parent HEAD loses its target/ (R6)", async () => {
+		const repo = makeRepo();
+		const { dir, worktreePath } = entryAt(repo, "kept-merged", join(tempDir("pi-reap-wt-"), "tree"), {
+			target: true,
+			dirty: true,
+			parentCwd: repo,
+			logLastLine: "── Exited (1 turns, exit 1) ──\n",
+		});
+
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+		expect(results.map((r) => r.outcome)).toEqual(["kept-uncommitted"]);
+		// The tree stays (resume and inspection still work); only the build output
+		// goes, because the branch holds nothing unlanded.
+		expect(existsSync(worktreePath)).toBe(true);
+		expect(existsSync(join(worktreePath, "target"))).toBe(false);
+		expect(readFileSync(join(worktreePath, "uncommitted.txt"), "utf8")).toBe("bytes\n");
+		expect(results[0].detail).toContain("branch merged");
+	});
+
+	it("a kept tree whose branch still holds unlanded work keeps its target/ (R6)", async () => {
+		const repo = makeRepo();
+		const worktreePath = join(tempDir("pi-reap-wt-"), "tree");
+		const { dir } = entryAt(repo, "kept-live", worktreePath, {
+			target: true,
+			parentCwd: repo,
+			logLastLine: "── Exited (1 turns, exit 1) ──\n",
+		});
+		// A commit on the branch, then an uncommitted change: the tree is kept and
+		// the branch has work of its own.
+		writeFileSync(join(worktreePath, "landed.txt"), "landed\n");
+		git(worktreePath, ["add", "-A"]);
+		git(worktreePath, ["commit", "-q", "-m", "the work"]);
+		writeFileSync(join(worktreePath, "uncommitted.txt"), "bytes\n");
+
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+		expect(results.map((r) => r.outcome)).toEqual(["kept-uncommitted"]);
+		expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
+	});
+
+	it("a kept tree whose recorded branch is gone loses its target/ (R6)", async () => {
+		const repo = makeRepo();
+		const { dir, worktreePath } = entryAt(repo, "kept-gone", join(tempDir("pi-reap-wt-"), "tree"), {
+			target: true,
+			dirty: true,
+			parentCwd: repo,
+			branch: "pi-subagent-branch-that-was-abandoned",
+			logLastLine: "── Exited (1 turns, exit 1) ──\n",
+		});
+
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+		expect(results.map((r) => r.outcome)).toEqual(["kept-uncommitted"]);
+		expect(existsSync(worktreePath)).toBe(true);
+		expect(existsSync(join(worktreePath, "target"))).toBe(false);
+		expect(results[0].detail).toContain("branch gone");
 	});
 });
 
