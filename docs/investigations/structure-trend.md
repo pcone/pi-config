@@ -27,17 +27,22 @@ refactor lands.
 
 ## 2026-11-08 — chunk: WO-2026-096 route 1 scans every profile-level dep-info location
 
-**growth.** `extensions/lib/build-output-reaper.ts` 743 → **783** (+40 over one commit);
-`pruneExactArtifacts` 84 → **96** lines, which is the three-location scan and nothing else.
-`tests/build-output-reaper.test.ts` 711 → **846** (+135, four rows and two fixture builders).
-One commit, no new file, no new module.
+**growth.** `extensions/lib/build-output-reaper.ts` 743 → **783** (the widen) → **800** (round 2:
+the boundary helper, the empty-stem count, the reported profile listing);
+`pruneExactArtifacts` 84 → **96** → **105** lines.
+`tests/build-output-reaper.test.ts` 711 → **846** → **958** (nine rows and two fixture builders).
+No new file, no new module.
 
 **unification.** The three locations are one loop over `DEP_INFO_SUBDIRS`, not three copies of
 the scan: `rg -n 'DEP_INFO_SUBDIRS|readdirSync\(depInfoDir' extensions/lib/build-output-reaper.ts`
 → 3 lines, one loop, one readdir per directory (the sibling-delete pass reuses the listing the
 scan already took, where the deps-only version listed each matched directory twice). The new
 `env-dep:` counter is one field threaded through the existing result→report path, not a second
-attribution check: attribution is still the one `depInfoNamesPath` call, unchanged.
+attribution check: "names this path" is one helper, `pathMentioned`, whose two callers differ
+only in the boundary characters their syntax allows — `depInfoNamesPath` for a source rule,
+`depInfoEnvDepNamesPath` for an `env-dep:` value
+(`rg -n 'pathMentioned|depInfoNamesPath|depInfoEnvDepNamesPath' extensions/lib/build-output-reaper.ts`
+→ 5 lines, 2 definitions of the boundary and 1 regex build).
 
 **cost.** Route 1's scan on this box's 707-`.d` profile (`~/.cache/cargo-target/tfd-d-487`):
 **0.19 ms** reading 2 `.d` → **0.74 ms** reading 14 (median of 15 alternating runs, a dead path

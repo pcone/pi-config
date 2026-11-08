@@ -95,12 +95,15 @@ must be measured in it, or it fires at half the size the owner named.
 > route. The paragraph below is the record of the deps-only reading.
 
 Cargo writes dep-info paths relative to the workspace root it built
-(`members/alpha/src/lib.rs`), so a `.d` from a worktree build never names the
-worktree path. Measured on two probes and on this box's real shared dirs
-(`.d` files present, none naming a worktree). Route 2 is what actually runs, and
-it drops every worktree's copy of the workspace crate it cleans — accepted by
-the owner's ruling ("if they can be told apart", and the coarse route is the
-case where they cannot).
+(`members/alpha/src/lib.rs`), so a `.d` from a build whose workspace root *is*
+the checkout root names no worktree. That is all the deps-only scan measured:
+0 of 3 `deps/*.d` on this box, and none in two probes — the absolutized paths
+those fixtures did hold sat in `<profile>/*.d` and `<profile>/examples/*.d`,
+which the scan never read, and 12 of the 14 `.d` at the three locations name a
+worktree. The reading was a property of the scan's scope, not of cargo. For a
+workspace-root build route 2 is what runs, and it drops every worktree's copy of
+the workspace crate it cleans — accepted by the owner's ruling ("if they can be
+told apart", and the coarse route is the case where they cannot).
 
 The claim is scoped to a workspace-root checkout. Cargo absolutizes a source
 path outside the workspace root it built, so in a checkout whose workspace sits
@@ -115,6 +118,23 @@ Where that absolute path lands depends on the target kind, and the probe
 the workspace root gets `<profile>/<name>.d` or `<profile>/examples/<name>.d`
 with the absolute paths. The deps-only scan attributed the first and missed the
 second; WO-2026-096 scans all three.
+
+## A `.d` naming two worktrees takes the live one's copy with it
+
+Dep-info is keyed by crate unit, not by worktree, so one `.d` can name two
+worktrees. `~/.cache/cargo-target/tfd-d-487/release/tfd.d` names
+`…-210bf89ad757` in 255 source paths and `…-5c8863381bd8` in two
+(`tfd-mem/src`, `tfd-rt/src`); measured 2026-11-08, when one of the two was live
+and one dead. Route 1 matches on any source rule naming the reaped path, so
+reaping either tree deletes that `.d` and the `tfd` binary beside it — the other
+tree's copy as much as the reaped one's.
+
+The other tree rebuilds the unit. Its own removal then finds no `.d` naming it,
+so route 1 matches nothing and route 2 runs: every worktree's copy of that crate
+goes, a third tree's included. The mechanism permits this — deletion is per
+artifact, and a `.d` with two owners is not split — and what it costs a live
+tree is one rebuild. Its sources, its own `target/` and its uncommitted work are
+untouched.
 
 ## Costs measured, not asserted
 
