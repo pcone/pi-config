@@ -1050,8 +1050,9 @@ removal sites' unlock → remove → branch-delete sequences became one `removeW
 (`rg -n '"worktree", "remove' extensions/` → 3 lines, **2** sites; the third is `createWorktree`'s
 stale-leftover cleanup, parked as `Q-091-a`). `removeWorktreeTarget` has 2 callers, both in the lib.
 
-**flag.** `extensions/subagent-async/index.ts` is **5215** lines and has now been touched by three
+**closed (owner 2026-11-08).** `extensions/subagent-async/index.ts` is **5215** lines and has now been touched by three
 consecutive landings (091, the turn cap in 090, the model-inheritance fix). Two strikes is the
-register's closure rule, and this is the third touch — the file is a candidate for the next
-extraction before any further feature work lands in it. The reap extraction (136 → 113, mechanism
+register's closure rule, and this is the third touch. **Carrier: WO-2026-095** (split by
+responsibility, nine extractions, ahead of WO-2026-094). No feature work lands in the file until it
+does. The reap extraction (136 → 113, mechanism
 moved out) is the pattern that works; the remaining inline growth is the spawn path.

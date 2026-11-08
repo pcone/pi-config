@@ -3,8 +3,8 @@
 ### Metadata
 
 - **work_order_id**: WO-2026-094
-- **parent_plan_id**: owner 2026-11-08 — `wo_record` appends for WO-477 and WO-424 were written into `~/Developer/tfd`'s working tree, not the worktree that commits; origin's records lack ~44 and ~10 entry headings.
-- **sequence_position**: 2 of 2 (sibling: WO-2026-093, seat checkout sync).
+- **parent_plan_id**: owner 2026-11-08 — `wo_record` appends for WO-477 and WO-424 were written into `~/Developer/tfd`'s working tree, not the worktree that commits; origin's records lack ~44 and ~10 entry headings. **Recovery dropped from scope (owner 2026-11-08):** the tfd seat restored those entries at `41880c7cc` as notes, because the stray copies reuse departure ids. This order is only "appends land where they commit, or fail loudly".
+- **sequence_position**: 3 of 3 — after **WO-2026-095** (the `subagent-async` split), which owns `index.ts`; this order edits the new `subagent-async/records.ts` instead.
 - **routed_to**: implement
 - **priority**: high (records are the durable account of what a work order did)
 - **estimated_complexity**: moderate
@@ -30,11 +30,9 @@
 
 **M3 — loud when it cannot.** A dispatch whose record cannot be written into a committing tree, or whose close-time verification finds the entries missing, ends the run with a **loud failure** carrying the record's path and the missing entry ids — the same weight as a failed worktree removal, not a `note`. The spawn still completes; the record failure is terminal for the record and visible in the status line.
 
-**M4 — recovery, once.** The stranded appends for WO-477 and WO-424 exist in `~/Developer/tfd`'s working tree. Re-append them where they belong (the branch that carries each order, or origin's record if the branch has landed), and report the recovered counts against the ~44 and ~10 missing. Do not hand-edit headings into a record: run the same append path, so the recovery is the mechanism's own output.
-
 ### Prohibitions
 
-- No second append path: recovery uses `wo_record.py append`, not a hand-written JSON/Markdown edit.
+- No second append path: the append goes through `wo_record.py append`, never a hand-written JSON/Markdown edit.
 - Never append into a tree that will not be committed.
 - Never silently downgrade a record failure to a note.
 - Don't change `wo_record.py`'s format in this order; the format is another repo's contract and `scripts/wo_record.py` owns it.
@@ -48,7 +46,6 @@ Each row with its mutation, run alone:
 - **R3** the append landing in the parent checkout while the spawn is isolated is caught (the observed bug): the close-time check fails loudly and names the record path.
 - **R4** a missing entry at close (append silently no-opped) fails the same way.
 - **R5** a repo without `scripts/wo_record.py` still gets no record and no failure (the existing contract).
-- **R6** recovery: the WO-477 and WO-424 entries land through the append path, and the counts are reported.
 
 ### Cost — measure, do not assert
 
