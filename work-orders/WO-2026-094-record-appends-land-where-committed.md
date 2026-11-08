@@ -84,7 +84,7 @@ leaves the entry uncommitted in a tree the reap or a checkout discards, which is
 loss this order exists to prevent. *Accept the uncommitted append* (option C): same
 loss, silently.
 
-**State this round.** Landed in this order's recovery-commit commit (SHA below); rows "commits what it appended, in the
+**State this round.** Landed in `b3775ed`; rows "commits what it appended, in the
 tree it wrote to, and verifies that commit" and "reports RECORD FAILURE when that
 tree's commit cannot carry the entries" in `tests/work-record-capture.test.ts`
 (dropping the commit step, or the verification, reds one row each).
