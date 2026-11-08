@@ -149,7 +149,8 @@ describe("the views read the vocabulary instead of re-deriving it (structural cl
 	});
 
 	it("classifyOutcome delegates its tail to outcomeFromExitCode", () => {
-		const entry = readFileSync(join(REPO_ROOT, "extensions/subagent-async/index.ts"), "utf8");
+		// WO-2026-095: classifyOutcome moved to sleep-guard.ts unchanged.
+		const entry = readFileSync(join(REPO_ROOT, "extensions/subagent-async/sleep-guard.ts"), "utf8");
 		expect(entry).toContain("return outcomeFromExitCode(facts.exitCode, facts.turns);");
 	});
 
