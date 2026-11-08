@@ -1259,6 +1259,120 @@ async function preCommitSteps(rs: RunningSubagent): Promise<{
 	}
 }
 
+// ── Worktree removal ───────────────────────────────────────────────────────
+
+/** The worktree facts a removal needs. `RunningSubagent` satisfies it, and so
+ *  does the record the session-start reap rebuilds from a meta file. */
+export interface RemovableWorktree {
+	worktreePath: string | null;
+	isolationBranch: string | null;
+	parentHeadCommit: string | null;
+	/** The repo the worktree belongs to; the git calls run here. */
+	parentCwd: string;
+}
+
+/** Per-site removal policy — the only things the two callers disagree on. */
+export interface WorktreeRemovalPolicy {
+	/** `git worktree remove --force`. Only post-delivery may force: its tree's
+	 *  bytes are committed by then. The reap's plain remove is what keeps a race
+	 *  from destroying uncommitted work. */
+	force: boolean;
+	/** The isolation branch's final commit, when the caller knows it. A branch
+	 *  that never moved past `parentHeadCommit` is deleted (WO-2026-049); `null`
+	 *  keeps it — the reap's case, where the work lives on the branch. */
+	finalCommit: string | null;
+	/** Reason stamped on the lock a failed removal puts back. */
+	relockReason: string;
+}
+
+/** Which step of the sequence failed, so the reap can report its own outcome
+ *  vocabulary (`kept-unlock-failed` vs `kept-remove-failed`). */
+export type RemovalStage = "unlock" | "remove" | "branch";
+
+export interface RemoveWorktreeOutcome {
+	ok: boolean;
+	stage?: RemovalStage;
+	/** Failure text for the caller's log / steer / ReapResult.detail. */
+	detail?: string;
+}
+
+export interface RemovalDeps {
+	/** Injection seam for tests; defaults to the module's `git()`. */
+	git?: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+}
+
+/**
+ * The one unlock → remove → branch-delete sequence (WO-2026-091). Post-delivery
+ * cleanup and the session-start reap every other detail of, so the build output
+ * that dies with a tree has exactly one place to be dropped from.
+ *
+ * A failure re-locks the tree best-effort: the unlock succeeded, so leaving it
+ * unlocked would leave live work unprotected. Never rmtree the directory — the
+ * lock exists to prevent exactly that deletion, and the tree's cleanliness is
+ * not known on this path.
+ */
+export async function removeWorktreeTree(
+	deps: RemovalDeps,
+	rs: RemovableWorktree,
+	policy: WorktreeRemovalPolicy,
+): Promise<RemoveWorktreeOutcome> {
+	const g = deps.git ?? git;
+	const { worktreePath, isolationBranch, parentHeadCommit, parentCwd } = rs;
+	if (!worktreePath) return { ok: false, stage: "remove", detail: "no worktree path" };
+
+	// The reap's tree outlives its parent checkout, and `git worktree remove` runs
+	// fine from inside the tree being removed — the worktree's own `.git` pointer
+	// reaches the same object store.
+	const repoCwd = fs.existsSync(parentCwd) ? parentCwd : worktreePath;
+
+	const relock = async () => {
+		const r = await g(["worktree", "lock", "--reason", policy.relockReason, worktreePath], repoCwd);
+		return r.exitCode;
+	};
+
+	// R3-2: unlock first — git refuses to remove a locked tree, and that refusal
+	// is the protection against reaping a live child's work. A tree that is not
+	// locked (spawned before this change, or already unlocked by the other site)
+	// is the one tolerated failure; any other unlock error means the lock may
+	// still be in force, so the directory is left alone rather than deleted.
+	const unlock = await g(["worktree", "unlock", worktreePath], repoCwd);
+	if (unlock.exitCode !== 0 && !/is not locked/i.test(unlock.stderr)) {
+		const detail = `git worktree unlock failed: ${unlock.stderr.trim() || `exit ${unlock.exitCode}`}`;
+		debugLog(`removeWorktreeTree: ${detail}`);
+		return { ok: false, stage: "unlock", detail };
+	}
+
+	const removeArgs = policy.force
+		? ["worktree", "remove", "--force", worktreePath]
+		: ["worktree", "remove", worktreePath];
+	const remove = await g(removeArgs, repoCwd);
+	if (remove.exitCode !== 0) {
+		const detail = `git worktree remove failed: ${remove.stderr.trim() || `exit ${remove.exitCode}`}`;
+		const relockExit = await relock();
+		debugLog(`removeWorktreeTree: ${detail} (re-lock exit ${relockExit})`);
+		return { ok: false, stage: "remove", detail };
+	}
+
+	// A branch still at the parent commit committed nothing — neither the harness
+	// nor the subagent itself — so delete it. `hadChanges` alone is NOT a safe
+	// signal: a subagent that committed its own work leaves nothing staged, so
+	// preCommitSteps reports hadChanges=false even though the branch HEAD moved
+	// past the parent; keying on finalCommit preserves those commits. (WO-2026-049;
+	// the Threefry branch-loss incident, 2026-08-08, where a self-commit's branch
+	// was deleted and the work survived only as a dangling commit.)
+	if (isolationBranch && parentHeadCommit && policy.finalCommit === parentHeadCommit) {
+		const del = await g(["branch", "-D", isolationBranch], repoCwd);
+		if (del.exitCode !== 0) {
+			const detail = `git branch -D ${isolationBranch} failed: ${del.stderr.trim() || `exit ${del.exitCode}`}`;
+			const relockExit = await relock();
+			debugLog(`removeWorktreeTree: ${detail} (re-lock exit ${relockExit})`);
+			return { ok: false, stage: "branch", detail };
+		}
+	}
+
+	return { ok: true };
+}
+
 /** Post-delivery cleanup: remove the worktree directory and delete the branch
  *  when no changes were committed. Runs async after deliverResult; failures are
  *  logged and surfaced as a steer warning, never fatal. */
@@ -1268,69 +1382,31 @@ async function postDeliveryCleanup(
 	finalCommit: string,
 	hadChanges: boolean,
 ): Promise<void> {
-	const { worktreePath, isolationBranch, parentHeadCommit, parentCwd } = rs;
+	const { worktreePath, isolationBranch, parentHeadCommit } = rs;
 	if (!worktreePath || !isolationBranch || !parentHeadCommit) return;
 
 	const t0 = PI_ASYNC_DEBUG ? Date.now() : 0;
+	const outcome = await removeWorktreeTree({}, rs, {
+		force: true,
+		finalCommit,
+		relockReason: `pi-subagent ${rs.sessionId} (cleanup failed)`,
+	});
 
-	let unlocked = false;
-	try {
-		// R3-2: unlock first — git refuses to force-remove a locked tree, and that
-		// refusal is the protection against reaping a live child's work. The
-		// completion is recorded by now (postDeliveryCleanup runs after
-		// deliverResult), so this is the proof the lock waited for. A tree that is
-		// not locked (spawned before this change, or already unlocked by the reap)
-		// is the one tolerated failure; any other unlock error means the lock may
-		// still be in force, so the directory is left alone rather than deleted.
-		const unlock = await git(["worktree", "unlock", worktreePath], parentCwd);
-		if (unlock.exitCode !== 0 && !/is not locked/i.test(unlock.stderr)) {
-			throw new Error(`git worktree unlock failed: ${unlock.stderr.trim() || `exit ${unlock.exitCode}`}`);
-		}
-		unlocked = true;
-
-		// Remove the worktree directory (branch ref stays in the repo). A failed
-		// removal is loud, not silent: the tree is unlocked by now, so swallowing
-		// the error would leave live work unprotected with no trace. The catch
-		// re-locks it (best-effort) and warns the parent. (Mirror:
-		// test-completion-filter.cjs throws on a failed remove too.)
-		const remove = await git(["worktree", "remove", "--force", worktreePath], parentCwd);
-		if (remove.exitCode !== 0) {
-			throw new Error(`git worktree remove failed: ${remove.stderr.trim() || `exit ${remove.exitCode}`}`);
-		}
-
-		if (finalCommit === parentHeadCommit) {
-			// Branch still at the parent commit — nothing new was committed (by the
-			// harness OR by the subagent itself), so delete it. hadChanges alone is
-			// NOT a safe signal: a subagent that committed its own work leaves
-			// nothing staged, so preCommitSteps reports hadChanges=false even though
-			// the branch HEAD moved past the parent — keying on finalCommit
-			// preserves those commits. (WO-2026-049; the Threefry branch-loss
-			// incident, 2026-08-08, where a self-commit's branch was deleted and
-			// the work survived only as a dangling commit, recovered by hash.)
-			await git(["branch", "-D", isolationBranch], parentCwd);
-		}
-
+	if (outcome.ok) {
 		if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: ${Date.now() - t0}ms (hadChanges=${hadChanges})`);
-	} catch (e: any) {
-		if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: FAILED after ${Date.now() - t0}ms: ${e.message || e}`);
-		// A failure after a successful unlock would leave an unprotected tree: put
-		// the lock back, best-effort, so live work stays guarded. Never rmtree the
-		// directory — that is exactly the deletion the lock exists to prevent, and
-		// the tree's cleanliness is unknown on this path. The warn below, plus the
-		// next session's reap, are the recovery.
-		if (unlocked) {
-			const relock = await git(["worktree", "lock", "--reason", `pi-subagent ${rs.sessionId} (cleanup failed)`, worktreePath], parentCwd);
-			debugLog(`postDeliveryCleanup: re-lock after failure: exit ${relock.exitCode}`);
-		}
-
-		// Surface the warning to the parent via steer
-		try {
-			pi.sendUserMessage(
-				`[subagent ${rs.sessionId.slice(-8)}] warning: worktree cleanup failed: ${e instanceof Error ? e.message : String(e)} — worktree at ${worktreePath} may need manual removal`,
-				{ deliverAs: "steer" },
-			);
-		} catch { /* steer failed — nothing we can do */ }
+		return;
 	}
+
+	if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: FAILED after ${Date.now() - t0}ms: ${outcome.detail}`);
+	// Surface the warning to the parent via steer. The tree is re-locked (or was
+	// never unlocked), so live work stays guarded; the next session's reap, plus
+	// this warning, are the recovery.
+	try {
+		pi.sendUserMessage(
+			`[subagent ${rs.sessionId.slice(-8)}] warning: worktree cleanup failed: ${outcome.detail} — worktree at ${worktreePath} may need manual removal`,
+			{ deliverAs: "steer" },
+		);
+	} catch { /* steer failed — nothing we can do */ }
 }
 
 async function writeTempFile(name: string, content: string): Promise<{ dir: string; filePath: string }> {
@@ -3852,24 +3928,35 @@ export async function reapFinishedWorktrees(
 				continue;
 			}
 
-			const unlock = await git(["worktree", "unlock", worktreePath], worktreePath);
-			if (unlock.exitCode !== 0 && !/is not locked/i.test(unlock.stderr)) {
-				debugLog(`reap: ${sid} unlock failed: ${unlock.stderr.trim()}`);
-				results.push({ sid, outcome: "kept-unlock-failed", worktreePath, detail: unlock.stderr.trim() });
-				continue;
-			}
-			const remove = await git(["worktree", "remove", worktreePath], worktreePath);
-			if (remove.exitCode !== 0) {
-				// The tree is clean by the check above and the unlock already
-				// succeeded, so a removal failure leaves it unprotected: put the
-				// lock back, best-effort, exactly as postDeliveryCleanup does. Never
-				// `--force`, never rmtree — the next reap retries.
-				const relock = await git(
-					["worktree", "lock", "--reason", `pi-subagent ${sid} (reap failed)`, worktreePath],
+			const removal = await removeWorktreeTree(
+				{},
+				{
 					worktreePath,
-				);
-				debugLog(`reap: ${sid} remove failed: ${remove.stderr.trim()} (re-lock exit ${relock.exitCode})`);
-				results.push({ sid, outcome: "kept-remove-failed", worktreePath, detail: remove.stderr.trim() });
+					isolationBranch: typeof meta.isolationBranch === "string" ? meta.isolationBranch : null,
+					parentHeadCommit: typeof meta.parentHeadCommit === "string" ? meta.parentHeadCommit : null,
+					// Empty when the meta predates the field: the removal then runs in the
+					// worktree itself, which reaches the same object store.
+					parentCwd: typeof meta.parentCwd === "string" ? meta.parentCwd : "",
+				},
+				{
+					// Never --force: the cleanliness check above is what makes a plain
+					// remove safe, and a race must not delete uncommitted work. No
+					// finalCommit either — the work lives on the branch, so it stays.
+					force: false,
+					finalCommit: null,
+					relockReason: `pi-subagent ${sid} (reap failed)`,
+				},
+			);
+			if (!removal.ok) {
+				// The shared removal already re-locked a tree it unlocked; nothing to
+				// restore. Never `--force`, never rmtree — the next reap retries.
+				debugLog(`reap: ${sid} ${removal.stage} failed: ${removal.detail}`);
+				results.push({
+					sid,
+					outcome: removal.stage === "unlock" ? "kept-unlock-failed" : "kept-remove-failed",
+					worktreePath,
+					detail: removal.detail,
+				});
 				continue;
 			}
 			debugLog(`reap: removed finished worktree ${worktreePath} (${sid})`);
