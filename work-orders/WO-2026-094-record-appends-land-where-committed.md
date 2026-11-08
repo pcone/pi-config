@@ -55,3 +55,41 @@ The append is one `python3` spawn, and the close-time verification is one `git g
 
 - `PREMISE FALSIFIED` if the record append already runs in the worktree (it does not, per the premise) or if `wo_record.py` writes somewhere other than a git-tracked path.
 - `PLAN MISMATCH` if a second place writes record entries besides `openWorkRecord` and the close path.
+
+### Owner question Q-094-a (raised 2026-11-08) — RULING PENDING
+
+**Ask:** a *recovered* run's record close appends into the tree it was told to
+complete, and nothing commits that tree. Commit it there, fail loudly, or accept
+the uncommitted append?
+
+**The site.** `extensions/subagent-async/recovery.ts:535-547` (the inherited-socket
+close path). A recovered child's messages never reach this process, so the harness
+completes its record from the session file — into `meta.workRecord.cwd`, the tree
+the original spawn named. A recovered run commits nothing itself: the worktree's
+fate is the reap's (`kept-uncommitted` when the tree is dirty), and a non-isolated
+recovery leaves the parent's working tree for the spawner's next commit. The append
+is therefore an uncommitted change at the moment of the record write, which is the
+state this order exists to make impossible to miss. The close path is unchanged in
+this order and reports its `RECORD FAILURE`s on the delivered result.
+
+**Option A (recorder's recommendation, not a ruling) — commit it there.** After the
+recovery append, `git add` the record file and commit it in `record.cwd`, with the
+harness's own subject line. The entry then reaches a commit by the same rule the
+spawn's close uses. Costs a git commit in a tree the harness may not own (a
+non-isolated recovery's parent checkout may hold the spawner's unrelated staged
+work), so it needs a rule for what to stage.
+
+**Option B — fail loudly.** Leave the append uncommitted and report a `RECORD FAILURE`
+from the recovery close, as the spawn close does when its entry is not in the
+committed tree. Costs a visible failure on every recovered run of an isolated spawn,
+since that tree is uncommitted by construction until the reap or the spawner commits
+it.
+
+**Option C — accept.** Say a recovery's record append is a working-tree change like
+any other, and leave it to the spawner's next commit. Cheapest; leaves the one path
+in the harness where a record entry can be lost to a checkout or a reap with no
+failure raised, which is the loss this order was opened for.
+
+**State this round:** the site is unchanged. `recovery.ts:535-547` names this row as
+the debt's carrier (`#Q-094-a`); the ruling, whichever way it goes, replaces that
+comment with the rule.
