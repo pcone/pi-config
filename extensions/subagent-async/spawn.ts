@@ -16,7 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { MAX_TURNS_HARD } from "../lib/subagent-state.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
 import type { AgentConfig } from "./agents.ts";
-import { completeWorkRecord } from "./records.ts";
+import { closeWorkRecord } from "./records.ts";
 import {
 	reportDeclaresOwnerAsks,
 } from "./recovery.ts";
@@ -761,11 +761,31 @@ export async function spawnSubagent(
 		// continues it instead of restarting the count the cap compares against.
 		updateMetaJson(sessionId, { turnsUsed: turnsUsed(rs) });
 
-		// PRE-DELIVERY: commit-producing git steps (add, diff, commit, rev-parse).
-		// Split from post-delivery cleanup so the result reaches the parent
-		// immediately rather than waiting seconds for worktree removal.
+		// PRE-DELIVERY: the work-order record first, then the git steps that commit the work
+		// (add, diff, commit, rev-parse). The record is written into the tree that will be
+		// committed, so it has to precede the commit: an isolated spawn's record lives in the
+		// worktree, which is removed after delivery (WO-2026-094 M1/M2). Split from post-delivery
+		// cleanup so the result reaches the parent immediately rather than waiting seconds for
+		// worktree removal. The funnel runs the appends, then those git steps as its commit step,
+		// then the close-time gate — which asks whether THIS process committed the tree it is
+		// about to remove.
 		const tDeliver = PI_ASYNC_DEBUG ? Date.now() : 0;
-		const { note: commitNote, finalCommit, hadChanges } = await preCommitSteps(rs);
+		let committed!: Awaited<ReturnType<typeof preCommitSteps>>;
+		const recordClose = await closeWorkRecord(rs.workRecord, {
+			implementerKey: rs.piSessionId ?? sessionId,
+			readFinal: () => getFinalOutput(rs.messages),
+			commit: async () => {
+				committed = await preCommitSteps(rs);
+				return []; // the child's commit is not the record's: its failures are `committed.note`
+			},
+			mustBeCommitted: rs.worktreePath !== null,
+			persist: (failures) => updateMetaJson(sessionId, { recordFailures: failures }),
+			carried: { notes: rs.recordNotes ?? [], failures: rs.recordFailures ?? [] },
+		});
+		const { note: commitNote, finalCommit, hadChanges } = committed;
+		rs.recordNotes = recordClose.notes;
+		rs.recordFailures = recordClose.failures;
+		const recordText = recordClose.text;
 
 		// Clean up temp files
 		if (tmpPath) try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
@@ -774,12 +794,7 @@ export async function spawnSubagent(
 		// DELIVER: the result reaches the parent now.
 		// No double delivery: resolveOnStop and deliverResult are mutually
 		// exclusive — see deliverCloseResult (the single delivery owner).
-		// Work-order record: the completion and each reviewer round (decisions/work-order-records/001).
-		const recordNotes = rs.workRecord
-			? completeWorkRecord(rs.workRecord, rs.piSessionId ?? sessionId, () => getFinalOutput(rs.messages))
-			: [];
-		rs.recordNotes = [...(rs.recordNotes ?? []), ...recordNotes];
-		const deliveryPath = deliverCloseResult(pi, rs, code, commitNote + recordNotes.map((n) => `\n${n}`).join(""));
+		const deliveryPath = deliverCloseResult(pi, rs, code, commitNote + recordText);
 		if (PI_ASYNC_DEBUG) debugLog(`deliverResult (${deliveryPath}): ${Date.now() - tDeliver}ms`);
 
 		// POST-DELIVERY: worktree removal and branch cleanup. Fire-and-forget —

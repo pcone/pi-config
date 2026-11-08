@@ -25,6 +25,48 @@ refactor lands.
 | `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
 | pre-refactor quota entry points (`renderQuotaSegment`, `renderGoUsageSegment`) | — (observation; no landing was flagged for it) | **closed 2026-11-07 by WO-2026-089** — both deleted; `rg -n 'renderQuotaSegment|renderGoUsageSegment' --glob '!*.md' extensions/` → 0. The three rendering files reach the one renderer through `tests/helpers/quota-render.ts` (one shared adapter, 82 lines), which assembles the snapshot the private `snapshotFor` used to build from `descriptor.fromQuotaData` / `goParts`; `goParts` is the one internal export added, marked `@for-testing` and still called by `goDescriptor.parse`. `fromQuotaData` stays: descriptor metadata the adapter reads. No golden moved — every `expected:` string in the four files is byte-identical | — |
 
+## 2026-11-08 — chunk: WO-2026-094 a record append lands where it commits, or fails loudly
+
+**growth.** `extensions/subagent-async/spawn.ts` 817 (WO-2026-095's split) → **835** once the
+close-time gate and its first two review rounds landed → **832** at this landing; `spawnSubagent`
+765 → **762** lines. `records.ts` 143 → **311** (the record writes, the gate, `commitRecordEntries`)
+→ **399** (the close funnel, its overloads, `verifyWorkRecord`'s committed leg);
+`recovery.ts` 697 → **724** → **718**. Tests: `work-record-capture.test.ts` 620 → **701**,
+`work-record-landing.test.ts` 323 → **341**. The growth is a mechanism, not a second copy —
+`records.ts` holds one implementation of each close step. `spawnSubagent` at 762 lines is the
+largest function in the extension and the obvious next extraction when this area reopens; nothing
+here split it, because the funnel is what the two closes needed.
+
+**unification.** The close assembly existed twice and the copies had already drifted: `spawn.ts`
+accumulated `rs.recordFailures` while `recovery.ts` overwrote it, each built its own
+`RECORD FAILURE` text, its own conditional meta write, and its own `{notes, failures}` ternary for
+a run with no record. The drift was load-bearing — a dispatch append that failed left the failure
+in the spawn's one-shot result text and nowhere else, so a later `subagent_status` reported a clean
+record. `closeWorkRecord` is the one funnel now (append → commit → gate → meta write → text), called
+from both closes; `completeWorkRecord` and `verifyWorkRecord` have one call site each
+(`rg -n '(complete|verify)WorkRecord\(record' extensions/` → 3: the two funnel calls and
+`verifyWorkRecord`'s own signature), and the text is built once (`rg -n '`RECORD FAILURE: ' extensions/` → 4, three of them renderers of an
+already-built list). Only `commit`, `mustBeCommitted` and `persist` differ per caller
+(`rg -n 'recordFailures: failures' extensions/subagent-async/` → 2, the two meta writers). The
+duplication this chunk removed is why no register strike is recorded on the area: the tip has one
+implementation of each step.
+
+**cost.** Measured with counting shims on `git` and `python3` plus `performance.now()` around the
+two legs. The append leg is **2 spawns** at the dispatch (`git hash-object`, then one
+`python3 wo_record.py append`) and **1 spawn** per reviewer round or completion: 113 ms mean for the
+dispatch append, 72 ms for one round's, over 10 fresh repos. The close-time verification is **2
+spawns per close** — one `python3 … summary --json` and one `git status --porcelain --ignored` per
+record file — at 79–96 ms mean, p95 90–110 ms, over 30 runs. It does not grow with entry count: a
+50-entry record and a 1-entry record measured the same across three interleaved pairs
+(95.1/92.2, 95.9/78.6, 80.0/83.6 ms), because the per-entry work is the tool's own file read rather
+than a harness spawn.
+
+**not taken.** Making the recovery's close asynchronous so one plain funnel signature would do. The
+funnel's result follows its commit step instead — synchronous for a record commit, a promise for a
+spawn's pre-commit steps — because the recovery delivers inside the socket event that caused it,
+and `tests/subagent-recovery-ownership.test.ts:421` pins that delivery happening before the emit
+returns.
+
 ## 2026-11-08 — chunk: WO-2026-095 `subagent-async/index.ts` split by responsibility
 
 **growth.** `extensions/subagent-async/index.ts` 5215 → **2143** (−3072; `--numstat` 292 3364),

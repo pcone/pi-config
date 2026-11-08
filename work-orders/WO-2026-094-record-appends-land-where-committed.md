@@ -55,15 +55,42 @@ The append is one `python3` spawn, and the close-time verification is one `git g
 
 - `PREMISE FALSIFIED` if the record append already runs in the worktree (it does not, per the premise) or if `wo_record.py` writes somewhere other than a git-tracked path.
 - `PLAN MISMATCH` if a second place writes record entries besides `openWorkRecord` and the close path.
+=======
 
-## Gate-back record
+### Owner question Q-094-a (raised 2026-11-08) — RULED (owner, 2026-11-08): recovery commits
 
-**Q-094-a — the recovery close path. Ruled by owner 2026-11-08 (session 8f90746f): *"Recovery
-commits (Recommended)"*.** Recovery commits the record on its branch and verifies it, like a normal
-close: the append goes to the tree recovery owns, that tree's commit carries it, and the same
-verification runs and reports `RECORD FAILURE` when the entry is not in the commit.
+**Ask:** a *recovered* run's record close appends into the tree it was told to
+complete, and nothing commits that tree. Commit it there, fail loudly, or accept
+the uncommitted append?
 
-**Where gate/landed entries get committed (owner 2026-11-08, same session).** In the orchestrator's
-own worktree, before its merge — so the `gate` entry lands in the chunk's commit and `landed --commit
-<sha>` names that merge. `agents/orchestrator.md` now says so; an append in a parent checkout is the
-lost-records bug, not a variant of it.
+**Ruling (owner, 2026-11-08): "Recovery commits (Recommended)".** The recovery close
+commits the record it appended, in the tree it wrote to, and runs the same
+verification a normal close runs.
+
+**What it requires.** Two steps after the recovery's record appends, in
+`extensions/subagent-async/recovery.ts` (the inherited-socket close path):
+
+1. **Commit the entries, and nothing else.** `commitRecordEntries` (`records.ts`)
+   stages the record files by path (`git add -A -- <rel>`) and commits them in
+   `record.cwd` — the tree the original spawn named — so a recovered run's entries
+   reach a commit without the harness committing the child's or the spawner's
+   unrelated work. Already-committed files are a stated state: nothing staged means
+   no commit, and no failure.
+2. **Verify that commit.** The same `verifyWorkRecord(record, true)` the spawn close
+   runs, so an entry the commit could not carry is a `RECORD FAILURE` naming the
+   record file and its state, on the delivered result and on the status surface.
+
+**Rejected alternatives.** *Fail loudly without committing* (the earlier option B):
+leaves the entry uncommitted in a tree the reap or a checkout discards, which is the
+loss this order exists to prevent. *Accept the uncommitted append* (option C): same
+loss, silently.
+
+**State this round.** Landed in `b3775ed`; rows "commits what it appended, in the
+tree it wrote to, and verifies that commit" and "reports RECORD FAILURE when that
+tree's commit cannot carry the entries" in `tests/work-record-capture.test.ts`
+(dropping the commit step, or the verification, reds one row each).
+
+**Where gate/landed entries get committed (recorded by the orchestrator, owner 2026-11-08).** In the
+orchestrator's own worktree, before its merge — so the `gate` entry lands in the chunk's commit and
+`landed --commit <sha>` names that merge. `agents/orchestrator.md` says so at both append sites; an
+append in a parent checkout is the lost-records bug, not a variant of it.
