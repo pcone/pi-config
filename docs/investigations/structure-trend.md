@@ -1098,3 +1098,26 @@ register's closure rule, and this is the third touch. **Carrier: WO-2026-095** (
 responsibility, nine extractions, ahead of WO-2026-094). No feature work lands in the file until it
 does. The reap extraction (136 → 113, mechanism
 moved out) is the pattern that works; the remaining inline growth is the spawn path.
+
+### WO-2026-093 + WO-2026-095 — seat-sync, and the subagent-async split (2026-11-08)
+
+**growth.** Two landings, one purpose each. `extensions/seat-sync.ts` is new at **76** lines over
+`extensions/lib/{seat-sync,git-fetch,git-run}.ts` (the last two extracted from `owner-asks` and the
+extension, so the fetch and the git runner each have one home). `extensions/subagent-async/index.ts`
+**5215 → 2143** (−3072): eight new modules, largest `spawn.ts` 817, then `recovery.ts` 697,
+`worktree.ts` 599, `sleep-guard.ts` 439, `rpc.ts` 346, `ui.ts` 213, `turn-cap.ts` 211, `records.ts` 143.
+
+**unification.** The split removed no behaviour and added no mechanism: 153 top-level declarations,
+one home each, 0 duplicated; `spawn.ts` and `recovery.ts` moved byte-identically. Two placements had
+to cross a section boundary — `bumpActivity` into `rpc.ts` (the other placement is a genuine
+`rpc` ↔ `sleep-guard` cycle) and `detach()` staying in `index.ts` (an ES module cannot assign an
+imported `let`). Both are recorded in the modules that own them.
+
+**flag, and the register's own correction.** `index.ts` at 2143 still exceeds the order's 1,600-line
+success row; the remainder is one `execute` body per tool, recorded as `Q-095-a`. The area's *next*
+unification candidate is `running`: a `const Map` mutated from seven sites across three files, now
+that the files are split. Not a defect of this landing — the mutation surface was always shared — but
+it is the next thing the split made visible.
+
+**cost.** Module load 529 → 526 ms (±4 ms over 12 samples). Seat-sync adds 2–7 ms blocking per
+session start and 4–5 git invocations per seat session, zero for a `wt/` session.
