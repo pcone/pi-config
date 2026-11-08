@@ -15,8 +15,12 @@ One removal path — `removeWorktreeTree(deps, rs, policy)` in
   and on a tree the reap keeps (M4).
 - **M2** `pruneCargoArtifactsFor` drops one worktree's share of the clone's
   shared dir. Route 1 attributes artifacts by `.d` dep-info that names the
-  worktree; route 2 (when route 1 finds nothing) runs `cargo clean -p <member>`
-  for the parent checkout's workspace members. Never a full `cargo clean`.
+  worktree in a source rule, scanning every location cargo writes one to for a
+  profile — `<profile>/*.d`, `<profile>/examples/*.d`, `<profile>/deps/*.d`;
+  route 2 (when route 1 finds nothing) runs `cargo clean -p <member>` for the
+  parent checkout's workspace members. Never a full `cargo clean`. A `.d` that
+  names the worktree only in a build-script `env-dep:` line is counted in
+  `depInfoEnvDepOnly` and left alone.
 - **M3** `enforceCargoTargetBound` bounds each clone's shared dir at **20 GiB**,
   checked once per session-start reap: route 1 per dead worktree path, then one
   coarse pass per clone, then re-measure. Still over is reported as over-bound,
@@ -80,6 +84,16 @@ must be measured in it, or it fires at half the size the owner named.
 
 ## Route 1 is inert for workspace-root builds
 
+> **Superseded in part (owner 2026-11-08, `Q-091-b`, carrier WO-2026-096) — the
+> deps-only scope this section measured is gone.** Route 1 scans all three
+> profile-level dep-info locations, and on this box it fires: the
+> `tfd-d-487` clone's `release/*.d` and `debug/examples/*.d` named its
+> worktree (12 of 14 scanned `.d`), none of them under `deps/`. What stands is
+> the scope of the claim: a build whose workspace root *is* the checkout root
+> writes relative source paths, so a `.d` from it names no worktree, and a
+> nested-workspace checkout with no out-of-workspace dep still gets neither
+> route. The paragraph below is the record of the deps-only reading.
+
 Cargo writes dep-info paths relative to the workspace root it built
 (`members/alpha/src/lib.rs`), so a `.d` from a worktree build never names the
 worktree path. Measured on two probes and on this box's real shared dirs
@@ -88,14 +102,19 @@ it drops every worktree's copy of the workspace crate it cleans — accepted by
 the owner's ruling ("if they can be told apart", and the coarse route is the
 case where they cannot).
 
-The claim is scoped to a workspace-root checkout, and the probe that decides it
-lives in `work-orders/WO-2026-091-worktree-build-output-reaper.md` §`Q-091-b`
-(ruling pending). Cargo absolutizes a source path outside the workspace root it
-built, so in a checkout whose workspace sits in a subdirectory, a path
-dependency elsewhere in the checkout does put an absolute worktree path in
-`<profile>/deps/*.d`, and route 1 fires there — which is also the layout where
-route 2 cannot run, because `cleanCargoWorkspaceMembers` needs a `Cargo.toml` at
-the checkout root.
+The claim is scoped to a workspace-root checkout. Cargo absolutizes a source
+path outside the workspace root it built, so in a checkout whose workspace sits
+in a subdirectory, a path dependency elsewhere in the checkout puts an absolute
+worktree path in its dep-info, and route 1 fires there — which is also the
+layout where route 2 cannot run, because `cleanCargoWorkspaceMembers` needs a
+`Cargo.toml` at the checkout root.
+
+Where that absolute path lands depends on the target kind, and the probe
+(`~/Developer/probe-depinfo`) settled it on cargo 1.96.0-nightly: a lib unit's
+`.d` goes to `<profile>/deps/`, and a bin or example whose sources reach outside
+the workspace root gets `<profile>/<name>.d` or `<profile>/examples/<name>.d`
+with the absolute paths. The deps-only scan attributed the first and missed the
+second; WO-2026-096 scans all three.
 
 ## Costs measured, not asserted
 
@@ -107,6 +126,7 @@ the checkout root.
 | synthetic reap of 36 finished trees, before / after | 4.3 s / 6.2 s |
 | `cargo clean -p <member>`, 8-member tfd workspace | 0.15–1.6 s per member |
 | M2 route 1 per removal, 700 `.d` files | ~50 ms |
+| M2 route 1 scan alone, this box's 707-`.d` profile: deps-only → three dirs | 0.19 ms / 2 `.d` read → 0.74 ms / 14 `.d` read (median of 15) |
 | one removal with route 2 inside, 1-member workspace | 195 / 262 / 276 ms, `cargo clean -p` 62 / 89 / 105 ms |
 | one removal with route 2 inside, 8-member workspace | 713 / 775 / 818 ms, eight cleans 546 / 582 / 644 ms |
 
