@@ -360,7 +360,7 @@ describe("R9 the first prompt is not delayed", () => {
 	it("returns from session_start while the fetch is still running, then reports", async () => {
 		const { root } = makeSeat();
 		const shim = gitShim("exec sleep 600");
-		_testSetFetchTimeout(400);
+		_testSetFetchTimeout(700);
 		try {
 			await withPathPrefix(shim.dir, async () => {
 				const { ctx, statuses, notes } = fakeCtx(root);
@@ -389,7 +389,7 @@ describe("R9 the first prompt is not delayed", () => {
 				// The report lands off the turn path, once the bound kills the fetch.
 				expect(Date.now() - settledAt).toBeGreaterThanOrEqual(200);
 				expect(statuses).toEqual([["seat-sync", "seat sync: BLOCKED — fetch failed"]]);
-				expect(notes[0].message).toContain("timed out after 400ms");
+				expect(notes[0].message).toContain("timed out after 700ms");
 			});
 		} finally {
 			_testSetFetchTimeout(undefined);
