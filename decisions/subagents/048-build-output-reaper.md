@@ -43,6 +43,24 @@ The box went from ~250 GB free to 22 GB in a day: per-worktree `target/` dirs
 ever pruned. 045's shared dir removed the per-worktree registry rebuild and, as
 a side effect, made build output outlive its worktree forever.
 
+## Rulings (owner, 2026-11-08)
+
+- **`createWorktree`'s stale-leftover cleanup stays out of `removeWorktreeTree`.**
+  The owner ruled *"Out of scope (Recommended)"* on `Q-091-a`, the third
+  `git worktree remove` site (`extensions/subagent-async/index.ts:969`). The
+  recorder's reason, recorded so it is not re-argued: the path is recreated at
+  once, git takes the ignored `target/` with the tree, and leftover cache
+  artifacts are reused at the same path — pruning there would cost a rebuild and
+  buy nothing.
+- **The bound is GiB, measured with `du -sk`.** A process fact the owner accepted;
+  §*The bound measures allocated blocks* carries the measurement behind it.
+- **Route 1 is inert.** Accepted as a process fact. The owner's instruction: if it
+  can never fire, delete it rather than keep a dead route, and say which in the
+  report. See §*Route 1 is inert* for the probe that decides it.
+- **The reap's ~1.0 s is inside budget**, and its cost must be named as the `du`
+  walk rather than left as a total: `enforceCargoTargetBound` shells `du -sk` once
+  per clone dir on every reap, and that walk is the whole regression from 336 ms.
+
 ## The bound measures allocated blocks, as `du -sk` does
 
 `dirSizeBytes` shells out to `du -sk`. Summing `st.blocks` in Node over-reports
