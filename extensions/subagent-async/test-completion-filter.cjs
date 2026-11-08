@@ -60,7 +60,7 @@ function unsafeCarryPath(p) {
 	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
 }
 
-// Mirror of worktree.ts's `git()` result shape for the carry status: never
+// Mirror of index.ts's `git()` result shape for the carry status: never
 // rejects — resolves with exitCode 1 when `git status` fails. Used as the
 // default fetch inside carryUncommittedState and as the prefetched
 // statusPromise from createWorktreeMirror (A2).

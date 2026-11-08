@@ -40,7 +40,7 @@ live-session ctx, attach state, `git`/`getPiInvocation`, model resolution, tool-
 
 **unification.** The census is the point of this chunk: 153 top-level declarations before the split,
 **0** declared twice, **98** referenced from more than one section. At the tip each of the 153 has
-exactly one home (`rg`-derived definition scan over the eight modules: 153/153, 0 duplicated, 0
+exactly one home (`rg`-derived definition scan over the nine files (the eight extractions plus the residual entry point): 153/153, 0 duplicated, 0
 missing), so the split removed no duplicate and created none. Three placements were decided by the
 "one new file, one row" rule rather than by the physical section: `bumpActivity` sits in `rpc.ts` (the
 protocol layer observes activity; the timer reads it) because leaving it with the timer made

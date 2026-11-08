@@ -538,7 +538,7 @@ test("checkpoint tool", () => {
 
 // ── Tests: formatTokens ────────────────────────────────────────────────────
 // NOTE: formatTokens and formatStatsLine are duplicated here as inline mirrors
-// of the functions in index.ts / ui.ts. This is the "acceptable alternative" per the
+// of the functions in ui.ts. This is the "acceptable alternative" per the
 // work order (WO-2026-009), chosen because the TypeScript functions are not
 // exported. The test reviewer audits index.ts and ui.ts directly to confirm the function
 // bodies match.

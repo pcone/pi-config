@@ -30,18 +30,20 @@ const assert = require("node:assert");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ── Constants — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union) ────────────────────────────────
+// ── Constants — KEEP IN SYNC with index.ts:274 (SILENCE_TIMEOUT_DEFAULT_MS), :259 (HARD_KILL_DELAY_MS),
+// :279-280 (SLEEP_GUARD_HEARTBEAT_MS, SLEEP_GUARD_SLACK_MS) and extensions/lib/subagent-state.ts:21
+// (SUBAGENT_STALE_TURN_MS) — the modules import these values, they do not own them.- ─────────────────────
 const SUBAGENT_STALE_TURN_MS = 5 * 60 * 1000; // 5 minutes (stage-1 wake, unchanged)
 const SILENCE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes (stage-2 kill)
 const HARD_KILL_DELAY_MS = 5000;
-// Sleep guard (decision 015 fix) — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union). Heartbeat
+// Sleep guard (decision 015 fix) — KEEP IN SYNC with index.ts:279-280. Heartbeat
 // cadence + jitter slack for detecting system sleep, and the module-level
 // heartbeat bookkeeping the silence timer's just-woke guard reads.
 const SLEEP_GUARD_HEARTBEAT_MS = 10 * 1000;
 const SLEEP_GUARD_SLACK_MS = 3 * 1000;
 let lastHeartbeatMs = 0;
 
-// ── resolveSilenceTimeout — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union) ────────────────────
+// ── resolveSilenceTimeout — KEEP IN SYNC with spawn.ts:182-186 (the resolution is inlined there; no symbol) ──────────────────
 // Per-spawn resolution: undefined → 30-min default; 0/negative (and
 // NaN/Infinity) → 0 (disabled). Per-spawn only — no global setting.
 function resolveSilenceTimeout(param) {
@@ -49,8 +51,8 @@ function resolveSilenceTimeout(param) {
 	return Number.isFinite(param) && param > 0 ? param : 0;
 }
 
-// ── bumpActivity — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union) ─────────────────────────────
-// ── ACTIVITY_EVENT_TYPES / eventCountsAsActivity — KEEP IN SYNC with rpc.ts ────────
+// ── bumpActivity — KEEP IN SYNC with rpc.ts ──────────────────────────────────────────────────────────────────────────────────
+// ── ACTIVITY_EVENT_TYPES / eventCountsAsActivity — KEEP IN SYNC with index.ts:288,297 ────────────────────────────────────────
 // Decision 015 guards 3+4: the raw RPC event types that count as child
 // activity. Guard 3: tool lifecycle + streaming tool output. Guard 4 (issue
 // #1): LLM-call streaming + provider retry lifecycle — a child mid-LLM-call
@@ -80,7 +82,7 @@ function bumpActivity(rs) {
 	rs.lastActivityMs = Date.now();
 }
 
-// ── armSilenceTimer / fireSilenceKill — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union) ────────
+// ── armSilenceTimer / fireSilenceKill — KEEP IN SYNC with sleep-guard.ts ────────
 // setTimeout chain mirroring the stage-1 watchdog: fires when the child has
 // been silent for `silenceTimeoutMs`, re-arming from its own callback when
 // activity slid the deadline. `silenceTimeoutMs <= 0` disables stage 2.
@@ -112,7 +114,7 @@ function armSilenceTimer(rs) {
 	}, remaining);
 }
 
-// ── heartbeatTick — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union) ─────────────────────────
+// ── heartbeatTick — KEEP IN SYNC with sleep-guard.ts ─────────────────────────
 // Detects process suspension: a tick landing >slack late means the process
 // was asleep (system sleep). Date.now() advanced across it but the children
 // could not emit activity, so each silence budget is inflated by the
@@ -145,7 +147,7 @@ function fireSilenceKill(rs) {
 	dispatchKillSignals(rs, "progress-timeout");
 }
 
-// ── dispatchKillSignals — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union) ──────────────────────
+// ── dispatchKillSignals — KEEP IN SYNC with sleep-guard.ts ──────────────────────
 // Shared SIGTERM→SIGKILL dispatch used by both `subagent_kill` and stage 2 —
 // the single kill path. Sets killedExplicitly/killedVia BEFORE proc.kill,
 // cancels the stale-turn watchdog AND the silence timer, logs the kill
@@ -172,7 +174,7 @@ function dispatchKillSignals(rs, via) {
 	return { alreadyDead };
 }
 
-// ── killedMarker — KEEP IN SYNC with sleep-guard.ts (and rpc.ts for bumpActivity/activity union) ─────────────────────────────
+// ── killedMarker — KEEP IN SYNC with sleep-guard.ts ─────────────────────────────
 // Marker prepended by the close handler (deliverResult / resolveOnStop).
 // The stage-2 variant is greppable as `[Killed via progress-timeout]`.
 function killedMarker(rs) {

@@ -92,11 +92,9 @@ import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	type CarriedSnapshot,
 	createWorktree,
-	getFinalOutput,
 	postDeliveryCleanup,
 	preCommitSteps,
 	removeWorktreeTree,
-	writeTempFile,
 } from "./worktree.ts";
 import {
 	completeWorkRecord,
