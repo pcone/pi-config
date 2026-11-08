@@ -104,6 +104,15 @@ import {
 	sessionFinalText,
 	type WorkRecord,
 } from "./records.ts";
+import {
+	type CommitRunner,
+	formatTurnCap,
+	observeCommit,
+	turnBudgetLine,
+	turnCapStep,
+	turnCapTurn,
+	turnsUsed,
+} from "./turn-cap.ts";
 
 // WO-2026-095 split: worktree.ts owns the tree's lifecycle. Re-exported here so
 // the entry point's existing importers (tests, the orchestrator tool) keep
@@ -126,6 +135,14 @@ export {
 	type WorkRecord,
 } from "./records.ts";
 
+// WO-2026-095 split: turn-cap.ts owns decision 046's cap and stall tripwire.
+export {
+	observeCommit,
+	turnCapStep,
+	turnCapTurn,
+	type CommitRunner,
+} from "./turn-cap.ts";
+
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const TURN_NUDGE_SOFT = 450; // warn once before the hard 500-turn kill
@@ -134,12 +151,12 @@ const TURN_NUDGE_SOFT = 450; // warn once before the hard 500-turn kill
 // number appears in either: the implementer learns of its cap only from the
 // wind-down, and a ledger-calibrated number in the child's context would leak
 // how much room it has left (owner ruling 2026-11-07, "hide it").
-const TURN_CAP_WIND_DOWN_STEER =
+export const TURN_CAP_WIND_DOWN_STEER =
 	"[Turn limit] This run has reached its turn limit. Commit what is green, leave the rest as a " +
 	"clearly-marked WIP commit, then report: status partial or blocked, naming what is done, what is not, " +
 	"the evidence you have, and what you would do next. You will be stopped shortly if you have not exited. " +
 	"Do not thin tests, skip mutations or skip checks to finish.";
-const STALL_STEER =
+export const STALL_STEER =
 	"[No-progress check] No new commit for a long stretch of turns. Stop and check whether your current " +
 	"approach is working: if it is, carry on; if it is not, change approach or report what is blocking you.";
 const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -966,195 +983,6 @@ function formatTokens(count: number): string {
 	return `${Math.round(count / 1000000)}M`;
 }
 
-// ── Turn cap and stall tripwire (decision 046) ─────────────────────────────
-
-/** Turns used by this logical dispatch: this run's own count plus the runs it
- *  continues. The cap compares against this, so a resume continues the count
- *  the previous run recorded. */
-function turnsUsed(rs: RunningSubagent): number {
-	return rs.turnsBefore + rs.progress.turns;
-}
-
-/** The cap as the parent sees it. `Infinity` is the disabled state. */
-function formatTurnCap(cap: number): string {
-	return Number.isFinite(cap) ? String(cap) : "none (disabled)";
-}
-
-/**
- * The parent-facing budget line for a spawn/resume result: the cap, the turns
- * counted so far, and — when the run has no branch to watch — the fact that the
- * stall arm is skipped. Never reaches the child.
- */
-function turnBudgetLine(cap: number, turns: number, hasBranch: boolean): string {
-	return (
-		`turn_cap: ${formatTurnCap(cap)} | turns_used: ${turns}` +
-		(hasBranch ? "" : " | stall_watch: none (no isolation branch)")
-	);
-}
-
-/** How the commit observation runs its command. Injectable so the rows can
- *  drive a slow or scripted observation without a git repository. */
-export type CommitRunner = (branch: string, cwd: string) => Promise<string>;
-
-/** The production runner: one asynchronous `git rev-parse <branch>`. */
-function gitRevParse(branch: string, cwd: string): Promise<string> {
-	return new Promise((resolve, reject) => {
-		execFile(
-			"git",
-			["rev-parse", branch],
-			{ cwd, encoding: "utf-8", timeout: 5000 },
-			(err, stdout) => {
-				if (err) reject(err);
-				else resolve(String(stdout).trim());
-			},
-		);
-	});
-}
-
-/**
- * Observe the child's branch tip — a command, not a ref-file read: a linked
- * worktree's `.git` is a file pointing at the gitdir, so the refs live in the
- * common dir and no file under the worktree holds the branch tip (decision 046).
- *
- * Asynchronous, and never awaited on the turn path (owner ruling 2026-11-07:
- * the spawn is off the parent's event loop; the measurement was a 286 ms mean
- * block per turn under load). A run with no branch (non-isolated dispatch or a
- * resume) and a command the observation cannot resolve both report
- * `observed: false`, which skips the stall arm: a child with nothing to watch
- * must never be told it stalled.
- * Exported as an @internal test hook, like `turnCapStep`.
- */
-export async function observeCommit(
-	rs: RunningSubagent,
-	run: CommitRunner = gitRevParse,
-): Promise<CommitObservation> {
-	if (!rs.isolationBranch) return { observed: false, changed: false };
-	let tip: string;
-	try {
-		tip = await run(rs.isolationBranch, rs.parentCwd);
-	} catch (e) {
-		debugLog(`stall-watch: git rev-parse ${rs.isolationBranch} failed: ${e instanceof Error ? e.message : String(e)}`);
-		return { observed: false, changed: false };
-	}
-	if (!tip) return { observed: false, changed: false };
-	const changed = rs.stall.lastTip !== null && tip !== rs.stall.lastTip;
-	rs.stall.lastTip = tip;
-	return { observed: true, changed };
-}
-
-/**
- * Start this sample turn's observation, if the child has a branch to watch and
- * no observation is still outstanding. The result lands in `stall.pending` and
- * is folded by a later sample turn — nothing on the turn path waits for it.
- */
-function scheduleStallObservation(rs: RunningSubagent, run?: CommitRunner): void {
-	if (!rs.isolationBranch || rs.stall.inFlight || rs.stall.pending) return;
-	const atTurn = turnsUsed(rs);
-	rs.stall.inFlight = true;
-	void observeCommit(rs, run)
-		.then((obs) => {
-			rs.stall.pending = { obs, atTurn };
-		})
-		// The flag means "a spawn is outstanding", so it clears whenever the
-		// promise settles. A rejection here would surface as an unhandled
-		// rejection — observeCommit turns its own failures into `observed: false`.
-		.finally(() => {
-			rs.stall.inFlight = false;
-		});
-}
-
-/**
- * One assistant turn's turn accounting: fold a commit observation into the
- * stall counters, ask the pure decider, then execute exactly the action it
- * named. Nothing here re-derives a cap or stall condition — the decisions live
- * in extensions/lib/subagent-state.ts (decision 046), and this function is
- * exported only so the wiring can be driven without a long-lived child.
- *
- * `obs` is null on a turn with no observation to fold: the counters and the
- * decider then run on what is already known, which is every non-sample turn.
- */
-export function turnCapStep(
-	rs: RunningSubagent,
-	obs: CommitObservation | null,
-	elapsedTurns = 1,
-): TurnAction {
-	if (obs) {
-		const fold = nextStallState(rs.stall, obs, elapsedTurns);
-		rs.stall.stallTurns = fold.stallTurns;
-		rs.stall.stallSteered = fold.stallSteered;
-		rs.stall.stallObserved = fold.stallObserved;
-	}
-	const action = decideTurnAction({
-		turns: turnsUsed(rs),
-		cap: rs.turnCap,
-		capTripped: rs.turnCapReached,
-		stallTurns: rs.stall.stallTurns,
-		stallSteered: rs.stall.stallSteered,
-		stallObserved: rs.stall.stallObserved,
-		commitChanged: obs?.changed ?? false,
-	});
-
-	switch (action.kind) {
-		case "none":
-			return action;
-		case "wind-down":
-			rs.turnCapReached = true;
-			rs.progress.currentActivity = "turn cap reached, winding down";
-			if (steerChild(rs, TURN_CAP_WIND_DOWN_STEER)) {
-				appendRunningLogLine(
-					rs,
-					`[turn-cap] wind-down injected at ${turnsUsed(rs)} turns ` +
-						`(cap ${formatTurnCap(rs.turnCap)}, grace ${TURN_CAP_GRACE})`,
-				);
-			} else {
-				debugLog(`turn-cap: wind-down for ${rs.sessionId} not delivered (child gone)`);
-			}
-			return action;
-		case "stall-steer":
-			if (steerChild(rs, STALL_STEER)) {
-				// Marked delivered only now, so a steer that could not land is
-				// retried on the next turn instead of being lost silently.
-				rs.stall.stallSteered = true;
-				appendRunningLogLine(rs, `[stall] no new commit for ${rs.stall.stallTurns} turns — advisory steer injected`);
-			}
-			return action;
-		case "kill":
-			rs.progress.currentActivity = "turn cap and grace exhausted, stopping";
-			rs.progress.errors.push(`Turn cap reached (${formatTurnCap(rs.turnCap)} + ${TURN_CAP_GRACE} grace)`);
-			debugLog(`turn-cap: dispatching kill at ${turnsUsed(rs)} turns (cap ${rs.turnCap})`);
-			dispatchKillSignals(rs, "turn-cap");
-			return action;
-	}
-}
-
-/**
- * One assistant turn on the `message_end` path: fold the previous sample's
- * observation if one is waiting, start this turn's observation when the sample
- * grid says so, then execute the turn's action. The observation is asynchronous
- * and its result is only ever applied on a later sample turn, so nothing here
- * blocks on a spawn (owner ruling 2026-11-07).
- *
- * A stall of `STALL_TURNS` is therefore noticed within one sample interval of
- * it: the turn that starts an observation cannot act on it, and the next one
- * that folds it can. The cap arm still decides every turn, which is what keeps
- * the grace and the kill at exact turn numbers.
- */
-export function turnCapTurn(rs: RunningSubagent, run?: CommitRunner): TurnAction {
-	const sampled = stallSampleDue(turnsUsed(rs));
-	let pending: PendingStallObservation | null = null;
-	if (sampled) {
-		pending = rs.stall.pending;
-		rs.stall.pending = null;
-	}
-	const elapsed = pending ? pending.atTurn - rs.stall.foldedTurn : 1;
-	if (pending) rs.stall.foldedTurn = pending.atTurn;
-	const action = turnCapStep(rs, pending?.obs ?? null, elapsed);
-	// A killing turn has nothing left to watch, and its observation would land
-	// on a handle nobody reads.
-	if (sampled && action.kind !== "kill") scheduleStallObservation(rs, run);
-	return action;
-}
-
 function formatProgress(rs: RunningSubagent): string {
 	const p = rs.progress;
 	const elapsed = Math.round((Date.now() - rs.startedAt) / 1000);
@@ -1229,7 +1057,7 @@ function steerBlockedReason(rs: RunningSubagent): "completed" | "process exited"
  * that means for its own reporting (`steerBlockedReason` names the guard case,
  * and a false with no blocked reason is a write that could not land).
  */
-function steerChild(rs: RunningSubagent, message: string): boolean {
+export function steerChild(rs: RunningSubagent, message: string): boolean {
 	const blocked = steerBlockedReason(rs);
 	if (blocked) {
 		debugLog(`steerChild: not delivered to ${rs.sessionId} (${blocked})`);
@@ -1269,7 +1097,7 @@ export function rpcSend(stdin: NodeJS.WritableStream | null, command: Record<str
  * log surface without needing access to the closure. Append-only; the close
  * handler is still the single owner of footer/status rendering.
  */
-function appendRunningLogLine(rs: RunningSubagent, text: string): void {
+export function appendRunningLogLine(rs: RunningSubagent, text: string): void {
 	// Decision 015: same activity signal as the closure-scoped `logEntry`.
 	bumpActivity(rs);
 	try { fs.appendFileSync(rs.logPath, text + "\n"); } catch { /* */ }
