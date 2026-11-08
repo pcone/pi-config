@@ -357,7 +357,9 @@ describe("decideTurnAction: the stall arm", () => {
 		// limit is refused rather than clamped. At 500 the run is killed as
 		// turn-limit, never as turn-cap. This holds for a fresh spawn: the ceiling
 		// counts this run's turns, the cap counts the dispatch's (decision 046).
-		const src = readFileSync("extensions/subagent-async/index.ts", "utf-8");
+		// WO-2026-095: the message_end path (and both statements) moved to
+		// spawn.ts unchanged; same order, same dispatch reason.
+		const src = readFileSync("extensions/subagent-async/spawn.ts", "utf-8");
 		const hardAt = src.indexOf("if (rs.progress.turns >= MAX_TURNS_HARD) {");
 		const capStepAt = src.indexOf("if (turnCapTurn(rs).kind === \"kill\") return;");
 		expect(hardAt).toBeGreaterThan(0);

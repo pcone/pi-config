@@ -13,7 +13,7 @@
  * spawn, no worktree). Without `workOrderPath`, prior behavior is
  * preserved (tool param OR canonical task-text bullet).
  *
- * This test cannot import index.ts — `typebox` and `@earendil-works/*`
+ * This test cannot import the extension's modules — `typebox` and `@earendil-works/*`
  * resolve only under jiti at runtime. So, following the test-subject.cjs /
  * test-carry-uncommitted.cjs precedent, it mirrors the WO parse, the gate
  * decision, and the skip injection (KEEP IN SYNC contracts below) and
@@ -33,7 +33,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-// ── parseWorkOrderPolicy — KEEP IN SYNC with index.ts ─────────────────────
+// ── parseWorkOrderPolicy — KEEP IN SYNC with rpc.ts ─────────────────────
 // Decision 014 + 2026-10-07 ruling: the bold line (leading bullet OPTIONAL —
 // a bare `**review_policy**: skip` metadata line is accepted) or the YAML
 // frontmatter line. First-word-after-colon semantics: `- **review_policy**:
@@ -47,7 +47,7 @@ function parseWorkOrderPolicy(woText) {
 	return m && m[1] === "skip" ? "skip" : "required";
 }
 
-// ── Review-gate decision — KEEP IN SYNC with index.ts ─────────────────────
+// ── Review-gate decision — KEEP IN SYNC with spawn.ts ─────────────────────
 // The task-text declaration is the bold line only (YAML is a work-order
 // spelling, not something a task string carries), same first-word semantics.
 // It fails on the template literal `required | skip` (skip is not the first

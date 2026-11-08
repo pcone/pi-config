@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Regression test for decision 015 — the silence-based stage-2 progress-kill
- * timeout in extensions/subagent-async/index.ts.
+ * timeout in extensions/subagent-async/sleep-guard.ts.
  *
  * A child SILENT for `silenceTimeoutMs` (no tool calls AND no assistant
  * messages — no log output either) is auto-killed via the SHARED
@@ -14,7 +14,7 @@
  * The stage-1 stale-turn wake (SUBAGENT_STALE_TURN_MS = 5 min) is
  * untouched — stage 2 is strictly longer by default.
  *
- * This test cannot import index.ts — `typebox` and `@earendil-works/*`
+ * This test cannot import the extension's modules — `typebox` and `@earendil-works/*`
  * resolve only under jiti at runtime. So, following the test-subject.cjs /
  * test-carry-uncommitted.cjs precedent, it mirrors the tracking/timer/kill
  * functions (KEEP IN SYNC contracts below) and exercises them through the
@@ -30,18 +30,20 @@ const assert = require("node:assert");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ── Constants — KEEP IN SYNC with index.ts ────────────────────────────────
+// ── Constants — KEEP IN SYNC with index.ts:274 (SILENCE_TIMEOUT_DEFAULT_MS), :259 (HARD_KILL_DELAY_MS),
+// :279-280 (SLEEP_GUARD_HEARTBEAT_MS, SLEEP_GUARD_SLACK_MS) and extensions/lib/subagent-state.ts:21
+// (SUBAGENT_STALE_TURN_MS) — the modules import these values, they do not own them.- ─────────────────────
 const SUBAGENT_STALE_TURN_MS = 5 * 60 * 1000; // 5 minutes (stage-1 wake, unchanged)
 const SILENCE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes (stage-2 kill)
 const HARD_KILL_DELAY_MS = 5000;
-// Sleep guard (decision 015 fix) — KEEP IN SYNC with index.ts. Heartbeat
+// Sleep guard (decision 015 fix) — KEEP IN SYNC with index.ts:279-280. Heartbeat
 // cadence + jitter slack for detecting system sleep, and the module-level
 // heartbeat bookkeeping the silence timer's just-woke guard reads.
 const SLEEP_GUARD_HEARTBEAT_MS = 10 * 1000;
 const SLEEP_GUARD_SLACK_MS = 3 * 1000;
 let lastHeartbeatMs = 0;
 
-// ── resolveSilenceTimeout — KEEP IN SYNC with index.ts ────────────────────
+// ── resolveSilenceTimeout — KEEP IN SYNC with spawn.ts:182-186 (the resolution is inlined there; no symbol) ──────────────────
 // Per-spawn resolution: undefined → 30-min default; 0/negative (and
 // NaN/Infinity) → 0 (disabled). Per-spawn only — no global setting.
 function resolveSilenceTimeout(param) {
@@ -49,14 +51,14 @@ function resolveSilenceTimeout(param) {
 	return Number.isFinite(param) && param > 0 ? param : 0;
 }
 
-// ── bumpActivity — KEEP IN SYNC with index.ts ─────────────────────────────
-// ── ACTIVITY_EVENT_TYPES / eventCountsAsActivity — KEEP IN SYNC ────────
+// ── bumpActivity — KEEP IN SYNC with rpc.ts ──────────────────────────────────────────────────────────────────────────────────
+// ── ACTIVITY_EVENT_TYPES / eventCountsAsActivity — KEEP IN SYNC with index.ts:288,297 ────────────────────────────────────────
 // Decision 015 guards 3+4: the raw RPC event types that count as child
 // activity. Guard 3: tool lifecycle + streaming tool output. Guard 4 (issue
 // #1): LLM-call streaming + provider retry lifecycle — a child mid-LLM-call
 // emits none of guard 3's signals, so one slow provider call spanning the
 // silence window was killed at a live turn boundary. The assistant
-// message_end bump is role-gated at its index.ts call site; log lines bump
+// message_end bump is role-gated at its spawn.ts call site; log lines bump
 // via logEntry.
 const ACTIVITY_EVENT_TYPES = new Set([
 	"tool_execution_start",
@@ -80,7 +82,7 @@ function bumpActivity(rs) {
 	rs.lastActivityMs = Date.now();
 }
 
-// ── armSilenceTimer / fireSilenceKill — KEEP IN SYNC with index.ts ────────
+// ── armSilenceTimer / fireSilenceKill — KEEP IN SYNC with sleep-guard.ts ────────
 // setTimeout chain mirroring the stage-1 watchdog: fires when the child has
 // been silent for `silenceTimeoutMs`, re-arming from its own callback when
 // activity slid the deadline. `silenceTimeoutMs <= 0` disables stage 2.
@@ -112,7 +114,7 @@ function armSilenceTimer(rs) {
 	}, remaining);
 }
 
-// ── heartbeatTick — KEEP IN SYNC with index.ts ─────────────────────────
+// ── heartbeatTick — KEEP IN SYNC with sleep-guard.ts ─────────────────────────
 // Detects process suspension: a tick landing >slack late means the process
 // was asleep (system sleep). Date.now() advanced across it but the children
 // could not emit activity, so each silence budget is inflated by the
@@ -145,7 +147,7 @@ function fireSilenceKill(rs) {
 	dispatchKillSignals(rs, "progress-timeout");
 }
 
-// ── dispatchKillSignals — KEEP IN SYNC with index.ts ──────────────────────
+// ── dispatchKillSignals — KEEP IN SYNC with sleep-guard.ts ──────────────────────
 // Shared SIGTERM→SIGKILL dispatch used by both `subagent_kill` and stage 2 —
 // the single kill path. Sets killedExplicitly/killedVia BEFORE proc.kill,
 // cancels the stale-turn watchdog AND the silence timer, logs the kill
@@ -172,7 +174,7 @@ function dispatchKillSignals(rs, via) {
 	return { alreadyDead };
 }
 
-// ── killedMarker — KEEP IN SYNC with index.ts ─────────────────────────────
+// ── killedMarker — KEEP IN SYNC with sleep-guard.ts ─────────────────────────────
 // Marker prepended by the close handler (deliverResult / resolveOnStop).
 // The stage-2 variant is greppable as `[Killed via progress-timeout]`.
 function killedMarker(rs) {
@@ -504,7 +506,7 @@ function eq(actual, expected, msg) {
 		armSilenceTimer(rs);
 		for (let i = 0; i < 14; i++) { // ~420ms of streaming deltas >> 5× 80ms
 			await sleep(30);
-			if (eventCountsAsActivity("message_update")) bumpActivity(rs); // the index.ts route
+			if (eventCountsAsActivity("message_update")) bumpActivity(rs); // the spawn.ts route
 		}
 		eq(rs.killedExplicitly, false, "mid-LLM-call streaming child survives");
 		assert.deepStrictEqual(procKills, [], "no signals dispatched");

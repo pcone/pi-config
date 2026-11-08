@@ -2,13 +2,13 @@
 /**
  * Regression test for the uncommitted-state carry into isolated worktrees.
  *
- * createWorktree (extensions/subagent-async/index.ts) now overlays the
+ * createWorktree (extensions/subagent-async/worktree.ts) now overlays the
  * parent's uncommitted working-tree state (untracked / modified / staged /
  * deleted / renamed / copied files) into the freshly-created worktree,
  * gated on `carryUncommitted && !baseRef`. The subagent therefore sees what
  * the orchestrator prepared instead of hitting ENOENT on first read.
  *
- * This test cannot import index.ts — `typebox` and `@earendil-works/*`
+ * This test cannot import the extension's modules — `typebox` and `@earendil-works/*`
  * resolve only under jiti at runtime. So, following the test-subject.cjs
  * precedent, it mirrors the carry logic (porcelain parsing + copy/delete
  * decisions + the CarriedSnapshot capture used by the WO-2026-035 completion
@@ -28,8 +28,8 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 
-// ── carryUncommittedState — KEEP IN SYNC with index.ts ────────────────────
-// Mirror of the carry overlay in extensions/subagent-async/index.ts
+// ── carryUncommittedState — KEEP IN SYNC with worktree.ts ────────────────────
+// Mirror of the carry overlay in extensions/subagent-async/worktree.ts
 // (carryUncommittedState + unsafeCarryPath + copyCarriedFile + hashCarriedFile).
 // Same porcelain -z parsing, same copy/delete/rename/copy decisions, same path
 // safety, same symlink-as-link and exec-bit handling. It now ALSO returns the
@@ -41,7 +41,7 @@ function unsafeCarryPath(p) {
 	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
 }
 
-// ── hashCarriedFile — KEEP IN SYNC with index.ts ──────────────────────────
+// ── hashCarriedFile — KEEP IN SYNC with worktree.ts ──────────────────────────
 // sha256 hex of a file's bytes, `"link:" + target` for a symlink, null when
 // absent / not a regular file or symlink. Single source of truth for the
 // snapshot hashes (capture here, compare in test-completion-filter.cjs).
@@ -76,8 +76,8 @@ async function copyCarriedFile(topLevel, worktreePath, rel) {
 	}
 }
 
-// ── carryUncommittedState — KEEP IN SYNC with index.ts ────────────────────
-// Mirror of the carry overlay in extensions/subagent-async/index.ts
+// ── carryUncommittedState — KEEP IN SYNC with worktree.ts ────────────────────
+// Mirror of the carry overlay in extensions/subagent-async/worktree.ts
 // (carryUncommittedState + unsafeCarryPath + copyCarriedFile + hashCarriedFile).
 // Same porcelain -z parsing, same copy/delete/rename/copy decisions, same path
 // safety, same symlink-as-link and exec-bit handling. It now ALSO returns the
@@ -86,7 +86,7 @@ async function copyCarriedFile(topLevel, worktreePath, rel) {
 // mirrored by test-completion-filter.cjs. When changing one side, change the
 // other. Both are pinned below against real `git status` output.
 //
-// WIRING HAZARD (do not "simplify"): index.ts's createWorktree destructures the
+// WIRING HAZARD (do not "simplify"): worktree.ts's createWorktree destructures the
 // git() result OBJECT and must extract the path string via .stdout.trim()
 // before calling carryUncommittedState. Passing the object instead of the
 // string makes the overlay silently no-op in production (spawn cwd invalid →
@@ -97,7 +97,7 @@ function unsafeCarryPath(p) {
 	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
 }
 
-// ── carryUncommittedState entry — KEEP IN SYNC with index.ts ──────────────
+// ── carryUncommittedState entry — KEEP IN SYNC with worktree.ts ──────────────
 // The mirror receives the extracted path STRING from createWorktreeMirror,
 // exactly like production. A non-string (e.g. the git result object) throws,
 // matching the production fail-fast guard.
@@ -128,7 +128,7 @@ async function carryUncommittedState(topLevel, worktreePath, statusPromise) {
 	assertTopLevelString(topLevel);
 	const snapshot = new Map();
 	const res = await (statusPromise ?? gitStatusPorcelain(topLevel));
-	if (res.exitCode !== 0) return snapshot; // git status failed — empty snapshot, mirror of index.ts
+	if (res.exitCode !== 0) return snapshot; // git status failed — empty snapshot, mirror of worktree.ts
 	const tokens = res.stdout.split("\0");
 	for (let i = 0; i < tokens.length; i++) {
 		const rec = tokens[i];
@@ -175,7 +175,7 @@ async function carryUncommittedState(topLevel, worktreePath, statusPromise) {
 // ── createWorktree mirror — control flow only ──────────────────────────────
 // Instrumented git runner for createWorktreeMirror's control flow. Records the
 // argv of every git subprocess the mirror issues so tests can assert on A1's
-// guarded cleanup (matrix cases 1/2). Production uses index.ts's git().
+// guarded cleanup (matrix cases 1/2). Production uses worktree.ts's git().
 const gitCallLog = [];
 function gitSync(args, opts) {
 	gitCallLog.push(args.join(" "));
@@ -629,7 +629,7 @@ test("20. clean tree — snapshot is a present empty map", async () => {
 test("21. wiring regression — carryUncommittedState rejects a non-string topLevel (git result object)", async () => {
 	// WO-2026-034 production bug: createWorktree passed the git() RESULT
 	// OBJECT as topLevel → spawn cwd invalid → best-effort catch → carry
-	// silently never ran. The fail-fast guard (index.ts + this mirror) makes
+	// silently never ran. The fail-fast guard (worktree.ts + this mirror) makes
 	// that loud. Pinning both sides.
 	const obj = { stdout: "/some/repo\n", stderr: "", exitCode: 0 };
 	await assert.rejects(

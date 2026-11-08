@@ -3,7 +3,7 @@
  * Regression test for the subagent worktree lock lifecycle (tfd
  * process-controls R3-2, owner 2026-10-19).
  *
- * `createWorktree` (extensions/subagent-async/index.ts) locks the tree with
+ * `createWorktree` (extensions/subagent-async/worktree.ts) locks the tree with
  * `git worktree lock --reason "pi-subagent <sid>"` immediately after
  * `git worktree add`, so `git worktree remove --force` on a live child's tree
  * fails loudly and a hand reap cannot destroy its work. The harness's own
@@ -11,7 +11,7 @@
  * unlocks and removes a clean finished tree with a plain (no `--force`) remove,
  * so a dirty tree is refused by git itself.
  *
- * This test cannot import index.ts — `typebox` and `@earendil-works/*` resolve
+ * This test cannot import the extension's modules — `typebox` and `@earendil-works/*` resolve
  * only under jiti at runtime. Following the test-carry-uncommitted.cjs
  * precedent it mirrors the exact command sequences (KEEP IN SYNC) and runs them
  * against REAL temp repos and REAL worktrees.
@@ -26,7 +26,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 
-// ── The mirrored sequences — KEEP IN SYNC with index.ts ────────────────────
+// ── The mirrored sequences — KEEP IN SYNC with worktree.ts ────────────────────
 // createWorktree, after a successful `worktree add`:
 //     git worktree lock --reason "pi-subagent <sid>" <path>      (best-effort)
 // postDeliveryCleanup, after the completion is recorded:
