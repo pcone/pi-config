@@ -27,6 +27,7 @@ import subagentFactory, {
 	resolveRunningSession,
 	verifyWorkRecord,
 	writeMetaJson,
+	_testSetLiveSessionCtx,
 } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { WO_RECORD_STUB } from "./helpers/wo-record-stub.ts";
@@ -54,12 +55,13 @@ afterEach(() => {
 	for (const f of tmpFiles.splice(0)) fs.rmSync(f, { force: true });
 });
 
-function makeRepo({ script = true, record = true } = {}): string {
+function makeRepo({ script = true, record = true, ignoreRecords = false } = {}): string {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wo-record-capture-"));
 	tmpDirs.push(root);
 	execFileSync("git", ["init", "-q"], { cwd: root, env: childEnv() });
 	fs.mkdirSync(path.join(root, "work-orders"));
 	fs.writeFileSync(path.join(root, WO_FILE), "# WO-2026-001 — demo\n\nbody\n");
+	if (ignoreRecords) fs.writeFileSync(path.join(root, ".gitignore"), "work-orders/records/\n");
 	if (script) {
 		fs.mkdirSync(path.join(root, "scripts"));
 		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
@@ -80,6 +82,10 @@ function makeRepo({ script = true, record = true } = {}): string {
 function commitAll(root: string, message = "record"): void {
 	execFileSync("git", ["add", "-A"], { cwd: root, env: childEnv() });
 	execFileSync("git", ["commit", "-q", "-m", message], { cwd: root, env: childEnv() });
+}
+
+function gitOut(root: string, args: string[]): string {
+	return execFileSync("git", args, { cwd: root, env: childEnv(), encoding: "utf-8" }).trim();
 }
 
 function calls(root: string): { argv: string[]; body: string }[] {
@@ -391,14 +397,14 @@ describe("readSessionExchange", () => {
 
 // ── Resume, recovery and the execute branch ─────────────────────────────────
 
-function stubPi() {
+function stubPi(delivered: string[] = []) {
 	const tools = new Map<string, any>();
 	const pi: any = {
 		events: { emit: () => {} },
 		registerTool: (def: any) => tools.set(def.name, def),
 		registerCommand: () => {},
 		on: () => {},
-		sendUserMessage: () => {},
+		sendUserMessage: (text: string) => delivered.push(text),
 		ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {} },
 	};
 	return { pi, tools };
@@ -449,19 +455,13 @@ class FakeSock extends EventEmitter {
 }
 
 describe("recovery completes the record from the recovered session file", () => {
-	it("appends the reviews not yet recorded, then the completion", () => {
-		const root = makeRepo();
-		const piId = uniqueKey("impl");
-		const record = openRecordContext({ cwd: root, woId: WO_ID });
-		// Run 1 completed before the reload.
-		registerReviewer(piId, "subagent-rec-a", "review-code", reviewSession(path.join(root, "a.jsonl"), "Review A.", "APPROVED"));
-		completeWorkRecord(record, piId, () => "First report.");
-		const before = calls(root).length;
-
-		// Run 2: its reviewer ran before the reload, then the child finished under a recovered handle.
-		registerReviewer(piId, "subagent-rec-b", "review-tests", reviewSession(path.join(root, "b.jsonl"), "Review B.", "REJECT"));
+	/** Drive the orphan-recovery close for a run whose record lives in `root`. A live session ctx is
+	 *  set first — the hook mirrors the `session_start` lifecycle — so the delivered result is
+	 *  captured rather than dropped. Returns the delivered text and the record writes it made. */
+	function recoverRun(root: string, piId: string, before: number) {
 		const sid = `subagent-${randomUUID()}`;
-		const runFile = reviewSession(path.join(root, "run2.jsonl"), "Rework.", "Reworked.\n\n**deviations_from_spec:**\n- Changed the approach.");
+		const runFile = reviewSession(path.join(root, "run2.jsonl"), "Rework.",
+			"Reworked.\n\n**deviations_from_spec:**\n- Changed the approach.");
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wo-recover-"));
 		tmpDirs.push(dir);
 		fs.writeFileSync(path.join(dir, `pi-subagent-${sid}.sock`), "");
@@ -471,8 +471,10 @@ describe("recovery completes the record from the recovered session file", () => 
 			sessionFile: runFile, ownerPid: process.pid, workRecord: { cwd: root, woId: WO_ID },
 		}));
 
-		const { pi } = stubPi();
+		const delivered: string[] = [];
+		const { pi } = stubPi(delivered);
 		const sock = new FakeSock();
+		_testSetLiveSessionCtx(stubCtx(root));
 		recoverOrphanedSubagents(
 			pi,
 			{ cwd: root, sessionManager: { getSessionId: () => "session-under-test" } } as any,
@@ -480,12 +482,56 @@ describe("recovery completes the record from the recovered session file", () => 
 		);
 		sock.emit("connect");
 		sock.emit("close");
+		return { sid, delivered: delivered.join("\n"), after: calls(root).slice(before) };
+	}
 
-		const after = calls(root).slice(before);
+	/** A record its first run already wrote a completion into, and a reviewer its second run added. */
+	function runTwice(root: string) {
+		const piId = uniqueKey("impl");
+		const record = openRecordContext({ cwd: root, woId: WO_ID });
+		registerReviewer(piId, "subagent-rec-a", "review-code", reviewSession(path.join(root, "a.jsonl"), "Review A.", "APPROVED"));
+		completeWorkRecord(record, piId, () => "First report.");
+		const before = calls(root).length;
+		registerReviewer(piId, "subagent-rec-b", "review-tests", reviewSession(path.join(root, "b.jsonl"), "Review B.", "REJECT"));
+		return { piId, before };
+	}
+
+	it("appends the reviews not yet recorded, then the completion", () => {
+		const root = makeRepo();
+		const { piId, before } = runTwice(root);
+		const { sid, after } = recoverRun(root, piId, before);
+
 		expect(after.map((c) => c.argv[2])).toEqual(["review", "completion"]);
 		expect(after[0].argv.slice(3, 9)).toEqual(["--seat", "review-tests", "--round", "2", "--session", "subagent-rec-b"]);
 		expect(after[1].body).toBe("Reworked.\n\n**deviations_from_spec:**\n- Changed the approach.");
 		expect(resolveRunningSession(sid)).toBeNull();
+	}, 30_000);
+
+	it("commits what it appended, in the tree it wrote to, and verifies that commit", () => {
+		// Owner ruling Q-094-a (2026-11-08): a recovery commits its record and verifies it, exactly
+		// as a normal close does. A recovered run never runs the spawn's pre-commit steps, so
+		// without this the entries sit uncommitted in a tree the reap or a checkout discards.
+		const root = makeRepo();
+		const { piId, before } = runTwice(root);
+		const { delivered } = recoverRun(root, piId, before);
+
+		expect(gitOut(root, ["status", "--porcelain", "--ignored", "--", `work-orders/records/${WO_ID}.md`])).toBe("");
+		expect(gitOut(root, ["ls-tree", "-r", "--name-only", "HEAD"])).toBe(`work-orders/records/${WO_ID}.md`);
+		// The commit carries the record file and nothing else in that tree.
+		expect(gitOut(root, ["show", "--name-only", "--format=%s", "HEAD"]).replace(/\n+/g, "\n"))
+			.toBe(`work-order record: recovery append (${WO_ID})\nwork-orders/records/${WO_ID}.md`);
+		expect(delivered).not.toContain("RECORD FAILURE");
+	}, 30_000);
+
+	it("reports RECORD FAILURE when that tree's commit cannot carry the entries", () => {
+		const root = makeRepo({ ignoreRecords: true });
+		const { piId, before } = runTwice(root);
+		const { delivered } = recoverRun(root, piId, before);
+
+		expect(delivered).toContain("RECORD FAILURE");
+		expect(delivered).toContain(`${recordFile(root)} is not committed in ${root}: !! work-orders/records/`);
+		// The append itself happened: the failure names what the commit could not carry.
+		expect(fs.readFileSync(recordFile(root), "utf-8")).toContain("## completion");
 	}, 30_000);
 });
 

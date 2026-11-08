@@ -56,40 +56,35 @@ The append is one `python3` spawn, and the close-time verification is one `git g
 - `PREMISE FALSIFIED` if the record append already runs in the worktree (it does not, per the premise) or if `wo_record.py` writes somewhere other than a git-tracked path.
 - `PLAN MISMATCH` if a second place writes record entries besides `openWorkRecord` and the close path.
 
-### Owner question Q-094-a (raised 2026-11-08) — RULING PENDING
+### Owner question Q-094-a (raised 2026-11-08) — RULED (owner, 2026-11-08): recovery commits
 
 **Ask:** a *recovered* run's record close appends into the tree it was told to
 complete, and nothing commits that tree. Commit it there, fail loudly, or accept
 the uncommitted append?
 
-**The site.** `extensions/subagent-async/recovery.ts:535-547` (the inherited-socket
-close path). A recovered child's messages never reach this process, so the harness
-completes its record from the session file — into `meta.workRecord.cwd`, the tree
-the original spawn named. A recovered run commits nothing itself: the worktree's
-fate is the reap's (`kept-uncommitted` when the tree is dirty), and a non-isolated
-recovery leaves the parent's working tree for the spawner's next commit. The append
-is therefore an uncommitted change at the moment of the record write, which is the
-state this order exists to make impossible to miss. The close path is unchanged in
-this order and reports its `RECORD FAILURE`s on the delivered result.
+**Ruling (owner, 2026-11-08): "Recovery commits (Recommended)".** The recovery close
+commits the record it appended, in the tree it wrote to, and runs the same
+verification a normal close runs.
 
-**Option A (recorder's recommendation, not a ruling) — commit it there.** After the
-recovery append, `git add` the record file and commit it in `record.cwd`, with the
-harness's own subject line. The entry then reaches a commit by the same rule the
-spawn's close uses. Costs a git commit in a tree the harness may not own (a
-non-isolated recovery's parent checkout may hold the spawner's unrelated staged
-work), so it needs a rule for what to stage.
+**What it requires.** Two steps after the recovery's record appends, in
+`extensions/subagent-async/recovery.ts` (the inherited-socket close path):
 
-**Option B — fail loudly.** Leave the append uncommitted and report a `RECORD FAILURE`
-from the recovery close, as the spawn close does when its entry is not in the
-committed tree. Costs a visible failure on every recovered run of an isolated spawn,
-since that tree is uncommitted by construction until the reap or the spawner commits
-it.
+1. **Commit the entries, and nothing else.** `commitRecordEntries` (`records.ts`)
+   stages the record files by path (`git add -A -- <rel>`) and commits them in
+   `record.cwd` — the tree the original spawn named — so a recovered run's entries
+   reach a commit without the harness committing the child's or the spawner's
+   unrelated work. Already-committed files are a stated state: nothing staged means
+   no commit, and no failure.
+2. **Verify that commit.** The same `verifyWorkRecord(record, true)` the spawn close
+   runs, so an entry the commit could not carry is a `RECORD FAILURE` naming the
+   record file and its state, on the delivered result and on the status surface.
 
-**Option C — accept.** Say a recovery's record append is a working-tree change like
-any other, and leave it to the spawner's next commit. Cheapest; leaves the one path
-in the harness where a record entry can be lost to a checkout or a reap with no
-failure raised, which is the loss this order was opened for.
+**Rejected alternatives.** *Fail loudly without committing* (the earlier option B):
+leaves the entry uncommitted in a tree the reap or a checkout discards, which is the
+loss this order exists to prevent. *Accept the uncommitted append* (option C): same
+loss, silently.
 
-**State this round:** the site is unchanged. `recovery.ts:535-547` names this row as
-the debt's carrier (`#Q-094-a`); the ruling, whichever way it goes, replaces that
-comment with the rule.
+**State this round.** Landed in this order's recovery-commit commit (SHA below); rows "commits what it appended, in the
+tree it wrote to, and verifies that commit" and "reports RECORD FAILURE when that
+tree's commit cannot carry the entries" in `tests/work-record-capture.test.ts`
+(dropping the commit step, or the verification, reds one row each).

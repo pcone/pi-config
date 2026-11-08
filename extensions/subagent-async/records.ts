@@ -228,6 +228,36 @@ export function completeWorkRecord(
 	}
 }
 
+/** Commit the record files a run wrote, and nothing else, in the tree that carries them.
+ *  A recovery commits its own record because it never runs the spawn's pre-commit steps, so its
+ *  entries would otherwise sit uncommitted in a tree the reap or a later checkout discards (owner
+ *  ruling Q-094-a, 2026-11-08: recovery commits the record it appended). Staging and committing by
+ *  path keeps the tree's other work — the child's, or the spawner's — out of this commit. A commit
+ *  is skipped when the paths hold nothing to commit: already committed is a stated state, so a
+ *  second close is not a failure. Returns the commit failures; the caller runs `verifyWorkRecord`
+ *  either way, which decides whether the entries actually reached the commit. */
+export function commitRecordEntries(record: WorkRecord): string[] {
+	const inside: string[] = [];
+	for (const file of record.paths) {
+		const rel = path.relative(record.cwd, file);
+		// A path outside the tree is `verifyWorkRecord`'s failure to name, not something to stage.
+		if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+		inside.push(rel);
+	}
+	if (inside.length === 0) return [];
+	const git = (args: string[]) => spawnSync("git", args, { cwd: record.cwd, encoding: "utf8" });
+	const staged = (why: string) => `${why} in ${record.cwd} (${inside.join(", ")})`;
+
+	const added = git(["add", "-A", "--", ...inside]);
+	if (added.status !== 0 || added.error) return [`record commit ${staged("could not stage")}: ${failureText(added)}`];
+	const diff = git(["diff", "--cached", "--quiet", "--", ...inside]);
+	if (diff.status === 0) return [];
+	if (diff.status !== 1) return [`record commit ${staged("not checked")}: ${failureText(diff)}`];
+	const commit = git(["commit", "-m", `work-order record: recovery append (${record.woId})`, "--", ...inside]);
+	if (commit.status !== 0 || commit.error) return [`record commit ${staged("failed")}: ${failureText(commit)}`];
+	return [];
+}
+
 /** Close-time gate (WO-2026-094 M2): every entry the record must hold is in the record, and every
  *  file this run wrote is in the tree that will be committed. `mustBeCommitted` is set when this
  *  process committed that tree and is about to remove it (an isolated spawn), so the file has to be

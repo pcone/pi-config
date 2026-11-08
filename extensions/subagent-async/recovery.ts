@@ -34,7 +34,7 @@ import {
 	resolveTurnCap,
 	type OwnerProbe,
 } from "../lib/subagent-state.ts";
-import { completeWorkRecord, openRecordContext, sessionFinalText, type PersistedWorkRecord } from "./records.ts";
+import { commitRecordEntries, completeWorkRecord, openRecordContext, sessionFinalText, verifyWorkRecord, type PersistedWorkRecord } from "./records.ts";
 import { removeWorktreeTree } from "./worktree.ts";
 import {
 	debugLog,
@@ -539,18 +539,26 @@ export function recoverOrphanedSubagents(
 					}
 				} catch {}
 				// The recovered child's messages never reached this process; its session file has them.
-				// A recovered run commits nothing — the reap decides whether its worktree survives — so
-				// its record appends land in the recorded tree uncommitted. That debt is the owner
-				// question `work-orders/WO-2026-094-record-appends-land-where-committed.md#Q-094-a`:
-				// commit it there, fail loudly, or accept.
+				// A recovered run runs no pre-commit steps, so it commits the record it appended itself and
+				// then runs the same close-time check a normal close runs — owner ruling Q-094-a
+				// (`work-orders/WO-2026-094-record-appends-land-where-committed.md#Q-094-a`, 2026-11-08).
+				// The commit carries the record files only; the rest of the tree is the reap's business.
 				const record = rs.workRecord
 					? completeWorkRecord(rs.workRecord, meta.piSessionId ?? sid, () => sessionFinalText(meta.sessionFile))
 					: { notes: [], failures: [] };
+				const recordFailures = [
+					...record.failures,
+					...(rs.workRecord ? commitRecordEntries(rs.workRecord) : []),
+					...(rs.workRecord ? verifyWorkRecord(rs.workRecord, true) : []),
+				];
 				rs.recordNotes = record.notes;
-				rs.recordFailures = record.failures;
+				rs.recordFailures = recordFailures;
+				// The recovered session is about to leave the running map, so the meta is where a status
+				// query still reads the outcome from (WO-2026-094 M3).
+				if (recordFailures.length > 0) updateMetaAt(path.join(sockDir, `pi-subagent-${sid}.meta.json`), { recordFailures });
 				const recordText = [
 					...record.notes,
-					...record.failures.map((f) => `RECORD FAILURE: ${f}`),
+					...recordFailures.map((f) => `RECORD FAILURE: ${f}`),
 				].map((n) => `\n${n}`).join("");
 				deliverResult(pi, rs, recoveredExitCode, `\n[Isolation] Recovered from previous session.${recordText}`);
 				running.delete(sid);
