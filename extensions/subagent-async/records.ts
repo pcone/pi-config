@@ -25,10 +25,12 @@ import { readMetaJson, readPersistedSpawns } from "./index.ts";
 const WO_RECORD_SCRIPT = "scripts/wo_record.py";
 
 /** The absolute record file a tool line names: `appended <kind> to <path>`, or `<kind> already
- *  recorded in <path> (…)` when it wrote nothing. The path runs to that line's `.md`, so a checkout
- *  whose directory holds a space or a parenthesis keeps its whole path. The tool owns where a
- *  record lives; the harness only needs it to check the entry reached a commit. */
-const NAMED_RECORD_FILE = /^(?:appended \S+ to |\S+ already recorded in )(.+?\.md)\b/m;
+ *  recorded in <path> (…)` when it wrote nothing. The path is the run up to the line's LAST `.md`,
+ *  which is the one that ends a path component: a checkout whose directory holds a space, a
+ *  parenthesis or a `.md` of its own (`/x/repo.md/records/WO-1.md`) keeps its whole path, where a
+ *  lazy match stopped at the directory's `.md` and named a file the tool never wrote. The tool owns
+ *  where a record lives; the harness only needs it to check the entry reached a commit. */
+const NAMED_RECORD_FILE = /^(?:appended \S+ to |\S+ already recorded in )(.+\.md)(?=\s|$)/m;
 
 function namedRecordFile(stdout: string): string | null {
 	return NAMED_RECORD_FILE.exec(stdout)?.[1] ?? null;

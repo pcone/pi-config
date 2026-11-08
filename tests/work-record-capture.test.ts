@@ -174,6 +174,22 @@ describe("openWorkRecord — dispatch at spawn", () => {
 		expect(calls(root)).toEqual([]);
 	}, 30_000);
 
+	it("names the whole record file when a directory on the way holds a .md of its own", () => {
+		// The tool's line names the path absolutely; reading to the FIRST `.md` stops at the
+		// directory's, so the record is tracked under a file the tool never wrote.
+		const parent = fs.mkdtempSync(path.join(os.tmpdir(), "wo.md dir "));
+		tmpDirs.push(parent);
+		const root = path.join(parent, "repo");
+		fs.mkdirSync(path.join(root, "work-orders"), { recursive: true });
+		fs.mkdirSync(path.join(root, "scripts"));
+		fs.writeFileSync(path.join(root, WO_FILE), "# WO-2026-001 — demo\n");
+		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
+		execFileSync("git", ["init", "-q"], { cwd: root, env: childEnv() });
+		const { record, failures } = openWorkRecord(root, WO_FILE, "subagent-impl-1", "task");
+		expect(failures).toEqual([]);
+		expect(record?.paths).toEqual([recordFile(root)]);
+	}, 30_000);
+
 	it("names the whole record file in a checkout whose path holds a space and a parenthesis", () => {
 		// The tool answers `appended <kind> to <path>`; a path parsed only up to the first space
 		// reads as a file outside the record's tree, and one holding a parenthesis parses as nothing.
