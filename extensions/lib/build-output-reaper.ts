@@ -629,3 +629,86 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 
 	return report;
 }
+
+// ── The reap's build-output half ───────────────────────────────────────────
+
+export interface ReapBuildOutputOptions {
+	/** The home whose `~/.cache/cargo-target` holds one dir per clone. */
+	home?: string;
+	/** Injection seams, passed through to the bound and M4. */
+	run?: CommandRunner;
+	sizeOf?: (dir: string) => number | Promise<number>;
+}
+
+export interface KeptTargetNote {
+	/** Fragments for the caller's `ReapResult.detail`: the drop, and its failures. */
+	notes: string[];
+	/** Why nothing was dropped — informational, for the caller's log. */
+	keptBecause: string | null;
+}
+
+/**
+ * One reap's build-output half: the dead set M3 prunes, M4 for a tree the reap
+ * keeps, and M3 itself once at the end.
+ *
+ * The reap owns its loop and its gates; this owns everything that touches a
+ * `target/` or a shared dir, so there is one implementation of it and the reap
+ * is not the repo's fastest-growing file. Lines and detail fragments come back
+ * to the caller: this module never writes to the reap's log and never throws.
+ */
+export interface ReapBuildOutput {
+	/** Record a namespace worktree path that no longer exists. One `existsSync`,
+	 *  idempotent: called on the registry walk the reap already does. A path
+	 *  outside the namespace has no clone to attribute to and is ignored. */
+	noteGone(worktreePath: string, parentCwd: string): void;
+	/** M4 for a tree the reap is keeping. */
+	dropKeptTarget(facts: { worktreePath: string; branch: string | null; parentCwd: string }): Promise<KeptTargetNote>;
+	/** M3 once, at the end of the reap. Returns the log lines it would have written. */
+	enforceBound(): Promise<string[]>;
+}
+
+export function createReapBuildOutput(opts: ReapBuildOutputOptions = {}): ReapBuildOutput {
+	const home = opts.home ?? homedir();
+	const dead = new Map<string, DeadWorktree>();
+	return {
+		noteGone(worktreePath, parentCwd) {
+			if (!repoNameFromWorktreePath(worktreePath, home)) return;
+			if (existsSync(worktreePath)) return;
+			if (dead.has(worktreePath)) return;
+			dead.set(worktreePath, { worktreePath, parentCwd });
+		},
+		async dropKeptTarget(facts) {
+			const landed = await dropLandedWorktreeTarget(facts, { run: opts.run });
+			const notes = [landed.dropped ? `target/ dropped (branch ${landed.state})` : null, ...landed.problems];
+			return {
+				notes: notes.filter((note): note is string => note !== null),
+				keptBecause: landed.detail ?? null,
+			};
+		},
+		async enforceBound() {
+			const lines: string[] = [];
+			try {
+				const bound = await enforceCargoTargetBound({
+					home,
+					deadWorktrees: [...dead.values()],
+					run: opts.run,
+					sizeOf: opts.sizeOf,
+				});
+				for (const problem of bound.problems) lines.push(`reap: cargo bound: ${problem}`);
+				for (const entry of bound.entries) {
+					lines.push(
+						`reap: shared dir ${entry.overBound ? "OVER" : "under"} bound ${entry.cargoTargetDir}: ` +
+							`${formatBytes(entry.beforeBytes)} → ${formatBytes(entry.afterBytes)} ` +
+							`(bound ${formatBytes(bound.boundBytes)}, route ${entry.route}, ${entry.worktreePathsPruned} dead paths)` +
+							`${entry.problems.length > 0 ? ` problems: ${entry.problems.join("; ")}` : ""}`,
+					);
+				}
+			} catch (e) {
+				// The reap runs on every session start: a bound that cannot run reports
+				// it and lets the reap finish, rather than aborting the walk's results.
+				lines.push(`reap: cargo bound failed: ${e instanceof Error ? e.message : String(e)}`);
+			}
+			return lines;
+		},
+	};
+}

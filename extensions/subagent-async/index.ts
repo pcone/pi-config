@@ -20,18 +20,13 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
 import { registerWaitSource } from "../lib/waits.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
-import { cargoTargetDirFor, repoNameFromWorktreePath, subagentWorktreePath } from "../lib/subagent-worktree.ts";
+import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
 import {
 	type CommandRunner,
-	type DeadWorktree,
 	type BuildOutputReport,
+	createReapBuildOutput,
 	describeBuildOutput,
-	describePrune,
 	disposeWorktreeBuildOutput,
-	dropLandedWorktreeTarget,
-	enforceCargoTargetBound,
-	formatBytes,
-	pruneCargoArtifactsFor,
 } from "../lib/build-output-reaper.ts";
 import { discoverSessions } from "../lib/subagent-discovery.ts";
 import {
@@ -3942,10 +3937,12 @@ export interface ReapResult {
  * left in place, marked in the meta (`worktreeKept`) so the status answer
  * offers `subagent_resume` for it, and the reap moves on. Never throws.
  *
- * Build output (WO-2026-091): a removed tree loses its `target/` and its share
- * of the clone's shared cargo dir; a kept one loses its `target/` once its
- * branch has landed or is gone; and a shared dir over its bound is pruned. The
- * bound is checked here, once per session start, never on the spawn path.
+ * Build output (WO-2026-091) is not this function's: a removed tree loses its
+ * `target/` and its share of the clone's shared cargo dir through
+ * `removeWorktreeTree`, a kept one loses its `target/` once its branch has
+ * landed or is gone, and a shared dir over its bound is pruned. That half lives
+ * in `lib/build-output-reaper.ts`; the bound is checked here, once per session
+ * start, never on the spawn path.
  */
 export async function reapFinishedWorktrees(
 	pi: ExtensionAPI,
@@ -3953,23 +3950,19 @@ export async function reapFinishedWorktrees(
 	deps: RecoveryScanDeps = {},
 ): Promise<ReapResult[]> {
 	const results: ReapResult[] = [];
-	/** Worktrees under the namespace that no longer exist — the bound's dead set.
-	 *  Collected on the same registry walk, so it costs one `existsSync` per meta. */
-	const dead = new Map<string, DeadWorktree>();
+	const buildOutput = createReapBuildOutput({
+		home: deps.home ?? cargoHomeOverride,
+		run: deps.run,
+		sizeOf: deps.sizeOf,
+	});
 	try {
 		const dir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		for (const { sid, meta } of listSubagentMetas(dir)) {
 			const worktreePath = typeof meta.worktreePath === "string" ? meta.worktreePath : null;
 			const parentCwd = typeof meta.parentCwd === "string" ? meta.parentCwd : "";
 			const isolationBranch = typeof meta.isolationBranch === "string" ? meta.isolationBranch : null;
-			if (
-				worktreePath &&
-				repoNameFromWorktreePath(worktreePath, deps.home ?? cargoHomeOverride) &&
-				!fs.existsSync(worktreePath) &&
-				!dead.has(worktreePath)
-			) {
-				dead.set(worktreePath, { worktreePath, parentCwd });
-			}
+			// A namespace path the disk no longer has is the bound's dead set (M3).
+			if (worktreePath) buildOutput.noteGone(worktreePath, parentCwd);
 
 			if (running.has(sid)) continue; // this process is still tracking it
 			if (
@@ -3989,10 +3982,9 @@ export async function reapFinishedWorktrees(
 			// landed or is gone (owner ask 2). The tree stays: resuming or inspecting
 			// it still works, only the multi-GB target goes.
 			const keep = async (outcome: ReapResult["outcome"], detail?: string): Promise<void> => {
-				const landed = await dropLandedWorktreeTarget({ worktreePath, branch: isolationBranch, parentCwd });
-				if (landed.detail) debugLog(`reap: ${sid} target/ kept: ${landed.detail}`);
-				const notes = [detail, landed.dropped ? `target/ dropped (branch ${landed.state})` : null, ...landed.problems];
-				const joined = notes.filter(Boolean).join("; ");
+				const landed = await buildOutput.dropKeptTarget({ worktreePath, branch: isolationBranch, parentCwd });
+				if (landed.keptBecause) debugLog(`reap: ${sid} target/ kept: ${landed.keptBecause}`);
+				const joined = [detail, ...landed.notes].filter(Boolean).join("; ");
 				results.push({ sid, outcome, worktreePath, ...(joined ? { detail: joined } : {}) });
 			};
 
@@ -4048,38 +4040,21 @@ export async function reapFinishedWorktrees(
 				await keep(removal.stage === "unlock" ? "kept-unlock-failed" : "kept-remove-failed", removal.detail);
 				continue;
 			}
-			const buildOutput = removal.buildOutput ? describeBuildOutput(removal.buildOutput) : null;
-			debugLog(`reap: removed finished worktree ${worktreePath} (${sid})${buildOutput ? ` — ${buildOutput}` : ""}`);
-			dead.set(worktreePath, { worktreePath, parentCwd });
-			results.push({ sid, outcome: "removed", worktreePath, ...(buildOutput ? { detail: buildOutput } : {}) });
+			const detail = removal.buildOutput ? describeBuildOutput(removal.buildOutput) : null;
+			debugLog(`reap: removed finished worktree ${worktreePath} (${sid})${detail ? ` — ${detail}` : ""}`);
+			buildOutput.noteGone(worktreePath, parentCwd);
+			results.push({ sid, outcome: "removed", worktreePath, ...(detail ? { detail } : {}) });
 		}
 	} catch (e) {
 		debugLog(`reap: aborted: ${e instanceof Error ? e.message : String(e)}`);
 	}
 
-	// The shared dir's bound (owner ask 3): measure each clone's dir, prune the
-	// dead worktrees' shares of what is over, then one coarse pass per repo. A
-	// dir still over is reported, never force-cleaned — a full `cargo clean` is
-	// exactly the registry rebuild the shared dir exists to avoid.
-	try {
-		const bound = await enforceCargoTargetBound({
-			home: deps.home ?? cargoHomeOverride,
-			deadWorktrees: [...dead.values()],
-			run: deps.run,
-			sizeOf: deps.sizeOf,
-		});
-		for (const problem of bound.problems) debugLog(`reap: cargo bound: ${problem}`);
-		for (const entry of bound.entries) {
-			debugLog(
-				`reap: shared dir ${entry.overBound ? "OVER" : "under"} bound ${entry.cargoTargetDir}: ` +
-					`${formatBytes(entry.beforeBytes)} → ${formatBytes(entry.afterBytes)} ` +
-					`(bound ${formatBytes(bound.boundBytes)}, route ${entry.route}, ${entry.worktreePathsPruned} dead paths)` +
-					`${entry.problems.length > 0 ? ` problems: ${entry.problems.join("; ")}` : ""}`,
-			);
-		}
-	} catch (e) {
-		debugLog(`reap: cargo bound failed: ${e instanceof Error ? e.message : String(e)}`);
-	}
+	// The shared dir's bound (owner ask 3), once per session start: measure each
+	// clone's dir, prune the dead worktrees' shares of what is over, then one
+	// coarse pass per clone. Never throws; a dir still over is reported, not
+	// force-cleaned — a full `cargo clean` is the registry rebuild the shared dir
+	// exists to avoid.
+	for (const line of await buildOutput.enforceBound()) debugLog(line);
 	return results;
 }
 
