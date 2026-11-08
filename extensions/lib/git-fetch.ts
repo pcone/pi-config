@@ -37,8 +37,9 @@ export const FETCH_TIMEOUT_MS = 10_000;
 
 export interface FetchOutcome {
 	ok: boolean;
-	/** git's stderr, last non-empty line; "" when it printed none (including a
-	 *  background shape, which captures none). */
+	/** git's stderr, last non-empty line — or the spawn's own message when git
+	 *  never ran. "" when there is neither, which is every plain failure of a
+	 *  background shape: it captures no stderr. */
 	stderr: string;
 	/** True when this call joined a fetch already running for the same checkout. */
 	joined: boolean;
