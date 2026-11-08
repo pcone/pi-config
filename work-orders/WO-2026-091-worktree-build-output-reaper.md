@@ -94,3 +94,46 @@ Each row needs its mutation: name the one-line change that reds it, and show it 
 - `PREMISE FALSIFIED` if neither route can attribute artifacts — say what you probed and why the exact route found nothing (`.d` absent, different layout) and the coarse route is unavailable (no parent checkout, not a workspace).
 - `PLAN MISMATCH` if a third removal path exists that the two sites do not cover; name it and land nothing.
 - A failed prune is reported in `ReapResult.detail`, not swallowed; if you find yourself wanting to swallow it to keep a row green, stop.
+
+---
+
+## Gate-back record — 2026-11-08
+
+### Owner question Q-091-a (raised 2026-11-08) — RULING PENDING
+
+**Ask:** must `createWorktree`'s stale-leftover cleanup route through
+`removeWorktreeTree`, or is it out of this order's scope?
+
+**The site.** `extensions/subagent-async/index.ts:969` at `f0bb295`
+(`createWorktree`'s stale-leftover cleanup): an `await git(["worktree",
+"unlock", ...])`, then `Promise.allSettled` of `git worktree remove --force`
+and `git branch -D`, with no lock handling and no build-output pass. It is the
+third `git worktree remove` in product code —
+`rg -n '"worktree", "remove' extensions/subagent-async/index.ts` → 3 lines in 2
+sites; the other is `removeWorktreeTree`'s (`:1369`, `:1370`).
+
+**Why a ruling and not a review.** This order's §Stop reports names exactly
+this case: "`PLAN MISMATCH` if a third removal path exists that the two sites
+do not cover; name it and land nothing." The implementer disclosed the site and
+landed the rest of the order at `6b16d45`. Both directions are mechanically
+sound; they differ in what the harness does afterwards, which no test can
+settle.
+
+**Option A (recorder's recommendation, not a ruling) — out of scope; record it.**
+Git's own removal takes an ignored `target/` with the tree, and the same
+function recreates the path immediately afterwards, so the shared-dir artifacts
+are reused rather than orphaned: no build output survives a path that is gone.
+Costs nothing; leaves the third sequence as the one place a future target-drop
+would have to be added by hand. Recorded in `decisions/subagents/048-…`.
+
+**Option B — route it through `removeWorktreeTree`.** One sequence, one place
+to prune. The branch half does not fit as-is: the cleanup deletes the branch
+unconditionally, where the shared sequence deletes it only when
+`finalCommit === parentHeadCommit` (WO-2026-049), so either the cleanup calls
+the sequence with a branch policy that does not exist yet, or it keeps its own
+`git branch -D` and only the remove moves — a partial move, with the sequence's
+unlock/relock contract bolted onto a path whose tree is being replaced anyway.
+
+**State this round:** the site is unchanged and no code routes it. The claim in
+`048` that the harness has one removal path is corrected there to name this
+site and this question; the ruling, whichever way it goes, replaces that note.
