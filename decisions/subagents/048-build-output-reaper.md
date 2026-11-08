@@ -99,13 +99,14 @@ must be measured in it, or it fires at half the size the owner named.
 Cargo writes dep-info paths relative to the workspace root it built
 (`members/alpha/src/lib.rs`), so a `.d` from a build whose workspace root *is*
 the checkout root names no worktree. That is all the deps-only scan measured:
-0 of 3 `deps/*.d` on this box, and none in two probes — the absolutized paths
-those fixtures did hold sat in `<profile>/*.d` and `<profile>/examples/*.d`,
-which the scan never read, and 12 of the 14 `.d` at the three locations name a
-worktree. The reading was a property of the scan's scope, not of cargo. For a
-workspace-root build route 2 is what runs, and it drops every worktree's copy of
-the workspace crate it cleans — accepted by the owner's ruling ("if they can be
-told apart", and the coarse route is the case where they cannot).
+0 of 3 `deps/*.d` across this box's three clone dirs (2 of the 3 in `tfd-d-487`),
+and none in two probes — the absolutized paths those fixtures did hold sat in
+`<profile>/*.d` and `<profile>/examples/*.d`, which the scan never read, and 12
+of the 14 `.d` at the three locations in `tfd-d-487` name a worktree. The
+reading was a property of the scan's scope, not of cargo. For a workspace-root
+build route 2 is what runs, and it drops every worktree's copy of the workspace
+crate it cleans — accepted by the owner's ruling ("if they can be told apart",
+and the coarse route is the case where they cannot).
 
 The claim is scoped to a workspace-root checkout. Cargo absolutizes a source
 path outside the workspace root it built, so in a checkout whose workspace sits

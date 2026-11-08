@@ -30,7 +30,7 @@ refactor lands.
 **growth.** `extensions/lib/build-output-reaper.ts` 743 → **783** (the widen) → **800** (round 2:
 the boundary helper, the empty-stem count, the reported profile listing);
 `pruneExactArtifacts` 84 → **96** → **105** lines.
-`tests/build-output-reaper.test.ts` 711 → **846** → **958** (nine rows and two fixture builders).
+`tests/build-output-reaper.test.ts` 711 → **846** → **1004** (eleven rows and two fixture builders: 37 → 41 → 48 `it(`).
 No new file, no new module.
 
 **unification.** The three locations are one loop over `DEP_INFO_SUBDIRS`, not three copies of
@@ -42,7 +42,7 @@ attribution check: "names this path" is one helper, `pathMentioned`, whose two c
 only in the boundary characters their syntax allows — `depInfoNamesPath` for a source rule,
 `depInfoEnvDepNamesPath` for an `env-dep:` value
 (`rg -n 'pathMentioned|depInfoNamesPath|depInfoEnvDepNamesPath' extensions/lib/build-output-reaper.ts`
-→ 5 lines, 2 definitions of the boundary and 1 regex build).
+→ 7 lines: the helper, its 2 callers with their boundary characters, and the 2 call sites).
 
 **cost.** Route 1's scan on this box's 707-`.d` profile (`~/.cache/cargo-target/tfd-d-487`):
 **0.19 ms** reading 2 `.d` → **0.74 ms** reading 14 (median of 15 alternating runs, a dead path

@@ -370,6 +370,37 @@ describe("pruneExactArtifacts (M2 route 1)", () => {
 		expect(existsSync(join(examples, "sibling.d"))).toBe(true);
 	});
 
+	it("counts an env-dep value at a line end, before another token, and with no newline", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		// The value is the bare worktree root, and each file ends differently: a
+		// newline, the next `env-dep:` token, and no trailing newline at all. The
+		// three are the value matcher's alternatives beyond `/`, one file each.
+		write(
+			join(examples, "rootline.d"),
+			`${join(examples, "rootline")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath}\n`,
+		);
+		write(join(examples, "rootline"));
+		write(
+			join(examples, "roottoken.d"),
+			`${join(examples, "roottoken")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath} env-dep:TFD_BUILD_ID=1\n`,
+		);
+		write(join(examples, "roottoken"));
+		write(
+			join(examples, "rootbare.d"),
+			`${join(examples, "rootbare")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath}`,
+		);
+		write(join(examples, "rootbare"));
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 3, depInfoMatched: 0, depInfoEnvDepOnly: 3 });
+		expect(existsSync(join(examples, "rootline.d"))).toBe(true);
+		expect(existsSync(join(examples, "roottoken.d"))).toBe(true);
+		expect(existsSync(join(examples, "rootbare.d"))).toBe(true);
+	});
+
 	it("scans no build-script output dir, so its .d is neither counted nor attributed", () => {
 		const deadPath = tempDir("pi-reaper-dead-");
 		const target = tempDir("pi-reaper-box-target-");
@@ -878,21 +909,33 @@ describe("enforceCargoTargetBound (M3)", () => {
 
 	it("counts the dead paths' env-dep-only .d in its entry, not as a constant", async () => {
 		const { home, cargoTargetDir, deadPath } = fakeHome("tfd-d");
+		// Two dead paths of the one clone, each with its own env-dep-only `.d`: the
+		// entry's count is a sum over paths, so `=` in place of `+=` at the
+		// aggregation site keeps only the last path's file.
+		const deadPath2 = deadPath.replace("77a40e201285", "abcdef123456");
 		const examples = join(cargoTargetDir, "debug", "examples");
 		write(
 			join(examples, "envonly.d"),
 			`${join(examples, "envonly")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath, "parser")}\n`,
 		);
+		write(
+			join(examples, "envonly2.d"),
+			`${join(examples, "envonly2")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath2, "parser")}\n`,
+		);
 
 		const report = await enforceCargoTargetBound({
 			home,
-			deadWorktrees: [{ worktreePath: deadPath, parentCwd: "" }],
+			deadWorktrees: [
+				{ worktreePath: deadPath, parentCwd: "" },
+				{ worktreePath: deadPath2, parentCwd: "" },
+			],
 			sizeOf: () => 25 * GiB,
 			run: fakeRunner().run,
 		});
 
-		// The bound's route-1 pass counts through its own aggregation, per dead path.
-		expect(report.entries[0]).toMatchObject({ depInfoScanned: 1, depInfoMatched: 0, depInfoEnvDepOnly: 1, worktreePathsPruned: 0 });
+		// Both files are read once per dead path (4 reads); each is env-dep-only for
+		// the one path it names, so the entry's sum over paths is 2.
+		expect(report.entries[0]).toMatchObject({ depInfoScanned: 4, depInfoMatched: 0, depInfoEnvDepOnly: 2, worktreePathsPruned: 0 });
 	});
 
 	it("uses route 1 when the dead worktree's artifacts can be attributed", async () => {
