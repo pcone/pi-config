@@ -24,6 +24,15 @@ One removal path — `removeWorktreeTree(deps, rs, policy)` in
 - **M4** `dropLandedWorktreeTarget` drops a kept tree's `target/` once its
   isolation branch is merged into the parent's current HEAD or no longer exists.
 
+Three lines in `extensions/subagent-async/index.ts` run `git worktree remove`
+(`rg -n '"worktree", "remove' extensions/subagent-async/index.ts` → 3, in two
+sites). Both of the order's sites go through `removeWorktreeTree`. The third is
+`createWorktree`'s stale-leftover cleanup (`index.ts:969` at `f0bb295`), and
+whether it must is **WO-2026-091 `Q-091-a`, open**: git's own removal takes an
+ignored `target/` with the tree and the path is recreated immediately, so no
+build output is orphaned there, but routing it is a mechanism change this
+order does not carry.
+
 ## Why
 
 The box went from ~250 GB free to 22 GB in a day: per-worktree `target/` dirs
@@ -59,9 +68,53 @@ case where they cannot).
 | synthetic reap of 36 finished trees, before / after | 4.3 s / 6.2 s |
 | `cargo clean -p <member>`, 8-member tfd workspace | 0.15–1.6 s per member |
 | M2 route 1 per removal, 700 `.d` files | ~50 ms |
+| one removal with route 2 inside, 1-member workspace | 195 / 262 / 276 ms, `cargo clean -p` 62 / 89 / 105 ms |
+| one removal with route 2 inside, 8-member workspace | 713 / 775 / 818 ms, eight cleans 546 / 582 / 644 ms |
 
-The per-removal coarse pass is the expensive part on a cargo-workspace clone
-(~1.5–3 s at 8 members); it runs once per removed worktree.
+## Route 2 is what every removal pays
+
+Measured 2026-11-08 on a real workspace, not a fake shared dir: a one-member
+cargo workspace at `~/Developer/wo091-f4-cargo`, a locked worktree at
+`~/Developer/wt/subagents/wo091-f4-cargo-4add98737109`, a real
+`CARGO_TARGET_DIR=~/.cache/cargo-target/wo091-f4-cargo`, `cargo build` in the
+worktree, then `removeWorktreeTree` on the reap's policy (plain remove, branch
+kept) with every `cargo` call timed through the runner seam. Three runs each:
+
+| fixture | removal, end to end | of which `cargo clean -p` | `.d` scanned / naming the worktree | shared dir |
+|---|---|---|---|---|
+| 1 member | 195 / 262 / 276 ms | 62 / 89 / 105 ms | 1 / 0 | 2.9 MiB → 8 KiB |
+| 8 members | 713 / 775 / 818 ms | 49–100 ms each, 546 / 582 / 644 ms total | 8 / 0 | 23 MiB → 8 KiB |
+
+Route 1 matched nothing in either fixture, as the section above says: a real
+cargo build writes dep-info paths relative to the workspace root. Route 2 runs
+on every removal, and it runs `cargo clean -p` once per workspace member —
+eight invocations for eight members, every time a worktree is removed. These
+members have no registry deps, so each clean is the fast end of the range; the
+box's real shared dirs cost 0.15–1.6 s per member, i.e. 1.2–13 s per removed
+worktree.
+
+The earlier synthetic reap figure (36 finished trees, 4.3 s → 6.2 s) does not
+cover that. Its 1.9 s delta cannot be 36 route-2 removals of a workspace this
+size unless the parent was a one-member workspace (36 × ~53 ms ≈ 1.9 s, which
+matches) or route 2 skipped (no parent checkout, paths outside the namespace).
+Use the per-removal figures above.
+
+## The removal's git runs in the parent checkout
+
+`removeWorktreeTree` sets `repoCwd = parentCwd` when that path exists, else the
+worktree. Running the whole sequence inside the tree was tried and reverted:
+the branch step runs after a successful `git worktree remove`, so its spawn
+fails on the missing cwd — `git -C <removed tree> branch -D <branch>` answers
+`fatal: cannot change to '<path>': No such file or directory`, exit 128 (probe,
+2026-11-08), which the harness's runner reports as exit 1. A branch that never
+moved past the parent commit is then kept, reddening two
+`tests/worktree-removal.test.ts` rows. Unlock and removal work from either cwd;
+only the branch step needs the parent.
+
+What the rule costs: a meta whose `parentCwd` exists but points at the wrong
+repository fails the unlock with "not a working tree" and is kept every reap,
+where the tree's own cwd would have removed it. No meta on this box has that
+shape; it is recorded so the next reader does not rediscover the fork.
 
 ## Alternatives rejected
 
