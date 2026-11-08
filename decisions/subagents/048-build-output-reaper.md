@@ -79,6 +79,15 @@ it drops every worktree's copy of the workspace crate it cleans — accepted by
 the owner's ruling ("if they can be told apart", and the coarse route is the
 case where they cannot).
 
+The claim is scoped to a workspace-root checkout, and the probe that decides it
+lives in `work-orders/WO-2026-091-worktree-build-output-reaper.md` §`Q-091-b`
+(ruling pending). Cargo absolutizes a source path outside the workspace root it
+built, so in a checkout whose workspace sits in a subdirectory, a path
+dependency elsewhere in the checkout does put an absolute worktree path in
+`<profile>/deps/*.d`, and route 1 fires there — which is also the layout where
+route 2 cannot run, because `cleanCargoWorkspaceMembers` needs a `Cargo.toml` at
+the checkout root.
+
 ## Costs measured, not asserted
 
 | measurement | value |
