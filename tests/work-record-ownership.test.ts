@@ -35,21 +35,9 @@ import * as path from "node:path";
 import subagentFactory, { metaPath, readPersistedSpawns, resolveRunningSession } from "../extensions/subagent-async/index.ts";
 import { _loadAgentsFromDir } from "../extensions/subagent-async/agents.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { WO_RECORD_STUB } from "./helpers/wo-record-stub.ts";
 import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
-
-// Logs each append to calls.jsonl; `summary --json` answers "no reviews yet",
-// which is what the close-time completion reads.
-const STUB = `#!/usr/bin/env python3
-import json, os, sys
-root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-log = os.path.join(root, "calls.jsonl")
-if sys.argv[1] == "summary":
-    print(json.dumps({"status": "open", "entries": []}))
-    sys.exit(0)
-with open(log, "a") as f:
-    f.write(json.dumps({"argv": sys.argv[1:], "body": sys.stdin.read()}) + "\\n")
-`;
 
 const WO_FILE = "work-orders/WO-2026-001-demo.md";
 const WO_ID = "WO-2026-001";
@@ -115,7 +103,7 @@ function makeRepo(): string {
 	fs.mkdirSync(path.join(root, "work-orders"));
 	fs.mkdirSync(path.join(root, "scripts"));
 	fs.writeFileSync(path.join(root, WO_FILE), `# ${WO_ID} — demo\n\nbody\n`);
-	fs.writeFileSync(path.join(root, "scripts/wo_record.py"), STUB);
+	fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
 	return root;
 }
 
@@ -200,7 +188,7 @@ describe("a reviewer spawn carrying workOrderPath", () => {
 			const rs = resolveRunningSession(reviewer.sid);
 			expect(rs).toBeDefined();
 			expect(rs?.workRecord).toBeUndefined();
-			expect(rs?.recordNotes).toEqual([]);
+			expect(rs?.recordFailures).toEqual([]);
 			expect(reviewer.text).not.toContain("work-order record");
 		},
 		60_000,
@@ -317,7 +305,10 @@ describe("an implementer spawn carrying workOrderPath", () => {
 					"--implementer", impl.sid, "--work_order", WO_FILE],
 				body: "Do the work.",
 			}]);
-			expect(resolveRunningSession(impl.sid)?.workRecord).toEqual({ cwd: root, woId: WO_ID });
+			// The record is the spawner's own repo here (no isolation), and this run wrote one entry.
+			const record = resolveRunningSession(impl.sid)?.workRecord;
+			expect({ cwd: record?.cwd, woId: record?.woId }).toEqual({ cwd: root, woId: WO_ID });
+			expect(record?.entries).toEqual([{ kind: "dispatch", keys: { implementer: impl.sid } }]);
 		},
 		60_000,
 	);
@@ -335,7 +326,7 @@ describe("a reviewer spawn without workOrderPath", () => {
 			expect(reviewer.text).not.toContain("work-order record");
 			const rs = resolveRunningSession(reviewer.sid);
 			expect(rs?.workRecord).toBeUndefined();
-			expect(rs?.recordNotes).toEqual([]);
+			expect(rs?.recordFailures).toEqual([]);
 		},
 		60_000,
 	);
