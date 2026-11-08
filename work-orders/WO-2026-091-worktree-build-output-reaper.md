@@ -173,9 +173,12 @@ here yet, which is why 048's measurement found nothing.
 **Also found: route 1 reads the wrong `.d` files.** Absolute worktree paths do
 exist in the shared dirs — 25 source-rule `.d` (12 in `tfd-d-487`, 13 in
 `tfd-gate-424-prep`; 10 + 10 under `examples/`, 2 + 3 at the profile root) and 12
-build-script `.d` under `<profile>/build/**/out/` carrying only
-`# env-dep:CARGO_MANIFEST_DIR=/…/tfd-d-487-210bf89ad757/parser`. All of them sit
-outside `<profile>/deps/`, which is all `pruneExactArtifacts` reads. Route 1 is
+build-script `.d` under `<profile>/build/**/out/` whose only worktree-naming line
+is a `# env-dep:CARGO_MANIFEST_DIR=` one — three dead worktrees across two
+crates: `tfd-d-487-210bf89ad757` (parser 2, codegen 2), `tfd-d-487-7a3db341ffc7`
+(codegen 1), `tfd-gate-424-prep-74be735f6e04` (codegen 5, parser 2). All of them
+sit outside `<profile>/deps/`, which is all `pruneExactArtifacts` reads — and the
+12 build-script ones are outside option C's proposed width too. Route 1 is
 inert on this box because of its scan scope, not because cargo writes relative
 paths everywhere. A dead worktree of `tfd-d-487` (`210bf89ad757`) still has
 artifacts in the shared dir today, and its paths are at `examples/`.
@@ -233,17 +236,24 @@ Three consequences the option costs have to carry:
   clean), `tests/subagent-worktree-lock.test.ts:510` (R1 asserts `(exact)` and
   the `.d`/`.rlib`/`.fingerprint` deletions — assert the coarse pass instead),
   `:567` (an unreadable `.d` reaches `detail` only because route 1 reads it), and
-  `:597` (the bound's per-dead-path pass). Mechanically `planCargoBound`'s `dead`
+  `:597` (the bound's per-dead-path pass), plus two call-site-only arity edits
+  where a row's assertions survive untouched: `:396` (call at `:400`) and `:403`
+  (calls at `:406`, `:408`). Mechanically `planCargoBound`'s `dead`
   argument goes (calls at `:391`, `:400`, `:406`, `:408`, `:419`), and `route`
-  keeps its `"coarse"`/`"none"` arms — asserted at `:249`, `:266`, `:277` — while
-  the `"exact"` arm (`:233`) goes. Mutation behind the list: with
+  keeps its `"coarse"`/`"none"` arms — `"coarse"` asserted at `:249`, `:459`,
+  `:568`, `"none"` at `:266`, `:277` — while
+  the `"exact"` arm (`:233`, `:491`, `:662`) goes. Mutation behind the list: with
   `pruneExactArtifacts` returning zeros, `bun test tests/build-output-reaper.test.ts`
   → 6 fail (`:156`, `:179`, `:226`, `:465`, `:573`, `:648`); `:199` stays green
   and vacuous.
 - **C — widen the scan** to `<profile>/*.d` and `<profile>/examples/*.d`, where
   the 25 source-rule `.d` carrying absolute worktree paths actually are. The only
   option that makes attribution do something on a workspace-root checkout, and
-  the only one that would reach `210bf89ad757`'s leftovers. M2's mechanism names
+  the only one that would reach `210bf89ad757`'s leftovers. Its reach stops short
+  of route 2's: the workspace members' relative `deps/` units stay unattributable
+  under C too, because route 2 still cannot run in this layout, so C is not a
+  substitute for the coarse pass — it is what would cover the bins, examples and
+  profile-root units. M2's mechanism names
   `deps/*.d`, so it is an order the current one does not carry; it would also
   need non-`deps` fixtures, since `fakeSharedDir` builds only `debug/deps/*.d`.
 
@@ -254,7 +264,7 @@ authority). **State this round:** route 1 is unchanged and nothing is deleted.
 
 **Doc edits each outcome owes**, so the ruling and the docs move together:
 A — `decisions/subagents/048-…:57` (Rulings bullet, scoped not rewritten) and
-`:72`, plus the fixture comment at `tests/build-output-reaper.test.ts:237-239`,
+`:72`, plus the fixture comment at `tests/build-output-reaper.test.ts:238-239`,
 which states the falsified generalisation flatly. B — the row rework above, R4
 rewritten, and 048's §*Route 1 is inert* becoming the deletion record. C — the
 scan change plus its fixtures.
