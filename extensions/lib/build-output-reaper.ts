@@ -567,16 +567,21 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 	// the bound, and treating that as 0 would disable the bound. Results are
 	// filtered back into walk order so the report is deterministic.
 	const measured = await Promise.all(
-		cloneDirs.map(async (cargoTargetDir) => {
+		cloneDirs.map(async (cargoTargetDir): Promise<{ cargoTargetDir: string; bytes: number } | { problem: string }> => {
 			try {
 				return { cargoTargetDir, bytes: await sizeOf(cargoTargetDir) };
 			} catch (e) {
-				report.problems.push(`could not measure ${cargoTargetDir}: ${e instanceof Error ? e.message : String(e)}`);
-				return null;
+				return { problem: `could not measure ${cargoTargetDir}: ${e instanceof Error ? e.message : String(e)}` };
 			}
 		}),
 	);
-	const dirSizes = measured.filter((m): m is { cargoTargetDir: string; bytes: number } => m !== null);
+	// Folded back in walk order, problems included: concurrency must not show up
+	// as a report whose lines are ordered by whichever `du` failed first.
+	const dirSizes: Array<{ cargoTargetDir: string; bytes: number }> = [];
+	for (const m of measured) {
+		if ("problem" in m) report.problems.push(m.problem);
+		else dirSizes.push(m);
+	}
 	const parentCwdFor = (cargoTargetDir: string): string | undefined =>
 		opts.deadWorktrees.find((d) => {
 			const repoName = repoNameFromWorktreePath(d.worktreePath, home);
