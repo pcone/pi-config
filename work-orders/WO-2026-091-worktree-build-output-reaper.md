@@ -137,3 +137,134 @@ unlock/relock contract bolted onto a path whose tree is being replaced anyway.
 **State this round:** the site is unchanged and no code routes it. The claim in
 `048` that the harness has one removal path is corrected there to name this
 site and this question; the ruling, whichever way it goes, replaces that note.
+
+### Owner question Q-091-b (raised 2026-11-08) — RULING PENDING
+
+**Ask:** route 1 *can* fire — the probe below makes it delete real artifacts —
+so the owner's deletion instruction (048 §Rulings, "if route 1 can never fire,
+delete it") has no condition to act on. Keep route 1, delete it on a narrower
+premise, or widen its scan?
+
+**Probe** (cargo 1.96.0-nightly, 2026-11-08, `~/Developer/probe-depinfo`;
+verbatim `.d` dumps in `PROBE.md` beside it). A workspace at `W/ws` whose member
+`app` has `inside-lib = { path = "../../inside-lib" }`, `CARGO_TARGET_DIR`
+outside the tree, `W` standing in for a worktree root:
+
+| build | `.d` under `deps/` naming a path | route 1 on `W` |
+|---|---|---|
+| workspace root = `W` (no out-of-workspace dep), from the root | relative `app/src/main.rs` | no |
+| same, via `--manifest-path` from outside the tree | relative | no |
+| workspace at `W/ws`, dep at `W/inside-lib`, from `W/ws` | `/…/W/inside-lib/src/lib.rs` | **yes: 2 scanned, 1 matched, 4 files + 1 dir deleted** |
+| same, via `--manifest-path` from outside the tree | absolute | **yes: 1 matched, 4 files + 1 dir** |
+| same, cwd = the member dir | absolute | **yes: 1 matched, 4 files + 1 dir** |
+| dep outside the worktree entirely | absolute, outside `W` | no |
+
+Cargo writes a source path relative to the **workspace root it built**, and
+absolute for a crate outside that root. Route 1 fires when the workspace root is
+a subdirectory of the checkout and a path dependency sits elsewhere in the
+checkout — a normal cargo layout, not a synthetic one.
+
+**What is true on this box.** Every cargo repo here roots its workspace at the
+checkout root (`tfd/Cargo.toml`; `editors/zed` is a standalone `[workspace]` with
+no out-of-workspace path dep), so no `<profile>/deps/*.d` names a worktree: 0 of
+3 `.d` files across the three shared dirs. The shape that fires does not exist
+here yet, which is why 048's measurement found nothing.
+
+**Also found: route 1 reads the wrong `.d` files.** Absolute worktree paths do
+exist in the shared dirs — 25 source-rule `.d` (12 in `tfd-d-487`, 13 in
+`tfd-gate-424-prep`; 10 + 10 under `examples/`, 2 + 3 at the profile root) and 12
+build-script `.d` under `<profile>/build/**/out/` whose only worktree-naming line
+is a `# env-dep:CARGO_MANIFEST_DIR=` one — three dead worktrees across two
+crates: `tfd-d-487-210bf89ad757` (parser 2, codegen 2), `tfd-d-487-7a3db341ffc7`
+(codegen 1), `tfd-gate-424-prep-74be735f6e04` (codegen 5, parser 2). All of them
+sit outside `<profile>/deps/`, which is all `pruneExactArtifacts` reads — and the
+12 build-script ones are outside option C's proposed width too. Route 1 is
+inert on this box because of its scan scope, not because cargo writes relative
+paths everywhere. A dead worktree of `tfd-d-487` (`210bf89ad757`) still has
+artifacts in the shared dir today, and its paths are at `examples/`.
+
+**In the layout where route 1 fires, route 2 does not run and cannot.** Two
+separate reasons, both measured on the probe:
+
+- `pruneCargoArtifactsFor` returns early when `exact.depInfoMatched > 0`
+  (`build-output-reaper.ts:308`), so route 1 firing *suppresses* route 2.
+- `cleanCargoWorkspaceMembers` reads `<parentCwd>/Cargo.toml`, and a checkout
+  whose workspace lives in a subdirectory has no manifest at its root:
+  `cleanCargoWorkspaceMembers(W)` → `{"membersCleaned":[],"problems":["no /…/W/Cargo.toml:
+  not a cargo workspace"]}`, 0 cargo calls. A nested-workspace checkout with no
+  out-of-workspace dep gets *neither* route.
+
+Three consequences the option costs have to carry:
+
+1. Keeping route 1 removes only the out-of-workspace path-dependency units. The
+   workspace members' own artifacts survive either way, because their `.d` paths
+   are relative and route 2 is what would drop them.
+2. "Route 2 is what every removal pays anyway" is false in this layout.
+3. Deleting route 1 leaves the order's **R4** (`:79`, attribution deletes only
+   the dead worktree's artifacts) with no mechanism, and the owner's "if they can
+   be told apart" clause with nothing that tells them apart. A ruling for B
+   changes an acceptance row, which the owner has to do knowingly.
+
+**Options.**
+
+- **A (recorder's recommendation, not a ruling) — keep route 1, correct the
+  claim.** In the only layout where it can fire, it is the only mechanism that
+  exists, and it is what R4 and "if they can be told apart" rest on. Its cost is
+  the per-removal dep-info scan (measured at ~50 ms for 700 `.d`) and a claim in
+  `048` that has to be scoped to a workspace-root checkout. Its limit is real and
+  belongs in the record: it clears only out-of-workspace units, and it reads
+  `deps/` where this box's absolute worktree paths are not.
+- **B — delete it.** Argument for: no repo on this box has the layout that fires,
+  so it costs a scan per removal and buys nothing here. Code cost: the route-1
+  section is `:65-:182` (118 lines including its banner) plus 32 lines outside it
+  that name a route-1 symbol —
+  `rg -n 'pruneExactArtifacts|ExactPruneResult|depInfoScanned|depInfoMatched|worktreePaths|worktreePathsPruned|filesDeleted|dirsDeleted|"exact"' extensions/lib/build-output-reaper.ts`,
+  minus that section. Argument against: it
+  retires R4 and the "told apart" clause, and it leaves a nested-workspace
+  checkout with no attribution at all. Blast radius, read off the rows at this
+  tip: **4 deleted** — `tests/build-output-reaper.test.ts:156`, `:199`, `:226`,
+  `:648` (`:199` tests a predicate that would no longer exist; it does not red,
+  it goes with the function) — and **9 rewritten**, because the behaviour they
+  pin survives: `tests/build-output-reaper.test.ts:179` (`describePrune`'s
+  "problems:" arm — the sole row for that function), `:387` and `:412`
+  (`planCargoBound`'s `worktreePaths`, and the namespace filter that moves to
+  `parentCwdFor`), `:435` (drop `worktreePathsPruned`, keep the over-bound
+  verdict and the never-a-full-clean assertion), `:465` (a bound verdict, not a
+  route-1 one), `:573` (assertion at `:605`: its `.d` fixture and
+  `existsSync(depInfo)` are route-1-only, and its `parentCwd: ""` blocks a coarse
+  pass — drop them, or give it a workspace `parentCwd` and assert the coarse
+  clean), `tests/subagent-worktree-lock.test.ts:510` (R1 asserts `(exact)` and
+  the `.d`/`.rlib`/`.fingerprint` deletions — assert the coarse pass instead),
+  `:567` (an unreadable `.d` reaches `detail` only because route 1 reads it), and
+  `:597` (the bound's per-dead-path pass), plus two call-site-only arity edits
+  where a row's assertions survive untouched: `:396` (call at `:400`) and `:403`
+  (calls at `:406`, `:408`). Mechanically `planCargoBound`'s `dead`
+  argument goes (calls at `:391`, `:400`, `:406`, `:408`, `:419`), and `route`
+  keeps its `"coarse"`/`"none"` arms — `"coarse"` asserted at `:249`, `:459`,
+  `:568`, `"none"` at `:266`, `:277` — while
+  the `"exact"` arm (`:233`, `:491`, `:662`) goes. Mutation behind the list: with
+  `pruneExactArtifacts` returning zeros, `bun test tests/build-output-reaper.test.ts`
+  → 6 fail (`:156`, `:179`, `:226`, `:465`, `:573`, `:648`); `:199` stays green
+  and vacuous.
+- **C — widen the scan** to `<profile>/*.d` and `<profile>/examples/*.d`, where
+  the 25 source-rule `.d` carrying absolute worktree paths actually are. The only
+  option that makes attribution do something on a workspace-root checkout, and
+  the only one that would reach `210bf89ad757`'s leftovers. Its reach stops short
+  of route 2's: the workspace members' relative `deps/` units stay unattributable
+  under C too, because route 2 still cannot run in this layout, so C is not a
+  substitute for the coarse pass — it is what would cover the bins, examples and
+  profile-root units. M2's mechanism names
+  `deps/*.d`, so it is an order the current one does not carry; it would also
+  need non-`deps` fixtures, since `fakeSharedDir` builds only `debug/deps/*.d`.
+
+**Why a ruling and not a review.** The owner's instruction was conditional on a
+probe; the probe came back the other way. A reviewer cannot rule on it, and
+landing the deletion anyway would be a departure (APPEND_SYSTEM §Spec
+authority). **State this round:** route 1 is unchanged and nothing is deleted.
+
+**Doc edits each outcome owes**, so the ruling and the docs move together:
+A — `decisions/subagents/048-…:57` (Rulings bullet, scoped not rewritten) and
+`:72`, plus the fixture comment at `tests/build-output-reaper.test.ts:238-239`,
+which states the falsified generalisation flatly. B — the row rework above, R4
+rewritten, and 048's §*Route 1 is inert* becoming the deletion record. C — the
+scan change plus its fixtures.
