@@ -18,15 +18,8 @@ import {
 	type PendingStallObservation,
 	type TurnAction,
 } from "../lib/subagent-state.ts";
-import {
-	STALL_STEER,
-	TURN_CAP_WIND_DOWN_STEER,
-	appendRunningLogLine,
-	debugLog,
-	dispatchKillSignals,
-	steerChild,
-	type RunningSubagent,
-} from "./index.ts";
+import { STALL_STEER, TURN_CAP_WIND_DOWN_STEER, debugLog, dispatchKillSignals, type RunningSubagent } from "./index.ts";
+import { appendRunningLogLine, steerChild } from "./rpc.ts";
 
 // ── Turn cap and stall tripwire (decision 046) ─────────────────────────────
 
