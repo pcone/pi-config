@@ -14,7 +14,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, {
@@ -400,6 +400,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		const repo = makeRepo();
 		const { dir, worktreePath } = makeEntryFor(repo, "tracked-1", {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+			target: true,
 		});
 		const { _testRunning } = await import("../extensions/subagent-async/index.ts");
 		_testRunning.set("tracked-1", { sessionId: "tracked-1" } as any);
@@ -407,6 +408,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 			expect(results).toEqual([]);
 			expect(existsSync(worktreePath)).toBe(true);
+			expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
 		} finally {
 			_testRunning.delete("tracked-1");
 		}
@@ -423,6 +425,9 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 		const { dir, worktreePath } = makeEntryFor(repo, "submod-1", {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+			// M4's funnel covers every kept outcome, not only kept-uncommitted.
+			target: true,
+			parentCwd: repo,
 		});
 		git(worktreePath, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]);
 		expect(git(worktreePath, ["status", "--porcelain", "-uall"]).out.trim()).toBe("");
@@ -435,6 +440,10 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		expect(entry).not.toBeNull();
 		expect(entry!).toContain("locked");
 		expect(entry!).toContain("(reap failed)");
+		// The branch sits at the parent commit, so the kept tree's build output
+		// goes even though the tree could not be removed.
+		expect(existsSync(join(worktreePath, "target"))).toBe(false);
+		expect(results[0].detail).toContain("branch merged");
 		// Two repos, a submodule add/update and a refused worktree remove: ~6 s
 		// alone, over the 5 s default on a loaded box.
 	}, 30_000);
@@ -520,7 +529,11 @@ describe("reap build output (real git, injected registry)", () => {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 
 			expect(results.map((r) => r.outcome)).toEqual(["removed"]);
-			// R1: neither the tree nor its target survives.
+			// R1: neither the tree nor its target survives. These two lines cannot
+			// fail on their own: `removeWorktreeTree` disposes only after git removed
+			// the tree, and `git worktree remove` deletes an ignored target/ with it.
+			// What pins the mechanism is the shared-dir assertions below; M1's own
+			// firing is pinned by the M4 rows (a kept tree keeps its directory).
 			expect(existsSync(worktreePath)).toBe(false);
 			expect(existsSync(join(worktreePath, "target"))).toBe(false);
 			// ... and the worktree's share of the clone's shared dir goes too.
@@ -551,6 +564,79 @@ describe("reap build output (real git, injected registry)", () => {
 		expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
 	});
 
+	it("a failed prune reaches ReapResult.detail (reported, not swallowed)", async () => {
+		const home = tempDir("pi-reap-home-");
+		const repo = makeRepo();
+		const repoName = repo.split("/").pop()!;
+		const worktreePath = join(home, "Developer", "wt", "subagents", `${repoName}-4add98737109`);
+		const deps = join(home, ".cache", "cargo-target", repoName, "debug", "deps");
+		mkdirSync(deps, { recursive: true });
+		// A `.d` the prune cannot read: the row is that the failure is reported,
+		// not that the artifacts went.
+		const unreadable = join(deps, `${repoName}_x-deadbeefdeadbeef.d`);
+		writeFileSync(unreadable, `${worktreePath}/src/lib.rs: ${worktreePath}/src/lib.rs\n`);
+		chmodSync(unreadable, 0o000);
+
+		const { dir } = entryAt(repo, "reaped-unreadable", worktreePath, {
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+
+		_testSetCargoHome(home);
+		try {
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+			expect(results.map((r) => r.outcome)).toEqual(["removed"]);
+			expect(results[0].detail).toContain("problems:");
+			expect(results[0].detail).toContain("not readable");
+		} finally {
+			chmodSync(unreadable, 0o644);
+			_testSetCargoHome(join(fixtureRoot, "home"));
+		}
+	});
+
+	it("the bound prunes a dead worktree's share of an over-bound clone", async () => {
+		const home = tempDir("pi-reap-home-");
+		const repo = makeRepo();
+		const repoName = repo.split("/").pop()!;
+		// A tree that is already gone (its meta still names it), and its share of
+		// the clone's shared dir, which only the bound's pass can reach.
+		const deadPath = join(home, "Developer", "wt", "subagents", `${repoName}-1234567890ab`);
+		const deps = join(home, ".cache", "cargo-target", repoName, "debug", "deps");
+		mkdirSync(deps, { recursive: true });
+		const depInfo = join(deps, `${repoName}-deadbeefdeadbeef.d`);
+		writeFileSync(depInfo, `${deadPath}/src/lib.rs: ${deadPath}/src/lib.rs\n`);
+		const entry = makeEntryFor(repo, "dead-under-bound", {
+			worktreePath: join(tempDir("pi-reap-wt-"), "tree"),
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		// Rewrite the meta to the gone path, with a foreign owner that is dead, so
+		// the reap's own loop skips it and only the bound can act on it.
+		const metaFile = join(entry.dir, "pi-subagent-dead-under-bound.meta.json");
+		const meta = JSON.parse(readFileSync(metaFile, "utf8"));
+		meta.worktreePath = deadPath;
+		meta.ownerPid = process.pid === 1 ? 2 : process.ppid;
+		meta.ownerStartToken = "not-our-token";
+		writeFileSync(metaFile, JSON.stringify(meta));
+		git(entry.worktreePath, ["status"]);
+
+		_testSetCargoHome(home);
+		try {
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+				dir: entry.dir,
+				selfPid: -1,
+				probe: { exists: () => false, startToken: () => null },
+				sizeOf: () => 25 * 1024 ** 3,
+			});
+
+			// The reap's loop did not touch it (foreign, dead owner) ...
+			expect(results).toEqual([]);
+			// ... so the bound is what pruned the dead path's share.
+			expect(existsSync(depInfo)).toBe(false);
+		} finally {
+			_testSetCargoHome(join(fixtureRoot, "home"));
+		}
+	});
+
 	it("a kept tree whose branch is merged into the parent HEAD loses its target/ (R6)", async () => {
 		const repo = makeRepo();
 		const { dir, worktreePath } = entryAt(repo, "kept-merged", join(tempDir("pi-reap-wt-"), "tree"), {
@@ -569,6 +655,29 @@ describe("reap build output (real git, injected registry)", () => {
 		expect(existsSync(join(worktreePath, "target"))).toBe(false);
 		expect(readFileSync(join(worktreePath, "uncommitted.txt"), "utf8")).toBe("bytes\n");
 		expect(results[0].detail).toContain("branch merged");
+	});
+
+	it("a kept tree whose target cannot be dropped reports it in ReapResult.detail", async () => {
+		const repo = makeRepo();
+		const { dir, worktreePath } = entryAt(repo, "kept-locked-target", join(tempDir("pi-reap-wt-"), "tree"), {
+			target: true,
+			dirty: true,
+			parentCwd: repo,
+			logLastLine: "── Exited (1 turns, exit 1) ──\n",
+		});
+		// A read-only dir inside target/: M4's unlink fails and must be reported,
+		// not swallowed, while the tree stays.
+		const inner = join(worktreePath, "target", "debug");
+		chmodSync(inner, 0o500);
+		try {
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+			expect(results.map((r) => r.outcome)).toEqual(["kept-uncommitted"]);
+			expect(results[0].detail).toContain("not removed");
+			expect(existsSync(inner)).toBe(true);
+		} finally {
+			chmodSync(inner, 0o755);
+		}
 	});
 
 	it("a kept tree whose branch still holds unlanded work keeps its target/ (R6)", async () => {

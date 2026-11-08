@@ -3714,6 +3714,8 @@ export interface RecoveryScanDeps {
 	home?: string;
 	/** Override for the reap's `cargo` / `git` calls (tests). */
 	run?: CommandRunner;
+	/** Override for the bound's directory-size measure (tests). */
+	sizeOf?: (dir: string) => number | Promise<number>;
 }
 
 /**
@@ -3981,9 +3983,10 @@ export async function reapFinishedWorktrees(
 			// it still works, only the multi-GB target goes.
 			const keep = async (outcome: ReapResult["outcome"], detail?: string): Promise<void> => {
 				const landed = await dropLandedWorktreeTarget({ worktreePath, branch: isolationBranch, parentCwd });
-				if (landed.dropped) detail = [detail, `target/ dropped (branch ${landed.state})`].filter(Boolean).join("; ");
-				else if (landed.detail) debugLog(`reap: ${sid} target/ kept: ${landed.detail}`);
-				results.push({ sid, outcome, worktreePath, ...(detail ? { detail } : {}) });
+				if (landed.detail) debugLog(`reap: ${sid} target/ kept: ${landed.detail}`);
+				const notes = [detail, landed.dropped ? `target/ dropped (branch ${landed.state})` : null, ...landed.problems];
+				const joined = notes.filter(Boolean).join("; ");
+				results.push({ sid, outcome, worktreePath, ...(joined ? { detail: joined } : {}) });
 			};
 
 			if (!fs.existsSync(worktreePath)) {
@@ -4066,6 +4069,7 @@ export async function reapFinishedWorktrees(
 			home: deps.home ?? cargoHomeOverride,
 			deadWorktrees: [...dead.values()],
 			run: deps.run,
+			sizeOf: deps.sizeOf,
 		});
 		for (const entry of bound.entries) {
 			debugLog(

@@ -13,13 +13,14 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	CARGO_TARGET_BOUND_BYTES,
 	cargoWorkspaceMembers,
 	cleanCargoWorkspaceMembers,
+	describePrune,
 	dirSizeBytes,
 	dropLandedWorktreeTarget,
 	enforceCargoTargetBound,
@@ -93,6 +94,25 @@ describe("removeWorktreeTarget (M1)", () => {
 		expect(readFileSync(join(wt, "target"), "utf8")).toBe("not a dir\n");
 	});
 
+	it("records an unlink failure instead of throwing (reported, never swallowed)", () => {
+		const wt = tempDir("pi-reaper-wt-");
+		// A read-only directory inside target/: recursive delete cannot empty it,
+		// so the unlink really fails and must be reported, not swallowed.
+		mkdirSync(join(wt, "target", "sub"), { recursive: true });
+		writeFileSync(join(wt, "target", "sub", "artifact"), "bytes\n");
+		const locked = lstatSync(join(wt, "target", "sub"));
+		const originalMode = locked.mode & 0o777;
+		chmodSync(join(wt, "target", "sub"), 0o500);
+		const problems: string[] = [];
+		try {
+			expect(removeWorktreeTarget(wt, (d) => problems.push(d))).toBe(false);
+		} finally {
+			chmodSync(join(wt, "target", "sub"), originalMode);
+		}
+		expect(problems).toHaveLength(1);
+		expect(problems[0]).toContain("not removed");
+	});
+
 	it("returns false and stays quiet when there is no target", () => {
 		const wt = tempDir("pi-reaper-wt-");
 		const problems: string[] = [];
@@ -104,19 +124,29 @@ describe("removeWorktreeTarget (M1)", () => {
 // ── M2 route 1 — attribution ──────────────────────────────────────────────
 
 /** A shared dir shaped like a real one: one profile, `.d` files that name a
- *  source under the worktree, and the artifacts of both crates. */
+ *  source under the worktree, and the artifacts of both crates.
+ *
+ * The crate names carry cargo's divergence on purpose: dep-info and the linked
+ * artifacts use the *target* name (`tfd_d-<16hex>.d`, `libtfd_d-<16hex>.rlib`),
+ * while `.fingerprint` and `build` dirs use the *package* name
+ * (`tfd-d-<16hex>`). Both spellings must be derived from one stem. */
 function fakeSharedDir(deadPath: string, livePath: string): string {
 	const shared = tempDir("pi-reaper-shared-");
 	const deps = join(shared, "debug", "deps");
 	mkdirSync(deps, { recursive: true });
-	writeFileSync(join(deps, "dead-abc123.d"), `${join(deps, "libdead-abc123.rlib")}: ${join(deadPath, "src/lib.rs")}\n`);
-	writeFileSync(join(deps, "libdead-abc123.rlib"), "dead\n");
-	writeFileSync(join(deps, "libdead-abc123.rmeta"), "dead\n");
-	writeFileSync(join(deps, "live-def456.d"), `${join(deps, "liblive-def456.rlib")}: ${join(livePath, "src/lib.rs")}\n`);
-	writeFileSync(join(deps, "liblive-def456.rlib"), "live\n");
-	for (const [sub, name] of [["debug/.fingerprint", "dead-abc123"], ["debug/.fingerprint", "live-def456"], ["debug/build", "dead-abc123"], ["debug/build", "live-def456"]] as const) {
+	writeFileSync(join(deps, "tfd_d-06cf16eab8d292f7.d"), `${join(deps, "libtfd_d-06cf16eab8d292f7.rlib")}: ${join(deadPath, "src/lib.rs")}\n`);
+	writeFileSync(join(deps, "libtfd_d-06cf16eab8d292f7.rlib"), "dead\n");
+	writeFileSync(join(deps, "libtfd_d-06cf16eab8d292f7.rmeta"), "dead\n");
+	writeFileSync(join(deps, "tfd_rt-bd8665ddd11f8381.d"), `${join(deps, "libtfd_rt-bd8665ddd11f8381.rlib")}: ${join(livePath, "src/lib.rs")}\n`);
+	writeFileSync(join(deps, "libtfd_rt-bd8665ddd11f8381.rlib"), "live\n");
+	for (const [sub, name, body] of [
+		["debug/.fingerprint", "tfd-d-06cf16eab8d292f7", "dead\n"],
+		["debug/.fingerprint", "tfd-rt-bd8665ddd11f8381", "live\n"],
+		["debug/build", "tfd-d-06cf16eab8d292f7", "dead\n"],
+		["debug/build", "tfd-rt-bd8665ddd11f8381", "live\n"],
+	] as const) {
 		mkdirSync(join(shared, sub, name), { recursive: true });
-		writeFileSync(join(shared, sub, name, "entry"), name === "dead-abc123" ? "dead\n" : "live\n");
+		writeFileSync(join(shared, sub, name, "entry"), body);
 	}
 	return shared;
 }
@@ -130,17 +160,39 @@ describe("pruneExactArtifacts (M2 route 1)", () => {
 		const result = pruneExactArtifacts(shared, deadPath);
 
 		expect(result).toMatchObject({ depInfoScanned: 2, depInfoMatched: 1, problems: [] });
-		// The dead crate's unit: dep-info, rlib, rmeta, and its two cargo dirs.
-		expect(existsSync(join(shared, "debug", "deps", "dead-abc123.d"))).toBe(false);
-		expect(existsSync(join(shared, "debug", "deps", "libdead-abc123.rlib"))).toBe(false);
-		expect(existsSync(join(shared, "debug", "deps", "libdead-abc123.rmeta"))).toBe(false);
-		expect(existsSync(join(shared, "debug", ".fingerprint", "dead-abc123"))).toBe(false);
-		expect(existsSync(join(shared, "debug", "build", "dead-abc123"))).toBe(false);
+		// The dead crate's unit: dep-info, rlib, rmeta, and its two cargo dirs —
+		// the fingerprint/build dirs spelled with the package name, not the target
+		// name the `.d` stem carries.
+		expect(existsSync(join(shared, "debug", "deps", "tfd_d-06cf16eab8d292f7.d"))).toBe(false);
+		expect(existsSync(join(shared, "debug", "deps", "libtfd_d-06cf16eab8d292f7.rlib"))).toBe(false);
+		expect(existsSync(join(shared, "debug", "deps", "libtfd_d-06cf16eab8d292f7.rmeta"))).toBe(false);
+		expect(existsSync(join(shared, "debug", ".fingerprint", "tfd-d-06cf16eab8d292f7"))).toBe(false);
+		expect(existsSync(join(shared, "debug", "build", "tfd-d-06cf16eab8d292f7"))).toBe(false);
 		// The live worktree's copies are untouched.
-		expect(existsSync(join(shared, "debug", "deps", "live-def456.d"))).toBe(true);
-		expect(existsSync(join(shared, "debug", "deps", "liblive-def456.rlib"))).toBe(true);
-		expect(existsSync(join(shared, "debug", ".fingerprint", "live-def456"))).toBe(true);
-		expect(existsSync(join(shared, "debug", "build", "live-def456"))).toBe(true);
+		expect(existsSync(join(shared, "debug", "deps", "tfd_rt-bd8665ddd11f8381.d"))).toBe(true);
+		expect(existsSync(join(shared, "debug", "deps", "libtfd_rt-bd8665ddd11f8381.rlib"))).toBe(true);
+		expect(existsSync(join(shared, "debug", ".fingerprint", "tfd-rt-bd8665ddd11f8381"))).toBe(true);
+		expect(existsSync(join(shared, "debug", "build", "tfd-rt-bd8665ddd11f8381"))).toBe(true);
+	});
+
+	it("reports a dep-info file it cannot read instead of swallowing it", async () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const shared = tempDir("pi-reaper-shared-");
+		const deps = join(shared, "debug", "deps");
+		mkdirSync(deps, { recursive: true });
+		const unreadable = write(join(deps, "unreadable-abc123.d"), `${deadPath}/src/lib.rs: ${deadPath}/src/lib.rs\n`);
+		chmodSync(unreadable, 0o000);
+		try {
+			const result = await pruneCargoArtifactsFor(shared, deadPath, { run: fakeRunner().run });
+
+			expect(result.depInfoMatched).toBe(0);
+			expect(result.problems.join(" ")).toContain("not readable");
+			// And the failure reaches the caller's report line, which is what a
+			// ReapResult.detail carries.
+			expect(describePrune(result)).toContain("problems:");
+		} finally {
+			chmodSync(unreadable, 0o644);
+		}
 	});
 
 	it("does not attribute a .d that merely shares the path's prefix", () => {
@@ -310,6 +362,15 @@ describe("planCargoBound (M3)", () => {
 		expect(planCargoBound([{ cargoTargetDir, bytes: 19 * GiB }], dead, CARGO_TARGET_BOUND_BYTES, home)).toEqual([]);
 	});
 
+	it("treats exactly the bound as under it", () => {
+		const cargoTargetDir = sharedFor("tfd-d");
+
+		expect(planCargoBound([{ cargoTargetDir, bytes: CARGO_TARGET_BOUND_BYTES }], [], CARGO_TARGET_BOUND_BYTES, home)).toEqual([]);
+		expect(
+			planCargoBound([{ cargoTargetDir, bytes: CARGO_TARGET_BOUND_BYTES + 1 }], [], CARGO_TARGET_BOUND_BYTES, home),
+		).toHaveLength(1);
+	});
+
 	it("ignores dead paths of another clone and paths outside the namespace", () => {
 		const cargoTargetDir = sharedFor("tfd-d");
 		const dead = [
@@ -414,6 +475,14 @@ describe("dirSizeBytes", () => {
 		symlinkSync(join(outside, "c"), join(dir, "link"));
 
 		expect(await dirSizeBytes(dir)).toBe(2 * MiB);
+	});
+
+	it("counts a hard link once, the reason it shells out to du", async () => {
+		const dir = tempDir("pi-reaper-size-");
+		writeFileSync(join(dir, "a"), Buffer.alloc(MiB));
+		linkSync(join(dir, "a"), join(dir, "b"));
+
+		expect(await dirSizeBytes(dir)).toBe(MiB);
 	});
 
 	it("answers 0 for a path that is not there", async () => {

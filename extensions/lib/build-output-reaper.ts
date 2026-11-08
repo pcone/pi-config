@@ -377,6 +377,9 @@ export interface LandedTargetResult {
 	dropped: boolean;
 	/** `merged` / `gone` end the build output's claim; `live` keeps it. */
 	state: "merged" | "gone" | "live" | "unknown";
+	/** Unswallowed failures from the target delete, for the caller's report. */
+	problems: string[];
+	/** Why the branch state could not be read — informational, not a failure. */
 	detail?: string;
 }
 
@@ -398,28 +401,28 @@ export async function dropLandedWorktreeTarget(
 ): Promise<LandedTargetResult> {
 	const run = opts.run ?? spawnRunner;
 	const { worktreePath, branch, parentCwd } = facts;
-	if (!branch) return { dropped: false, state: "unknown", detail: "no isolation branch recorded" };
-	if (!existsSync(parentCwd)) return { dropped: false, state: "unknown", detail: `parent checkout gone: ${parentCwd}` };
+	if (!branch) return { dropped: false, state: "unknown", problems: [], detail: "no isolation branch recorded" };
+	if (!existsSync(parentCwd)) {
+		return { dropped: false, state: "unknown", problems: [], detail: `parent checkout gone: ${parentCwd}` };
+	}
+
+	const drop = (state: "merged" | "gone"): LandedTargetResult => {
+		const problems: string[] = [];
+		const dropped = removeWorktreeTarget(worktreePath, (detail) => problems.push(detail));
+		return { dropped, state, problems };
+	};
 
 	const merged = await run("git", ["branch", "--merged", "HEAD"], { cwd: parentCwd });
 	if (merged.exitCode !== 0) {
-		return { dropped: false, state: "unknown", detail: `git branch --merged failed: ${merged.stderr.trim()}` };
+		return { dropped: false, state: "unknown", problems: [], detail: `git branch --merged failed: ${merged.stderr.trim()}` };
 	}
 	// `git branch` lists `* <name>`, `+ <name>` (in another worktree) and spaces.
 	const isMerged = merged.stdout.split("\n").some((line) => line.replace(/^[*+]?\s*/, "").trim() === branch);
-	if (isMerged) {
-		const problems: string[] = [];
-		const dropped = removeWorktreeTarget(worktreePath, (detail) => problems.push(detail));
-		return { dropped, state: "merged", detail: problems[0] };
-	}
+	if (isMerged) return drop("merged");
 
 	const exists = await run("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: parentCwd });
-	if (exists.exitCode !== 0) {
-		const problems: string[] = [];
-		const dropped = removeWorktreeTarget(worktreePath, (detail) => problems.push(detail));
-		return { dropped, state: "gone", detail: problems[0] };
-	}
-	return { dropped: false, state: "live" };
+	if (exists.exitCode !== 0) return drop("gone");
+	return { dropped: false, state: "live", problems: [] };
 }
 
 // ── M3 — the bound ─────────────────────────────────────────────────────────
