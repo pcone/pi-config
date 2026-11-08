@@ -625,14 +625,16 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 				return null;
 			}
 		};
-		const reportOver = (bytes: number | null): void => {
+		/** The one place an entry is closed: the bound comparison lives here, so a
+		 *  measured size and an unmeasured one (`null`) cannot be judged twice. */
+		const closeEntry = (bytes: number | null): void => {
 			entry.afterBytes = bytes;
 			entry.overBound = bytes === null ? null : bytes > boundBytes;
 			report.entries.push(entry);
 		};
 		const measuredAfterRoute1 = await remeasure();
 		if (measuredAfterRoute1 === null) {
-			reportOver(null);
+			closeEntry(null);
 			continue;
 		}
 		let after = measuredAfterRoute1;
@@ -647,7 +649,7 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 				// unreadable is reported as unmeasured, not as a size or a verdict.
 				const final = await remeasure();
 				if (final === null) {
-					reportOver(null);
+					closeEntry(null);
 					continue;
 				}
 				after = final;
@@ -655,9 +657,7 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 				entry.problems.push("no parent checkout recorded for this clone: coarse pass skipped");
 			}
 		}
-		entry.afterBytes = after;
-		entry.overBound = after > boundBytes;
-		report.entries.push(entry);
+		closeEntry(after);
 	}
 
 	return report;

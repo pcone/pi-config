@@ -3937,7 +3937,10 @@ export interface ReapResult {
  * on the branch) is unlocked and removed with a plain `worktree remove` — no
  * `--force`, so even a race cannot delete uncommitted work. A dirty tree is
  * left in place, marked in the meta (`worktreeKept`) so the status answer
- * offers `subagent_resume` for it, and the reap moves on. Never throws.
+ * offers `subagent_resume` for it, and the reap moves on. A removal or prune
+ * failure is reported in the result, never thrown; a bug in the build-output
+ * helpers is not swallowed, and surfaces through the caller's `reap: unhandled`
+ * log line.
  *
  * Build output (WO-2026-091) is not this function's: a removed tree loses its
  * `target/` and its share of the clone's shared cargo dir through

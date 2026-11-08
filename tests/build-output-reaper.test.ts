@@ -13,7 +13,7 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -528,6 +528,66 @@ describe("enforceCargoTargetBound (M3)", () => {
 		expect(report.entries[0]).toMatchObject({ membersCleaned: ["parser"], route: "coarse", afterBytes: null, overBound: null });
 		expect(report.entries[0].problems.join(" ")).toContain("could not re-measure");
 		expect(calls.map((c) => c.args)).toEqual([["clean", "-p", "parser"]]);
+	});
+
+	it("measures each clone's dir on its own, so one bad dir does not hide another", async () => {
+		// Arity production has: this box carries three clone dirs, and every other
+		// bound row builds one. One dir cannot be sized; the other is over-bound.
+		const home = tempDir("pi-reaper-home-");
+		const root = join(home, ".cache", "cargo-target");
+		const unmeasurable = join(root, "aaa-d");
+		const overBound = join(root, "zzz-d");
+		mkdirSync(join(unmeasurable, "debug"), { recursive: true });
+		const deps = join(overBound, "debug", "deps");
+		mkdirSync(deps, { recursive: true });
+		const deadPath = join(home, "Developer", "wt", "subagents", "zzz-d-77a40e201285");
+		const depInfo = join(deps, "zzz-d-abc123.d");
+		writeFileSync(depInfo, `${deadPath}/src/lib.rs: ${deadPath}/src/lib.rs\n`);
+		const { run } = fakeRunner();
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [{ worktreePath: deadPath, parentCwd: "" }],
+			sizeOf: (dir) => {
+				if (dir === unmeasurable) throw new Error("du: permission denied");
+				return 25 * GiB;
+			},
+			run,
+		});
+
+		// The bad dir reports and does not abort the walk ...
+		expect(report.problems).toHaveLength(1);
+		expect(report.problems[0]).toContain("aaa-d");
+		// ... the other dir is still judged against the bound, with its own size,
+		// and its dead path's share is pruned.
+		expect(report.entries).toHaveLength(1);
+		expect(report.entries[0]).toMatchObject({ cargoTargetDir: overBound, beforeBytes: 25 * GiB, overBound: true });
+		expect(existsSync(depInfo)).toBe(false);
+	});
+
+	it("reports unmeasurable dirs in walk order, not completion order", async () => {
+		const home = tempDir("pi-reaper-home-");
+		const root = join(home, ".cache", "cargo-target");
+		const first = join(root, "aaa-first");
+		const second = join(root, "zzz-second");
+		mkdirSync(first, { recursive: true });
+		mkdirSync(second, { recursive: true });
+		// Walk order is the listing's order, whatever that is on this filesystem.
+		const walkOrder = readdirSync(root).map((name) => join(root, name));
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [],
+			sizeOf: (dir) => {
+				throw new Error(`du: cannot read ${dir}`);
+			},
+			run: fakeRunner().run,
+		});
+
+		expect(report.entries).toEqual([]);
+		expect(report.problems).toHaveLength(2);
+		const named = report.problems.map((p) => (p.includes("aaa-first") ? first : second));
+		expect(named).toEqual(walkOrder);
 	});
 
 	it("takes no action for a dir under the bound", async () => {
