@@ -101,7 +101,9 @@ export function planSync(facts: SyncFacts): SyncPlan {
 
 /** `git status --porcelain` line → its two status columns and the path they describe. */
 export function parseStatusLine(line: string): { code: string; path: string } {
-	const code = line.slice(0, 2).trim() || "??";
+	// The two status columns, as git printed them: no inferred code for a line
+	// git never produces.
+	const code = line.slice(0, 2).trim();
 	const rest = line.slice(3);
 	// A rename prints `R  old -> new`; the new path is what exists now.
 	const path = rest.includes(" -> ") ? rest.split(" -> ").pop()! : rest;
