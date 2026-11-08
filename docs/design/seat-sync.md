@@ -81,6 +81,9 @@ Dirty outranks divergence because a fast-forward needs a clean tree whatever the
 counts say; divergence outranks ahead because it needs both numbers to be
 understood.
 
+A `git log` that fails while the branch is ahead leaves the subjects unnamed; the
+count is the fact and the subjects are decoration, so the report still names it.
+
 A branch with no upstream is skipped silently and spends no fetch: it has nothing
 to fast-forward to.
 

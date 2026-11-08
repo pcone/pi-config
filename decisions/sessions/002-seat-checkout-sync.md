@@ -10,12 +10,13 @@ date: 2026-11-08
 **Ruling.** At `session_start` in a clone's main checkout, `extensions/seat-sync.ts`
 fetches and runs `git merge --ff-only @{u}` when the tree is clean and the branch is
 not ahead. Every other state is a warning naming the evidence: dirty paths, the
-ahead or diverged counts, or the fetch's stderr. A `git worktree` (`.git` is a file)
-and any path beneath `wt/` are never touched.
+ahead or diverged counts, or the fetch's stderr — or, when the fetch it joined
+captured none, that it captured none. A `git worktree` (`.git` is a file) and any
+path beneath `wt/` are never touched.
 
-The fetch runs in a task `session_start` does not await. It is the one checkout
-fetch in the process, shared with `owner-asks` (`extensions/lib/git-fetch.ts`), and
-it is killed after 10 s.
+The fetch runs in a task `session_start` does not await. It is the one shared
+checkout fetch, joined by `owner-asks` (`extensions/lib/git-fetch.ts`), and it is
+killed after 10 s.
 
 **Why.** Measured 2026-11-08: `~/Developer/tfd` was 550 commits behind
 `origin/hamster`, `~/Developer/tfd-d` 881. Every seat session starts in its main

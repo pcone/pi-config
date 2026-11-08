@@ -74,9 +74,9 @@ async function registryRoot(cwd: string): Promise<string | null> {
 
 /**
  * Start a `git fetch` unless one started within FETCH_INTERVAL_MS. The fetch
- * itself is `lib/git-fetch.ts` — the one checkout fetch this process runs, which
- * the seat-sync extension joins or waits on. Fire-and-forget here: the counts
- * read whatever refs land.
+ * itself is `lib/git-fetch.ts` — the one shared checkout fetch, which the
+ * seat-sync extension joins or waits on. Fire-and-forget here: the counts read
+ * whatever refs land.
  */
 function fetchIfStale(root: string, cacheDir: string): void {
 	const stamp = path.join(cacheDir, `${sanitize(root)}.fetched`);
