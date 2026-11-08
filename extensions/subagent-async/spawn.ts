@@ -781,6 +781,10 @@ export async function spawnSubagent(
 		];
 		rs.recordNotes = [...(rs.recordNotes ?? []), ...record.notes];
 		rs.recordFailures = [...(rs.recordFailures ?? []), ...recordFailures];
+		// The session left the running map before this check could run (it must, see above), so the
+		// meta is the only place a status query can still read a record failure from (WO-2026-094
+		// M3). Written only when there is one: a clean close leaves the meta as it was.
+		if (recordFailures.length > 0) updateMetaJson(sessionId, { recordFailures });
 		const recordText = [
 			...record.notes,
 			...recordFailures.map((f) => `RECORD FAILURE: ${f}`),

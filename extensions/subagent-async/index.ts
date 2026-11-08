@@ -1814,9 +1814,12 @@ export default function (pi: ExtensionAPI) {
 			);
 			// The resumed run completes the same work-order record (decisions/work-order-records/001).
 			// A resume is not isolated — its commits land in `cwd` — so that is the tree its record
-			// writes go to, whatever tree the original spawn used (WO-2026-094 M1).
+			// writes go to, whatever tree the original spawn used (WO-2026-094 M1). The dispatch it
+			// must already hold is checked with them: the original spawn wrote that entry into the
+			// tree IT committed, so a record split across two trees is reported at this close
+			// instead of being appended to silently (WO-2026-094 Q-094-a).
 			rs.workRecord = resolvedMeta.workRecord
-				? openRecordContext({ cwd, woId: resolvedMeta.workRecord.woId })
+				? openRecordContext({ cwd, woId: resolvedMeta.workRecord.woId }, [{ kind: "dispatch", keys: { implementer: sid } }])
 				: undefined;
 
 			running.set(sid, rs);

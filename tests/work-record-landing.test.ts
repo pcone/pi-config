@@ -158,13 +158,16 @@ function gitQuiet(cwd: string, args: string[]): string {
 	}
 }
 
-/** A temp repo with the WO file committed — a worktree needs a HEAD to branch from. */
-function makeRepo({ script = true } = {}): string {
+/** A temp repo with the WO file committed — a worktree needs a HEAD to branch from.
+ *  `ignoreRecords` makes the records directory invisible to a commit, the shape in which a record
+ *  cannot reach the tree that gets committed. */
+function makeRepo({ script = true, ignoreRecords = false } = {}): string {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wo-landing-repo-"));
 	repos.push(root);
 	git(root, ["init", "-q", "-b", "main"]);
 	fs.mkdirSync(path.join(root, "work-orders"));
 	fs.writeFileSync(path.join(root, WO_FILE), `# ${WO_ID} — demo\n\nbody\n`);
+	if (ignoreRecords) fs.writeFileSync(path.join(root, ".gitignore"), "work-orders/records/\n");
 	if (script) {
 		fs.mkdirSync(path.join(root, "scripts"));
 		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
@@ -213,7 +216,7 @@ async function spawnAndClose(root: string, isolate: boolean) {
 	while (sent.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
 	expect(sent.length).toBeGreaterThan(0);
 	const meta = JSON.parse(fs.readFileSync(metaPath(sid), "utf-8"));
-	return { sid, sent: sent.join("\n"), spawnText: String(res.content[0].text), meta };
+	return { sid, sent: sent.join("\n"), spawnText: String(res.content[0].text), meta, tools, ctx };
 }
 
 /** The record file's content at a branch tip, or "" when the branch does not carry it. */
@@ -256,33 +259,52 @@ describe("R2 — a non-isolated spawn's record lands in the parent cwd", () => {
 	}, 120_000);
 });
 
-describe("R3 — an append into the parent while the spawn is isolated is caught", () => {
-	it("fails the close-time check and names the record and the missing entries", async () => {
-		const root = makeRepo();
-		// The observed bug: the append lands in the parent checkout, the child's work (and its
-		// record) commit on the branch. `stray-to` is the parent's path, from the worktree's view.
-		fs.writeFileSync(path.join(root, "stray-to"), root);
-		const { sid, sent, meta } = await spawnAndClose(root, true);
+describe("R3 — a record the commit does not carry is caught", () => {
+	it("fails the close-time check and names the record and its state", async () => {
+		// The observed bug's class: the append lands where the commit never reaches — the WO-477/424
+		// stray append — and removing the worktree then destroys it. `git diff --quiet HEAD`
+		// answers 0 for a path no commit holds, so this read as committed and nothing was reported.
+		const root = makeRepo({ ignoreRecords: true });
+		const { sent, meta } = await spawnAndClose(root, true);
 
+		expect(meta.worktreePath).toBeTruthy();
 		expect(sent).toContain("RECORD FAILURE");
-		expect(sent).toContain(path.join(root, RECORD_FILE));
-		expect(sent).toContain("dispatch(implementer=");
-		expect(sent).toContain("completion(implementer=");
-		// The parent's copy is the stray one; nothing reached the branch's commit.
-		expect(fs.readFileSync(path.join(root, RECORD_FILE), "utf-8")).toContain(`implementer: ${sid}`);
+		expect(sent).toContain(`${path.join(meta.worktreePath, RECORD_FILE)} is not committed in ${meta.worktreePath}`);
+		// The parent's copy is not the stray one here: the record was written into the tree that
+		// commits, and that tree's commit still does not carry it.
+		expect(fs.existsSync(path.join(root, RECORD_FILE))).toBe(false);
 		expect(committedRecord(root, meta.isolationBranch)).toBe("");
 	}, 120_000);
 });
 
 describe("R4 — an entry missing at close fails the same way", () => {
-	it("catches an append that no-ops, naming the entry the record lacks", async () => {
+	it("catches an append that no-ops, naming the entry and reporting it on the status surface", async () => {
 		const root = makeRepo();
 		// The tool's own no-op: it reports the entry as already recorded and writes nothing.
 		fs.writeFileSync(path.join(root, "noop-on"), "completion");
-		const { sent } = await spawnAndClose(root, true);
+		const { sid, sent, tools, ctx } = await spawnAndClose(root, true);
 
 		expect(sent).toContain("RECORD FAILURE");
 		expect(sent).toContain("missing completion(implementer=");
+		// The close-time check can only run after the session left the running map, so the failure
+		// is carried by the meta and a later status query reads it there (WO-2026-094 M3).
+		const status = await tools.get("subagent_status").execute("ts", { session_id: sid }, undefined, undefined, ctx);
+		expect(String(status.content[0].text)).toContain("RECORD FAILURE: record");
+		expect(String(status.content[0].text)).toContain("missing completion(implementer=");
+	}, 120_000);
+});
+
+describe("R4b — a record the harness cannot read is a failure, not a crash", () => {
+	it("delivers the result with the failure named, after the work is committed", async () => {
+		const root = makeRepo();
+		// A summary whose entry list is not an entry list: the shape must fail, and it must fail
+		// inside the close handler rather than throwing out of it.
+		fs.writeFileSync(path.join(root, "summary-shape"), "entries-not-array");
+		const { sent } = await spawnAndClose(root, true);
+
+		expect(sent).toContain("RECORD FAILURE");
+		expect(sent).toContain("not read, nothing written: summary carries no entries array");
+		expect(sent).toContain("not readable in");
 	}, 120_000);
 });
 

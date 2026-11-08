@@ -24,17 +24,23 @@ import { readMetaJson, readPersistedSpawns } from "./index.ts";
 
 const WO_RECORD_SCRIPT = "scripts/wo_record.py";
 
-/** The absolute record file `append` names in its own output. The tool owns where a record
- *  lives; the harness only needs to know it to check the entry reached a commit. */
-const NAMED_RECORD_FILE = /(?:^|\s)(\/[^\s()]+\.md)\b/;
+/** The absolute record file a tool line names: `appended <kind> to <path>`, or `<kind> already
+ *  recorded in <path> (…)` when it wrote nothing. The path runs to that line's `.md`, so a checkout
+ *  whose directory holds a space or a parenthesis keeps its whole path. The tool owns where a
+ *  record lives; the harness only needs it to check the entry reached a commit. */
+const NAMED_RECORD_FILE = /^(?:appended \S+ to |\S+ already recorded in )(.+?\.md)\b/m;
 
-/** An entry this run wrote, keyed the way `summary --json` reports it. */
+function namedRecordFile(stdout: string): string | null {
+	return NAMED_RECORD_FILE.exec(stdout)?.[1] ?? null;
+}
+
+/** An entry in a record, keyed the way `summary --json` reports it. */
 export interface RecordEntryRef {
 	kind: string;
 	keys: Record<string, string>;
 }
 
-/** What a meta carries for the record. The write list below is per-run, so a resume starts
+/** What a meta carries for the record. The write lists below are per-run, so a resume starts
  *  a fresh one: only this process's appends are checked at its close. */
 export interface PersistedWorkRecord {
 	cwd: string; // the tree that will be committed: the isolation worktree, else the spawner's repo root
@@ -46,11 +52,14 @@ export interface WorkRecord extends PersistedWorkRecord {
 	paths: string[];
 	/** The entries this run wrote. */
 	entries: RecordEntryRef[];
+	/** The entries the record must already hold: a resume re-opens the record its dispatch opened,
+	 *  so it checks that entry too and reports a record split across two trees (WO-2026-094 Q-094-a). */
+	expected: RecordEntryRef[];
 }
 
 /** A record open for a run: the meta's fields, with this run's write list empty. */
-export function openRecordContext(persisted: PersistedWorkRecord): WorkRecord {
-	return { cwd: persisted.cwd, woId: persisted.woId, paths: [], entries: [] };
+export function openRecordContext(persisted: PersistedWorkRecord, expected: RecordEntryRef[] = []): WorkRecord {
+	return { cwd: persisted.cwd, woId: persisted.woId, paths: [], entries: [], expected };
 }
 
 /** `review(session=subagent-…)` — how a failure names an entry that went missing. */
@@ -69,9 +78,9 @@ function woRecordAppend(record: WorkRecord, args: string[], body: string): strin
 		cwd: record.cwd, input: body, encoding: "utf8",
 	});
 	if (run.status !== 0 || run.error) return failureText(run);
-	const named = NAMED_RECORD_FILE.exec(run.stdout);
+	const named = namedRecordFile(run.stdout);
 	if (!named) return `append ${args[1]} named no record file: ${run.stdout.trim() || "(no output)"}`;
-	if (!record.paths.includes(named[1])) record.paths.push(named[1]);
+	if (!record.paths.includes(named)) record.paths.push(named);
 	return null;
 }
 
@@ -124,15 +133,37 @@ export function openWorkRecord(
 	}
 }
 
-/** The reviewer sessions a record already holds, and how many reviews. Read through the tool, not
- *  by parsing its text. A failure is returned as text: the caller then writes nothing. */
-function recordedReviews(record: WorkRecord): { sessions: Set<string>; count: number } | string {
+/** The entries a record holds, read through the tool rather than by parsing its text. A record
+ *  this harness cannot read — the tool refuses, prints no JSON, or reports a shape that is not an
+ *  entry list — is returned as text: it must never be read as an empty record, or the completion
+ *  hook appends the reviews it already holds a second time. */
+function readRecordEntries(record: WorkRecord): RecordEntryRef[] | string {
 	const run = spawnSync("python3", [path.join(record.cwd, WO_RECORD_SCRIPT), "summary", record.woId, "--json"], {
 		cwd: record.cwd, encoding: "utf8",
 	});
 	if (run.status !== 0 || run.error) return failureText(run);
-	const reviews = (JSON.parse(run.stdout).entries as { kind: string; keys: Record<string, string> }[])
-		.filter((e) => e.kind === "review");
+	let parsed: any;
+	try {
+		parsed = JSON.parse(run.stdout);
+	} catch (e) {
+		return `summary is not JSON: ${e instanceof Error ? e.message : String(e)}`;
+	}
+	const entries = parsed?.entries;
+	if (!Array.isArray(entries)) return `summary carries no entries array: ${run.stdout.trim().slice(0, 200) || "(no output)"}`;
+	for (const [i, entry] of entries.entries()) {
+		if (typeof entry?.kind !== "string" || typeof entry?.keys !== "object" || entry.keys === null || Array.isArray(entry.keys)) {
+			return `summary entry ${i} is not a record entry: ${JSON.stringify(entry).slice(0, 200)}`;
+		}
+	}
+	return entries as RecordEntryRef[];
+}
+
+/** The reviewer sessions a record already holds, and how many reviews. A failure is returned as
+ *  text: the caller then writes nothing. */
+function recordedReviews(record: WorkRecord): { sessions: Set<string>; count: number } | string {
+	const entries = readRecordEntries(record);
+	if (typeof entries === "string") return entries;
+	const reviews = entries.filter((e) => e.kind === "review");
 	return { sessions: new Set(reviews.map((e) => e.keys.session)), count: reviews.length };
 }
 
@@ -197,50 +228,54 @@ export function completeWorkRecord(
 	}
 }
 
-/** Close-time gate (WO-2026-094 M2): every entry this run wrote must be in the tree that will be
- *  committed. `mustBeCommitted` is set when this process committed that tree and is about to remove
- *  it (an isolated spawn), so the entry has to be in its HEAD; a non-isolated spawn's tree is
- *  committed by the spawner later, so the entry only has to be in its working file.
+/** Close-time gate (WO-2026-094 M2): every entry the record must hold is in the record, and every
+ *  file this run wrote is in the tree that will be committed. `mustBeCommitted` is set when this
+ *  process committed that tree and is about to remove it (an isolated spawn), so the file has to be
+ *  committed there; a non-isolated spawn's tree is committed by the spawner later, so the entry only
+ *  has to be in its working file.
  *  Returns the failures — each naming the record and what is missing — and empty when the record is
- *  where it will be committed. A run that wrote nothing has nothing to check; its note says why. */
+ *  where it will be committed. A run that wrote nothing and re-opened nothing has nothing to check;
+ *  its note says why. Never throws: it runs in an async close handler whose work is already
+ *  committed, where a throw would be an unhandled rejection and no delivery at all. */
 export function verifyWorkRecord(record: WorkRecord, mustBeCommitted: boolean): string[] {
-	if (record.entries.length === 0) return [];
-	const failures: string[] = [];
+	const expected = [...record.expected, ...record.entries];
+	if (expected.length === 0) return [];
 	const where = record.paths.join(", ") || record.cwd;
+	try {
+		const failures: string[] = [];
 
-	const run = spawnSync("python3", [path.join(record.cwd, WO_RECORD_SCRIPT), "summary", record.woId, "--json"], {
-		cwd: record.cwd, encoding: "utf8",
-	});
-	let held: { kind: string; keys: Record<string, string> }[] | null = null;
-	if (run.status !== 0 || run.error) {
-		failures.push(`record ${where} not readable in ${record.cwd}: ${failureText(run)}`);
-	} else {
-		try {
-			held = JSON.parse(run.stdout).entries;
-		} catch (e) {
-			failures.push(`record ${where} summary is not JSON: ${e instanceof Error ? e.message : String(e)}`);
-		}
-	}
-	if (held) {
-		const missing = record.entries.filter((want) =>
-			!held.some((got) => got.kind === want.kind
-				&& Object.entries(want.keys).every(([k, v]) => got.keys?.[k] === v)));
-		if (missing.length > 0) {
-			failures.push(`record ${where} is missing ${missing.map(recordLabel).join(", ")}`);
-		}
-	}
-
-	if (mustBeCommitted) {
-		for (const file of record.paths) {
-			const rel = path.relative(record.cwd, file);
-			if (rel.startsWith("..") || path.isAbsolute(rel)) {
-				failures.push(`record file ${file} is outside the committed tree ${record.cwd}`);
-				continue;
+		const held = readRecordEntries(record);
+		if (typeof held === "string") {
+			failures.push(`record ${where} not readable in ${record.cwd}: ${held}`);
+		} else {
+			const missing = expected.filter((want) =>
+				!held.some((got) => got.kind === want.kind
+					&& Object.entries(want.keys).every(([k, v]) => got.keys?.[k] === v)));
+			if (missing.length > 0) {
+				failures.push(`record ${where} is missing ${missing.map(recordLabel).join(", ")}`);
 			}
-			const diff = spawnSync("git", ["diff", "--quiet", "HEAD", "--", rel], { cwd: record.cwd, encoding: "utf8" });
-			if (diff.status === 1) failures.push(`record file ${file} is not committed in ${record.cwd}`);
-			else if (diff.status !== 0) failures.push(`record file ${file} not checked: ${failureText(diff)}`);
 		}
+
+		// The committed leg. `git diff --quiet HEAD` answers 0 for a path that is untracked or
+		// ignored — exactly the record nobody commits — so the state is read from `status` instead,
+		// which reports `??`, `!!`, and every uncommitted change to a tracked file.
+		if (mustBeCommitted) {
+			for (const file of record.paths) {
+				const rel = path.relative(record.cwd, file);
+				if (rel.startsWith("..") || path.isAbsolute(rel)) {
+					failures.push(`record file ${file} is outside the committed tree ${record.cwd}`);
+					continue;
+				}
+				const state = spawnSync("git", ["status", "--porcelain", "--ignored", "--", rel], {
+					cwd: record.cwd, encoding: "utf8",
+				});
+				const line = state.stdout.trim().split("\n")[0];
+				if (state.status !== 0 || state.error) failures.push(`record file ${file} not checked: ${failureText(state)}`);
+				else if (line) failures.push(`record file ${file} is not committed in ${record.cwd}: ${line}`);
+			}
+		}
+		return failures;
+	} catch (e) {
+		return [`record ${where} not verified: ${e instanceof Error ? e.message : String(e)}`];
 	}
-	return failures;
 }

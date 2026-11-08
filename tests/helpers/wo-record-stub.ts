@@ -7,13 +7,18 @@
  *   cwd at all;
  * - it prints `appended <kind> to <absolute path>`, the only place the harness learns where a
  *   record lives;
- * - `summary <wo-id> --json` reports the entries the record file holds.
+ * - `summary <wo-id> --json` reports the entries the record file holds, and fails (exit 1) when the
+ *   record does not exist — a missing record is an error there, never an empty entry list
+ *   (tfd `scripts/wo_record.py:840-856,943-945`);
+ * - `append` refuses every kind but `dispatch` for a record that does not exist yet, which is why
+ *   the first write a record ever takes is its dispatch.
  *
  * Control files in the repo decide the failure cases:
  * - `fail-on` holding a kind: that append is refused (exit 1);
  * - `noop-on` holding a kind: that append reports the tool's own "already recorded" no-op and
  *   writes nothing;
- * - `stray-to` holding a path: appends land in *that* repo instead (the WO-477/424 stray append).
+ * - `summary-shape` holding `entries-not-array` or `not-json`: `summary` answers that instead of
+ *   the record's entries.
  *
  * Every append is logged to `calls.jsonl` so a row can read the argv and body it received.
  */
@@ -45,8 +50,17 @@ def entries(text):
 
 if sys.argv[1] == "summary":
     path = record_path(root, sys.argv[2])
-    text = open(path).read() if os.path.exists(path) else ""
-    print(json.dumps({"status": "open", "entries": entries(text)}))
+    if not os.path.exists(path):
+        print("wo_record: no record at " + path, file=sys.stderr)
+        sys.exit(1)
+    shape = control("summary-shape")
+    if shape == "entries-not-array":
+        print(json.dumps({"status": "open", "entries": {"dispatch": 1}}))
+        sys.exit(0)
+    if shape == "not-json":
+        print("not json")
+        sys.exit(0)
+    print(json.dumps({"status": "open", "entries": entries(open(path).read())}))
     sys.exit(0)
 
 wo_id, kind = sys.argv[2], sys.argv[3]
@@ -63,12 +77,15 @@ if refused == kind:
     print("stub refused " + kind, file=sys.stderr)
     sys.exit(1)
 
-target = control("stray-to") or root
-path = record_path(target, wo_id)
+path = record_path(root, wo_id)
 noop = control("noop-on")
 if noop == kind:
     print("%s already recorded in %s (same implementer and wo_blob); nothing appended" % (kind, path))
     sys.exit(0)
+
+if not os.path.exists(path) and kind != "dispatch":
+    print("wo_record: no record for " + wo_id + ": its first entry is a dispatch", file=sys.stderr)
+    sys.exit(1)
 
 entry = ["", "## %s — 2026-10-17T10:00:00Z" % kind] + ["%s: %s" % kv for kv in keys.items()]
 entry += ["", "**body**", "\`\`\`", body.rstrip("\\n"), "\`\`\`", ""]

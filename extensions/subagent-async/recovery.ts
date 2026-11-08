@@ -192,6 +192,12 @@ export function describeUnknownSession(idQuery: string): string {
 	}
 	if (meta.isolationBranch) parts.push(`Branch: ${meta.isolationBranch}.`);
 	if (meta.worktreePath) parts.push(`Worktree: ${meta.worktreePath}.`);
+	// The close-time record check runs after the session has left the running map, so its outcome
+	// reaches a status query only through the meta (WO-2026-094 M3).
+	const recordFailures: string[] = Array.isArray(meta.recordFailures)
+		? meta.recordFailures.filter((f: unknown) => typeof f === "string")
+		: [];
+	parts.push(...recordFailures.map((f) => `RECORD FAILURE: ${f}`));
 	parts.push(`Log: /tmp/pi-subagent-${sid}.log`);
 	// R3-2 reap kept a finished child's dirty tree: the work is still on disk and
 	// resumable, so the answer says so — with the WO's own label for it — instead
@@ -534,7 +540,9 @@ export function recoverOrphanedSubagents(
 				} catch {}
 				// The recovered child's messages never reached this process; its session file has them.
 				// A recovered run commits nothing — the reap decides whether its worktree survives — so
-				// its record appends land in the recorded tree uncommitted. See WO-2026-094 notes.
+				// its record appends land in the recorded tree uncommitted. That debt is the owner
+				// question `work-orders/WO-2026-094-record-appends-land-where-committed.md#Q-094-a`:
+				// commit it there, fail loudly, or accept.
 				const record = rs.workRecord
 					? completeWorkRecord(rs.workRecord, meta.piSessionId ?? sid, () => sessionFinalText(meta.sessionFile))
 					: { notes: [], failures: [] };

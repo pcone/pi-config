@@ -25,6 +25,7 @@ import subagentFactory, {
 	readSessionExchange,
 	recoverOrphanedSubagents,
 	resolveRunningSession,
+	verifyWorkRecord,
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
@@ -53,7 +54,7 @@ afterEach(() => {
 	for (const f of tmpFiles.splice(0)) fs.rmSync(f, { force: true });
 });
 
-function makeRepo({ script = true } = {}): string {
+function makeRepo({ script = true, record = true } = {}): string {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wo-record-capture-"));
 	tmpDirs.push(root);
 	execFileSync("git", ["init", "-q"], { cwd: root, env: childEnv() });
@@ -63,7 +64,22 @@ function makeRepo({ script = true } = {}): string {
 		fs.mkdirSync(path.join(root, "scripts"));
 		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
 	}
+	// The real tool opens a record only through a dispatch and refuses every other kind without
+	// one, so a run that appends finds a record a dispatch already created. `record: false` is for
+	// the rows that read a repo no run has written to.
+	if (record) {
+		fs.mkdirSync(path.join(root, "work-orders/records"), { recursive: true });
+		fs.writeFileSync(recordFile(root), [
+			"---", 'title: "WO-2026-001 — demo"', "type: wo-record", `work_order: ${WO_FILE}`, "status: open", "---", "",
+			`## dispatch — ${ISO}`, "implementer: subagent-seed", "",
+		].join("\n"));
+	}
 	return root;
+}
+
+function commitAll(root: string, message = "record"): void {
+	execFileSync("git", ["add", "-A"], { cwd: root, env: childEnv() });
+	execFileSync("git", ["commit", "-q", "-m", message], { cwd: root, env: childEnv() });
 }
 
 function calls(root: string): { argv: string[]; body: string }[] {
@@ -119,7 +135,7 @@ describe("openWorkRecord — dispatch at spawn", () => {
 		expect(failures).toEqual([]);
 		expect(record).toEqual({
 			cwd: root, woId: "WO-2026-001", paths: [recordFile(root)],
-			entries: [{ kind: "dispatch", keys: { implementer: "subagent-impl-1" } }],
+			entries: [{ kind: "dispatch", keys: { implementer: "subagent-impl-1" } }], expected: [],
 		});
 		expect(calls(root)).toEqual([{
 			argv: ["append", "WO-2026-001", "dispatch", "--wo_blob", blobOf(root, WO_FILE),
@@ -150,10 +166,26 @@ describe("openWorkRecord — dispatch at spawn", () => {
 		expect(out.failures[0]).toContain("has no WO-YYYY-NNN prefix");
 		expect(calls(root)).toEqual([]);
 	}, 30_000);
+
+	it("names the whole record file in a checkout whose path holds a space and a parenthesis", () => {
+		// The tool answers `appended <kind> to <path>`; a path parsed only up to the first space
+		// reads as a file outside the record's tree, and one holding a parenthesis parses as nothing.
+		const parent = fs.mkdtempSync(path.join(os.tmpdir(), "wo record (x) "));
+		tmpDirs.push(parent);
+		const root = path.join(parent, "repo");
+		fs.mkdirSync(path.join(root, "work-orders"), { recursive: true });
+		fs.mkdirSync(path.join(root, "scripts"));
+		fs.writeFileSync(path.join(root, WO_FILE), "# WO-2026-001 — demo\n");
+		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
+		execFileSync("git", ["init", "-q"], { cwd: root, env: childEnv() });
+		const { record, failures } = openWorkRecord(root, WO_FILE, "subagent-impl-1", "task");
+		expect(failures).toEqual([]);
+		expect(record?.paths).toEqual([recordFile(root)]);
+		expect(verifyWorkRecord(record!, false)).toEqual([]);
+	}, 30_000);
 });
 
-describe("completeWorkRecord — reviewer rounds, then completion", () => {
-	it("writes each reviewer round in spawn order, then the completion", () => {
+describe("completeWorkRecord — reviewer rounds, then completion", () => {	it("writes each reviewer round in spawn order, then the completion", () => {
 		const root = makeRepo();
 		const key = uniqueKey("impl");
 		const code = sessionFile(root, [
@@ -206,6 +238,129 @@ describe("completeWorkRecord — reviewer rounds, then completion", () => {
 		const { notes } = completeWorkRecord(openRecordContext({ cwd: root, woId: WO_ID }), uniqueKey("impl"), () => "  \n");
 		expect(notes).toEqual(["work-order record: completion not written: implementer has no final report"]);
 		expect(calls(root)).toEqual([]);
+	}, 30_000);
+
+	it("writes nothing when the record does not hold an entry list", () => {
+		// A record it cannot read is not an empty record: appending the reviews it already holds
+		// twice is exactly what reading a broken record as `[]` would do.
+		const root = makeRepo();
+		fs.writeFileSync(path.join(root, "summary-shape"), "entries-not-array");
+		const { failures } = completeWorkRecord(openRecordContext({ cwd: root, woId: WO_ID }), uniqueKey("impl"), () => "Done.");
+		expect(failures).toEqual([
+			'work-order record: WO-2026-001 not read, nothing written: summary carries no entries array: ' +
+			'{"status": "open", "entries": {"dispatch": 1}}',
+		]);
+		expect(calls(root)).toEqual([]);
+	}, 30_000);
+
+	it("writes nothing when the record does not exist", () => {
+		// The real tool exits 1 on a missing record rather than answering an empty entry list.
+		const root = makeRepo({ record: false });
+		const { failures } = completeWorkRecord(openRecordContext({ cwd: root, woId: WO_ID }), uniqueKey("impl"), () => "Done.");
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toContain("not read, nothing written: wo_record: no record at");
+		expect(calls(root)).toEqual([]);
+	}, 30_000);
+});
+
+describe("verifyWorkRecord — the close-time gate", () => {
+	/** A record this run wrote, through the tool, as a spawn writes its dispatch. */
+	function written(root: string) {
+		const { record, failures } = openWorkRecord(root, WO_FILE, "subagent-impl-1", "task");
+		expect(failures).toEqual([]);
+		return record!;
+	}
+
+	it("passes a record file committed in its own tree", () => {
+		const root = makeRepo({ record: false });
+		const record = written(root);
+		commitAll(root);
+		expect(verifyWorkRecord(record, true)).toEqual([]);
+	}, 30_000);
+
+	it("R3 — fails a record left untracked in the tree that commits, naming the file", () => {
+		// The observed bug's class: the append lands where the commit never reaches, and the
+		// worktree removal then destroys it. `git diff --quiet HEAD` answers 0 for this path, which
+		// is how it read as committed.
+		const root = makeRepo({ record: false });
+		commitAll(root, "base");
+		const record = written(root);
+		expect(verifyWorkRecord(record, true)).toEqual([
+			`record file ${recordFile(root)} is not committed in ${root}: ?? work-orders/records/${WO_ID}.md`,
+		]);
+	}, 30_000);
+
+	it("fails a record staged but never committed", () => {
+		const root = makeRepo({ record: false });
+		commitAll(root, "base");
+		const record = written(root);
+		execFileSync("git", ["add", "-A"], { cwd: root, env: childEnv() });
+		expect(verifyWorkRecord(record, true)[0]).toContain("is not committed in");
+	}, 30_000);
+
+	it("fails a record the repo ignores, which no commit carries either", () => {
+		const root = makeRepo({ record: false });
+		fs.writeFileSync(path.join(root, ".gitignore"), "work-orders/records/\n");
+		commitAll(root, "base");
+		const record = written(root);
+		// Porcelain collapses an untracked-or-ignored directory to the directory itself.
+		expect(verifyWorkRecord(record, true)).toEqual([
+			`record file ${recordFile(root)} is not committed in ${root}: !! work-orders/records/`,
+		]);
+	}, 30_000);
+
+	it("fails a record changed after its commit", () => {
+		const root = makeRepo({ record: false });
+		const record = written(root);
+		commitAll(root, "base");
+		fs.appendFileSync(recordFile(root), "\ntrailing\n");
+		expect(verifyWorkRecord(record, true)[0]).toContain("is not committed in");
+	}, 30_000);
+
+	it("passes an uncommitted working file when the spawner's own commit carries it", () => {
+		const root = makeRepo({ record: false });
+		const record = written(root);
+		expect(verifyWorkRecord(record, false)).toEqual([]);
+	}, 30_000);
+
+	it("names a record file outside the record's tree", () => {
+		const root = makeRepo();
+		const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "wo-elsewhere-"));
+		tmpDirs.push(elsewhere);
+		const stray = path.join(elsewhere, `${WO_ID}.md`);
+		fs.writeFileSync(stray, fs.readFileSync(recordFile(root)));
+		const record = {
+			...openRecordContext({ cwd: root, woId: WO_ID }),
+			paths: [stray],
+			entries: [{ kind: "dispatch", keys: { implementer: "subagent-seed" } }],
+		};
+		expect(verifyWorkRecord(record, true)).toEqual([`record file ${stray} is outside the committed tree ${root}`]);
+	}, 30_000);
+
+	it("reports a record the tool does not hold instead of reading it as empty", () => {
+		// The unreadable branch: the real tool exits 1 on a missing record, so a run whose tree
+		// never held it fails here rather than completing as if it had read an empty record.
+		const root = makeRepo({ record: false });
+		const record = openRecordContext({ cwd: root, woId: WO_ID },
+			[{ kind: "dispatch", keys: { implementer: "subagent-impl-1" } }]);
+		expect(verifyWorkRecord(record, false)).toEqual([
+			`record ${root} not readable in ${root}: wo_record: no record at ${recordFile(root)}`,
+		]);
+	}, 30_000);
+
+	it("reports a summary that is not an entry list rather than throwing", () => {
+		// It runs after the work is committed, in an async close handler: a throw there is an
+		// unhandled rejection and no delivery at all.
+		const root = makeRepo();
+		const record = { ...openRecordContext({ cwd: root, woId: WO_ID }),
+			entries: [{ kind: "dispatch", keys: { implementer: "subagent-seed" } }] };
+		fs.writeFileSync(path.join(root, "summary-shape"), "entries-not-array");
+		expect(verifyWorkRecord(record, false)).toEqual([
+			`record ${root} not readable in ${root}: summary carries no entries array: ` +
+			'{"status": "open", "entries": {"dispatch": 1}}',
+		]);
+		fs.writeFileSync(path.join(root, "summary-shape"), "not-json");
+		expect(verifyWorkRecord(record, false)[0]).toContain("summary is not JSON");
 	}, 30_000);
 });
 
@@ -334,8 +489,8 @@ describe("recovery completes the record from the recovered session file", () => 
 	}, 30_000);
 });
 
-describe("resume carries the record context from the meta", () => {
-	it("sets the resumed run's record from the meta written at its original spawn", async () => {
+describe("resume re-opens the record and checks the dispatch it must already hold", () => {
+	it("carries the meta's record, expecting the dispatch, and reports a tree that lacks it", async () => {
 		const root = makeRepo();
 		const sid = `subagent-${randomUUID()}`;
 		const sessionFile = path.join(root, "resume.jsonl");
@@ -347,7 +502,17 @@ describe("resume carries the record context from the meta", () => {
 			const res = await tools.get("subagent_resume").execute("tc", { session_id: sid, task: "continue" },
 				undefined, undefined, stubCtx(root));
 			expect(res.isError).toBeFalsy();
-			expect(resolveRunningSession(sid)?.workRecord).toEqual(openRecordContext({ cwd: root, woId: WO_ID }));
+			const record = resolveRunningSession(sid)?.workRecord!;
+			// The dispatch was written by the spawn that owns the order, under this same session id.
+			expect(record).toEqual(openRecordContext({ cwd: root, woId: WO_ID },
+				[{ kind: "dispatch", keys: { implementer: sid } }]));
+			// The seeded record carries another implementer's dispatch: this run's is missing.
+			expect(verifyWorkRecord(record, false)).toEqual([
+				`record ${root} is missing dispatch(implementer=${sid})`,
+			]);
+			// And a tree with no record at all is a failure, not an empty record.
+			fs.rmSync(recordFile(root));
+			expect(verifyWorkRecord(record, false)[0]).toContain("not readable in");
 		} finally {
 			await tools.get("subagent_kill").execute("tk", { session_id: sid }, undefined, undefined, stubCtx(root));
 			removeArtifacts(sid);
