@@ -445,7 +445,11 @@ export default function (pi: ExtensionAPI) {
 			"Use peer_send when the user asks to coordinate with another pi session or another agent.",
 			"Call peer_list first to discover peers and confirm the recipient name.",
 			"Set expectReply: true when this session needs the peer's answer; the reply arrives as a user message prefixed with the peer's name.",
-			"Write messages information-dense: lead with the ask and include whatever context or constraints the peer needs, skipping salutations, sign-offs, pleasantries, and recap. Concise is good, but completeness still wins.",
+			"Write messages information-dense: lead with the ask and include whatever context or constraints the peer needs, skipping salutations, sign-offs, pleasantries, and recap.",
+			"Keep a message to about 1,500 characters: verdict, shas, what changed, and any question with its recommendation. Every message is injected into the recipient's prompt.",
+			"Put detail — tables, measurements, derivations, logs — in the record (seat file, investigation doc, notes file) and name the path in the message.",
+			"Send one message per event; do not restate an earlier message.",
+			"An owner question keeps its options and its recommendation — that part is not trimmed.",
 		],
 		parameters: Type.Object({
 			to: Type.String({

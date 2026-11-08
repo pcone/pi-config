@@ -141,6 +141,10 @@ Growth findings are delta-based, never absolute thresholds. A repo may set a sma
 
 **Keep the remote current.** The remote mainline is an integration point, not a release branch. A green increment that breaks no existing feature is a valid landing even when its feature is unfinished. Don't hold green work waiting for completeness, and never push red. Pull before starting a change and again before merging. Push merged work promptly, or say explicitly that the push is pending.
 
+## Peers
+
+**A peer message is a report, not a document.** Every message is injected into the recipient's prompt, so keep it to about 1,500 characters: verdict, shas, what changed, and any question with its recommendation. Detail — tables, measurements, derivations, logs — belongs in the record (seat file, investigation doc, notes file), and the message names the path. One message per event; do not restate what an earlier one said. An owner question keeps its options and its recommendation: that part is never trimmed.
+
 ## PDFs
 
 `fetch_url` and the `read` tool convert PDFs to Markdown; never read raw PDF bytes or `cat` one. For page ranges, tables, or a failed conversion, use the `pdf` skill.
