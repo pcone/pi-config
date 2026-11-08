@@ -34,7 +34,7 @@ import {
 	resolveTurnCap,
 	type OwnerProbe,
 } from "../lib/subagent-state.ts";
-import { completeWorkRecord, sessionFinalText, type WorkRecord } from "./records.ts";
+import { completeWorkRecord, openRecordContext, sessionFinalText, type PersistedWorkRecord } from "./records.ts";
 import { removeWorktreeTree } from "./worktree.ts";
 import {
 	debugLog,
@@ -68,8 +68,9 @@ export interface SpawnMetaFields {
 	systemPrompt?: string;
 	allowedSubagents: string[];
 	excludeTools: string[];
-	/** Set when the spawn opened a work-order record; resume and recovery complete it. */
-	workRecord?: WorkRecord;
+	/** Set when the spawn opened a work-order record; resume and recovery complete it. Only the
+	 *  tree that commits it and its id travel: a run's write list is per-process. */
+	workRecord?: PersistedWorkRecord;
 	/** Decision 046: the resolved turn cap, stored in the spawn's own input
 	 *  convention so a resume can hand it straight back to `resolveTurnCap` —
 	 *  `0` is the disabled state. */
@@ -89,6 +90,9 @@ export function buildSpawnMeta(
 ): Record<string, any> {
 	return {
 		...fields,
+		// A record's per-run write list is not part of the dispatch: a resumed or recovered run
+		// starts a fresh one and checks only its own appends (WO-2026-094 M2).
+		workRecord: fields.workRecord && { cwd: fields.workRecord.cwd, woId: fields.workRecord.woId },
 		ownerPid: owner.pid,
 		ownerStartToken: owner.startToken,
 		parentSessionId: owner.sessionId,
@@ -457,7 +461,7 @@ export function recoverOrphanedSubagents(
 				isolationBranch: meta.isolationBranch || null,
 				parentHeadCommit: meta.parentHeadCommit || null,
 				parentCwd: meta.parentCwd || ctx.cwd,
-				workRecord: meta.workRecord,
+				workRecord: meta.workRecord && openRecordContext(meta.workRecord),
 				// Recovered (orphan-reattached) subagents don't carry the
 				// parent's tracker key from the metadata file. Use a stable
 				// pid fallback so re-attached sessions don't pollute the
@@ -529,11 +533,18 @@ export function recoverOrphanedSubagents(
 					}
 				} catch {}
 				// The recovered child's messages never reached this process; its session file has them.
-				const recordNotes = rs.workRecord
+				// A recovered run commits nothing — the reap decides whether its worktree survives — so
+				// its record appends land in the recorded tree uncommitted. See WO-2026-094 notes.
+				const record = rs.workRecord
 					? completeWorkRecord(rs.workRecord, meta.piSessionId ?? sid, () => sessionFinalText(meta.sessionFile))
-					: [];
-				rs.recordNotes = recordNotes;
-				deliverResult(pi, rs, recoveredExitCode, `\n[Isolation] Recovered from previous session.${recordNotes.map((n) => `\n${n}`).join("")}`);
+					: { notes: [], failures: [] };
+				rs.recordNotes = record.notes;
+				rs.recordFailures = record.failures;
+				const recordText = [
+					...record.notes,
+					...record.failures.map((f) => `RECORD FAILURE: ${f}`),
+				].map((n) => `\n${n}`).join("");
+				deliverResult(pi, rs, recoveredExitCode, `\n[Isolation] Recovered from previous session.${recordText}`);
 				running.delete(sid);
 				updateFooter();
 			});

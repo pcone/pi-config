@@ -98,8 +98,10 @@ import {
 } from "./worktree.ts";
 import {
 	completeWorkRecord,
+	openRecordContext,
 	openWorkRecord,
 	sessionFinalText,
+	verifyWorkRecord,
 	type WorkRecord,
 } from "./records.ts";
 import {
@@ -178,8 +180,12 @@ export {
 // WO-2026-095 split: records.ts owns the work-order record writes.
 export {
 	completeWorkRecord,
+	openRecordContext,
 	openWorkRecord,
 	readSessionExchange,
+	verifyWorkRecord,
+	type PersistedWorkRecord,
+	type RecordEntryRef,
 	type WorkRecord,
 } from "./records.ts";
 
@@ -591,7 +597,10 @@ export interface RunningSubagent {
 	// well-formed. Derived from the agent prompt, never a name list.
 	ownerAsksRequired?: boolean;
 	workRecord?: WorkRecord; // set when the spawn passed workOrderPath (decisions/work-order-records/001)
-	recordNotes?: string[]; // failed record writes, surfaced in status and the delivered result
+	recordNotes?: string[]; // record writes skipped for want of material, surfaced in status and the delivered result
+	// Record writes and close-time checks that failed (WO-2026-094 M3). Loud, not a note: the record is
+	// what survives of the dispatch, so a lost entry has to be visible in the status line.
+	recordFailures?: string[];
 	// Worktree isolation
 	worktreePath: string | null;
 	isolationBranch: string | null;
@@ -802,6 +811,7 @@ function formatProgress(rs: RunningSubagent): string {
 		p.filesModified.size > 0 ? `Files modified: ${p.filesModified.size}` : null,
 		p.errors.length > 0 ? `Errors: ${p.errors.length}` : null,
 		rs.recordNotes?.length ? `Work-order record: ${rs.recordNotes.join("; ")}` : null,
+		rs.recordFailures?.length ? `RECORD FAILURE: ${rs.recordFailures.join("; ")}` : null,
 	]
 		.filter(Boolean)
 		.join(" | ");
@@ -1471,17 +1481,19 @@ export default function (pi: ExtensionAPI) {
 			// Work-order record: the dispatch belongs to the spawn that OWNS the order, which is a
 			// property of the spawned agent. A reviewer never owns one — it reviews one — so its
 			// spawn reads the order from its task text and writes no record. (Record design:
-			// decisions/work-order-records/001, tfd.) A failure is reported with the result; it
-			// never fails the spawn.
+			// decisions/work-order-records/001, tfd.) The record's cwd is the tree that will be
+			// committed: the isolation worktree when this spawn got one, else the spawner's own repo
+			// root, whose commit carries it (WO-2026-094 M1). A failed write is reported as a record
+			// failure with the result; it never fails the spawn.
 			const isReviewer = agent.reviewerKind !== undefined;
 			if (params.workOrderPath && isReviewer) {
 				debugLog(`work-order record: no dispatch for ${agent.name} (reviewer_kind=${agent.reviewerKind}); a reviewer never owns an order`);
 			}
 			const dispatch = params.workOrderPath && !isReviewer
-				? openWorkRecord(cwd, params.workOrderPath, sessionId, params.task)
-				: { notes: [] };
+				? openWorkRecord(worktreePath ?? cwd, params.workOrderPath, sessionId, params.task)
+				: { failures: [] };
 			rs.workRecord = dispatch.record;
-			rs.recordNotes = dispatch.notes;
+			rs.recordFailures = dispatch.failures;
 
 		// Write metadata for recovery on session reload. Includes the full
 		// agent config so subagent_resume can reproduce the original
@@ -1509,7 +1521,7 @@ export default function (pi: ExtensionAPI) {
 			systemPrompt: agent.systemPrompt,
 			allowedSubagents: agent.allowedSubagents ?? [],
 			excludeTools: agent.excludeTools ?? [],
-			workRecord: dispatch.record,
+			workRecord: dispatch.record, // the meta keeps `cwd`/`woId`; a resume starts a fresh write list
 			// Stored in the spawn's own input convention (`0` = disabled) so a
 			// resume hands it straight back to `resolveTurnCap`.
 			turnCap: Number.isFinite(resolvedTurnCap) ? resolvedTurnCap : 0,
@@ -1549,7 +1561,7 @@ export default function (pi: ExtensionAPI) {
 							`Subagent started: ${agent.name} (session: ${sessionId})${isolationStatus}`,
 							`Task: ${params.task.slice(0, 200)}${params.task.length > 200 ? "..." : ""}`,
 							turnBudgetLine(resolvedTurnCap, 0, isolationBranch !== null),
-							...dispatch.notes,
+							...dispatch.failures.map((f) => `RECORD FAILURE: ${f}`),
 							"",
 							"The session id is the subagent's real pi session id — search it in /resume",
 							"or join it from a terminal with `pi --session <id>`.",
@@ -1801,7 +1813,11 @@ export default function (pi: ExtensionAPI) {
 				resumeTurnsBefore, // decision 046: continue the recorded turn count
 			);
 			// The resumed run completes the same work-order record (decisions/work-order-records/001).
-			rs.workRecord = resolvedMeta.workRecord;
+			// A resume is not isolated — its commits land in `cwd` — so that is the tree its record
+			// writes go to, whatever tree the original spawn used (WO-2026-094 M1).
+			rs.workRecord = resolvedMeta.workRecord
+				? openRecordContext({ cwd, woId: resolvedMeta.workRecord.woId })
+				: undefined;
 
 			running.set(sid, rs);
 			updateFooter();
