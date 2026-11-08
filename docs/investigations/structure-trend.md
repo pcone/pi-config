@@ -1036,3 +1036,22 @@ receive" predicate to unify — and the register's open item stays the one it wa
 **watch.** `extensions/peer-link/index.ts` untouched this landing: the fourth-touch question the
 last snapshot raised is not answered either way. `recipients()` is now the file's only conditional
 over peer identity, which is where a third reachability kind lands.
+
+### WO-2026-091 — subagent build output dies with its worktree (2026-11-08)
+
+**growth.** `git diff --numstat c1e44f0..HEAD -- extensions/`: `extensions/lib/build-output-reaper.ts`
+new **743**, `extensions/subagent-async/index.ts` 5033 → 5215 (+182 net over 4 commits), the reap's
+own body **136 → 113** lines after the extraction. The file grew by the call sites and the wiring, not
+by the mechanism: everything that touches a `target/` or a shared dir lives in the new lib, called
+once from the reap (`createReapBuildOutput`) and once from `removeWorktreeTree`.
+
+**unification.** The landing's point was removing a parallel mechanism, not adding one: the two
+removal sites' unlock → remove → branch-delete sequences became one `removeWorktreeTree`
+(`rg -n '"worktree", "remove' extensions/` → 3 lines, **2** sites; the third is `createWorktree`'s
+stale-leftover cleanup, parked as `Q-091-a`). `removeWorktreeTarget` has 2 callers, both in the lib.
+
+**flag.** `extensions/subagent-async/index.ts` is **5215** lines and has now been touched by three
+consecutive landings (091, the turn cap in 090, the model-inheritance fix). Two strikes is the
+register's closure rule, and this is the third touch — the file is a candidate for the next
+extraction before any further feature work lands in it. The reap extraction (136 → 113, mechanism
+moved out) is the pattern that works; the remaining inline growth is the spawn path.
