@@ -26,9 +26,18 @@ path synced a seat checkout; `owner-asks` fetched only to count registry asks.
 **Why the fetch is shared rather than added.** `owner-asks` already fetched this
 checkout once per five minutes. Its fetch is detached and unobserved, so it could
 not gate a fast-forward, and a second one would download the same pack twice.
-Sharing one function is the only shape where exactly one fetch happens per
-checkout per session: the first caller spawns, the second joins the same promise.
-`owner-asks`' behaviour is otherwise unchanged — it still ignores the result.
+One function is the only shape where at most one fetch is in flight per checkout:
+the first caller spawns, the second joins the same promise. Two callers that do
+not overlap still fetch twice — "fetched recently enough" stays `owner-asks`'
+five-minute stamp, not this module's.
+
+The shape a caller asks for fixes what the outcome can say. `seat-sync` waits, so
+it gets git's stderr and can quote a `fatal:` line. `owner-asks` does not wait —
+the statusline and `/asks` CLIs must exit at once — so its fetch is detached with
+stdio ignored and captures no stderr. A `seat-sync` that arrives while that
+background fetch is running joins it and inherits the limit: the warning says
+`stderr not captured: joined a background fetch` rather than quoting git.
+`owner-asks` ignores the outcome either way.
 
 **Alternatives rejected.**
 

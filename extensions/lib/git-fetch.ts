@@ -17,8 +17,10 @@
  * - **background** (`background: true`): detached, stdio ignored, both the child
  *   and the bound timer unreferenced, so a short-lived caller (the Claude Code
  *   statusline, `~/.claude/commands/asks.md`) exits at once instead of waiting
- *   out the fetch. Nothing captures stderr in this shape; a joiner reports
+ *   out the fetch. Nothing captures git's stderr in this shape: a joiner reports
  *   `joined: true` with `stderr: ""`, which is what "no stderr captured" means.
+ *   The one message it does carry is the bound's own — a fetch this module
+ *   killed says so, because git printed nothing.
  *
  * No pi import: this module stays unit-testable, and the Claude Code CLI loads it.
  */
@@ -114,17 +116,15 @@ function spawnBackground(root: string, timeoutMs: number): Promise<FetchOutcome>
 			resolve({ ok: false, stderr: `git fetch --quiet timed out after ${timeoutMs}ms in ${root}`, joined: false });
 		}, timeoutMs);
 		timer.unref();
-		child.on("error", (err) => {
+		child.on("error", () => {
 			clearTimeout(timer);
-			resolve({ ok: false, stderr: err.message, joined: false });
+			// A spawn that never reached git has no stderr to report, and this shape
+			// captures none: an empty one is the truth, not a placeholder.
+			resolve({ ok: false, stderr: "", joined: false });
 		});
 		child.on("exit", (code) => {
 			clearTimeout(timer);
-			resolve(
-				code === 0
-					? { ok: true, stderr: "", joined: false }
-					: { ok: false, stderr: `git fetch --quiet exited ${code} in ${root}`, joined: false },
-			);
+			resolve(code === 0 ? { ok: true, stderr: "", joined: false } : { ok: false, stderr: "", joined: false });
 		});
 	});
 }

@@ -43,13 +43,17 @@ gate is 0 ms (measured below).
 
 ## The fetch, and why it is shared
 
-One `git fetch --quiet` per checkout per process, in `lib/git-fetch.ts`.
+At most one `git fetch --quiet` in flight per checkout, in `lib/git-fetch.ts`.
 `owner-asks` already fetched (`extensions/owner-asks/lib.ts`, once per five
 minutes, for its `@{u}` ask counts) — that fetch was detached and unobserved, so
 it could not gate a fast-forward, and a second fetch would download the same pack
 again. Both callers now use one function: whoever asks first spawns, the second
 joins the same promise. `owner-asks` still ignores the result (its counts read
 whatever refs land); `seat-sync` awaits it.
+
+`owner-asks` does not wait on its fetch, so that fetch is detached and captures no
+stderr. A `seat-sync` that joins one reports `stderr not captured: joined a
+background fetch` instead of quoting git's failure.
 
 The fetch is killed after 10 s (`FETCH_TIMEOUT_MS`), including a remote waiting
 on credentials (`GIT_TERMINAL_PROMPT=0`). A seat further behind than 10 s of

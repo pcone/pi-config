@@ -12,6 +12,10 @@
  * PATH: async `execFile`/`execFileSync` see live `process.env` mutations (only
  * sync spawns get Bun's startup env snapshot — see tests/owner-asks.test.ts).
  *
+ * The rows after R9 are about the report and the shared fetch: the debug line,
+ * print mode, a join into `owner-asks`' background fetch, a ctx that went stale
+ * under the task, and git's read/merge failures.
+ *
  * Run: bun test tests/seat-sync.test.ts
  */
 
@@ -86,6 +90,8 @@ interface Surfaces {
 	report: SeatReport | undefined;
 	statuses: [string, string | undefined][];
 	notes: { message: string; level?: string }[];
+	/** Wall time the `session_start` handler took to return — the blocking cost. */
+	blockingMs: number;
 }
 
 function loadExtension(): Record<string, (event: unknown, ctx: unknown) => unknown> {
@@ -115,9 +121,11 @@ function fakeCtx(cwd: string) {
 /** Fire `session_start` the way pi does and wait for the task it started. */
 async function fire(cwd: string): Promise<Surfaces> {
 	const { ctx, statuses, notes } = fakeCtx(cwd);
+	const started = Date.now();
 	loadExtension().session_start({ type: "session_start", reason: "startup" }, ctx);
+	const blockingMs = Date.now() - started;
 	await _testLastSync();
-	return { report: _testLastReport(), statuses, notes };
+	return { report: _testLastReport(), statuses, notes, blockingMs };
 }
 
 /** Capture `console.warn` while `body` runs — the print-mode channel. */
@@ -152,14 +160,17 @@ async function withPathPrefix<T>(dir: string, body: () => Promise<T>): Promise<T
 	}
 }
 
-/** A `git` that logs its argv, runs `fetchBody` for `fetch`, and delegates otherwise. */
-function gitShim(fetchBody: string): { dir: string; calls: () => string[] } {
+/**
+ * A `git` that logs its argv, runs `bodies[subcommand]` when one is given, and
+ * delegates to the real git otherwise. A body that must fail exits non-zero.
+ */
+function gitShim(bodies: Record<string, string> = {}): { dir: string; calls: () => string[] } {
 	const dir = tmp("shim");
 	const log = join(dir, "calls.log");
-	writeFileSync(
-		join(dir, "git"),
-		`#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nif [ "$1" = "fetch" ]; then\n${fetchBody}\nfi\nexec '${REAL_GIT}' "$@"\n`,
-	);
+	const cases = Object.entries(bodies)
+		.map(([verb, body]) => `if [ "$1" = "${verb}" ]; then\n${body}\nfi`)
+		.join("\n");
+	writeFileSync(join(dir, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${cases}\nexec '${REAL_GIT}' "$@"\n`);
 	chmodSync(join(dir, "git"), 0o755);
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter((line) => line !== "") : []);
 	return { dir, calls };
@@ -297,7 +308,7 @@ describe("R6 a worktree is never a seat", () => {
 		expect(seatScope(tree)).toEqual({ isSeat: false, reason: "worktree", root: tree });
 
 		// A shim that logs every git invocation: the gate must spawn none.
-		const shim = gitShim("exit 0");
+		const shim = gitShim({ fetch: "exit 0" });
 		const { report, statuses, notes } = await withPathPrefix(shim.dir, () => fire(tree));
 
 		expect(report).toBeUndefined();
@@ -351,9 +362,9 @@ describe("R8 fetch fails", () => {
 		const { root, remote } = makeSeat();
 		pushRemote(remote, "new.txt");
 		const before = git(root, "rev-parse", "HEAD");
-		const shim = gitShim(
-			`echo "fatal: unable to access 'https://example.invalid/x.git': Could not resolve host" >&2\nexit 1`,
-		);
+		const shim = gitShim({
+			fetch: `echo "fatal: unable to access 'https://example.invalid/x.git': Could not resolve host" >&2\nexit 1`,
+		});
 
 		const { report, notes } = await withPathPrefix(shim.dir, () => fire(root));
 
@@ -371,7 +382,7 @@ describe("R8 fetch fails", () => {
 		// The order's box: 10 s. Pinned because every row below overrides it.
 		expect(FETCH_TIMEOUT_MS).toBe(10_000);
 		const { root } = makeSeat();
-		const shim = gitShim("exec sleep 600");
+		const shim = gitShim({ fetch: "exec sleep 600" });
 		_testSetFetchTimeout(300);
 		try {
 			const { report } = await withPathPrefix(shim.dir, () => fire(root));
@@ -387,7 +398,7 @@ describe("R8 fetch fails", () => {
 describe("R9 the first prompt is not delayed", () => {
 	it("returns from session_start while the fetch is still running, then reports", async () => {
 		const { root } = makeSeat();
-		const shim = gitShim("exec sleep 600");
+		const shim = gitShim({ fetch: "exec sleep 600" });
 		_testSetFetchTimeout(2_000);
 		try {
 			await withPathPrefix(shim.dir, async () => {
@@ -422,5 +433,190 @@ describe("R9 the first prompt is not delayed", () => {
 		} finally {
 			_testSetFetchTimeout(undefined);
 		}
+	}, 60_000);
+});
+
+describe("the debug line", () => {
+	it("names the five commands only when PI_SEAT_SYNC_DEBUG=1", async () => {
+		const saved = process.env.PI_SEAT_SYNC_DEBUG;
+		try {
+			const on = makeSeat();
+			pushRemote(on.remote, "new.txt");
+			process.env.PI_SEAT_SYNC_DEBUG = "1";
+			const debugged = await fire(on.root);
+
+			expect(debugged.report!.outcome).toBe("fast-forwarded");
+			expect(debugged.blockingMs).toBeLessThan(100);
+			expect(debugged.notes).toEqual([
+				{
+					message:
+						"[seat-sync] fast-forwarded: fast-forwarded 1 commit; commands: " +
+						"git rev-parse --abbrev-ref @{u} ; git fetch --quiet ; " +
+						"git status --porcelain -uall ; git rev-list --count --left-right @{u}...HEAD ; " +
+						"git merge --ff-only @{u}",
+					level: "info",
+				},
+			]);
+
+			// The same five commands, with the variable unset: nothing but the status note.
+			delete process.env.PI_SEAT_SYNC_DEBUG;
+			const off = makeSeat();
+			pushRemote(off.remote, "new.txt");
+			const silent = await fire(off.root);
+
+			expect(silent.report!.commands).toEqual(debugged.report!.commands);
+			expect(silent.notes).toEqual([]);
+			expect(silent.statuses).toEqual([["seat-sync", "seat sync: fast-forwarded 1 commit"]]);
+		} finally {
+			if (saved === undefined) delete process.env.PI_SEAT_SYNC_DEBUG;
+			else process.env.PI_SEAT_SYNC_DEBUG = saved;
+		}
+	}, 60_000);
+});
+
+describe("print/RPC mode (no UI)", () => {
+	it("sends the warning to stderr and never touches the status line", async () => {
+		const { root, remote } = makeSeat();
+		pushRemote(remote, "new.txt");
+		const before = git(root, "rev-parse", "HEAD");
+		writeFileSync(join(root, "a.txt"), "changed\n");
+
+		const { ctx, statuses, notes } = fakeCtx(root);
+		ctx.hasUI = false;
+		const started = Date.now();
+		const { value, warns } = await withWarnCapture(async () => {
+			loadExtension().session_start({ type: "session_start", reason: "startup" }, ctx);
+			const blockingMs = Date.now() - started;
+			await _testLastSync();
+			return { report: _testLastReport(), blockingMs };
+		});
+
+		expect(value.blockingMs).toBeLessThan(100);
+		expect(value.report!.outcome).toBe("blocked");
+		// The one thing the report exists to say survives the missing UI.
+		expect(warns).toHaveLength(1);
+		expect(warns[0]).toContain("has 1 dirty file and was not fast-forwarded");
+		expect(warns[0]).toContain("M a.txt");
+		// Neither the status bar nor a notification exists, and neither is called.
+		expect(statuses).toEqual([]);
+		expect(notes).toEqual([]);
+		expect(git(root, "rev-parse", "HEAD")).toBe(before);
+	}, 60_000);
+});
+
+describe("one fetch in flight per checkout", () => {
+	it("joins owner-asks' background fetch, spawns no second one, and says it has no stderr to quote", async () => {
+		const { root, remote } = makeSeat();
+		// A registry repo, so `ownerAsks` starts the checkout's fetch...
+		mkdirSync(join(root, "scripts"), { recursive: true });
+		writeFileSync(join(root, "scripts", "reviews_status.py"), 'import sys\nsys.stdout.write(open("asks.txt").read())\n');
+		writeFileSync(join(root, "asks.txt"), "docs/reviews/a.md  A1  soon  first\n");
+		git(root, "add", "-A");
+		commit(root, "registry scripts");
+		git(root, "push", "-q", "origin", "HEAD:main");
+		// ...and something to fast-forward to, which this fetch's failure blocks.
+		pushRemote(remote, "new.txt");
+		const shim = gitShim({ fetch: "sleep 1\nexit 1" });
+		const cache = join(tmp("cache"), "owner-asks");
+
+		const { report } = await withPathPrefix(shim.dir, async () => {
+			const state = await ownerAsks(root, cache);
+			expect(state!.asks).toHaveLength(1);
+			// owner-asks' fetch is detached and still sleeping: seat-sync arrives mid-fetch.
+			await waitFor(() => shim.calls().includes("fetch --quiet"), 2_000);
+			expect(shim.calls()).toContain("fetch --quiet");
+
+			const surfaces = await fire(root);
+			// Exactly one fetch: seat-sync joined the running one instead of spawning another.
+			expect(shim.calls().filter((call) => call === "fetch --quiet")).toHaveLength(1);
+			expect(surfaces.blockingMs).toBeLessThan(100);
+			return surfaces;
+		});
+
+		expect(report!.outcome).toBe("blocked");
+		expect(report!.status).toBe("seat sync: BLOCKED — fetch failed");
+		// A background fetch captures no stderr, so the join says that rather than nothing.
+		expect(report!.warning).toBe(
+			`seat sync: BLOCKED — git fetch --quiet failed in ${root} (stderr not captured: joined a background fetch)`,
+		);
+		expect(report!.commands).not.toContain("git merge --ff-only @{u}");
+	}, 60_000);
+});
+
+describe("a stale ctx", () => {
+	it("resolves the task quietly when hasUI/ui throw after cwd was read", async () => {
+		const { root, remote } = makeSeat();
+		const pushed = pushRemote(remote, "new.txt");
+		const stale = {
+			cwd: root,
+			get hasUI(): boolean {
+				throw new Error("this session is no longer active");
+			},
+			get ui(): never {
+				throw new Error("this session is no longer active");
+			},
+		};
+
+		const { value, warns } = await withWarnCapture(async () => {
+			loadExtension().session_start({ type: "session_start", reason: "startup" }, stale as never);
+			await _testLastSync();
+			return _testLastReport();
+		});
+
+		// The sync itself still did its work; only the drawing had nowhere to go.
+		expect(value!.outcome).toBe("fast-forwarded");
+		expect(git(root, "rev-parse", "HEAD")).toBe(pushed);
+		expect(warns.filter((line) => line.includes("[seat-sync] report failed"))).toEqual([]);
+	}, 60_000);
+});
+
+describe("git read and merge failures", () => {
+	it("reads the tree: a failing status is a blocked report carrying its stderr", async () => {
+		const { root, remote } = makeSeat();
+		pushRemote(remote, "new.txt");
+		const before = git(root, "rev-parse", "HEAD");
+		const shim = gitShim({ status: `echo "fatal: index file smaller than expected" >&2\nexit 128` });
+
+		const { report, notes } = await withPathPrefix(shim.dir, () => fire(root));
+
+		expect(report!.outcome).toBe("blocked");
+		expect(report!.status).toBe("seat sync: BLOCKED — cannot read the working tree");
+		expect(report!.warning).toContain("index file smaller than expected");
+		expect(notes.map((n) => n.level)).toEqual(["warning"]);
+		expect(report!.commands.filter((command) => command.startsWith("git merge"))).toEqual([]);
+		expect(git(root, "rev-parse", "HEAD")).toBe(before);
+	}, 60_000);
+
+	it("counts the divergence: a failing rev-list is a blocked report carrying its stderr", async () => {
+		const { root, remote } = makeSeat();
+		pushRemote(remote, "new.txt");
+		const before = git(root, "rev-parse", "HEAD");
+		const shim = gitShim({ "rev-list": `echo "fatal: bad revision '@{u}...HEAD'" >&2\nexit 128` });
+
+		const { report } = await withPathPrefix(shim.dir, () => fire(root));
+
+		expect(report!.outcome).toBe("blocked");
+		expect(report!.status).toBe("seat sync: BLOCKED — cannot read the upstream divergence");
+		expect(report!.warning).toContain("bad revision");
+		expect(report!.commands.filter((command) => command.startsWith("git merge"))).toEqual([]);
+		expect(git(root, "rev-parse", "HEAD")).toBe(before);
+	}, 60_000);
+
+	it("a failing merge is a blocked report, never a claimed fast-forward", async () => {
+		const { root, remote } = makeSeat();
+		pushRemote(remote, "new.txt");
+		const before = git(root, "rev-parse", "HEAD");
+		const shim = gitShim({ merge: `echo "fatal: Not possible to fast-forward, aborting." >&2\nexit 128` });
+
+		const { report, statuses, notes } = await withPathPrefix(shim.dir, () => fire(root));
+
+		expect(report!.outcome).toBe("blocked");
+		expect(report!.reason).toBe("fast-forward failed");
+		expect(report!.status).toBe("seat sync: BLOCKED — fast-forward failed");
+		expect(report!.warning).toContain("Not possible to fast-forward");
+		expect(statuses).toEqual([["seat-sync", "seat sync: BLOCKED — fast-forward failed"]]);
+		expect(notes.map((n) => n.level)).toEqual(["warning"]);
+		expect(report!.commands.at(-1)).toBe("git merge --ff-only @{u}");
+		expect(git(root, "rev-parse", "HEAD")).toBe(before);
 	}, 60_000);
 });
