@@ -20,7 +20,9 @@ One removal path — `removeWorktreeTree(deps, rs, policy)` in
   route 2 (when route 1 finds nothing) runs `cargo clean -p <member>` for the
   parent checkout's workspace members. Never a full `cargo clean`. A `.d` that
   names the worktree only in a build-script `env-dep:` line is counted in
-  `depInfoEnvDepOnly` and left alone.
+  `depInfoEnvDepOnly` and left alone. Build-script output dirs
+  (`<profile>/build/<pkg>/<hash>/out/`) are outside the scan — owner 2026-11-09,
+  §*`<profile>/build/**/out/*.d` stays outside the scan*.
 - **M3** `enforceCargoTargetBound` bounds each clone's shared dir at **20 GiB**,
   checked once per session-start reap: route 1 per dead worktree path, then one
   coarse pass per clone, then re-measure. Still over is reported as over-bound,
@@ -135,6 +137,23 @@ goes, a third tree's included. The mechanism permits this — deletion is per
 artifact, and a `.d` with two owners is not split — and what it costs a live
 tree is one rebuild. Its sources, its own `target/` and its uncommitted work are
 untouched.
+
+## `<profile>/build/**/out/*.d` stays outside the scan
+
+**Ruling (owner, 2026-11-09):** *"Exclude + pin (Recommended)"* —
+`<profile>/build/<pkg>/<hash>/out/*.d` stays out of the scan, and the row that
+pins it (`tests/build-output-reaper.test.ts`, "scans no build-script output dir,
+so its .d is neither counted nor attributed") must fail if a later change adds
+that location to `DEP_INFO_SUBDIRS`.
+
+The evidence that made it cheap, measured on this box's three clone dirs
+(2026-11-09): 1433 `.d` sit under a `build/` path, and 12 name a worktree. All 12
+name it in one `env-dep:CARGO_MANIFEST_DIR=` token and none in a source rule, so
+a scan of that location attributes nothing — 0 of 12 would match. What it would
+widen instead is the delete surface: a build script's `.d` stem is
+`<pkg>-<hash>`, the same name its `.fingerprint` and `build` siblings carry, so
+attributing one there deletes the build script's own output directory — the
+directory the `.d` sits in.
 
 ## Costs measured, not asserted
 

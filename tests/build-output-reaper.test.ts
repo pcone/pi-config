@@ -373,9 +373,12 @@ describe("pruneExactArtifacts (M2 route 1)", () => {
 	it("scans no build-script output dir, so its .d is neither counted nor attributed", () => {
 		const deadPath = tempDir("pi-reaper-dead-");
 		const target = tempDir("pi-reaper-box-target-");
-		// `<profile>/build/<pkg>-<hash>/out/` holds a build script's own dep-info;
-		// the 476 `.d` under this box's `<profile>/build/` are that kind. They
-		// describe a script's inputs, not a crate unit route 1 attributes.
+		// Owner 2026-11-09: `<profile>/build/<pkg>/<hash>/out/*.d` stays out of the
+		// scan, and this row is the pin. On this box 12 of the 1433 `.d` there name a
+		// worktree and all 12 name it only in an `env-dep:CARGO_MANIFEST_DIR=` token,
+		// so scanning them attributes nothing; what it would widen is the delete
+		// surface, since a build script's `.d` stem is the name of its own `build/`
+		// dir. Adding the location to `DEP_INFO_SUBDIRS` is red here.
 		const out = join(target, "debug", "build", "parser-1a2b3c4d5e6f7890", "out");
 		write(join(out, "inputs.d"), `${join(out, "inputs")}: ${join(deadPath, "parser/src/lib.rs")}\n`);
 		// Directly under `build/`, so a plain `"build"` entry in the scan list is
