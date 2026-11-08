@@ -179,12 +179,16 @@ export {
 
 // WO-2026-095 split: records.ts owns the work-order record writes.
 export {
+	closeWorkRecord,
+	commitRecordEntries,
 	completeWorkRecord,
 	openRecordContext,
 	openWorkRecord,
 	readSessionExchange,
 	verifyWorkRecord,
+	type CloseWorkRecordOptions,
 	type PersistedWorkRecord,
+	type RecordClose,
 	type RecordEntryRef,
 	type WorkRecord,
 } from "./records.ts";

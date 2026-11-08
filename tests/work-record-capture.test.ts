@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import subagentFactory, {
+	commitRecordEntries,
 	completeWorkRecord,
 	metaPath,
 	openRecordContext,
@@ -590,6 +591,29 @@ describe("resume re-opens the record and checks the dispatch it must already hol
 			await tools.get("subagent_kill").execute("tk", { session_id: sid }, undefined, undefined, stubCtx(root));
 			removeArtifacts(sid);
 		}
+	}, 30_000);
+});
+
+describe("commitRecordEntries — the recovery commits the record it appended, and nothing else", () => {
+	/** A record this run wrote through the tool, as a recovery's appends leave it. */
+	function written(root: string) {
+		const { record, failures } = openWorkRecord(root, WO_FILE, "subagent-impl-1", "task");
+		expect(failures).toEqual([]);
+		return record!;
+	}
+
+	it("commits nothing and reports nothing when the record is already committed", () => {
+		// The stated state behind the branch: a second close over the same record. Nothing staged
+		// means no commit — and a commit attempted with nothing staged would fail, so this row
+		// reds if the branch is inverted rather than passing quietly.
+		const root = makeRepo({ record: false });
+		const record = written(root);
+		commitAll(root, "record");
+		const head = gitOut(root, ["rev-parse", "HEAD"]);
+
+		expect(commitRecordEntries(record)).toEqual([]);
+		expect(gitOut(root, ["rev-parse", "HEAD"])).toBe(head);
+		expect(gitOut(root, ["status", "--porcelain", "-uall"])).toBe("");
 	}, 30_000);
 });
 
