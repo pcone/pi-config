@@ -25,6 +25,7 @@ import {
 	dropLandedWorktreeTarget,
 	enforceCargoTargetBound,
 	planCargoBound,
+	createReapBuildOutput,
 	pruneCargoArtifactsFor,
 	pruneExactArtifacts,
 	removeWorktreeTarget,
@@ -461,6 +462,45 @@ describe("enforceCargoTargetBound (M3)", () => {
 		expect(calls.map((c) => c.args)).toEqual([["clean", "-p", "parser"]]);
 	});
 
+	it("reports an over-bound dir that route 1 brought under as under, not as unmeasured", async () => {
+		const { home, cargoTargetDir, deadPath } = fakeHome("tfd-d");
+		const deps = join(cargoTargetDir, "debug", "deps");
+		mkdirSync(deps, { recursive: true });
+		const depInfo = join(deps, "tfd_d-abc123.d");
+		writeFileSync(depInfo, `${deadPath}/src/lib.rs: ${deadPath}/src/lib.rs\n`);
+		// Over the bound on the walk, under it once the dead share is pruned: the
+		// verdict "under" is the third arm of the comparison, and it is the one
+		// that tells a reader the prune did its job. One counter per sweep.
+		const sizes = () => {
+			let n = 0;
+			return () => (n++ === 0 ? 25 * GiB : 10 * GiB);
+		};
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [{ worktreePath: deadPath, parentCwd: "" }],
+			sizeOf: sizes(),
+			run: fakeRunner().run,
+		});
+
+		expect(report.entries[0]).toMatchObject({
+			cargoTargetDir,
+			beforeBytes: 25 * GiB,
+			afterBytes: 10 * GiB,
+			overBound: false,
+			route: "exact",
+		});
+		expect(existsSync(depInfo)).toBe(false);
+
+		const lines = await createReapBuildOutput({
+			home,
+			sizeOf: sizes(),
+			run: fakeRunner().run,
+		}).enforceBound();
+		expect(lines.join("\n")).toContain("shared dir under bound");
+		expect(lines.join("\n")).not.toContain("UNMEASURED");
+	});
+
 	it("reports a dir it could not measure instead of calling it under-bound", async () => {
 		const home = tempDir("pi-reaper-home-");
 		mkdirSync(join(home, ".cache", "cargo-target", "tfd-d"), { recursive: true });
@@ -578,7 +618,12 @@ describe("enforceCargoTargetBound (M3)", () => {
 		const report = await enforceCargoTargetBound({
 			home,
 			deadWorktrees: [],
-			sizeOf: (dir) => {
+			sizeOf: async (dir) => {
+				// Delay the failure that comes first in walk order, so a result folded
+				// in completion order lands in the wrong place. A synchronous throw
+				// makes completion order equal walk order, and the row then passes
+				// against the very bug it exists to pin.
+				if (dir === walkOrder[0]) await new Promise((r) => setTimeout(r, 50));
 				throw new Error(`du: cannot read ${dir}`);
 			},
 			run: fakeRunner().run,
