@@ -74,11 +74,27 @@ function depInfoNamesPath(content: string, worktreePath: string): boolean {
 	return new RegExp(`(^|[\\s:])${escaped}(/|$)`, "m").test(content);
 }
 
+/** A build-script `env-dep:` line names an environment input, not the source set
+ *  a unit was compiled from: `env-dep:CARGO_MANIFEST_DIR=<worktree>/parser`. The
+ *  value is preceded by `=`, so the prefix rule above does not treat it as
+ *  naming the worktree — an `env-dep:`-only file is counted
+ *  (`depInfoEnvDepOnly`) and left alone. Attributing it would risk a live
+ *  worktree's artifacts for a weaker claim than a source rule. */
+function depInfoMentionsPath(content: string, worktreePath: string): boolean {
+	return content.includes(worktreePath);
+}
+
+/** The dep-info locations cargo writes for one profile, relative to it. */
+const DEP_INFO_SUBDIRS = ["", "examples", "deps"] as const;
+
 export interface ExactPruneResult {
 	/** `.d` files read. */
 	depInfoScanned: number;
-	/** `.d` files naming the dead worktree — the crates it owns. */
+	/** `.d` files naming the dead worktree in a source rule — the crates it owns. */
 	depInfoMatched: number;
+	/** `.d` files naming it *only* in `env-dep:` lines, counted and left alone:
+	 *  their artifacts are not attributed to the worktree. */
+	depInfoEnvDepOnly: number;
 	filesDeleted: number;
 	dirsDeleted: number;
 	/** Read/delete failures, unswallowed. */
@@ -97,7 +113,14 @@ export interface ExactPruneResult {
  * path and are left for route 2.
  */
 export function pruneExactArtifacts(cargoTargetDir: string, worktreePath: string): ExactPruneResult {
-	const result: ExactPruneResult = { depInfoScanned: 0, depInfoMatched: 0, filesDeleted: 0, dirsDeleted: 0, problems: [] };
+	const result: ExactPruneResult = {
+		depInfoScanned: 0,
+		depInfoMatched: 0,
+		depInfoEnvDepOnly: 0,
+		filesDeleted: 0,
+		dirsDeleted: 0,
+		problems: [],
+	};
 
 	const dropPath = (p: string, isDir: boolean): void => {
 		try {
@@ -120,59 +143,64 @@ export function pruneExactArtifacts(cargoTargetDir: string, worktreePath: string
 	}
 
 	for (const profile of profiles) {
-		const depsDir = join(cargoTargetDir, profile, "deps");
-		let depInfo: string[];
-		try {
-			depInfo = readdirSync(depsDir).filter((f) => f.endsWith(".d"));
-		} catch {
-			continue; // no deps dir in this profile
-		}
-		const stems = new Set<string>();
-		for (const name of depInfo) {
-			result.depInfoScanned++;
-			let content: string;
+		// Dep-info sits beside the artifacts it describes: a linked bin target at
+		// the profile root, an example under `examples/`, a crate unit under
+		// `deps/`. Which of the three holds an absolutized worktree path depends
+		// on the target kind, so all three are scanned (Q-091-b).
+		for (const sub of DEP_INFO_SUBDIRS) {
+			const depInfoDir = sub === "" ? join(cargoTargetDir, profile) : join(cargoTargetDir, profile, sub);
+			let entries: string[];
 			try {
-				content = readFileSync(join(depsDir, name), "utf8");
-			} catch (e) {
-				result.problems.push(`${join(depsDir, name)} not readable: ${e instanceof Error ? e.message : String(e)}`);
-				continue;
+				entries = readdirSync(depInfoDir);
+			} catch {
+				continue; // this profile has no such dir
 			}
-			if (depInfoNamesPath(content, worktreePath)) stems.add(name.slice(0, -".d".length));
-		}
-		if (stems.size === 0) continue;
-		result.depInfoMatched += stems.size;
-
-		let depEntries: string[] = [];
-		try {
-			depEntries = readdirSync(depsDir);
-		} catch { /* listed above */ }
-
-		for (const stem of stems) {
-			// Every artifact of the unit shares the stem: `lib<stem>.rlib` and
-			// `<stem>.rmeta` for a library target, `<stem>.<hash>.rcgu.o` parts, the
-			// `<stem>` binary for a bin target. Cargo prefixes library artifacts with
-			// `lib`, which the stem (taken from the `.d` name) does not carry.
-			const names = [stem, `lib${stem}`];
-			for (const name of depEntries) {
-				if (!names.some((n) => name === n || name.startsWith(`${n}.`))) continue;
-				dropPath(join(depsDir, name), false);
+			const stems = new Set<string>();
+			for (const name of entries) {
+				// A file named exactly `.d` has an empty stem, and an empty stem
+				// matches every dotfile in the directory. Cargo writes none.
+				if (name.length <= ".d".length || !name.endsWith(".d")) continue;
+				result.depInfoScanned++;
+				let content: string;
+				try {
+					content = readFileSync(join(depInfoDir, name), "utf8");
+				} catch (e) {
+					result.problems.push(`${join(depInfoDir, name)} not readable: ${e instanceof Error ? e.message : String(e)}`);
+					continue;
+				}
+				if (depInfoNamesPath(content, worktreePath)) stems.add(name.slice(0, -".d".length));
+				else if (depInfoMentionsPath(content, worktreePath)) result.depInfoEnvDepOnly++;
 			}
-			// `<pkg>-<hash>`: cargo uses the target name (`_`) for dep-info and the
-			// package name (`-`) for fingerprints and build-script output.
-			const cut = stem.lastIndexOf("-");
-			if (cut <= 0) continue;
-			const hash = stem.slice(cut + 1);
-			const pkgNames = new Set([stem.slice(0, cut), stem.slice(0, cut).replace(/_/g, "-")]);
-			for (const pkg of pkgNames) {
-				for (const [sub, isDir] of [[".fingerprint", true], ["build", true]] as const) {
-					const candidate = join(cargoTargetDir, profile, sub, `${pkg}-${hash}`);
-					let st;
-					try {
-						st = lstatSync(candidate);
-					} catch {
-						continue;
+			if (stems.size === 0) continue;
+			result.depInfoMatched += stems.size;
+
+			for (const stem of stems) {
+				// Every artifact of the unit shares the stem: `lib<stem>.rlib` and
+				// `<stem>.rmeta` for a library target, `<stem>.<hash>.rcgu.o` parts, the
+				// `<stem>` binary for a bin target. Cargo prefixes library artifacts with
+				// `lib`, which the stem (taken from the `.d` name) does not carry.
+				const names = [stem, `lib${stem}`];
+				for (const name of entries) {
+					if (!names.some((n) => name === n || name.startsWith(`${n}.`))) continue;
+					dropPath(join(depInfoDir, name), false);
+				}
+				// `<pkg>-<hash>`: cargo uses the target name (`_`) for dep-info and the
+				// package name (`-`) for fingerprints and build-script output.
+				const cut = stem.lastIndexOf("-");
+				if (cut <= 0) continue;
+				const hash = stem.slice(cut + 1);
+				const pkgNames = new Set([stem.slice(0, cut), stem.slice(0, cut).replace(/_/g, "-")]);
+				for (const pkg of pkgNames) {
+					for (const [dir, isDir] of [[".fingerprint", true], ["build", true]] as const) {
+						const candidate = join(cargoTargetDir, profile, dir, `${pkg}-${hash}`);
+						let st;
+						try {
+							st = lstatSync(candidate);
+						} catch {
+							continue;
+						}
+						if (st.isDirectory()) dropPath(candidate, isDir);
 					}
-					if (st.isDirectory()) dropPath(candidate, isDir);
 				}
 			}
 		}
@@ -271,6 +299,9 @@ export interface CargoPruneResult {
 	route: "exact" | "coarse" | "none";
 	depInfoScanned: number;
 	depInfoMatched: number;
+	/** `.d` files naming the worktree only in `env-dep:` lines: counted, not
+	 *  attributed (see `pruneExactArtifacts`). */
+	depInfoEnvDepOnly: number;
 	filesDeleted: number;
 	dirsDeleted: number;
 	membersCleaned: string[];
@@ -300,6 +331,7 @@ export async function pruneCargoArtifactsFor(
 	const base = {
 		depInfoScanned: exact.depInfoScanned,
 		depInfoMatched: exact.depInfoMatched,
+		depInfoEnvDepOnly: exact.depInfoEnvDepOnly,
 		filesDeleted: exact.filesDeleted,
 		dirsDeleted: exact.dirsDeleted,
 		membersCleaned: [] as string[],
@@ -358,6 +390,9 @@ export function describePrune(cargo: CargoPruneResult): string | null {
 	} else if (cargo.route === "none" && cargo.depInfoScanned > 0) {
 		parts.push(`shared dir untouched (${cargo.depInfoMatched}/${cargo.depInfoScanned} .d)`);
 	}
+	// Counted and left alone: named in the report so a run that attributes
+	// nothing still shows the files it recognised and refused.
+	if (cargo.depInfoEnvDepOnly > 0) parts.push(`${cargo.depInfoEnvDepOnly} env-dep-only .d left alone`);
 	if (cargo.problems.length > 0) parts.push(`problems: ${cargo.problems.join("; ")}`);
 	return parts.length > 0 ? parts.join("; ") : null;
 }
@@ -513,6 +548,9 @@ export interface CargoBoundEntryReport {
 	worktreePathsPruned: number;
 	depInfoScanned: number;
 	depInfoMatched: number;
+	/** `.d` files naming a dead path only in `env-dep:` lines: counted, not
+	 *  attributed. */
+	depInfoEnvDepOnly: number;
 	membersCleaned: string[];
 	problems: string[];
 }
@@ -598,6 +636,7 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 			worktreePathsPruned: 0,
 			depInfoScanned: 0,
 			depInfoMatched: 0,
+			depInfoEnvDepOnly: 0,
 			membersCleaned: [],
 			problems: [],
 		};
@@ -608,6 +647,7 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 			const exact = pruneExactArtifacts(action.cargoTargetDir, worktreePath);
 			entry.depInfoScanned += exact.depInfoScanned;
 			entry.depInfoMatched += exact.depInfoMatched;
+			entry.depInfoEnvDepOnly += exact.depInfoEnvDepOnly;
 			entry.problems.push(...exact.problems);
 			if (exact.depInfoMatched > 0) pruned++;
 		}
