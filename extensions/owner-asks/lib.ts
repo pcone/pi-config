@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fetchCheckout } from "../lib/git-fetch.ts";
+import { runGit } from "../lib/git-run.ts";
 
 /** Minimum gap between background fetches of one repo. */
 export const FETCH_INTERVAL_MS = 5 * 60_000;
@@ -52,11 +53,14 @@ export function attention(state: OwnerAsks): boolean {
 	return state.asks.some((a) => a.isNew) || state.unruled.length > 0;
 }
 
-/** Trimmed stdout of a git command, or null when it fails (no upstream, not a repo). */
-export function gitOut(cwd: string, args: string[]): Promise<string | null> {
-	return new Promise((resolve) =>
-		execFile("git", args, { cwd }, (err, stdout) => resolve(err ? null : stdout.trim())),
-	);
+/**
+ * stdout of a git command, or null when it fails (no upstream, not a repo).
+ * Bounded by `lib/git-run.ts`: a hung git leaves the count stale, it does not
+ * hold the status line.
+ */
+export async function gitOut(cwd: string, args: string[]): Promise<string | null> {
+	const result = await runGit(cwd, args);
+	return result.ok ? result.out : null;
 }
 
 function sanitize(root: string): string {
@@ -82,7 +86,9 @@ function fetchIfStale(root: string, cacheDir: string): void {
 	// Stamp before spawning: a failing fetch must not retry on every call.
 	fs.writeFileSync(stamp, "");
 	// Best effort: a missing git or a dead remote only leaves the counts stale.
-	void fetchCheckout(root);
+	// Background shape: the statusline and `/asks` CLIs must not wait out the
+	// fetch they do not read the result of.
+	void fetchCheckout(root, { background: true });
 }
 
 function runPython(root: string, args: string[]): Promise<string[]> {

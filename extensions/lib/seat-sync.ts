@@ -19,17 +19,14 @@
  * Design: `docs/design/seat-sync.md`. Decision:
  * `decisions/sessions/002-seat-checkout-sync.md`.
  */
-import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
 import { join, sep } from "node:path";
-import { safeNotify } from "./safe-notify.ts";
+import { liveUi, safeNotify } from "./safe-notify.ts";
 import { fetchCheckout } from "./git-fetch.ts";
+import { runGit } from "./git-run.ts";
 
 /** Footer status key. */
 export const STATUS_KEY = "seat-sync";
-
-/** A hung local git (status, rev-list, merge) must not hold the task either. */
-const GIT_TIMEOUT_MS = 5_000;
 
 /** Dirty files named in a warning; past this the rest are a count. */
 export const DIRTY_LIST_LIMIT = 10;
@@ -139,39 +136,21 @@ export interface SeatReport {
 	commands: string[];
 }
 
+/**
+ * What to append after "failed in <root>". A join of a background fetch carries
+ * no stderr (that shape discards it), and saying so beats a colon with nothing
+ * after it.
+ */
+function fetchDetail(fetched: { stderr: string; joined: boolean }): string {
+	if (fetched.stderr) return `: ${fetched.stderr}`;
+	return fetched.joined ? " (stderr not captured: joined a background fetch)" : "";
+}
+
 function blocked(reason: string, status: string, warning: string, commands: string[]): SeatReport {
 	return { outcome: "blocked", reason, status, warning, commands };
 }
 
 // ── The sync ───────────────────────────────────────────────────────────────
-
-interface GitRun {
-	ok: boolean;
-	/** stdout without its trailing newline. Not `trim()`: `status --porcelain`
-	 *  starts its first line with a status column, and stripping it shifts every
-	 *  path by one character. */
-	out: string;
-	/** Last non-empty stderr line. */
-	err: string;
-}
-
-function runGit(cwd: string, args: string[], timeoutMs: number): Promise<GitRun> {
-	return new Promise((resolveGit) => {
-		execFile(
-			"git",
-			args,
-			{ cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
-			(err, stdout, stderr) => {
-				const lines = stderr.split("\n").map((line) => line.trim()).filter((line) => line !== "");
-				resolveGit({
-					ok: !err,
-					out: stdout.trimEnd(),
-					err: lines.length === 0 ? (err?.message ?? "") : lines[lines.length - 1],
-				});
-			},
-		);
-	});
-}
 
 export interface SyncOptions {
 	/** Fetch bound; `fetchCheckout`'s own default unless a row needs it shorter. */
@@ -185,9 +164,9 @@ export interface SyncOptions {
  */
 export async function syncSeat(root: string, opts: SyncOptions = {}): Promise<SeatReport> {
 	const commands: string[] = [];
-	const git = (args: string[]): Promise<GitRun> => {
+	const git = (args: string[]) => {
 		commands.push(`git ${args.join(" ")}`);
-		return runGit(root, args, GIT_TIMEOUT_MS);
+		return runGit(root, args);
 	};
 
 	// Upstream first: a branch without one has nothing to fast-forward to, and
@@ -197,12 +176,12 @@ export async function syncSeat(root: string, opts: SyncOptions = {}): Promise<Se
 	const upstreamName = upstream.out;
 
 	commands.push("git fetch --quiet");
-	const fetched = await fetchCheckout(root, opts.fetchTimeoutMs);
+	const fetched = await fetchCheckout(root, { timeoutMs: opts.fetchTimeoutMs });
 	if (!fetched.ok) {
 		return blocked(
 			"fetch failed",
 			"seat sync: BLOCKED — fetch failed",
-			`seat sync: BLOCKED — git fetch --quiet failed in ${root}: ${fetched.stderr}`,
+			`seat sync: BLOCKED — git fetch --quiet failed in ${root}${fetchDetail(fetched)}`,
 			commands,
 		);
 	}
@@ -322,22 +301,27 @@ export interface SeatUi {
  * one thing the report exists to say, and it must not vanish with the UI.
  */
 export function applyReport(ctx: SeatUi, report: SeatReport, debug: boolean): void {
-	// Stale-ctx tolerance is `lib/safe-notify.ts`'s rationale, applied to the
-	// status line too: this task outlives a reload.
-	const setStatus = (text: string | undefined): void => {
+	// Every ctx read happens here, in one guarded take: `hasUI` and `ui` are
+	// getters that throw once the session that started this task is replaced or
+	// reloaded, and this task deliberately outlives that (`lib/safe-notify.ts`).
+	const surface = liveUi(ctx);
+	if (!surface) return;
+	const { hasUI, ui } = surface;
+
+	const setStatus = (text: string | undefined, color?: "warning"): void => {
 		try {
-			ctx.ui.setStatus(STATUS_KEY, text);
+			ui.setStatus(STATUS_KEY, color ? ui.theme.fg(color, text!) : text);
 		} catch { /* ctx stale after reload */ }
 	};
 
 	if (report.warning) {
-		if (ctx.hasUI) {
-			safeNotify(ctx, report.warning, "warning");
-			setStatus(ctx.ui.theme.fg("warning", report.status!));
+		if (hasUI) {
+			safeNotify({ ui }, report.warning, "warning");
+			setStatus(report.status, "warning");
 		} else {
 			console.warn(report.warning);
 		}
-	} else if (ctx.hasUI) {
+	} else if (hasUI) {
 		// An up-to-date or skipped checkout clears the note: it describes this
 		// checkout as it stands now, not as a pre-reload sync left it.
 		setStatus(report.status);
@@ -345,6 +329,6 @@ export function applyReport(ctx: SeatUi, report: SeatReport, debug: boolean): vo
 
 	if (!debug) return;
 	const line = `[seat-sync] ${report.outcome}: ${report.reason}; commands: ${report.commands.join(" ; ") || "none"}`;
-	if (ctx.hasUI) safeNotify(ctx, line, "info");
+	if (hasUI) safeNotify({ ui }, line, "info");
 	else console.warn(line);
 }

@@ -65,5 +65,12 @@ async function runSync(ctx: ExtensionContext, root: string): Promise<void> {
 		};
 	}
 	lastReport = report;
-	applyReport(ctx as unknown as SeatUi, report, debug);
+	try {
+		applyReport(ctx as unknown as SeatUi, report, debug);
+	} catch (err) {
+		// The report path is the last place a stale ctx can still throw, and this
+		// task's rejection would be unhandled: pi installs no handler for it, and
+		// Bun exits 1 on one. Losing the report is bad; killing the session is worse.
+		console.warn(`[seat-sync] report failed: ${(err as Error).message}\n${report.warning ?? report.status ?? report.reason}`);
+	}
 }

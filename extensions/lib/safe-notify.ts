@@ -27,3 +27,21 @@ export function safeNotify(
 		ctx.ui.notify?.(message, level);
 	} catch { /* ctx stale after reload */ }
 }
+
+/**
+ * The UI surface, or null when the ctx is stale.
+ *
+ * `hasUI`, `ui`, `mode` and `cwd` are getters on pi's context, each calling
+ * `assertActive()` (`runner.js:626-651`), so *reading* them is what throws after
+ * a session replacement or reload — not any call made through the value. A
+ * detached task (one the handler did not await) outlives exactly that event, so
+ * it has to take the surface in one guarded read and give up quietly when there
+ * is no longer a session to draw on.
+ */
+export function liveUi<T>(ctx: { hasUI: boolean; ui: T }): { hasUI: boolean; ui: T } | null {
+	try {
+		return { hasUI: ctx.hasUI, ui: ctx.ui };
+	} catch {
+		return null;
+	}
+}

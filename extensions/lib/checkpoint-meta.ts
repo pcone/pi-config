@@ -17,9 +17,9 @@
  *
  * Type-only pi import — this module must stay unit-testable.
  */
-import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { runGit as runGitOutcome } from "./git-run.ts";
 
 /** Commits the branch is ahead of / behind its upstream. */
 export interface AheadBehind {
@@ -50,13 +50,11 @@ export interface CheckpointTokens {
 /** A hung git must never hold a checkpoint: every call is bounded. */
 const GIT_TIMEOUT_MS = 2000;
 
-function runGit(cwd: string, args: string[]): Promise<string> {
-	return new Promise((resolveGit, rejectGit) => {
-		execFile("git", args, { cwd, timeout: GIT_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
-			if (err) rejectGit(err);
-			else resolveGit(stdout.trim());
-		});
-	});
+/** Trimmed stdout, rejecting on any failure — the shape `captureGitBinding` catches. */
+async function runGit(cwd: string, args: string[]): Promise<string> {
+	const result = await runGitOutcome(cwd, args, { timeoutMs: GIT_TIMEOUT_MS });
+	if (!result.ok) throw new Error(result.err);
+	return result.out;
 }
 
 /**

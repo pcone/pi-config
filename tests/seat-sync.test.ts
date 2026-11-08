@@ -21,7 +21,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import seatSync, { _testLastReport, _testLastSync, _testSetFetchTimeout } from "../extensions/seat-sync.ts";
+import { FETCH_TIMEOUT_MS } from "../extensions/lib/git-fetch.ts";
 import { seatScope, type SeatReport } from "../extensions/lib/seat-sync.ts";
+import { ownerAsks } from "../extensions/owner-asks/lib.ts";
 
 const GIT_ENV = {
 	...process.env,
@@ -118,6 +120,20 @@ async function fire(cwd: string): Promise<Surfaces> {
 	return { report: _testLastReport(), statuses, notes };
 }
 
+/** Capture `console.warn` while `body` runs — the print-mode channel. */
+async function withWarnCapture<T>(body: () => Promise<T>): Promise<{ value: T; warns: string[] }> {
+	const warns: string[] = [];
+	const saved = console.warn;
+	console.warn = (...args: unknown[]) => {
+		warns.push(args.map((arg) => String(arg)).join(" "));
+	};
+	try {
+		return { value: await body(), warns };
+	} finally {
+		console.warn = saved;
+	}
+}
+
 /** Resolve once `ready()` holds, or give up after `ms` (the assertion after it then fails). */
 async function waitFor(ready: () => boolean, ms: number): Promise<void> {
 	const deadline = Date.now() + ms;
@@ -165,6 +181,9 @@ describe("R1 clean and behind", () => {
 		expect(git(root, "rev-parse", "HEAD")).toBe(git(root, "rev-parse", "@{u}"));
 		// The working tree moved, not just the ref.
 		expect(existsSync(join(root, "new.txt"))).toBe(true);
+		// The move was the one command the order allows, and no other verb ran.
+		expect(report!.commands.at(-1)).toBe("git merge --ff-only @{u}");
+		expect(report!.commands.filter((command) => /\b(reset|stash|checkout)\b|--force|--no-ff/.test(command))).toEqual([]);
 	}, 60_000);
 });
 
@@ -208,20 +227,24 @@ describe("R2 dirty", () => {
 });
 
 describe("R3 ahead", () => {
-	it("does not move, and the warning names the commit count and subjects", async () => {
+	it("does not move, and names the commit count and the first three subjects", async () => {
 		const { root } = makeSeat();
-		writeFileSync(join(root, "local.txt"), "l\n");
-		const local = commit(root, "local work only here");
-		const upstream = git(root, "rev-parse", "@{u}");
+		const subjects = ["local one", "local two", "local three", "local four"];
+		for (const [i, subject] of subjects.entries()) {
+			writeFileSync(join(root, `local-${i}.txt`), "l\n");
+			commit(root, subject);
+		}
+		const local = git(root, "rev-parse", "HEAD");
 
 		const { report } = await fire(root);
 
 		expect(report!.outcome).toBe("blocked");
-		expect(report!.status).toBe("seat sync: BLOCKED — 1 commit ahead of origin/main");
-		expect(report!.warning).toContain("1 commit ahead of origin/main");
-		expect(report!.warning).toContain("local work only here");
+		expect(report!.status).toBe("seat sync: BLOCKED — 4 commits ahead of origin/main");
+		expect(report!.warning).toContain("4 commits ahead of origin/main");
+		// The cap is three, newest first: the oldest subject is not named.
+		for (const subject of subjects.slice(1)) expect(report!.warning).toContain(subject);
+		expect(report!.warning).not.toContain(subjects[0]);
 		expect(git(root, "rev-parse", "HEAD")).toBe(local);
-		expect(git(root, "rev-parse", "@{u}")).toBe(upstream);
 	}, 60_000);
 });
 
@@ -273,11 +296,14 @@ describe("R6 a worktree is never a seat", () => {
 		git(root, "worktree", "add", "-q", tree, "-b", "elsewhere");
 		expect(seatScope(tree)).toEqual({ isSeat: false, reason: "worktree", root: tree });
 
-		const { report, statuses, notes } = await fire(tree);
+		// A shim that logs every git invocation: the gate must spawn none.
+		const shim = gitShim("exit 0");
+		const { report, statuses, notes } = await withPathPrefix(shim.dir, () => fire(tree));
 
 		expect(report).toBeUndefined();
 		expect(statuses).toEqual([]);
 		expect(notes).toEqual([]);
+		expect(shim.calls()).toEqual([]);
 		// The gate ran before anything spawned git: the tree is untouched.
 		expect(git(tree, "rev-parse", "--abbrev-ref", "HEAD")).toBe("elsewhere");
 	}, 60_000);
@@ -342,6 +368,8 @@ describe("R8 fetch fails", () => {
 	}, 60_000);
 
 	it("degrades a fetch that outlives its bound to a warning naming the timeout", async () => {
+		// The order's box: 10 s. Pinned because every row below overrides it.
+		expect(FETCH_TIMEOUT_MS).toBe(10_000);
 		const { root } = makeSeat();
 		const shim = gitShim("exec sleep 600");
 		_testSetFetchTimeout(300);
@@ -360,7 +388,7 @@ describe("R9 the first prompt is not delayed", () => {
 	it("returns from session_start while the fetch is still running, then reports", async () => {
 		const { root } = makeSeat();
 		const shim = gitShim("exec sleep 600");
-		_testSetFetchTimeout(700);
+		_testSetFetchTimeout(2_000);
 		try {
 			await withPathPrefix(shim.dir, async () => {
 				const { ctx, statuses, notes } = fakeCtx(root);
@@ -387,9 +415,9 @@ describe("R9 the first prompt is not delayed", () => {
 				const settledAt = Date.now();
 				await _testLastSync();
 				// The report lands off the turn path, once the bound kills the fetch.
-				expect(Date.now() - settledAt).toBeGreaterThanOrEqual(200);
+				expect(Date.now() - settledAt).toBeGreaterThanOrEqual(500);
 				expect(statuses).toEqual([["seat-sync", "seat sync: BLOCKED — fetch failed"]]);
-				expect(notes[0].message).toContain("timed out after 700ms");
+				expect(notes[0].message).toContain("timed out after 2000ms");
 			});
 		} finally {
 			_testSetFetchTimeout(undefined);
