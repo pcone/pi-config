@@ -61,7 +61,10 @@ Move these sections, in this order (line spans at `1f1f8fe`; verify at your base
 
 - **R1** at each extraction commit, every named characterisation row passes unchanged (`git diff <prev>..<commit> -- tests/` shows only additions).
 - **R2** the extension still loads and registers the same tools/commands: a smoke row that loads the module and asserts the tool name set is unchanged against the pre-split list.
-- **R3** `index.ts` at the tip is under **1,600** lines; every new file is under **900** (the two numbers are the split's success condition, measured and reported).
+- **R3** `index.ts` at the tip is **2,143** lines; every new file is under **900**. Amended by owner
+  ruling (2026-11-08): *"Accept 2,143 (Recommended)"* — the original bound of 1,600 was unreachable
+  with the entry point's own keeps (1,151 lines) plus one `execute` body per tool. A tenth file for
+  the tool surface is optional future work, unscheduled.
 - **R4** the duplication census: each function name that appeared in more than one section before the split is either one definition at the tip, or its two uses are recorded with a reason.
 - **R5** no import cycle between the new modules (`rg` + a load-order check, or a cycle detector if one is already used).
 - **R6** external importers still resolve: every `import … from "…/subagent-async/index.ts"` outside the extension compiles against the tip.

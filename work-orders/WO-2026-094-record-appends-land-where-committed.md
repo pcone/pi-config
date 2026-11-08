@@ -55,3 +55,15 @@ The append is one `python3` spawn, and the close-time verification is one `git g
 
 - `PREMISE FALSIFIED` if the record append already runs in the worktree (it does not, per the premise) or if `wo_record.py` writes somewhere other than a git-tracked path.
 - `PLAN MISMATCH` if a second place writes record entries besides `openWorkRecord` and the close path.
+
+## Gate-back record
+
+**Q-094-a — the recovery close path. Ruled by owner 2026-11-08 (session 8f90746f): *"Recovery
+commits (Recommended)"*.** Recovery commits the record on its branch and verifies it, like a normal
+close: the append goes to the tree recovery owns, that tree's commit carries it, and the same
+verification runs and reports `RECORD FAILURE` when the entry is not in the commit.
+
+**Where gate/landed entries get committed (owner 2026-11-08, same session).** In the orchestrator's
+own worktree, before its merge — so the `gate` entry lands in the chunk's commit and `landed --commit
+<sha>` names that merge. `agents/orchestrator.md` now says so; an append in a parent checkout is the
+lost-records bug, not a variant of it.
