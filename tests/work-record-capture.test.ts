@@ -486,6 +486,7 @@ describe("recovery completes the record from the recovered session file", () => 
 
 		const delivered: string[] = [];
 		const { pi, tools } = stubPi(delivered);
+		subagentFactory(pi); // the tools a user's status query reaches for
 		const sock = new FakeSock();
 		_testSetLiveSessionCtx(stubCtx(root));
 		recoverOrphanedSubagents(
@@ -545,6 +546,19 @@ describe("recovery completes the record from the recovered session file", () => 
 		expect(delivered).toContain(`${recordFile(root)} is not committed in ${root}: !! work-orders/records/`);
 		// The append itself happened: the failure names what the commit could not carry.
 		expect(fs.readFileSync(recordFile(root), "utf-8")).toContain("## completion");
+	}, 30_000);
+
+	it("leaves that failure on the status surface the recovered session left behind", async () => {
+		// The recovered run is out of the running map before its commit runs, so a user's later
+		// `subagent_status` reads the meta and nothing else: the delivered result is one shot, and
+		// the meta write is the only thing that carries the outcome past it.
+		const root = makeRepo({ ignoreRecords: true });
+		const { piId, before } = runTwice(root);
+		const { sid, tools } = recoverRun(root, piId, before, { exposeMetaInTmp: true });
+
+		const status = await tools.get("subagent_status").execute("ts", { session_id: sid }, undefined, undefined, stubCtx(root));
+		expect(String(status.content[0].text))
+			.toContain(`RECORD FAILURE: record file ${recordFile(root)} is not committed in ${root}`);
 	}, 30_000);
 });
 
