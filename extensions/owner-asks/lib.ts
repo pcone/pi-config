@@ -12,10 +12,11 @@
  * Shared by the pi extension (index.ts) and the Claude Code CLI (external.ts).
  */
 
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fetchCheckout } from "../lib/git-fetch.ts";
 
 /** Minimum gap between background fetches of one repo. */
 export const FETCH_INTERVAL_MS = 5 * 60_000;
@@ -67,7 +68,12 @@ async function registryRoot(cwd: string): Promise<string | null> {
 	return root && fs.existsSync(path.join(root, SCRIPT)) ? root : null;
 }
 
-/** Start a detached `git fetch` unless one started within FETCH_INTERVAL_MS. */
+/**
+ * Start a `git fetch` unless one started within FETCH_INTERVAL_MS. The fetch
+ * itself is `lib/git-fetch.ts` — the one checkout fetch this process runs, which
+ * the seat-sync extension joins or waits on. Fire-and-forget here: the counts
+ * read whatever refs land.
+ */
 function fetchIfStale(root: string, cacheDir: string): void {
 	const stamp = path.join(cacheDir, `${sanitize(root)}.fetched`);
 	const last = fs.existsSync(stamp) ? fs.statSync(stamp).mtimeMs : 0;
@@ -75,16 +81,8 @@ function fetchIfStale(root: string, cacheDir: string): void {
 	fs.mkdirSync(cacheDir, { recursive: true });
 	// Stamp before spawning: a failing fetch must not retry on every call.
 	fs.writeFileSync(stamp, "");
-	// No prompt: a detached process that waits on credentials would hang forever.
-	const child = spawn("git", ["fetch", "--quiet"], {
-		cwd: root,
-		detached: true,
-		stdio: "ignore",
-		env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-	});
 	// Best effort: a missing git or a dead remote only leaves the counts stale.
-	child.on("error", () => {});
-	child.unref();
+	void fetchCheckout(root);
 }
 
 function runPython(root: string, args: string[]): Promise<string[]> {
