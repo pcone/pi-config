@@ -64,24 +64,32 @@ export function removeWorktreeTarget(worktreePath: string, onFailure?: (detail: 
 
 // ── M2 route 1 — the exact route ───────────────────────────────────────────
 
+/** `worktreePath` as a whole path in `content`. `before` and `after` are the
+ *  boundary alternatives the caller's syntax allows, so a longer path that
+ *  merely starts with the worktree's (`…/live-e3ifza2` for `…/live-e3ifza`) is
+ *  a different path and does not count. */
+function pathMentioned(content: string, worktreePath: string, before: string, after: string): boolean {
+	if (!content.includes(worktreePath)) return false;
+	const escaped = worktreePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`(^|${before})${escaped}(?:${after})`, "m").test(content);
+}
+
 /** Dep-info files are Makefile rules: `path:` for the crate's own artifacts,
  *  then the sources. Cargo writes those source paths relative to the workspace
  *  root it was invoked for, so this matches only a build whose sources lie
  *  outside the worktree it was run in (the common case is route 2's). */
 function depInfoNamesPath(content: string, worktreePath: string): boolean {
-	if (!content.includes(worktreePath)) return false;
-	const escaped = worktreePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	return new RegExp(`(^|[\\s:])${escaped}(/|$)`, "m").test(content);
+	return pathMentioned(content, worktreePath, "[\\s:]", "/|$");
 }
 
 /** A build-script `env-dep:` line names an environment input, not the source set
  *  a unit was compiled from: `env-dep:CARGO_MANIFEST_DIR=<worktree>/parser`. The
- *  value is preceded by `=`, so the prefix rule above does not treat it as
+ *  value is preceded by `=`, so the source rule above does not treat it as
  *  naming the worktree — an `env-dep:`-only file is counted
  *  (`depInfoEnvDepOnly`) and left alone. Attributing it would risk a live
  *  worktree's artifacts for a weaker claim than a source rule. */
-function depInfoMentionsPath(content: string, worktreePath: string): boolean {
-	return content.includes(worktreePath);
+function depInfoEnvDepNamesPath(content: string, worktreePath: string): boolean {
+	return pathMentioned(content, worktreePath, "=", "/|\\s|$");
 }
 
 /** The dep-info locations cargo writes for one profile, relative to it. */
@@ -152,14 +160,18 @@ export function pruneExactArtifacts(cargoTargetDir: string, worktreePath: string
 			let entries: string[];
 			try {
 				entries = readdirSync(depInfoDir);
-			} catch {
-				continue; // this profile has no such dir
+			} catch (e) {
+				// Absent is the expected state for a location this profile never built
+				// (a library-only crate has no `examples/`). Anything else is a location
+				// the scan cannot read: it attributes nothing there, so it is reported.
+				if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+					result.problems.push(`${depInfoDir} not readable: ${e instanceof Error ? e.message : String(e)}`);
+				}
+				continue;
 			}
 			const stems = new Set<string>();
 			for (const name of entries) {
-				// A file named exactly `.d` has an empty stem, and an empty stem
-				// matches every dotfile in the directory. Cargo writes none.
-				if (name.length <= ".d".length || !name.endsWith(".d")) continue;
+				if (!name.endsWith(".d")) continue;
 				result.depInfoScanned++;
 				let content: string;
 				try {
@@ -168,8 +180,13 @@ export function pruneExactArtifacts(cargoTargetDir: string, worktreePath: string
 					result.problems.push(`${join(depInfoDir, name)} not readable: ${e instanceof Error ? e.message : String(e)}`);
 					continue;
 				}
-				if (depInfoNamesPath(content, worktreePath)) stems.add(name.slice(0, -".d".length));
-				else if (depInfoMentionsPath(content, worktreePath)) result.depInfoEnvDepOnly++;
+				// A file named exactly `.d` has an empty stem, and an empty stem matches
+				// every dotfile in the directory. It is counted above; nothing is
+				// attributed to it. Cargo writes none.
+				const stem = name.slice(0, -".d".length);
+				if (stem.length === 0) continue;
+				if (depInfoNamesPath(content, worktreePath)) stems.add(stem);
+				else if (depInfoEnvDepNamesPath(content, worktreePath)) result.depInfoEnvDepOnly++;
 			}
 			if (stems.size === 0) continue;
 			result.depInfoMatched += stems.size;

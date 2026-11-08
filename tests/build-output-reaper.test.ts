@@ -326,9 +326,102 @@ describe("pruneExactArtifacts (M2 route 1)", () => {
 		expect(existsSync(join(examples, "envonly"))).toBe(true);
 		expect(existsSync(join(examples, "mixed.d"))).toBe(false);
 		expect(existsSync(join(examples, "mixed"))).toBe(false);
-		// The count reaches the operator's report line, not just the result object.
-		expect(describePrune({ route: "exact", depInfoScanned: 2, depInfoMatched: 1, depInfoEnvDepOnly: 1, filesDeleted: 2, dirsDeleted: 0, membersCleaned: [], problems: [] }))
-			.toContain("1 env-dep-only .d left alone");
+	});
+
+	it("carries the env-dep-only count from the real scan to the operator's line", async () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		write(
+			join(examples, "envonly.d"),
+			`${join(examples, "envonly")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath, "parser")}\n`,
+		);
+		write(join(examples, "envonly"));
+		write(join(examples, "mixed.d"), `${join(examples, "mixed")}: ${join(deadPath, "parser/src/lib.rs")}\n`);
+		write(join(examples, "mixed"));
+
+		// The count travels the whole path a removal takes: the scan's result, the
+		// route-1 base `pruneCargoArtifactsFor` hands the caller, and the line that
+		// becomes `ReapResult.detail`. A constant anywhere on it shows up here.
+		const result = await pruneCargoArtifactsFor(target, deadPath, { run: fakeRunner().run });
+
+		expect(result).toMatchObject({ route: "exact", depInfoScanned: 2, depInfoMatched: 1, depInfoEnvDepOnly: 1 });
+		expect(describePrune(result)).toContain("1 env-dep-only .d left alone");
+	});
+
+	it("does not count an env-dep naming a longer path that starts with the dead one", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		// A sibling path whose name starts with the dead worktree's — this box's
+		// `…/live-e3ifza2` against `…/live-e3ifza`. A substring test called that
+		// file env-dep-only; the field, its comment and the report line say
+		// `env-dep:`-only, so the match carries the same path boundary the source
+		// rule does.
+		write(
+			join(examples, "sibling.d"),
+			`${join(examples, "sibling")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath}2/parser\n`,
+		);
+		write(join(examples, "sibling"));
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 1, depInfoMatched: 0, depInfoEnvDepOnly: 0 });
+		expect(existsSync(join(examples, "sibling.d"))).toBe(true);
+	});
+
+	it("scans no build-script output dir, so its .d is neither counted nor attributed", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		// `<profile>/build/<pkg>-<hash>/out/` holds a build script's own dep-info;
+		// the 476 `.d` under this box's `<profile>/build/` are that kind. They
+		// describe a script's inputs, not a crate unit route 1 attributes.
+		const out = join(target, "debug", "build", "parser-1a2b3c4d5e6f7890", "out");
+		write(join(out, "inputs.d"), `${join(out, "inputs")}: ${join(deadPath, "parser/src/lib.rs")}\n`);
+		// Directly under `build/`, so a plain `"build"` entry in the scan list is
+		// red here too, not only a `build/**/out` widening.
+		write(join(target, "debug", "build", "held.d"), `held: ${join(deadPath, "src/lib.rs")}\n`);
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 0, depInfoMatched: 0 });
+		expect(existsSync(join(out, "inputs.d"))).toBe(true);
+		expect(existsSync(join(target, "debug", "build", "held.d"))).toBe(true);
+	});
+
+	it("counts a .d named exactly `.d`, and attributes nothing to its empty stem", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		write(join(examples, ".d"), `${join(examples, "nothing")}: ${join(deadPath, "parser/src/lib.rs")}\n`);
+		// The artefact a naive empty-stem match would take with it: every dotfile in
+		// the directory starts with the empty string.
+		write(join(examples, ".env"), "keep\n");
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 1, depInfoMatched: 0, filesDeleted: 0 });
+		expect(existsSync(join(examples, ".d"))).toBe(true);
+		expect(existsSync(join(examples, ".env"))).toBe(true);
+	});
+
+	it("reports a profile directory it cannot list instead of reading it as empty", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const profile = join(target, "debug");
+		mkdirSync(profile, { recursive: true });
+		const problems = (() => {
+			chmodSync(profile, 0o000);
+			try {
+				return pruneExactArtifacts(target, deadPath).problems;
+			} finally {
+				chmodSync(profile, 0o700);
+			}
+		})();
+
+		// One level up is reported already; a profile the scan could not read is the
+		// same failure and hides the same artifacts.
+		expect(problems.join(" ")).toContain(`${profile} not readable`);
 	});
 
 	it("does not attribute a .d that merely shares the path's prefix", () => {
@@ -778,6 +871,25 @@ describe("enforceCargoTargetBound (M3)", () => {
 
 		expect(report.entries).toEqual([]);
 		expect(calls).toEqual([]);
+	});
+
+	it("counts the dead paths' env-dep-only .d in its entry, not as a constant", async () => {
+		const { home, cargoTargetDir, deadPath } = fakeHome("tfd-d");
+		const examples = join(cargoTargetDir, "debug", "examples");
+		write(
+			join(examples, "envonly.d"),
+			`${join(examples, "envonly")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath, "parser")}\n`,
+		);
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [{ worktreePath: deadPath, parentCwd: "" }],
+			sizeOf: () => 25 * GiB,
+			run: fakeRunner().run,
+		});
+
+		// The bound's route-1 pass counts through its own aggregation, per dead path.
+		expect(report.entries[0]).toMatchObject({ depInfoScanned: 1, depInfoMatched: 0, depInfoEnvDepOnly: 1, worktreePathsPruned: 0 });
 	});
 
 	it("uses route 1 when the dead worktree's artifacts can be attributed", async () => {
