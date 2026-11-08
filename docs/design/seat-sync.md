@@ -71,7 +71,7 @@ Everything else is a report, in this order of precedence:
 | diverged | `seat sync: BLOCKED — diverged from origin/main: A ahead, B behind` |
 | ahead | `seat sync: BLOCKED — N commits ahead of origin/main`, first three subjects |
 | behind, clean | `seat sync: fast-forwarded N commits` |
-| level | no note (a stale note is cleared) |
+| up to date | no note (a stale note is cleared) |
 
 Dirty outranks divergence because a fast-forward needs a clean tree whatever the
 counts say; divergence outranks ahead because it needs both numbers to be
