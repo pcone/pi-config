@@ -33,6 +33,7 @@ import {
 	type CheckpointTokens,
 	type GitBinding,
 } from "./lib/checkpoint-meta.ts";
+import { pruneArchives } from "./lib/checkpoint-archive.ts";
 import {
 	checkpointFileOps,
 	renderMachineBlock,
@@ -671,6 +672,14 @@ async function archiveSession(
 		),
 		"utf8",
 	);
+	// Retention rides the write: a seat that checkpoints often is exactly the
+	// one whose archive grows without it. Best-effort — a failed sweep is not a
+	// failed checkpoint.
+	try {
+		pruneArchives(archiveDir);
+	} catch {
+		// best-effort: a failed sweep is not a failed checkpoint
+	}
 	return archivePath;
 }
 
