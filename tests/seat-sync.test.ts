@@ -38,7 +38,7 @@ const GIT_ENV = {
 	GIT_TERMINAL_PROMPT: "0",
 };
 
-const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { env: GIT_ENV, encoding: "utf8" }).trim();
 
 const git = (cwd: string, ...args: string[]): string =>
 	execFileSync("git", args, { cwd, env: GIT_ENV, encoding: "utf8" }).trim();
