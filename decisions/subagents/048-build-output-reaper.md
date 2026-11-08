@@ -20,7 +20,10 @@ One removal path — `removeWorktreeTree(deps, rs, policy)` in
 - **M3** `enforceCargoTargetBound` bounds each clone's shared dir at **20 GiB**,
   checked once per session-start reap: route 1 per dead worktree path, then one
   coarse pass per clone, then re-measure. Still over is reported as over-bound,
-  never force-cleaned.
+  never force-cleaned. A measure that fails is reported and the entry carries no
+  verdict (`afterBytes` and `overBound` are `null`), never a size or an
+  under-bound reading nobody took. The per-clone walks run concurrently: 0.70 s
+  against 1.07 s serial for this box's three clone dirs.
 - **M4** `dropLandedWorktreeTarget` drops a kept tree's `target/` once its
   isolation branch is merged into the parent's current HEAD or no longer exists.
 

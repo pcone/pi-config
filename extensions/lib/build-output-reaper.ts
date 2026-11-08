@@ -502,9 +502,13 @@ export function planCargoBound(
 export interface CargoBoundEntryReport {
 	cargoTargetDir: string;
 	beforeBytes: number;
-	afterBytes: number;
-	/** Still over the bound after both passes: reported, never force-cleaned. */
-	overBound: boolean;
+	/** The last size read, or `null` when the measure after a pass failed: the
+	 *  entry then has no size to report, and says so rather than reusing one. */
+	afterBytes: number | null;
+	/** `null` when a measure after a pass failed: unknown, which is not "under".
+	 *  The failure itself is in `problems`; a dir that cannot be sized is never
+	 *  force-cleaned on the strength of a size nobody read. */
+	overBound: boolean | null;
 	route: "none" | "exact" | "coarse";
 	worktreePathsPruned: number;
 	depInfoScanned: number;
@@ -556,17 +560,23 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 	}
 
 	// One walk per clone dir, concurrently: a reap cannot start a second one
-	// before this finishes, and two `du` runs on one volume cost the slower one.
-	// A dir whose size cannot be read is reported and skipped: it has no size to
-	// compare with the bound, and treating that as 0 would disable the bound.
-	const dirSizes: Array<{ cargoTargetDir: string; bytes: number }> = [];
-	for (const cargoTargetDir of cloneDirs) {
-		try {
-			dirSizes.push({ cargoTargetDir, bytes: await sizeOf(cargoTargetDir) });
-		} catch (e) {
-			report.problems.push(`could not measure ${cargoTargetDir}: ${e instanceof Error ? e.message : String(e)}`);
-		}
-	}
+	// before this finishes, and two `du` runs on one volume cost the slower one,
+	// not the sum (measured here on the three clone dirs: ~0.70 s concurrent
+	// against ~1.07 s serial, median of three alternating runs each). A dir whose
+	// size cannot be read is reported and skipped: it has no size to compare with
+	// the bound, and treating that as 0 would disable the bound. Results are
+	// filtered back into walk order so the report is deterministic.
+	const measured = await Promise.all(
+		cloneDirs.map(async (cargoTargetDir) => {
+			try {
+				return { cargoTargetDir, bytes: await sizeOf(cargoTargetDir) };
+			} catch (e) {
+				report.problems.push(`could not measure ${cargoTargetDir}: ${e instanceof Error ? e.message : String(e)}`);
+				return null;
+			}
+		}),
+	);
+	const dirSizes = measured.filter((m): m is { cargoTargetDir: string; bytes: number } => m !== null);
 	const parentCwdFor = (cargoTargetDir: string): string | undefined =>
 		opts.deadWorktrees.find((d) => {
 			const repoName = repoNameFromWorktreePath(d.worktreePath, home);
@@ -577,8 +587,8 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 		const entry: CargoBoundEntryReport = {
 			cargoTargetDir: action.cargoTargetDir,
 			beforeBytes: dirSizes.find((d) => d.cargoTargetDir === action.cargoTargetDir)!.bytes,
-			afterBytes: 0,
-			overBound: false,
+			afterBytes: null,
+			overBound: null,
 			route: "none",
 			worktreePathsPruned: 0,
 			depInfoScanned: 0,
@@ -599,17 +609,28 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 		entry.worktreePathsPruned = pruned;
 		if (pruned > 0) entry.route = "exact";
 
-		// (b) still over: one coarse pass for the clone.
-		let after: number;
-		try {
-			after = await sizeOf(action.cargoTargetDir);
-		} catch (e) {
-			entry.problems.push(`could not re-measure: ${e instanceof Error ? e.message : String(e)}`);
-			entry.afterBytes = entry.beforeBytes;
-			entry.overBound = true;
+		// (b) still over: one coarse pass for the clone. Both measures after the
+		// route-1 pass follow one policy: a dir that cannot be sized is reported and
+		// left over its bound, never read as under it.
+		const remeasure = async (): Promise<number | null> => {
+			try {
+				return await sizeOf(action.cargoTargetDir);
+			} catch (e) {
+				entry.problems.push(`could not re-measure: ${e instanceof Error ? e.message : String(e)}`);
+				return null;
+			}
+		};
+		const reportOver = (bytes: number | null): void => {
+			entry.afterBytes = bytes;
+			entry.overBound = bytes === null ? null : bytes > boundBytes;
 			report.entries.push(entry);
+		};
+		const measuredAfterRoute1 = await remeasure();
+		if (measuredAfterRoute1 === null) {
+			reportOver(null);
 			continue;
 		}
+		let after = measuredAfterRoute1;
 		if (after > boundBytes && action.coarsePrune) {
 			const parentCwd = parentCwdFor(action.cargoTargetDir);
 			if (parentCwd) {
@@ -617,7 +638,14 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 				entry.membersCleaned = coarse.membersCleaned;
 				entry.problems.push(...coarse.problems);
 				if (coarse.membersCleaned.length > 0) entry.route = "coarse";
-				after = await sizeOf(action.cargoTargetDir);
+				// The coarse pass ran, so the size is unknown until it is read again:
+				// unreadable is reported as unmeasured, not as a size or a verdict.
+				const final = await remeasure();
+				if (final === null) {
+					reportOver(null);
+					continue;
+				}
+				after = final;
 			} else {
 				entry.problems.push("no parent checkout recorded for this clone: coarse pass skipped");
 			}
@@ -658,8 +686,9 @@ export interface KeptTargetNote {
  */
 export interface ReapBuildOutput {
 	/** Record a namespace worktree path that no longer exists. One `existsSync`,
-	 *  idempotent: called on the registry walk the reap already does. A path
-	 *  outside the namespace has no clone to attribute to and is ignored. */
+	 *  idempotent: called on the registry walk the reap already does. Membership
+	 *  is not filtered — the namespace rule is applied where a path is mapped to
+	 *  its clone's shared dir (`planCargoBound`, and `parentCwdFor`). */
 	noteGone(worktreePath: string, parentCwd: string): void;
 	/** M4 for a tree the reap is keeping. */
 	dropKeptTarget(facts: { worktreePath: string; branch: string | null; parentCwd: string }): Promise<KeptTargetNote>;
@@ -672,7 +701,6 @@ export function createReapBuildOutput(opts: ReapBuildOutputOptions = {}): ReapBu
 	const dead = new Map<string, DeadWorktree>();
 	return {
 		noteGone(worktreePath, parentCwd) {
-			if (!repoNameFromWorktreePath(worktreePath, home)) return;
 			if (existsSync(worktreePath)) return;
 			if (dead.has(worktreePath)) return;
 			dead.set(worktreePath, { worktreePath, parentCwd });
@@ -687,26 +715,22 @@ export function createReapBuildOutput(opts: ReapBuildOutputOptions = {}): ReapBu
 		},
 		async enforceBound() {
 			const lines: string[] = [];
-			try {
-				const bound = await enforceCargoTargetBound({
-					home,
-					deadWorktrees: [...dead.values()],
-					run: opts.run,
-					sizeOf: opts.sizeOf,
-				});
-				for (const problem of bound.problems) lines.push(`reap: cargo bound: ${problem}`);
-				for (const entry of bound.entries) {
-					lines.push(
-						`reap: shared dir ${entry.overBound ? "OVER" : "under"} bound ${entry.cargoTargetDir}: ` +
-							`${formatBytes(entry.beforeBytes)} → ${formatBytes(entry.afterBytes)} ` +
-							`(bound ${formatBytes(bound.boundBytes)}, route ${entry.route}, ${entry.worktreePathsPruned} dead paths)` +
-							`${entry.problems.length > 0 ? ` problems: ${entry.problems.join("; ")}` : ""}`,
-					);
-				}
-			} catch (e) {
-				// The reap runs on every session start: a bound that cannot run reports
-				// it and lets the reap finish, rather than aborting the walk's results.
-				lines.push(`reap: cargo bound failed: ${e instanceof Error ? e.message : String(e)}`);
+			const bound = await enforceCargoTargetBound({
+				home,
+				deadWorktrees: [...dead.values()],
+				run: opts.run,
+				sizeOf: opts.sizeOf,
+			});
+			for (const problem of bound.problems) lines.push(`reap: cargo bound: ${problem}`);
+			for (const entry of bound.entries) {
+				const size = entry.afterBytes === null ? "unknown" : formatBytes(entry.afterBytes);
+				const verdict = entry.overBound === null ? "UNMEASURED" : entry.overBound ? "OVER" : "under";
+				lines.push(
+					`reap: shared dir ${verdict} bound ${entry.cargoTargetDir}: ` +
+						`${formatBytes(entry.beforeBytes)} → ${size} ` +
+						`(bound ${formatBytes(bound.boundBytes)}, route ${entry.route}, ${entry.worktreePathsPruned} dead paths)` +
+						`${entry.problems.length > 0 ? ` problems: ${entry.problems.join("; ")}` : ""}`,
+				);
 			}
 			return lines;
 		},

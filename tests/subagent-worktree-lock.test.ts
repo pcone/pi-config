@@ -617,7 +617,6 @@ describe("reap build output (real git, injected registry)", () => {
 		meta.ownerPid = process.pid === 1 ? 2 : process.ppid;
 		meta.ownerStartToken = "not-our-token";
 		writeFileSync(metaFile, JSON.stringify(meta));
-		git(entry.worktreePath, ["status"]);
 
 		_testSetCargoHome(home);
 		try {
@@ -673,7 +672,7 @@ describe("reap build output (real git, injected registry)", () => {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 
 			expect(results.map((r) => r.outcome)).toEqual(["kept-uncommitted"]);
-			expect(results[0].detail).toContain("not removed");
+			expect(results[0].detail ?? "").toContain("not removed");
 			expect(existsSync(inner)).toBe(true);
 		} finally {
 			chmodSync(inner, 0o755);

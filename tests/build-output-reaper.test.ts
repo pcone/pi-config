@@ -333,6 +333,43 @@ describe("dropLandedWorktreeTarget (M4)", () => {
 		expect(landed).toMatchObject({ dropped: false, state: "live" });
 		expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
 	});
+
+	it("keeps the target when no isolation branch was recorded", async () => {
+		const { worktreePath, parentCwd } = keptWorktree();
+		const { run, calls } = fakeRunner();
+
+		const landed = await dropLandedWorktreeTarget({ worktreePath, branch: null, parentCwd }, { run });
+
+		expect(landed).toMatchObject({ dropped: false, state: "unknown" });
+		expect(landed.detail).toContain("no isolation branch");
+		expect(calls).toEqual([]);
+		expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
+	});
+
+	it("keeps the target when the parent checkout is gone", async () => {
+		const { worktreePath } = keptWorktree();
+		const parentCwd = join(tempDir("pi-reaper-parent-"), "gone");
+		const { run, calls } = fakeRunner();
+
+		const landed = await dropLandedWorktreeTarget({ worktreePath, branch: "pi-subagent-orphan-1", parentCwd }, { run });
+
+		expect(landed).toMatchObject({ dropped: false, state: "unknown" });
+		expect(landed.detail).toContain("parent checkout gone");
+		expect(calls).toEqual([]);
+		expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
+	});
+
+	it("keeps the target when the branch list cannot be read", async () => {
+		const { worktreePath, parentCwd } = keptWorktree();
+		const { run } = fakeRunner(() => ({ exitCode: 128, stderr: "fatal: not a git repository" }));
+
+		const landed = await dropLandedWorktreeTarget({ worktreePath, branch: "pi-subagent-unknown-1", parentCwd }, { run });
+
+		// Unknown is not merged and not gone: the target stays.
+		expect(landed).toMatchObject({ dropped: false, state: "unknown" });
+		expect(landed.detail).toContain("git branch --merged failed");
+		expect(existsSync(join(worktreePath, "target", "debug", "artifact"))).toBe(true);
+	});
 });
 
 // ── M3 — the bound ────────────────────────────────────────────────────────
@@ -442,6 +479,55 @@ describe("enforceCargoTargetBound (M3)", () => {
 		expect(report.problems).toHaveLength(1);
 		expect(report.problems[0]).toContain("could not measure");
 		expect(calls).toEqual([]);
+	});
+
+	it("reports an unmeasurable re-measure as unknown instead of a verdict", async () => {
+		const { home, cargoTargetDir } = fakeHome("tfd-d");
+		const { run, calls } = fakeRunner();
+		let measure = 0;
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [],
+			sizeOf: () => {
+				measure++;
+				if (measure === 1) return 25 * GiB;
+				throw new Error("du: permission denied");
+			},
+			run,
+		});
+
+		// No size was read after the route-1 pass, so there is no verdict to give:
+		// not over, not under, and no coarse pass on the strength of a guess.
+		expect(report.entries).toHaveLength(1);
+		expect(report.entries[0]).toMatchObject({ cargoTargetDir, beforeBytes: 25 * GiB, afterBytes: null, overBound: null });
+		expect(report.entries[0].problems.join(" ")).toContain("could not re-measure");
+		expect(calls).toEqual([]);
+	});
+
+	it("reports an unmeasurable re-measure after the coarse pass as unknown", async () => {
+		const { home, deadPath } = fakeHome("tfd-d");
+		const parentCwd = tempDir("pi-reaper-parent-");
+		writeFileSync(join(parentCwd, "Cargo.toml"), '[workspace]\nmembers = ["parser"]\n');
+		const { run, calls } = fakeRunner();
+		let measure = 0;
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [{ worktreePath: deadPath, parentCwd }],
+			sizeOf: () => {
+				measure++;
+				if (measure < 3) return 25 * GiB;
+				throw new Error("du: permission denied");
+			},
+			run,
+		});
+
+		// The coarse pass ran, its effect could not be read back, and the entry says
+		// so rather than reporting the pre-clean size as the post-clean one.
+		expect(report.entries[0]).toMatchObject({ membersCleaned: ["parser"], route: "coarse", afterBytes: null, overBound: null });
+		expect(report.entries[0].problems.join(" ")).toContain("could not re-measure");
+		expect(calls.map((c) => c.args)).toEqual([["clean", "-p", "parser"]]);
 	});
 
 	it("takes no action for a dir under the bound", async () => {

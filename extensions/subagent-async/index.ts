@@ -1431,8 +1431,8 @@ async function postDeliveryCleanup(
 		relockReason: `pi-subagent ${rs.sessionId} (cleanup failed)`,
 	});
 
+	const buildOutput = outcome.buildOutput ? describeBuildOutput(outcome.buildOutput) : null;
 	if (outcome.ok) {
-		const buildOutput = outcome.buildOutput ? describeBuildOutput(outcome.buildOutput) : null;
 		if (PI_ASYNC_DEBUG) {
 			debugLog(`postDeliveryCleanup: ${Date.now() - t0}ms (hadChanges=${hadChanges})${buildOutput ? ` — ${buildOutput}` : ""}`);
 		}
@@ -1443,14 +1443,16 @@ async function postDeliveryCleanup(
 	// Surface the warning to the parent via steer. A removal failure re-locked the
 	// tree (or never unlocked it), so live work stays guarded and the worktree is
 	// still on disk; a branch-delete failure happens after the tree is gone, so it
-	// says only that the ref survived.
+	// says only that the ref survived. A prune problem from the same removal rides
+	// along: the branch failure used to be the only thing the parent heard.
 	const where =
 		outcome.stage === "branch"
 			? `the worktree is removed; branch \`${rs.isolationBranch}\` still exists`
 			: `worktree at ${worktreePath} may need manual removal`;
+	const pruned = buildOutput ? ` — build output: ${buildOutput}` : "";
 	try {
 		pi.sendUserMessage(
-			`[subagent ${rs.sessionId.slice(-8)}] warning: worktree cleanup failed: ${outcome.detail} — ${where}`,
+			`[subagent ${rs.sessionId.slice(-8)}] warning: worktree cleanup failed: ${outcome.detail} — ${where}${pruned}`,
 			{ deliverAs: "steer" },
 		);
 	} catch { /* steer failed — nothing we can do */ }
