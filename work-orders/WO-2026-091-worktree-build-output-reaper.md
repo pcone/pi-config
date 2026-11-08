@@ -137,3 +137,70 @@ unlock/relock contract bolted onto a path whose tree is being replaced anyway.
 **State this round:** the site is unchanged and no code routes it. The claim in
 `048` that the harness has one removal path is corrected there to name this
 site and this question; the ruling, whichever way it goes, replaces that note.
+
+### Owner question Q-091-b (raised 2026-11-08) — RULING PENDING
+
+**Ask:** route 1 *can* fire — the probe below makes it delete real artifacts —
+so the owner's deletion instruction (048 §Rulings, "if route 1 can never fire,
+delete it") has no condition to act on. Keep route 1, delete it on a narrower
+premise, or widen its scan?
+
+**Probe** (cargo 1.96.0-nightly, 2026-11-08, `~/Developer/probe-depinfo`;
+verbatim `.d` dumps in `PROBE.md` beside it). A workspace at `W/ws` whose member
+`app` has `inside-lib = { path = "../../inside-lib" }`, `CARGO_TARGET_DIR`
+outside the tree, `W` standing in for a worktree root:
+
+| build | `.d` under `deps/` naming a path | route 1 on `W` |
+|---|---|---|
+| workspace root = `W` (no out-of-workspace dep), from the root | relative `app/src/main.rs` | no |
+| same, via `--manifest-path` from outside the tree | relative | no |
+| workspace at `W/ws`, dep at `W/inside-lib`, from `W/ws` | `/…/W/inside-lib/src/lib.rs` | **yes: 2 scanned, 1 matched, 4 files + 1 dir deleted** |
+| same, via `--manifest-path` from outside the tree | absolute | **yes: 1 matched, 4 files + 1 dir** |
+| same, cwd = the member dir | absolute | **yes: 1 matched, 4 files + 1 dir** |
+| dep outside the worktree entirely | absolute, outside `W` | no |
+
+Cargo writes a source path relative to the **workspace root it built**, and
+absolute for a crate outside that root. Route 1 fires when the workspace root is
+a subdirectory of the checkout and a path dependency sits elsewhere in the
+checkout — a normal cargo layout, not a synthetic one.
+
+**What is true on this box.** Every cargo repo here roots its workspace at the
+checkout root (`tfd/Cargo.toml`; `editors/zed` is a standalone `[workspace]` with
+no out-of-workspace path dep), so no `<profile>/deps/*.d` names a worktree: 0 of
+3 `.d` files across the three shared dirs. The shape that fires does not exist
+here yet, which is why 048's measurement found nothing.
+
+**Also found.** Absolute worktree paths *are* in the shared dirs' `.d` files —
+17 in `tfd-d-487`, 20 in `tfd-gate-424-prep` — at `<profile>/*.d` and
+`<profile>/examples/*.d`, which route 1 does not scan: `pruneExactArtifacts`
+reads `<profile>/deps/*.d` only. Route 1 is inert on this box because of its
+scan scope, not because cargo writes relative paths everywhere.
+
+**Options.**
+
+- **A (recorder's recommendation, not a ruling) — keep it, correct the claim.**
+  Record route 1 as inert for a workspace-root checkout, not inert in general.
+  Costs nothing; fires correctly if a repo ever nests its workspace. `048`
+  §Rulings' "Route 1 is inert" bullet and §*Route 1 is inert for workspace-root
+  builds* then need the probe cited, which is a doc edit awaiting this ruling.
+- **B — delete it, on the narrower true premise.** No repo on this box has the
+  shape that fires, and route 2 is what every removal pays anyway. Removes the
+  118-line route-1 section plus ~45 lines of `exact`/`depInfo` plumbing in
+  `pruneCargoArtifactsFor`, `describePrune`, `planCargoBound` and the bound's
+  per-dead-path pass; M2 becomes route 2 only. Rows that go with it:
+  `pruneExactArtifacts (M2 route 1)` (3), "stops at route 1 when a .d named the
+  dead worktree", "uses route 1 when the dead worktree's artifacts can be
+  attributed", "reports an over-bound dir that route 1 brought under as under"
+  (2 of its 2 assertions are route-1-only). Rows that stay: route 2's fallback,
+  no-workspace, gone-parent and failed-clean rows, and every `dirSizeBytes` /
+  bound-verdict row.
+- **C — widen the scan** to `<profile>/*.d` and `<profile>/examples/*.d`, where
+  this box's absolute worktree paths actually are. The only change that makes
+  attribution per-worktree on a workspace-root checkout, and so the only one
+  that makes M2 route 1 do anything here — but M2's mechanism names `deps/*.d`,
+  so this is an order the current one does not carry.
+
+**Why a ruling and not a review.** The owner's instruction was conditional on a
+probe; the probe came back the other way. A reviewer cannot rule on it, and
+landing the deletion anyway would be a departure (APPEND_SYSTEM §Spec
+authority). **State this round:** route 1 is unchanged and nothing is deleted.
