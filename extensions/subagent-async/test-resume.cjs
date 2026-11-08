@@ -55,7 +55,7 @@ function throws(fn, expectedMsg) {
   }
 }
 
-// ── Inlined pure helpers (mirror index.ts module-level exports) ─────────────
+// ── Inlined pure helpers (mirror the extension's module-level exports) ─────────────
 // The extension is TypeScript ESM; these are tested at the logic level
 // matching the existing test-viewer.cjs pattern.
 
@@ -99,7 +99,7 @@ function buildSubagentArgs(config) {
 }
 
 /**
- * Validate a meta object for resume. Mirror of validateResumeMeta in index.ts.
+ * Validate a meta object for resume. Mirror of validateResumeMeta in recovery.ts.
  */
 function validateResumeMeta(meta, sid) {
   if (!meta) {
@@ -127,7 +127,7 @@ function validateResumeMeta(meta, sid) {
 }
 
 /**
- * Build an AgentConfig from persisted meta fields. Mirror of buildAgentConfigFromMeta.
+ * Build an AgentConfig from persisted meta fields. Mirror of buildAgentConfigFromMeta (index.ts, the resume tool).
  */
 function buildAgentConfigFromMeta(meta) {
   return {

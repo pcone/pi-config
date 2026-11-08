@@ -77,3 +77,75 @@ Module load time before and after (the extension is loaded at every session star
 - `PLAN MISMATCH` if a section cannot move without a logic change — name it and land nothing further in that extraction.
 - `REFACTOR FIRST` if you find a third responsibility the table has no row for, large enough to deserve its own file.
 - If an extraction needs more than 12 prerequisite steps, stop and hand the remaining plan back (the split is too big for one order).
+
+---
+
+## Gate-back record — 2026-11-08
+
+Landed: `c406d6f` (characterisation rows) and eight extraction commits,
+`b38ec37` → `f1af6dc`, plus the residual/docs commit. `index.ts` 5215 → 2143.
+Snapshot: `docs/investigations/structure-trend.md`, 2026-11-08 entry.
+
+### Owner question Q-095-a (raised 2026-11-08) — RULING PENDING
+
+**Ask:** R3's 1,600-line bound on `index.ts` cannot be met by the order's own
+boundary list. Which rule wins — keep row 9's list, or split the tool surface so
+the bound holds?
+
+**The arithmetic at `f1af6dc`.** `index.ts` is **2143** lines, of which the
+extension entry point (row 9: "the tool surface") is **1151** — nine
+`registerTool` bodies with their `Type.Object` schemas, four commands, the wait
+source, `maybeInjectReviewPolicySkip`, `buildAgentConfigFromMeta`. Row 9's other
+keeps add ~900: constants 79, reviewer-spawn tracker 133, meta-file helpers 56,
+progress tracking (types, `running`, `newProgress`, `extractFilesFromArgs`,
+`formatProgress`) 200, live-session ctx 63, attach state + `detach()` 60,
+`git`/`getPiInvocation` 42, model resolution 62, tool-action formatting (incl.
+`bumpStaleWatchdog`) 112, header and imports ~140, shims 69. Removing every
+section the table assigns a new file leaves that floor; the eight modules took
+the other 3072.
+
+**Why a ruling and not a review.** Every row of §Mechanism was followed, so the
+split is the specified one; the shortfall is between two statements in the same
+order — R3's number and row 9's list. Splitting the tool surface is a new row
+the table does not have, and §Prohibitions forbids a file mixing two rows and
+says nothing about a tenth. Landing it unasked would be a departure; failing R3
+silently would be a false claim.
+
+**Option A (recorder's recommendation, not a ruling) — accept 2143; no further
+split.** The bound was a proxy for "the next feature adds a file, not a hundred
+lines". The file fell 59% and the 1151 that remain are the tool surface: one
+`execute` body per tool, each already delegating to a module. Costs nothing;
+leaves `Task Summary`'s stated goal met and R3's number unmet, recorded as such.
+**Option B — split the tool registrations into `tools.ts`** (~900 of the 1151:
+the seven non-`subagent` tools, their param schemas and the command handlers),
+leaving `index.ts` ≈ 1240 with the factory and `subagent`'s dispatch. Buys the
+bound; costs one more module and a tenth row the table does not have, and the
+tool bodies would then import `running`/`describeUnknownSession` from the hub
+they already share.
+
+### Owner question Q-095-b (raised 2026-11-08) — RULING PENDING
+
+**Ask:** row 7 puts `detach()` in `ui.ts`; row 9 keeps attach state in
+`index.ts`. Does `detach()` stay where it is, or does the attach state move?
+
+**The site.** `detach()` assigns `attachedSessionId` and `_attachCtx` before
+calling `updateFooter()`. Those two `let`s are the row-9 attach state, still in
+`index.ts` (the `/attach` handler writes them too). An ES module cannot assign
+to an imported binding — `attachedSessionId = null` in `ui.ts` is a
+`TypeError` — so the section cannot move as written. Splitting it (a `setAttached()`
+exported from `index.ts`, or moving both `let`s to `ui.ts` with the `/attach`
+handler using accessors) is a mechanism change, so it was not done.
+
+**What landed.** `ui.ts` took the rest of row 7 — `LogViewer` (+
+`formatTokens`), `AttachEditor`, `AttachLogViewer`, `updateFooter`,
+`notifyChildDetached` — and `detach()` stayed in `index.ts` unchanged,
+re-exported as before.
+
+**Option A (recorder's recommendation, not a ruling) — `detach()` stays in
+`index.ts`.** The state and its only writer stay together; `ui.ts` reads
+`attachedSessionId` through the live binding and calls `detach()` through the
+hub, which is what it already does for `running` and `liveSessionCtx`. Costs
+row 7 being one section short, recorded here. **Option B — move the attach
+state to `ui.ts` and add accessors**, with `/attach` calling them. Row 9 loses
+"attach state"; the entry point gains two exported setters it does not have
+today. Cleanest ownership; the largest diff for no behavioural gain.

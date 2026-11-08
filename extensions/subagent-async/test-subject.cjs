@@ -13,7 +13,7 @@
  *   annotation reach the child only (promptMessage). The subject is derived
  *   via subjectFromTask(cleanTask) — first non-empty line, truncated.
  *
- * This test mirrors subjectFromTask (it can't import index.ts — pi's packages
+ * This test mirrors subjectFromTask (it can't import the extension's modules — pi's packages
  * resolve only under jiti at runtime) and exercises the OLD vs NEW derivation
  * through a real temp git repo, so it also pins the newline→subject mechanics.
  *
@@ -27,7 +27,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
-// ── subjectFromTask — KEEP IN SYNC with index.ts ───────────────────────────
+// ── subjectFromTask — KEEP IN SYNC with worktree.ts ───────────────────────────
 function subjectFromTask(task) {
 	const firstLine = task
 		.split("\n")

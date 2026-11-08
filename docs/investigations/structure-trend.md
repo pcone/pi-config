@@ -17,12 +17,54 @@ refactor lands.
 |---|---|---|---|
 | `extensions/{checkpoint,auto-checkpoint}` read tracking | 1 (2026-10-21) | open — one duplicate copy remains in `auto-checkpoint.ts` (blocked: another session's WIP, migration order pending owner ruling) | fold `auto-checkpoint.ts` onto `extensions/lib/read-tracking.ts` |
 | `extensions/checkpoint.ts` growth | 1 open (2026-11-04, WO-2026-073); the 2026-10-21 strike was resolved by WO-2026-057 (901 → 818) and is spent | open — one open strike, **carrier named: WO-2026-076** (the extraction itself, dispatched as its own order). Reading used: closure needs one more flagged landing (or a `REFACTOR FIRST` refusal); the extraction closing does not itself close the area — a further flagged landing would | the two `execute` preambles in `checkpoint` and `checkpoint_fork` (`checkpoint.ts:784-860`, `:930-946`) into one helper, behind characterization rows (WO-2026-076) |
+| `extensions/subagent-async/index.ts` growth | 3 landings (090 turn cap, 091 reap, the model-inheritance fix) — closed 2026-11-08 | **closed 2026-11-08 by WO-2026-095** — 5215 → 2143 lines over eight responsibility modules, 153/153 declarations with one home, no import cycle among them. The order's 1600-line bound was not met (entry point 1151 + the sections row 9 keeps); `Q-095-a` carries what splits the remainder | — (no further extraction scheduled; the area reopens on the next flagged landing) |
 | terminal-outcome vocabulary in the watch views | — (closed by WO-2026-080, `a8ff8be`) | **closed 2026-11-05** — 0 terminal word literals in the three viewers; `rg -n 'function outcomeFrom(Footer|ExitCode|FooterWord)' extensions/` → 3, all in `extensions/lib/subagent-state.ts`; the two live viewers had also been dead since pi-tui 1.4 (WO-2026-081) | — |
 | the viewers' text helpers (`plainLen`, `stripAnsi`, `padRight`, `timeAgo`, `truncate`) | — (closed by WO-2026-088) | **closed 2026-11-07** — one module, `extensions/lib/view-text.ts`, 5 exports: `rg -n 'function (plainLen|padRight|timeAgo|stripAnsi|truncate)' extensions/subagent-async/watch-session.cjs extensions/subagent-async/watch-session-v2.ts` → 0; `rg -n 'plainLine' extensions/` → 0 (the `.cjs`'s second name for `stripAnsi`). `watch-session.cjs` still *exports* `plainLen`, `padRight`, `timeAgo`, `truncate` — as re-exports of the module, because `test-viewer.cjs:51-53` imports them from the viewer, which is the harness's contract | — |
 | `extensions/lib/quota.ts` overflow policy | — (residue of WO-2026-065, not a strike) | open — carried; no order scheduled, so the row is the carrier. Five provider entries keep two behaviours: z.ai and both MiniMax hosts `clip` the first part, Go and Kimi `truncate` it | unify on one policy, then re-baseline the segment goldens in `tests/footer-quota-characterisation.test.ts` |
 | session discovery in `/tmp` | — (observation only; no landing was flagged for it) | **closed 2026-11-06 by WO-2026-083** — the three viewers folded in WO-2026-082 (`7eeaeb6`), then the last production copy: `rg -n 'endsWith("\.sock")' extensions/subagent-async/index.ts` → 0, `rg -c 'readdirSync' extensions/subagent-async/index.ts` → 1 (the out-of-scope meta scan, `:429`), `rg -n '── Turn' extensions/subagent-async/index.ts` → 1 (`:2205`, a header print). `recoverOrphanedSubagents` now takes its sock list, meta and turn count from `discoverSessions()`. The adoption predicate did not move: `decideRecoveryAdoption` stays in `subagent-state.ts:162`, called from `index.ts` with `selfPid` / `selfSessionId` / `probe` (WO-2026-083's 027 section). One copy is named and left uncarried: `resolveSubagentMeta` (`index.ts:426-456`) globs `pi-subagent-*.meta.json` on a hardcoded `/tmp` where `listSubagentMetas(dir)` already does it — its partial-id matching and ambiguity error make it its own fold, not this one's | — |
 | `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
 | pre-refactor quota entry points (`renderQuotaSegment`, `renderGoUsageSegment`) | — (observation; no landing was flagged for it) | **closed 2026-11-07 by WO-2026-089** — both deleted; `rg -n 'renderQuotaSegment|renderGoUsageSegment' --glob '!*.md' extensions/` → 0. The three rendering files reach the one renderer through `tests/helpers/quota-render.ts` (one shared adapter, 82 lines), which assembles the snapshot the private `snapshotFor` used to build from `descriptor.fromQuotaData` / `goParts`; `goParts` is the one internal export added, marked `@for-testing` and still called by `goDescriptor.parse`. `fromQuotaData` stays: descriptor metadata the adapter reads. No golden moved — every `expected:` string in the four files is byte-identical | — |
+
+## 2026-11-08 — chunk: WO-2026-095 `subagent-async/index.ts` split by responsibility
+
+**growth.** `extensions/subagent-async/index.ts` 5215 → **2143** (−3072; `--numstat` 292 3364),
+replaced by eight responsibility modules totalling **3465**: `spawn.ts` 817, `recovery.ts` 697,
+`worktree.ts` 599, `sleep-guard.ts` 439, `rpc.ts` 346, `ui.ts` 213, `turn-cap.ts` 211, `records.ts`
+143. Of the 3465, 69 lines are the entry point's import/`export … from` wiring and ~240 are the eight
+module headers and import blocks; the rest is moved body. Every file is under the 900-line follow-up
+threshold, so nothing is split further. `index.ts` did **not** reach the order's 1600-line bound: the
+extension entry point alone is 1,151 lines (nine tool registrations, five commands, the wait source),
+and the sections row 9 keeps — constants, the reviewer-spawn tracker, meta helpers, progress tracking,
+live-session ctx, attach state, `git`/`getPiInvocation`, model resolution, tool-action formatting plus
+`detach()` — are another ~900. `Q-095-a` in the order asks what carries the remaining split.
+
+**unification.** The census is the point of this chunk: 153 top-level declarations before the split,
+**0** declared twice, **98** referenced from more than one section. At the tip each of the 153 has
+exactly one home (`rg`-derived definition scan over the eight modules: 153/153, 0 duplicated, 0
+missing), so the split removed no duplicate and created none. Three placements were decided by the
+"one new file, one row" rule rather than by the physical section: `bumpActivity` sits in `rpc.ts` (the
+protocol layer observes activity; the timer reads it) because leaving it with the timer made
+`rpc.ts` ↔ `sleep-guard.ts` cyclic; the scan-dir/cargo-home overrides and the heartbeat/caffeinate
+state moved with the code that assigns them (a module cannot assign an imported `let`); and
+`extractFilesFromArgs` / `formatProgress` / `formatTokens` / `writeTempFile` / `getFinalOutput` were
+placed by responsibility, not by which section they happened to sit in. `detach()` could not move at
+all (`Q-095-b`).
+
+**import graph.** `rg -o 'from "\./[a-z-]*\.ts"'` over the eight modules: `spawn` → 7, `sleep-guard`
+→ 3, `recovery` → 2, `ui` → 2, `records` → 1, `turn-cap` → 1, `worktree` → 0, `rpc` → 0. Acyclic
+among the eight. All eight import `index.ts`, which imports all eight: the entry point is a hub by
+construction, because row 9 keeps the state they all read (`running`, `liveSessionCtx`,
+`attachedSessionId`, the meta helpers, the constants). The hazard that a hub cycle normally carries —
+a module reading an uninitialised `const` from the hub at its own top level — is absent: every
+cross-module reference is inside a function body.
+
+**cost.** Module load, interleaved A/B, 12 samples each, in-process import: 529 ms pre-split vs 526 ms
+at the tip (−4 ms, −0.7%) — no measurable cost. 69 lines of the entry point are the re-export shims
+plus the eight import statements.
+
+**not taken.** Splitting the entry point's tool registrations into their own module. It is the largest
+remaining block and the obvious next extraction, but row 9 says index keeps the tool surface and the
+order forbids a file the table has no row for; that is an owner question, not an implementer's call.
 
 ## 2026-11-07 — chunk: WO-2026-090 the harness enforces a turn cap
 

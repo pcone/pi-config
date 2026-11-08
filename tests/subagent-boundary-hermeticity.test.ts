@@ -60,7 +60,7 @@
  * (extensions/worktree-guard.ts:298-299) are a different class. They are read
  * once at extension load inside a pi process; the harness always overwrites
  * both at subagent spawn, empty when unisolated
- * (extensions/subagent-async/index.ts:1737-1745), so they cannot survive from
+ * (extensions/subagent-async/rpc.ts, `buildSubagentEnv`), so they cannot survive from
  * a caller; no test reads them from process.env; and no in-suite child picks
  * them up from an ambient value (the gate-spawned pi children get both
  * overwritten, and the two in-process SDK sessions load exactly one explicit

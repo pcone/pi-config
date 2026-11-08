@@ -40,10 +40,10 @@ function ok(value, msg) {
 //
 // The helpers are in a .ts file compiled by tsx at runtime. For standalone
 // test execution we extract the logic here to avoid the tsx dependency.
-// These are exact functional replicas of the helpers in index.ts.
+// These are exact functional replicas of the helpers in rpc.ts.
 
 /**
- * Replica of resolveAttachTarget from index.ts.
+ * Replica of resolveAttachTarget from rpc.ts.
  * Encapsulates lookup + all guards: empty arg, not found, already done,
  * no writable stdin.
  */
@@ -64,7 +64,7 @@ function resolveAttachTarget(runningMap, sid) {
 }
 
 /**
- * Replica of buildPromptPayload from index.ts.
+ * Replica of buildPromptPayload from rpc.ts.
  * Pins the exact shape — missing streamingBehavior would throw when the
  * child is mid-turn.
  */

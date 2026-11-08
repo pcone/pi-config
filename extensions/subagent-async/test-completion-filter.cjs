@@ -2,7 +2,7 @@
 /**
  * Regression test for the completion-time carry filter (WO-2026-035).
  *
- * preCommitSteps (extensions/subagent-async/index.ts) now skips auto-
+ * preCommitSteps (extensions/subagent-async/worktree.ts) now skips auto-
  * committing carried files whose worktree bytes still match the carried-in
  * snapshot: a subagent that only READ the orchestrator's uncommitted doc
  * produces no branch commit (branch stays at parent HEAD, postDeliveryCleanup
@@ -13,7 +13,7 @@
  * aborting preCommitSteps. The snapshot lives in-memory only (rs.carried,
  * default null) — no persistence.
  *
- * This test cannot import index.ts — `typebox` and `@earendil-works/*`
+ * This test cannot import the extension's modules — `typebox` and `@earendil-works/*`
  * resolve only under jiti at runtime. Following test-carry-uncommitted.cjs,
  * it mirrors the hash helper + filter (KEEP IN SYNC) and exercises the full
  * preCommitSteps sequence against REAL temp repos, REAL `git worktree add`,
@@ -31,11 +31,11 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 
-// ── hashCarriedFile — KEEP IN SYNC with index.ts ──────────────────────────
+// ── hashCarriedFile — KEEP IN SYNC with worktree.ts ──────────────────────────
 // Single source of truth for carry-snapshot hashes: sha256 hex of a file's
 // bytes, `"link:" + target` for a symlink, null when absent / not a regular
 // file or symlink. Used by both carryUncommittedState (capture) and
-// applyCarryFilter (compare) below, exactly as in index.ts.
+// applyCarryFilter (compare) below, exactly as in worktree.ts.
 async function hashCarriedFile(absPath) {
 	try {
 		const st = await fs.promises.lstat(absPath);
@@ -47,9 +47,9 @@ async function hashCarriedFile(absPath) {
 	}
 }
 
-// ── carryUncommittedState — KEEP IN SYNC with index.ts ────────────────────
+// ── carryUncommittedState — KEEP IN SYNC with worktree.ts ────────────────────
 // Mirror of the carry overlay + CarriedSnapshot capture in
-// extensions/subagent-async/index.ts (carryUncommittedState + unsafeCarryPath
+// extensions/subagent-async/worktree.ts (carryUncommittedState + unsafeCarryPath
 // + copyCarriedFile + hashCarriedFile). Same porcelain -z parsing, same
 // copy/delete/rename/copy decisions, same path safety, same symlink-as-link
 // and exec-bit handling — and now also records per-path snapshot entries:
@@ -60,7 +60,7 @@ function unsafeCarryPath(p) {
 	return p.length === 0 || p.includes("..") || p === ".git" || p.startsWith(".git/");
 }
 
-// Mirror of index.ts's `git()` result shape for the carry status: never
+// Mirror of worktree.ts's `git()` result shape for the carry status: never
 // rejects — resolves with exitCode 1 when `git status` fails. Used as the
 // default fetch inside carryUncommittedState and as the prefetched
 // statusPromise from createWorktreeMirror (A2).
@@ -99,7 +99,7 @@ async function recordPresent(snapshot, worktreePath, rel) {
 async function carryUncommittedState(topLevel, worktreePath, statusPromise) {
 	const snapshot = new Map();
 	const res = await (statusPromise ?? gitStatusPorcelain(topLevel));
-	if (res.exitCode !== 0) return snapshot; // git status failed — empty snapshot, mirror of index.ts
+	if (res.exitCode !== 0) return snapshot; // git status failed — empty snapshot, mirror of worktree.ts
 	const tokens = res.stdout.split("\0");
 	for (let i = 0; i < tokens.length; i++) {
 		const rec = tokens[i];
@@ -206,7 +206,7 @@ async function createWorktreeMirror(parentCwd, sessionId, baseRef, carryUncommit
 	};
 }
 
-// ── preCommitSteps mirrors — KEEP IN SYNC with index.ts ───────────────────
+// ── preCommitSteps mirrors — KEEP IN SYNC with worktree.ts ───────────────────
 // The completion filter: after `git add -A` + the WO-*.md unstage block,
 // reset every carried path whose worktree bytes still match the snapshot
 // (or whose carried deletion is still absent). Failures degrade — the filter
@@ -253,7 +253,7 @@ async function preCommitStepsMirror(worktreePath, carried, subject) {
 	return commitIfChanges(worktreePath, subject);
 }
 
-// ── postDeliveryCleanup mirror — KEEP IN SYNC with index.ts ───────────────
+// ── postDeliveryCleanup mirror — KEEP IN SYNC with worktree.ts ───────────────
 // The branch-deletion decision (WO-2026-049). preCommitSteps reports
 // hadChanges = "did the HARNESS auto-commit staged changes"; that flag alone
 // is NOT a safe signal for deleting the branch, because a subagent that
@@ -274,7 +274,7 @@ function branchExists(parentDir, branchName) {
 
 function postDeliveryCleanupMirror(parentDir, result, finalCommit) {
 	// R3-2 (tfd process-controls, owner 2026-10-19): unlock first — git refuses
-	// force-remove of a locked tree. Mirrors index.ts; the lock/unlock/reap
+	// force-remove of a locked tree. Mirrors worktree.ts; the lock/unlock/reap
 	// matrix itself lives in test-worktree-lock.cjs and tests/subagent-worktree-lock.test.ts.
 	try {
 		execFileSync("git", ["worktree", "unlock", result.worktreePath], { cwd: parentDir, stdio: "ignore" });
