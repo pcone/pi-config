@@ -25,6 +25,30 @@ refactor lands.
 | `resolveSubagentMeta`'s meta glob | — (residue of WO-2026-083, not a strike) | **closed 2026-11-06** — `rg -n 'endsWith("\.meta\.json")' extensions/subagent-async/index.ts` → 0; the resolver filters `listSubagentMetas` in `lib/subagent-state.ts`, and `test-resume.cjs` requires it instead of mirroring it (`rg -n 'function resolveSubagentMeta' extensions/subagent-async/test-resume.cjs` → 0) | — |
 | pre-refactor quota entry points (`renderQuotaSegment`, `renderGoUsageSegment`) | — (observation; no landing was flagged for it) | **closed 2026-11-07 by WO-2026-089** — both deleted; `rg -n 'renderQuotaSegment|renderGoUsageSegment' --glob '!*.md' extensions/` → 0. The three rendering files reach the one renderer through `tests/helpers/quota-render.ts` (one shared adapter, 82 lines), which assembles the snapshot the private `snapshotFor` used to build from `descriptor.fromQuotaData` / `goParts`; `goParts` is the one internal export added, marked `@for-testing` and still called by `goDescriptor.parse`. `fromQuotaData` stays: descriptor metadata the adapter reads. No golden moved — every `expected:` string in the four files is byte-identical | — |
 
+## 2026-11-08 — chunk: WO-2026-096 route 1 scans every profile-level dep-info location
+
+**growth.** `extensions/lib/build-output-reaper.ts` 743 → **783** (the widen) → **800** (round 2:
+the boundary helper, the empty-stem count, the reported profile listing);
+`pruneExactArtifacts` 84 → **96** → **105** lines.
+`tests/build-output-reaper.test.ts` 711 → **846** → **1004** (eleven rows and two fixture builders: 37 → 41 → 48 `it(`).
+No new file, no new module.
+
+**unification.** The three locations are one loop over `DEP_INFO_SUBDIRS`, not three copies of
+the scan: `rg -n 'DEP_INFO_SUBDIRS|readdirSync\(depInfoDir' extensions/lib/build-output-reaper.ts`
+→ 3 lines, one loop, one readdir per directory (the sibling-delete pass reuses the listing the
+scan already took, where the deps-only version listed each matched directory twice). The new
+`env-dep:` counter is one field threaded through the existing result→report path, not a second
+attribution check: "names this path" is one helper, `pathMentioned`, whose two callers differ
+only in the boundary characters their syntax allows — `depInfoNamesPath` for a source rule,
+`depInfoEnvDepNamesPath` for an `env-dep:` value
+(`rg -n 'pathMentioned|depInfoNamesPath|depInfoEnvDepNamesPath' extensions/lib/build-output-reaper.ts`
+→ 7 lines: the helper, its 2 callers with their boundary characters, and the 2 call sites).
+
+**cost.** Route 1's scan on this box's 707-`.d` profile (`~/.cache/cargo-target/tfd-d-487`):
+**0.19 ms** reading 2 `.d` → **0.74 ms** reading 14 (median of 15 alternating runs, a dead path
+that matches nothing, so nothing is deleted). The 476+217 `.d` under `<profile>/build/` stay
+outside the scan. `reapFinishedWorktrees` is unmoved at its ~1.0 s, which the `du` walk owns.
+
 ## 2026-11-08 — chunk: WO-2026-094 a record append lands where it commits, or fails loudly
 
 **growth.** `extensions/subagent-async/spawn.ts` 817 (WO-2026-095's split) → **835** once the

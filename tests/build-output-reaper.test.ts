@@ -196,6 +196,268 @@ describe("pruneExactArtifacts (M2 route 1)", () => {
 		}
 	});
 
+	// ── WO-2026-096: the scan covers every profile-level dep-info location ──
+
+	/** The nested layout of WO-2026-091's probe, in the shape real cargo wrote
+	 *  it on 2026-11-08 (`~/Developer/probe-depinfo/probe-tD`): the workspace
+	 *  sits at `<W>/ws`, its path dep at `<W>/inside-lib` — inside the checkout,
+	 *  outside the workspace root cargo built. Cargo therefore absolutizes the
+	 *  dep's sources, and the *example* target's dep-info (which pulls a source
+	 *  from the dep by `#[path]`) lands in `<profile>/examples/`, not `deps/`. */
+	function nestedLayout(deadPath: string): string {
+		const target = tempDir("pi-reaper-nested-target-");
+		const profile = join(target, "debug");
+		const depSource = join(deadPath, "inside-lib", "src", "lib.rs");
+		write(
+			join(profile, "examples", "inside_demo.d"),
+			`${join(profile, "examples", "inside_demo")}: ${depSource} ${join(deadPath, "ws/app/examples/inside_demo.rs")}\n`,
+		);
+		write(join(profile, "examples", "inside_demo"));
+		write(
+			join(profile, "deps", "inside_lib-50965d21f0660055.d"),
+			`${join(profile, "deps", "libinside_lib-50965d21f0660055.rlib")}: ${depSource}\n`,
+		);
+		write(join(profile, "deps", "libinside_lib-50965d21f0660055.rlib"));
+		write(join(profile, "deps", "libinside_lib-50965d21f0660055.rmeta"));
+		mkdirSync(join(profile, ".fingerprint", "inside-lib-50965d21f0660055"), { recursive: true });
+		mkdirSync(join(profile, "build", "inside-lib-50965d21f0660055"), { recursive: true });
+		return target;
+	}
+
+	it("R1: attributes the dep in a nested workspace, from a .d outside deps/", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = nestedLayout(deadPath);
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		// Both the dep's own unit and the example that pulled a source from it.
+		expect(result).toMatchObject({ depInfoScanned: 2, depInfoMatched: 2, problems: [] });
+		expect(existsSync(join(target, "debug", "examples", "inside_demo.d"))).toBe(false);
+		expect(existsSync(join(target, "debug", "examples", "inside_demo"))).toBe(false);
+		expect(existsSync(join(target, "debug", "deps", "inside_lib-50965d21f0660055.d"))).toBe(false);
+		expect(existsSync(join(target, "debug", "deps", "libinside_lib-50965d21f0660055.rlib"))).toBe(false);
+		expect(existsSync(join(target, "debug", "deps", "libinside_lib-50965d21f0660055.rmeta"))).toBe(false);
+		expect(existsSync(join(target, "debug", ".fingerprint", "inside-lib-50965d21f0660055"))).toBe(false);
+		expect(existsSync(join(target, "debug", "build", "inside-lib-50965d21f0660055"))).toBe(false);
+	});
+
+	/** This box's shape, measured 2026-11-08 on
+	 *  `~/.cache/cargo-target/tfd-d-487`: absolutized worktree paths at
+	 *  `<profile>/*.d` (linked bin targets) and `<profile>/examples/*.d`, none
+	 *  under `deps/` — plus a live worktree's `.d` and one naming no worktree,
+	 *  which R3 keeps. */
+	function boxLayout(deadPath: string, livePath: string): string {
+		const target = tempDir("pi-reaper-box-target-");
+		const release = join(target, "release");
+		const examples = join(target, "debug", "examples");
+		write(join(release, "tfd.d"), `${join(release, "tfd")}: ${join(deadPath, "binary/src/main.rs")} ${join(deadPath, "parser/src/lib.rs")}\n`);
+		write(join(release, "tfd"));
+		write(join(examples, "alloc_cost.d"), `${join(examples, "alloc_cost")}: ${join(deadPath, "tfd-mem/examples/alloc_cost.rs")}\n`);
+		write(join(examples, "alloc_cost"));
+		write(join(examples, "borrows.d"), `${join(examples, "borrows")}: ${join(deadPath, "tfd-mem/examples/borrows.rs")}\n`);
+		write(join(examples, "borrows"));
+		// The live worktree's copy, and a `.d` whose sources all sit inside the
+		// workspace root cargo built, so it names no worktree at all.
+		write(join(examples, "views.d"), `${join(examples, "views")}: ${join(livePath, "tfd-mem/examples/views.rs")}\n`);
+		write(join(examples, "views"));
+		write(join(examples, "scale.d"), `${join(examples, "scale")}: tfd-mem/examples/scale.rs tfd-mem/src/arena.rs\n`);
+		write(join(examples, "scale"));
+		// A crate unit under deps/ whose sources are relative: the inert case the
+		// old deps-only scan saw here.
+		write(join(target, "debug", "deps", "mtime_probe-5e932e2c4a3b9b6e.d"), "src/lib.rs: src/lib.rs\n");
+		write(join(target, "debug", "deps", "libmtime_probe-5e932e2c4a3b9b6e.rlib"));
+		return target;
+	}
+
+	it("R2: deletes the dead worktree's share of a profile-level scan", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = boxLayout(deadPath, tempDir("pi-reaper-live-"));
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 6, depInfoMatched: 3, problems: [] });
+		expect(existsSync(join(target, "release", "tfd.d"))).toBe(false);
+		expect(existsSync(join(target, "release", "tfd"))).toBe(false);
+		expect(existsSync(join(target, "debug", "examples", "alloc_cost.d"))).toBe(false);
+		expect(existsSync(join(target, "debug", "examples", "alloc_cost"))).toBe(false);
+		expect(existsSync(join(target, "debug", "examples", "borrows.d"))).toBe(false);
+		expect(existsSync(join(target, "debug", "examples", "borrows"))).toBe(false);
+	});
+
+	it("R3: never touches a .d naming another worktree or none", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const livePath = tempDir("pi-reaper-live-");
+		const target = boxLayout(deadPath, livePath);
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result.depInfoMatched).toBe(3);
+		// Deletion is the irreversible half: a live worktree's unit, and one
+		// attributed to nobody, both survive with their siblings.
+		expect(existsSync(join(target, "debug", "examples", "views.d"))).toBe(true);
+		expect(existsSync(join(target, "debug", "examples", "views"))).toBe(true);
+		expect(existsSync(join(target, "debug", "examples", "scale.d"))).toBe(true);
+		expect(existsSync(join(target, "debug", "examples", "scale"))).toBe(true);
+		expect(existsSync(join(target, "debug", "deps", "mtime_probe-5e932e2c4a3b9b6e.d"))).toBe(true);
+		expect(existsSync(join(target, "debug", "deps", "libmtime_probe-5e932e2c4a3b9b6e.rlib"))).toBe(true);
+	});
+
+	it("R4: an env-dep-only .d is counted and left alone; one with a source rule is attributed", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		// Cargo's build-script dep-info spells the worktree only in `env-dep:`:
+		// `<pkg>.d: src/... env-dep:CARGO_MANIFEST_DIR=<worktree>/parser`.
+		write(
+			join(examples, "envonly.d"),
+			`${join(examples, "envonly")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath, "parser")} env-dep:INSTA_WORKSPACE_ROOT\n`,
+		);
+		write(join(examples, "envonly"));
+		write(
+			join(examples, "mixed.d"),
+			`${join(examples, "mixed")}: ${join(deadPath, "parser/src/lib.rs")} env-dep:CARGO_MANIFEST_DIR=${join(deadPath, "parser")}\n`,
+		);
+		write(join(examples, "mixed"));
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 2, depInfoMatched: 1, depInfoEnvDepOnly: 1, problems: [] });
+		expect(existsSync(join(examples, "envonly.d"))).toBe(true);
+		expect(existsSync(join(examples, "envonly"))).toBe(true);
+		expect(existsSync(join(examples, "mixed.d"))).toBe(false);
+		expect(existsSync(join(examples, "mixed"))).toBe(false);
+	});
+
+	it("carries the env-dep-only count from the real scan to the operator's line", async () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		write(
+			join(examples, "envonly.d"),
+			`${join(examples, "envonly")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath, "parser")}\n`,
+		);
+		write(join(examples, "envonly"));
+		write(join(examples, "mixed.d"), `${join(examples, "mixed")}: ${join(deadPath, "parser/src/lib.rs")}\n`);
+		write(join(examples, "mixed"));
+
+		// The count travels the whole path a removal takes: the scan's result, the
+		// route-1 base `pruneCargoArtifactsFor` hands the caller, and the line that
+		// becomes `ReapResult.detail`. A constant anywhere on it shows up here.
+		const result = await pruneCargoArtifactsFor(target, deadPath, { run: fakeRunner().run });
+
+		expect(result).toMatchObject({ route: "exact", depInfoScanned: 2, depInfoMatched: 1, depInfoEnvDepOnly: 1 });
+		expect(describePrune(result)).toContain("1 env-dep-only .d left alone");
+	});
+
+	it("does not count an env-dep naming a longer path that starts with the dead one", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		// A sibling path whose name starts with the dead worktree's — this box's
+		// `…/live-e3ifza2` against `…/live-e3ifza`. A substring test called that
+		// file env-dep-only; the field, its comment and the report line say
+		// `env-dep:`-only, so the match carries the same path boundary the source
+		// rule does.
+		write(
+			join(examples, "sibling.d"),
+			`${join(examples, "sibling")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath}2/parser\n`,
+		);
+		write(join(examples, "sibling"));
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 1, depInfoMatched: 0, depInfoEnvDepOnly: 0 });
+		expect(existsSync(join(examples, "sibling.d"))).toBe(true);
+	});
+
+	it("counts an env-dep value at a line end, before another token, and with no newline", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		// The value is the bare worktree root, and each file ends differently: a
+		// newline, the next `env-dep:` token, and no trailing newline at all. The
+		// three are the value matcher's alternatives beyond `/`, one file each.
+		write(
+			join(examples, "rootline.d"),
+			`${join(examples, "rootline")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath}\n`,
+		);
+		write(join(examples, "rootline"));
+		write(
+			join(examples, "roottoken.d"),
+			`${join(examples, "roottoken")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath} env-dep:TFD_BUILD_ID=1\n`,
+		);
+		write(join(examples, "roottoken"));
+		write(
+			join(examples, "rootbare.d"),
+			`${join(examples, "rootbare")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${deadPath}`,
+		);
+		write(join(examples, "rootbare"));
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 3, depInfoMatched: 0, depInfoEnvDepOnly: 3 });
+		expect(existsSync(join(examples, "rootline.d"))).toBe(true);
+		expect(existsSync(join(examples, "roottoken.d"))).toBe(true);
+		expect(existsSync(join(examples, "rootbare.d"))).toBe(true);
+	});
+
+	it("scans no build-script output dir, so its .d is neither counted nor attributed", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		// Owner 2026-11-09: `<profile>/build/<pkg>/<hash>/out/*.d` stays out of the
+		// scan, and this row is the pin. On this box 12 of the 1433 `.d` there name a
+		// worktree and all 12 name it only in an `env-dep:CARGO_MANIFEST_DIR=` token,
+		// so scanning them attributes nothing; what it would widen is the delete
+		// surface, since a build script's `.d` stem is the name of its own `build/`
+		// dir. Adding the location to `DEP_INFO_SUBDIRS` is red here.
+		const out = join(target, "debug", "build", "parser-1a2b3c4d5e6f7890", "out");
+		write(join(out, "inputs.d"), `${join(out, "inputs")}: ${join(deadPath, "parser/src/lib.rs")}\n`);
+		// Directly under `build/`, so a plain `"build"` entry in the scan list is
+		// red here too, not only a `build/**/out` widening.
+		write(join(target, "debug", "build", "held.d"), `held: ${join(deadPath, "src/lib.rs")}\n`);
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 0, depInfoMatched: 0 });
+		expect(existsSync(join(out, "inputs.d"))).toBe(true);
+		expect(existsSync(join(target, "debug", "build", "held.d"))).toBe(true);
+	});
+
+	it("counts a .d named exactly `.d`, and attributes nothing to its empty stem", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const examples = join(target, "debug", "examples");
+		write(join(examples, ".d"), `${join(examples, "nothing")}: ${join(deadPath, "parser/src/lib.rs")}\n`);
+		// The artefact a naive empty-stem match would take with it: every dotfile in
+		// the directory starts with the empty string.
+		write(join(examples, ".env"), "keep\n");
+
+		const result = pruneExactArtifacts(target, deadPath);
+
+		expect(result).toMatchObject({ depInfoScanned: 1, depInfoMatched: 0, filesDeleted: 0 });
+		expect(existsSync(join(examples, ".d"))).toBe(true);
+		expect(existsSync(join(examples, ".env"))).toBe(true);
+	});
+
+	it("reports a profile directory it cannot list instead of reading it as empty", () => {
+		const deadPath = tempDir("pi-reaper-dead-");
+		const target = tempDir("pi-reaper-box-target-");
+		const profile = join(target, "debug");
+		mkdirSync(profile, { recursive: true });
+		const problems = (() => {
+			chmodSync(profile, 0o000);
+			try {
+				return pruneExactArtifacts(target, deadPath).problems;
+			} finally {
+				chmodSync(profile, 0o700);
+			}
+		})();
+
+		// One level up is reported already; a profile the scan could not read is the
+		// same failure and hides the same artifacts.
+		expect(problems.join(" ")).toContain(`${profile} not readable`);
+	});
+
 	it("does not attribute a .d that merely shares the path's prefix", () => {
 		const deadPath = tempDir("pi-reaper-dead-");
 		const shared = tempDir("pi-reaper-shared-");
@@ -643,6 +905,37 @@ describe("enforceCargoTargetBound (M3)", () => {
 
 		expect(report.entries).toEqual([]);
 		expect(calls).toEqual([]);
+	});
+
+	it("counts the dead paths' env-dep-only .d in its entry, not as a constant", async () => {
+		const { home, cargoTargetDir, deadPath } = fakeHome("tfd-d");
+		// Two dead paths of the one clone, each with its own env-dep-only `.d`: the
+		// entry's count is a sum over paths, so `=` in place of `+=` at the
+		// aggregation site keeps only the last path's file.
+		const deadPath2 = deadPath.replace("77a40e201285", "abcdef123456");
+		const examples = join(cargoTargetDir, "debug", "examples");
+		write(
+			join(examples, "envonly.d"),
+			`${join(examples, "envonly")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath, "parser")}\n`,
+		);
+		write(
+			join(examples, "envonly2.d"),
+			`${join(examples, "envonly2")}: parser/src/lib.rs env-dep:CARGO_MANIFEST_DIR=${join(deadPath2, "parser")}\n`,
+		);
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [
+				{ worktreePath: deadPath, parentCwd: "" },
+				{ worktreePath: deadPath2, parentCwd: "" },
+			],
+			sizeOf: () => 25 * GiB,
+			run: fakeRunner().run,
+		});
+
+		// Both files are read once per dead path (4 reads); each is env-dep-only for
+		// the one path it names, so the entry's sum over paths is 2.
+		expect(report.entries[0]).toMatchObject({ depInfoScanned: 4, depInfoMatched: 0, depInfoEnvDepOnly: 2, worktreePathsPruned: 0 });
 	});
 
 	it("uses route 1 when the dead worktree's artifacts can be attributed", async () => {
