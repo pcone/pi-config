@@ -18,9 +18,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cargoTargetDirFor, cargoTargetRoot, repoNameFromWorktreePath } from "./subagent-worktree.ts";
 
-/** Bound on one clone's shared cargo target dir — owner 2026-11-08, recorded by
- *  WO-2026-091 as the required enforcement value. GiB, the unit `du -sk` and
- *  the order's premise both report. */
+/** Bound on one clone's shared cargo target dir: 20 GiB.
+ *
+ *  WO-2026-091 §Rulings records this number as the recorder's call for that order
+ *  (owner 2026-11-08 asked for a bound and left the value to the recorder).
+ *  GiB, not decimal GB: it is measured in `du -sk`'s unit, and GiB is what the
+ *  order's premise figures were reported in. */
 export const CARGO_TARGET_BOUND_BYTES = 20 * 1024 ** 3;
 
 export function formatBytes(bytes: number): string {
@@ -412,7 +415,10 @@ export async function dropLandedWorktreeTarget(
 		return { dropped, state, problems };
 	};
 
-	const merged = await run("git", ["branch", "--merged", "HEAD"], { cwd: parentCwd });
+	// `-c color.branch=false`: with `color.branch=always` every listed name carries
+	// ANSI codes, the comparison below never matches and M4 would silently never
+	// fire.
+	const merged = await run("git", ["-c", "color.branch=false", "branch", "--merged", "HEAD"], { cwd: parentCwd });
 	if (merged.exitCode !== 0) {
 		return { dropped: false, state: "unknown", problems: [], detail: `git branch --merged failed: ${merged.stderr.trim()}` };
 	}
@@ -443,12 +449,19 @@ export interface DeadWorktree {
  * 8.2 GiB), because cargo's build-script outputs are hard-linked into the
  * worktree's own target. A bound that fires at half the stated size is worse
  * than no bound. Cost: one walk per clone dir, ~1.1 s for this box's 12.4 GiB.
+ *
+ * Throws when the measure fails. A directory that cannot be measured is not an
+ * under-bound directory, and answering 0 would switch the bound off silently —
+ * the caller reports the failure instead.
  */
 export async function dirSizeBytes(dir: string, run: CommandRunner = spawnRunner): Promise<number> {
 	const sized = await run("du", ["-sk", dir], { cwd: homedir() });
-	if (sized.exitCode !== 0) return 0;
+	if (sized.exitCode !== 0) {
+		throw new Error(`du -sk ${dir} failed: ${sized.stderr.trim() || `exit ${sized.exitCode}`}`);
+	}
 	const kb = Number.parseInt(sized.stdout.trim().split(/\s+/)[0] ?? "", 10);
-	return Number.isFinite(kb) ? kb * 1024 : 0;
+	if (!Number.isFinite(kb)) throw new Error(`du -sk ${dir} printed no size: ${JSON.stringify(sized.stdout.trim())}`);
+	return kb * 1024;
 }
 
 export interface CargoBoundAction {
@@ -503,6 +516,9 @@ export interface CargoBoundEntryReport {
 export interface CargoBoundReport {
 	boundBytes: number;
 	entries: CargoBoundEntryReport[];
+	/** Unswallowed failures outside any one entry — e.g. a dir that could not be
+	 *  measured, which therefore cannot be judged over the bound. */
+	problems: string[];
 }
 
 export interface CargoBoundOptions {
@@ -528,7 +544,7 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 	const boundBytes = opts.boundBytes ?? CARGO_TARGET_BOUND_BYTES;
 	const home = opts.home ?? homedir();
 	const cacheRoot = cargoTargetRoot(home);
-	const report: CargoBoundReport = { boundBytes, entries: [] };
+	const report: CargoBoundReport = { boundBytes, entries: [], problems: [] };
 
 	let cloneDirs: string[];
 	try {
@@ -541,9 +557,16 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 
 	// One walk per clone dir, concurrently: a reap cannot start a second one
 	// before this finishes, and two `du` runs on one volume cost the slower one.
-	const dirSizes = await Promise.all(
-		cloneDirs.map(async (cargoTargetDir) => ({ cargoTargetDir, bytes: await sizeOf(cargoTargetDir) })),
-	);
+	// A dir whose size cannot be read is reported and skipped: it has no size to
+	// compare with the bound, and treating that as 0 would disable the bound.
+	const dirSizes: Array<{ cargoTargetDir: string; bytes: number }> = [];
+	for (const cargoTargetDir of cloneDirs) {
+		try {
+			dirSizes.push({ cargoTargetDir, bytes: await sizeOf(cargoTargetDir) });
+		} catch (e) {
+			report.problems.push(`could not measure ${cargoTargetDir}: ${e instanceof Error ? e.message : String(e)}`);
+		}
+	}
 	const parentCwdFor = (cargoTargetDir: string): string | undefined =>
 		opts.deadWorktrees.find((d) => {
 			const repoName = repoNameFromWorktreePath(d.worktreePath, home);
@@ -577,7 +600,16 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 		if (pruned > 0) entry.route = "exact";
 
 		// (b) still over: one coarse pass for the clone.
-		let after = await sizeOf(action.cargoTargetDir);
+		let after: number;
+		try {
+			after = await sizeOf(action.cargoTargetDir);
+		} catch (e) {
+			entry.problems.push(`could not re-measure: ${e instanceof Error ? e.message : String(e)}`);
+			entry.afterBytes = entry.beforeBytes;
+			entry.overBound = true;
+			report.entries.push(entry);
+			continue;
+		}
 		if (after > boundBytes && action.coarsePrune) {
 			const parentCwd = parentCwdFor(action.cargoTargetDir);
 			if (parentCwd) {

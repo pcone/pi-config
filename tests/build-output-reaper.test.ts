@@ -424,6 +424,26 @@ describe("enforceCargoTargetBound (M3)", () => {
 		expect(calls.map((c) => c.args)).toEqual([["clean", "-p", "parser"]]);
 	});
 
+	it("reports a dir it could not measure instead of calling it under-bound", async () => {
+		const home = tempDir("pi-reaper-home-");
+		mkdirSync(join(home, ".cache", "cargo-target", "tfd-d"), { recursive: true });
+		const { run, calls } = fakeRunner();
+
+		const report = await enforceCargoTargetBound({
+			home,
+			deadWorktrees: [],
+			sizeOf: () => {
+				throw new Error("du: permission denied");
+			},
+			run,
+		});
+
+		expect(report.entries).toEqual([]);
+		expect(report.problems).toHaveLength(1);
+		expect(report.problems[0]).toContain("could not measure");
+		expect(calls).toEqual([]);
+	});
+
 	it("takes no action for a dir under the bound", async () => {
 		const { home } = fakeHome("tfd-d");
 		const { run, calls } = fakeRunner();
@@ -485,7 +505,16 @@ describe("dirSizeBytes", () => {
 		expect(await dirSizeBytes(dir)).toBe(MiB);
 	});
 
-	it("answers 0 for a path that is not there", async () => {
-		expect(await dirSizeBytes(join(tempDir("pi-reaper-size-"), "nope"))).toBe(0);
+	it("reports a failed measure instead of answering 0", async () => {
+		const dir = tempDir("pi-reaper-size-");
+		const failing: CommandRunner = async () => ({ stdout: "", stderr: "du: permission denied", exitCode: 1 });
+		await expect(dirSizeBytes(dir, failing)).rejects.toThrow("du -sk");
+
+		const silent: CommandRunner = async () => ({ stdout: "", stderr: "", exitCode: 0 });
+		await expect(dirSizeBytes(dir, silent)).rejects.toThrow("printed no size");
+	});
+
+	it("throws for a path that is not there rather than reporting an under-bound 0", async () => {
+		await expect(dirSizeBytes(join(tempDir("pi-reaper-size-"), "nope"))).rejects.toThrow("du -sk");
 	});
 });

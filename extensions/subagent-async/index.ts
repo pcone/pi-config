@@ -1381,6 +1381,21 @@ export async function removeWorktreeTree(
 		return { ok: false, stage: "remove", detail };
 	}
 
+	// The build output this tree produced dies with it (WO-2026-091): its own
+	// target/ and its share of the clone's shared cargo dir. It runs as soon as
+	// the tree is gone — before the branch step, so a `branch -D` failure cannot
+	// leave the multi-GB share behind for the next reap. Best-effort: a failure is
+	// reported to the caller, never thrown, and never undoes the removal.
+	let buildOutput: BuildOutputReport;
+	try {
+		const dispose = deps.disposeBuildOutput ?? ((p: string, parent: string) => disposeWorktreeBuildOutput(p, parent, { run: deps.run, home: deps.home }));
+		buildOutput = await dispose(worktreePath, parentCwd);
+	} catch (e) {
+		const detail = `build-output prune failed: ${e instanceof Error ? e.message : String(e)}`;
+		debugLog(`removeWorktreeTree: ${detail}`);
+		buildOutput = { targetRemoved: false, problems: [detail] };
+	}
+
 	// A branch still at the parent commit committed nothing — neither the harness
 	// nor the subagent itself — so delete it. `hadChanges` alone is NOT a safe
 	// signal: a subagent that committed its own work leaves nothing staged, so
@@ -1391,25 +1406,12 @@ export async function removeWorktreeTree(
 	if (isolationBranch && parentHeadCommit && policy.finalCommit === parentHeadCommit) {
 		const del = await g(["branch", "-D", isolationBranch], repoCwd);
 		if (del.exitCode !== 0) {
+			// The tree is already gone, so there is nothing to re-lock and no
+			// unprotected work: only the branch ref survived.
 			const detail = `git branch -D ${isolationBranch} failed: ${del.stderr.trim() || `exit ${del.exitCode}`}`;
-			const relockExit = await relock();
-			debugLog(`removeWorktreeTree: ${detail} (re-lock exit ${relockExit})`);
-			return { ok: false, stage: "branch", detail };
+			debugLog(`removeWorktreeTree: ${detail}`);
+			return { ok: false, stage: "branch", detail, buildOutput };
 		}
-	}
-
-	// The build output this tree produced dies with it (WO-2026-091): its own
-	// target/ and its share of the clone's shared cargo dir. Best-effort — a
-	// failure is reported to the caller, never thrown, and never undoes the
-	// removal that already succeeded.
-	let buildOutput: BuildOutputReport;
-	try {
-		const dispose = deps.disposeBuildOutput ?? ((p: string, parent: string) => disposeWorktreeBuildOutput(p, parent, { run: deps.run, home: deps.home }));
-		buildOutput = await dispose(worktreePath, parentCwd);
-	} catch (e) {
-		const detail = `build-output prune failed: ${e instanceof Error ? e.message : String(e)}`;
-		debugLog(`removeWorktreeTree: ${detail}`);
-		buildOutput = { targetRemoved: false, problems: [detail] };
 	}
 
 	return { ok: true, buildOutput };
@@ -1443,12 +1445,17 @@ async function postDeliveryCleanup(
 	}
 
 	if (PI_ASYNC_DEBUG) debugLog(`postDeliveryCleanup: FAILED after ${Date.now() - t0}ms: ${outcome.detail}`);
-	// Surface the warning to the parent via steer. The tree is re-locked (or was
-	// never unlocked), so live work stays guarded; the next session's reap, plus
-	// this warning, are the recovery.
+	// Surface the warning to the parent via steer. A removal failure re-locked the
+	// tree (or never unlocked it), so live work stays guarded and the worktree is
+	// still on disk; a branch-delete failure happens after the tree is gone, so it
+	// says only that the ref survived.
+	const where =
+		outcome.stage === "branch"
+			? `the worktree is removed; branch \`${rs.isolationBranch}\` still exists`
+			: `worktree at ${worktreePath} may need manual removal`;
 	try {
 		pi.sendUserMessage(
-			`[subagent ${rs.sessionId.slice(-8)}] warning: worktree cleanup failed: ${outcome.detail} — worktree at ${worktreePath} may need manual removal`,
+			`[subagent ${rs.sessionId.slice(-8)}] warning: worktree cleanup failed: ${outcome.detail} — ${where}`,
 			{ deliverAs: "steer" },
 		);
 	} catch { /* steer failed — nothing we can do */ }
@@ -3990,22 +3997,12 @@ export async function reapFinishedWorktrees(
 			};
 
 			if (!fs.existsSync(worktreePath)) {
-				// The tree is gone; its share of the clone's shared cargo dir is not.
-				// No M1 here: there is no target/ left to delete.
-				const repoName = repoNameFromWorktreePath(worktreePath, deps.home ?? cargoHomeOverride);
-				const cargo = repoName
-					? await pruneCargoArtifactsFor(cargoTargetDirFor(repoName, deps.home ?? cargoHomeOverride), worktreePath, {
-							parentCwd,
-							run: deps.run,
-						})
-					: null;
-				const prune = cargo ? describePrune(cargo) : null;
-				results.push({
-					sid,
-					outcome: "removed",
-					worktreePath,
-					detail: ["directory already gone", prune].filter(Boolean).join("; "),
-				});
+				// The tree is gone, so nothing is left to remove. Its share of the
+				// clone's shared cargo dir is M3's: the dead set below carries every
+				// gone namespace path, and the bound's pass prunes them — one
+				// implementation, gated where the order puts it, instead of a
+				// `cargo clean -p` per dead meta on every reap.
+				results.push({ sid, outcome: "removed", worktreePath, detail: "directory already gone" });
 				continue;
 			}
 
@@ -4071,6 +4068,7 @@ export async function reapFinishedWorktrees(
 			run: deps.run,
 			sizeOf: deps.sizeOf,
 		});
+		for (const problem of bound.problems) debugLog(`reap: cargo bound: ${problem}`);
 		for (const entry of bound.entries) {
 			debugLog(
 				`reap: shared dir ${entry.overBound ? "OVER" : "under"} bound ${entry.cargoTargetDir}: ` +
