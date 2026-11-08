@@ -197,7 +197,7 @@ Three consequences the option costs have to carry:
    workspace members' own artifacts survive either way, because their `.d` paths
    are relative and route 2 is what would drop them.
 2. "Route 2 is what every removal pays anyway" is false in this layout.
-3. Deleting route 1 leaves the order's **R4** (`:74`, attribution deletes only
+3. Deleting route 1 leaves the order's **R4** (`:79`, attribution deletes only
    the dead worktree's artifacts) with no mechanism, and the owner's "if they can
    be told apart" clause with nothing that tells them apart. A ruling for B
    changes an acceptance row, which the owner has to do knowingly.
@@ -212,7 +212,11 @@ Three consequences the option costs have to carry:
   belongs in the record: it clears only out-of-workspace units, and it reads
   `deps/` where this box's absolute worktree paths are not.
 - **B — delete it.** Argument for: no repo on this box has the layout that fires,
-  so it costs a scan per removal and buys nothing here. Argument against: it
+  so it costs a scan per removal and buys nothing here. Code cost: the route-1
+  section is `:65-:182` (118 lines including its banner) plus 32 lines outside it
+  that name a route-1 symbol —
+  `rg -n 'pruneExactArtifacts|ExactPruneResult|depInfoScanned|depInfoMatched|worktreePaths|worktreePathsPruned|filesDeleted|dirsDeleted|"exact"' extensions/lib/build-output-reaper.ts`,
+  minus that section. Argument against: it
   retires R4 and the "told apart" clause, and it leaves a nested-workspace
   checkout with no attribution at all. Blast radius, read off the rows at this
   tip: **4 deleted** — `tests/build-output-reaper.test.ts:156`, `:199`, `:226`,
