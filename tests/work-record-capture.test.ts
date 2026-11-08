@@ -344,6 +344,20 @@ describe("verifyWorkRecord — the close-time gate", () => {
 		expect(verifyWorkRecord(record, true)).toEqual([`record file ${stray} is outside the committed tree ${root}`]);
 	}, 30_000);
 
+	it("names a git it could not run instead of a null dereference", () => {
+		// A `git` that never started answers no stdout, so the state has to be read before the
+		// output: reading `stdout` first turns a spawn failure into "Cannot read properties of null
+		// (reading 'trim')", which names nothing a reader can act on. A tree that is gone is the
+		// reachable spawn failure: the process cannot start where the record says it lives.
+		const root = makeRepo({ record: false });
+		const record = written(root);
+		commitAll(root, "base");
+		fs.rmSync(root, { recursive: true, force: true });
+
+		const failures = verifyWorkRecord(record, true);
+		expect(failures).toContain(`record file ${recordFile(root)} not checked: ENOENT: no such file or directory, posix_spawn 'git'`);
+	}, 30_000);
+
 	it("reports a record the tool does not hold instead of reading it as empty", () => {
 		// The unreadable branch: the real tool exits 1 on a missing record, so a run whose tree
 		// never held it fails here rather than completing as if it had read an empty record.

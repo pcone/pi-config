@@ -379,9 +379,15 @@ export function verifyWorkRecord(record: WorkRecord, mustBeCommitted: boolean): 
 				const state = spawnSync("git", ["status", "--porcelain", "--ignored", "--", rel], {
 					cwd: record.cwd, encoding: "utf8",
 				});
+				// The failure is read before the output: a git that never ran (no binary on PATH)
+				// leaves `stdout` null, and reading it first reports a null dereference instead of
+				// the state this arm exists to name.
+				if (state.status !== 0 || state.error) {
+					failures.push(`record file ${file} not checked: ${failureText(state)}`);
+					continue;
+				}
 				const line = state.stdout.trim().split("\n")[0];
-				if (state.status !== 0 || state.error) failures.push(`record file ${file} not checked: ${failureText(state)}`);
-				else if (line) failures.push(`record file ${file} is not committed in ${record.cwd}: ${line}`);
+				if (line) failures.push(`record file ${file} is not committed in ${record.cwd}: ${line}`);
 			}
 		}
 		return failures;
