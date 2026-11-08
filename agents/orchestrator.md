@@ -246,7 +246,10 @@ Trust the implementer's own review — do not re-run `review-code` or
 don't duplicate.
 
 In a repo with `scripts/wo_record.py`, record the verdict: `python3
-scripts/wo_record.py append <WO-id> gate`, verdict text on stdin. The
+scripts/wo_record.py append <WO-id> gate`, verdict text on stdin. **Run it in your own
+worktree**, not the parent checkout: the entry must land in the commit that carries the
+chunk, and an append in a parent checkout is the 2026-11-08 lost-records bug, not a
+variant of it. The
 `completion` entry turns each `deviations_from_spec` item into a
 `departure` entry. Append any departure the report missed. Link each one to its
 registry row with `append <WO-id> departure --id Dn --registry
@@ -272,7 +275,8 @@ merges the same way.
 
 In a repo with `scripts/wo_record.py`, record the landing after the merge:
 `python3 scripts/wo_record.py append <WO-id> landed --commit <sha>`,
-with `<sha>` in HEAD's history.
+with `<sha>` in HEAD's history — again in your own worktree, so the entry commits with
+the chunk it records.
 
 ### 6. Reconcile the roadmap doc — if you own it
 
