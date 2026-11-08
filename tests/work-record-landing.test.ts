@@ -308,6 +308,24 @@ describe("R4b — a record the harness cannot read is a failure, not a crash", (
 	}, 120_000);
 });
 
+describe("R6 — a dispatch append that failed survives the close", () => {
+	it("is delivered with the result and stays on the status surface", async () => {
+		const root = makeRepo();
+		// The stub refuses the dispatch write, so this run has no record to complete: the spawn's
+		// own result text is the only other place the failure appeared, and it is one shot
+		// (WO-2026-094 round 3 — the same "downgraded to a note" class, one leg over).
+		fs.writeFileSync(path.join(root, "fail-on"), "dispatch");
+		const { sid, sent, meta, tools, ctx } = await spawnAndClose(root, false);
+
+		expect(meta.workRecord).toBeUndefined();
+		expect(sent).toContain("RECORD FAILURE: work-order record not written: stub refused dispatch");
+		// The session has left the running map, so the meta is the only carrier a status query has.
+		const status = await tools.get("subagent_status").execute("ts", { session_id: sid }, undefined, undefined, ctx);
+		expect(String(status.content[0].text))
+			.toContain("RECORD FAILURE: work-order record not written: stub refused dispatch");
+	}, 120_000);
+});
+
 describe("R5 — a repo without wo_record.py gets no record and no failure", () => {
 	it("spawns and delivers with neither", async () => {
 		const root = makeRepo({ script: false });

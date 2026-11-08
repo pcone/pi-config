@@ -16,7 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { MAX_TURNS_HARD } from "../lib/subagent-state.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
 import type { AgentConfig } from "./agents.ts";
-import { completeWorkRecord, verifyWorkRecord } from "./records.ts";
+import { closeWorkRecord } from "./records.ts";
 import {
 	reportDeclaresOwnerAsks,
 } from "./recovery.ts";
@@ -766,29 +766,26 @@ export async function spawnSubagent(
 		// committed, so it has to precede the commit: an isolated spawn's record lives in the
 		// worktree, which is removed after delivery (WO-2026-094 M1/M2). Split from post-delivery
 		// cleanup so the result reaches the parent immediately rather than waiting seconds for
-		// worktree removal.
+		// worktree removal. The funnel runs the appends, then those git steps as its commit step,
+		// then the close-time gate — which asks whether THIS process committed the tree it is
+		// about to remove.
 		const tDeliver = PI_ASYNC_DEBUG ? Date.now() : 0;
-		const record = rs.workRecord
-			? completeWorkRecord(rs.workRecord, rs.piSessionId ?? sessionId, () => getFinalOutput(rs.messages))
-			: { notes: [], failures: [] };
-		const { note: commitNote, finalCommit, hadChanges } = await preCommitSteps(rs);
-		// Close-time gate: every entry this run wrote must be in the tree being merged — the
-		// branch's HEAD when this process committed the worktree, else the spawner's own working
-		// tree, which its next commit carries.
-		const recordFailures = [
-			...record.failures,
-			...(rs.workRecord ? verifyWorkRecord(rs.workRecord, rs.worktreePath !== null) : []),
-		];
-		rs.recordNotes = [...(rs.recordNotes ?? []), ...record.notes];
-		rs.recordFailures = [...(rs.recordFailures ?? []), ...recordFailures];
-		// The session left the running map before this check could run (it must, see above), so the
-		// meta is the only place a status query can still read a record failure from (WO-2026-094
-		// M3). Written only when there is one: a clean close leaves the meta as it was.
-		if (recordFailures.length > 0) updateMetaJson(sessionId, { recordFailures });
-		const recordText = [
-			...record.notes,
-			...recordFailures.map((f) => `RECORD FAILURE: ${f}`),
-		].map((n) => `\n${n}`).join("");
+		let committed!: Awaited<ReturnType<typeof preCommitSteps>>;
+		const recordClose = await closeWorkRecord(rs.workRecord, {
+			implementerKey: rs.piSessionId ?? sessionId,
+			readFinal: () => getFinalOutput(rs.messages),
+			commit: async () => {
+				committed = await preCommitSteps(rs);
+				return []; // the child's commit is not the record's: its failures are `committed.note`
+			},
+			mustBeCommitted: rs.worktreePath !== null,
+			persist: (failures) => updateMetaJson(sessionId, { recordFailures: failures }),
+			carried: { notes: rs.recordNotes ?? [], failures: rs.recordFailures ?? [] },
+		});
+		const { note: commitNote, finalCommit, hadChanges } = committed;
+		rs.recordNotes = recordClose.notes;
+		rs.recordFailures = recordClose.failures;
+		const recordText = recordClose.text;
 
 		// Clean up temp files
 		if (tmpPath) try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }

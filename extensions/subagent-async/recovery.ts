@@ -34,7 +34,7 @@ import {
 	resolveTurnCap,
 	type OwnerProbe,
 } from "../lib/subagent-state.ts";
-import { commitRecordEntries, completeWorkRecord, openRecordContext, sessionFinalText, verifyWorkRecord, type PersistedWorkRecord } from "./records.ts";
+import { closeWorkRecord, commitRecordEntries, openRecordContext, sessionFinalText, type PersistedWorkRecord } from "./records.ts";
 import { removeWorktreeTree } from "./worktree.ts";
 import {
 	debugLog,
@@ -514,7 +514,7 @@ export function recoverOrphanedSubagents(
 				running.delete(sid);
 				updateFooter();
 			});
-			sock.on("close", () => {
+			sock.on("close", async () => {
 				rs.sockClients.delete(sock);
 				if (!connected) return; // orphan already handled in error handler
 				rs.isDone = true;
@@ -543,24 +543,18 @@ export function recoverOrphanedSubagents(
 				// then runs the same close-time check a normal close runs — owner ruling Q-094-a
 				// (`work-orders/WO-2026-094-record-appends-land-where-committed.md#Q-094-a`, 2026-11-08).
 				// The commit carries the record files only; the rest of the tree is the reap's business.
-				const record = rs.workRecord
-					? completeWorkRecord(rs.workRecord, meta.piSessionId ?? sid, () => sessionFinalText(meta.sessionFile))
-					: { notes: [], failures: [] };
-				const recordFailures = [
-					...record.failures,
-					...(rs.workRecord ? commitRecordEntries(rs.workRecord) : []),
-					...(rs.workRecord ? verifyWorkRecord(rs.workRecord, true) : []),
-				];
-				rs.recordNotes = record.notes;
-				rs.recordFailures = recordFailures;
-				// The recovered session is about to leave the running map, so the meta is where a status
-				// query still reads the outcome from (WO-2026-094 M3).
-				if (recordFailures.length > 0) updateMetaAt(path.join(sockDir, `pi-subagent-${sid}.meta.json`), { recordFailures });
-				const recordText = [
-					...record.notes,
-					...recordFailures.map((f) => `RECORD FAILURE: ${f}`),
-				].map((n) => `\n${n}`).join("");
-				deliverResult(pi, rs, recoveredExitCode, `\n[Isolation] Recovered from previous session.${recordText}`);
+				const recordClose = closeWorkRecord(rs.workRecord, {
+					implementerKey: meta.piSessionId ?? sid,
+					readFinal: () => sessionFinalText(meta.sessionFile),
+					commit: (record) => (record ? commitRecordEntries(record) : []),
+					mustBeCommitted: true,
+					// The recovered session is about to leave the running map, so the meta is where a
+					// status query still reads the outcome from (WO-2026-094 M3).
+					persist: (failures) => updateMetaAt(path.join(sockDir, `pi-subagent-${sid}.meta.json`), { recordFailures: failures }),
+				});
+				rs.recordNotes = recordClose.notes;
+				rs.recordFailures = recordClose.failures;
+				deliverResult(pi, rs, recoveredExitCode, `\n[Isolation] Recovered from previous session.${recordClose.text}`);
 				running.delete(sid);
 				updateFooter();
 			});

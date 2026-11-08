@@ -457,8 +457,16 @@ class FakeSock extends EventEmitter {
 describe("recovery completes the record from the recovered session file", () => {
 	/** Drive the orphan-recovery close for a run whose record lives in `root`. A live session ctx is
 	 *  set first — the hook mirrors the `session_start` lifecycle — so the delivered result is
-	 *  captured rather than dropped. Returns the delivered text and the record writes it made. */
-	function recoverRun(root: string, piId: string, before: number) {
+	 *  captured rather than dropped. `exposeMetaInTmp` links the run's meta at the path the status
+	 *  tools read (`/tmp`, the deployment's real sock dir) while the scan itself stays isolated in a
+	 *  temp dir, so it cannot adopt another run's socket. Returns the delivered text, the record
+	 *  writes it made, and the registered tools. */
+	function recoverRun(
+		root: string,
+		piId: string,
+		before: number,
+		{ exposeMetaInTmp = false } = {},
+	) {
 		const sid = `subagent-${randomUUID()}`;
 		const runFile = reviewSession(path.join(root, "run2.jsonl"), "Rework.",
 			"Reworked.\n\n**deviations_from_spec:**\n- Changed the approach.");
@@ -470,9 +478,14 @@ describe("recovery completes the record from the recovered session file", () => 
 			agentName: "implement", task: "Rework.", cwd: root, startedAt: Date.now(), piSessionId: piId,
 			sessionFile: runFile, ownerPid: process.pid, workRecord: { cwd: root, woId: WO_ID },
 		}));
+		if (exposeMetaInTmp) {
+			// A link, not a copy: the file the recovery writes is the one the status surface reads.
+			fs.symlinkSync(path.join(dir, `pi-subagent-${sid}.meta.json`), metaPath(sid));
+			tmpFiles.push(metaPath(sid));
+		}
 
 		const delivered: string[] = [];
-		const { pi } = stubPi(delivered);
+		const { pi, tools } = stubPi(delivered);
 		const sock = new FakeSock();
 		_testSetLiveSessionCtx(stubCtx(root));
 		recoverOrphanedSubagents(
@@ -482,7 +495,7 @@ describe("recovery completes the record from the recovered session file", () => 
 		);
 		sock.emit("connect");
 		sock.emit("close");
-		return { sid, delivered: delivered.join("\n"), after: calls(root).slice(before) };
+		return { sid, delivered: delivered.join("\n"), after: calls(root).slice(before), tools };
 	}
 
 	/** A record its first run already wrote a completion into, and a reviewer its second run added. */

@@ -258,6 +258,86 @@ export function commitRecordEntries(record: WorkRecord): string[] {
 	return [];
 }
 
+/** The per-caller half of {@link closeWorkRecord}: where a close's writes come from, the one step
+ *  it runs between them and the gate, and where its outcome goes. The write order, the gate, the
+ *  delivered text and the meta write are this module's, so the spawn close and the recovery close
+ *  cannot drift apart (WO-2026-094 round 3: they had, on both counts). */
+export interface CloseWorkRecordOptions {
+	/** The run's pi session id — the key its reviewers were registered under. */
+	implementerKey: string;
+	/** The implementer's final report: its session's last text, or the live process's messages. */
+	readFinal: () => string;
+	/** The caller's commit step, run between the appends and the gate, and the only behavioural
+	 *  difference between the two closes: a spawn's is its pre-commit steps, which commit the
+	 *  child's work in the tree the gate then reads (they report no record failures); a recovery
+	 *  commits the record files it appended (`commitRecordEntries`). Runs even for a run with no
+	 *  record: the spawn's git steps are the child's, not the record's. */
+	commit: (record: WorkRecord | undefined) => string[] | Promise<string[]>;
+	/** Whether each record file must be in the tree's HEAD — true where this process committed the
+	 *  tree and is about to remove it, false where the spawner's own later commit carries it. */
+	mustBeCommitted: boolean;
+	/** Where the outcome reaches a status query once the run has left the running map (M3). Called
+	 *  only when something failed: a clean close leaves the meta as it was. */
+	persist: (failures: string[]) => void;
+	/** The writes this run already reported before its close. A spawn's dispatch append can fail
+	 *  with no record left to complete, and the close is the last time its result reaches anyone,
+	 *  so those failures are carried through rather than dropped at the close (WO-2026-094 round 3). */
+	carried?: { notes: string[]; failures: string[] };
+}
+
+/** A close's record outcome: the two lists the status surface reads, and the delivered result's
+ *  lines. */
+export interface RecordClose {
+	notes: string[];
+	failures: string[];
+	text: string;
+}
+
+/** The one close funnel (WO-2026-094 M2/M3): append the reviews and the completion, run the
+ *  caller's commit step, run the close-time gate, persist the outcome for a status query, and
+ *  build the text the delivered result carries.
+ *  `record` is undefined for a run that opened none; its dispatch write may still have failed, so
+ *  the carried writes are delivered and persisted here rather than vanishing with the record.
+ *  The result follows the commit step: a synchronous one (the recovery's record commit) answers at
+ *  once, so the recovery's close still delivers in the socket event that caused it; an
+ *  asynchronous one (the spawn's pre-commit steps) answers a promise the close handler awaits. */
+export function closeWorkRecord(
+	record: WorkRecord | undefined,
+	opts: CloseWorkRecordOptions & { commit: (record: WorkRecord | undefined) => string[] },
+): RecordClose;
+export function closeWorkRecord(
+	record: WorkRecord | undefined,
+	opts: CloseWorkRecordOptions & { commit: (record: WorkRecord | undefined) => Promise<string[]> },
+): Promise<RecordClose>;
+export function closeWorkRecord(
+	record: WorkRecord | undefined,
+	opts: CloseWorkRecordOptions,
+): RecordClose | Promise<RecordClose> {
+	const notes = [...(opts.carried?.notes ?? [])];
+	const failures = [...(opts.carried?.failures ?? [])];
+	if (record) {
+		const written = completeWorkRecord(record, opts.implementerKey, opts.readFinal);
+		notes.push(...written.notes);
+		failures.push(...written.failures);
+	}
+	// Everything after the commit step: its failures, then the gate that decides whether the
+	// entries reached the tree being merged, then the one meta write a status query reads.
+	const afterCommit = (commitFailures: string[]): RecordClose => {
+		failures.push(...commitFailures);
+		if (record) failures.push(...verifyWorkRecord(record, opts.mustBeCommitted));
+		if (failures.length > 0) opts.persist(failures);
+		return { notes, failures, text: recordText(notes, failures) };
+	};
+	const committing = opts.commit(record);
+	return Array.isArray(committing) ? afterCommit(committing) : committing.then(afterCommit);
+}
+
+/** The delivered result's record lines: a note as itself, a failure under the `RECORD FAILURE`
+ *  prefix the status surface uses, each on its own line. */
+function recordText(notes: string[], failures: string[]): string {
+	return [...notes, ...failures.map((f) => `RECORD FAILURE: ${f}`)].map((n) => `\n${n}`).join("");
+}
+
 /** Close-time gate (WO-2026-094 M2): every entry the record must hold is in the record, and every
  *  file this run wrote is in the tree that will be committed. `mustBeCommitted` is set when this
  *  process committed that tree and is about to remove it (an isolated spawn), so the file has to be
