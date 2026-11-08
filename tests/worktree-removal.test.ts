@@ -181,6 +181,45 @@ describe("removeWorktreeTree (real git)", () => {
 		expect(branchExists(repo, unknown.branch)).toBe(true);
 	});
 
+	it("a failed branch delete still drops the build output, and does not re-lock the gone tree", async () => {
+		const repo = makeRepo();
+		const { worktreePath, branch, parentHeadCommit } = makeWorktree(repo, "branch-fail-1");
+
+		// One seam per step, recording the order: the prune must not be lost to a
+		// branch failure, because the tree (and so its multi-GB share of the shared
+		// cargo dir) is already gone by then.
+		const order: string[] = [];
+		const gitSeam = async (args: string[], cwd: string) => {
+			if (args[0] === "branch") {
+				order.push("branch");
+				return { stdout: "", stderr: "error: cannot delete branch", exitCode: 1 };
+			}
+			if (args[0] === "worktree" && args[1] === "lock") order.push("lock");
+			const r = git(cwd, args);
+			return { stdout: r.out, stderr: r.err, exitCode: r.code };
+		};
+		const outcome = await removeWorktreeTree(
+			{
+				git: gitSeam,
+				disposeBuildOutput: async () => {
+					order.push("dispose");
+					return { targetRemoved: true, problems: [] };
+				},
+			},
+			{ worktreePath, isolationBranch: branch, parentHeadCommit, parentCwd: repo },
+			{ force: true, finalCommit: parentHeadCommit, relockReason: "t" },
+		);
+
+		expect(outcome.ok).toBe(false);
+		expect(outcome.stage).toBe("branch");
+		expect(outcome.detail).toContain("cannot delete branch");
+		// The prune ran, before the branch step, and the branch ref survived.
+		expect(order).toEqual(["dispose", "branch"]);
+		expect(outcome.buildOutput).toMatchObject({ targetRemoved: true });
+		expect(branchExists(repo, branch)).toBe(true);
+		expect(existsSync(worktreePath)).toBe(false);
+	});
+
 	it("reports an unlock failure without touching the tree", async () => {
 		const repo = makeRepo();
 		const { branch, parentHeadCommit } = makeWorktree(repo, "unregistered-1");
