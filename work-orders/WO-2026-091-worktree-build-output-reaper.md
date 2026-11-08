@@ -185,15 +185,19 @@ scan scope, not because cargo writes relative paths everywhere.
   builds* then need the probe cited, which is a doc edit awaiting this ruling.
 - **B — delete it, on the narrower true premise.** No repo on this box has the
   shape that fires, and route 2 is what every removal pays anyway. Removes the
-  118-line route-1 section plus ~45 lines of `exact`/`depInfo` plumbing in
-  `pruneCargoArtifactsFor`, `describePrune`, `planCargoBound` and the bound's
-  per-dead-path pass; M2 becomes route 2 only. Rows that go with it:
-  `pruneExactArtifacts (M2 route 1)` (3), "stops at route 1 when a .d named the
-  dead worktree", "uses route 1 when the dead worktree's artifacts can be
-  attributed", "reports an over-bound dir that route 1 brought under as under"
-  (2 of its 2 assertions are route-1-only). Rows that stay: route 2's fallback,
-  no-workspace, gone-parent and failed-clean rows, and every `dirSizeBytes` /
-  bound-verdict row.
+  118-line route-1 section plus 34 lines of `exact`/`depInfo`/`worktreePaths`
+  plumbing outside it (`pruneCargoArtifactsFor`, `describePrune`,
+  `CargoBoundAction`, the bound's per-dead-path pass, the report line); M2
+  becomes route 2 only. Rows that go with it, all in
+  `tests/build-output-reaper.test.ts`: `pruneExactArtifacts (M2 route 1)` (3
+  rows, `:156`, `:179`, `:199`), "stops at route 1 when a .d named the dead
+  worktree" (`:226`), "uses route 1 when the dead worktree's artifacts can be
+  attributed" (`:648`). One row is rewritten rather than dropped: "reports an
+  over-bound dir that route 1 brought under as under, not as unmeasured"
+  (`:465`) pins a bound verdict, not route 1, and survives with its prune done
+  by route 2. Every other row stays: route 2's fallback, no-workspace,
+  gone-parent and failed-clean rows, and all `dirSizeBytes` / bound-verdict
+  rows.
 - **C — widen the scan** to `<profile>/*.d` and `<profile>/examples/*.d`, where
   this box's absolute worktree paths actually are. The only change that makes
   attribution per-worktree on a workspace-root checkout, and so the only one
