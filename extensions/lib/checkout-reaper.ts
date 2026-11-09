@@ -97,8 +97,21 @@ export interface WalkOptions {
 	now?: number;
 }
 
+/** @internal test hook — the home this module reads. `os.homedir()` answers
+ *  from the process's start-up home and ignores an in-process `HOME` change, so
+ *  a row that drives the real `session_start` pass needs this seam to keep off
+ *  the box's own checkouts and shared cargo dirs. Never set outside tests. */
+let homeOverride: string | undefined;
+export function _testSetReaperHome(home: string | undefined): void {
+	homeOverride = home;
+}
+
+function reaperHome(): string {
+	return homeOverride ?? homedir();
+}
+
 /** `~/Developer/wt` and the subagent namespace inside it, for one home. */
-export function wtRoots(home: string = homedir()): { root: string; subagentBase: string } {
+export function wtRoots(home: string = reaperHome()): { root: string; subagentBase: string } {
 	const subagentBase = subagentWorktreeBase(home);
 	return { root: path.dirname(subagentBase), subagentBase };
 }
@@ -148,6 +161,16 @@ function readNames(dir: string): string[] {
 
 function classify(full: string, scope: CheckoutScope, now: number): CheckoutEntry {
 	const base = { path: full, scope, parentCwd: null, gitDir: null, orphaned: false };
+	// A symlink is never traversed. A link under `wt/` is a pointer, not a
+	// checkout: following it would classify the worktree it names as this
+	// entry, and 091 would then remove that tree rather than the link.
+	let link: fs.Stats;
+	try {
+		link = fs.lstatSync(full);
+	} catch {
+		return { ...base, kind: "other", ageDays: null };
+	}
+	if (link.isSymbolicLink()) return { ...base, kind: "other", ageDays: null };
 	let dotGit: fs.Stats;
 	try {
 		dotGit = fs.lstatSync(path.join(full, ".git"));
@@ -426,7 +449,7 @@ export function formatReport(report: ReaperReport): string {
 }
 
 function shortPath(p: string): string {
-	const home = homedir();
+	const home = reaperHome();
 	return p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p;
 }
 
@@ -448,7 +471,7 @@ export interface ProcessCwd {
  *  this cost once each. An empty list with a problem means the evidence is
  *  missing, and the caller keeps rather than guessing. */
 export async function lsofProcessCwds(run: CommandRunner): Promise<{ cwds: ProcessCwd[]; problem: string | null }> {
-	const out = await run("lsof", ["-d", "cwd", "-Fpn"], { cwd: homedir() });
+	const out = await run("lsof", ["-d", "cwd", "-Fpn"], { cwd: reaperHome() });
 	if (out.exitCode !== 0) {
 		return { cwds: [], problem: `lsof -d cwd failed: ${out.stderr.trim() || `exit ${out.exitCode}`}` };
 	}
@@ -555,7 +578,7 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 	const run = opts.run ?? spawnRunner;
 	let probe: { cwds: ProcessCwd[]; problem: string | null } | null = null;
 	const ctx: ReapContext = {
-		home: opts.home ?? homedir(),
+		home: opts.home ?? reaperHome(),
 		now,
 		git: opts.git ?? runGit,
 		run,
@@ -566,6 +589,7 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 			}
 			return probe;
 		},
+		report,
 		checkedAt: report.generatedAt,
 		entries: [],
 		dryRun: opts.dryRun === true,
@@ -626,6 +650,9 @@ interface ReapContext {
 	now: number;
 	git: typeof runGit;
 	run: CommandRunner;
+	/** The pass's report, so a probe that cannot answer says so in `problems`
+	 *  instead of throwing the row away. */
+	report: ReaperReport;
 	/** The one `lsof` pass, run on first need and cached: a pass that removes
 	 *  nothing must not pay for it. */
 	cwds: () => Promise<{ cwds: ProcessCwd[]; problem: string | null }>;
@@ -939,10 +966,12 @@ function commonDirOf(gitDir: string): string {
  *  carry them.
  *
  *  A worktree dies alone, so its own branch is the spec (HEAD). A clone takes
- *  every local branch with it, so all of them are (`--branches`) — that is R4's
- *  shape: a merged branch beside another one that exists only locally. `%S`
- *  names the ref that reached each commit, so the count and the branches come
- *  out of one spawn. */
+ *  every local ref with it, so all of them are: `--branches` for R4's shape (a
+ *  merged branch beside another one that exists only locally), `HEAD` because
+ *  `--branches` starts from `refs/heads/*` and a clone left on a detached HEAD
+ *  has no branch naming its commit, and `--tags` because a local tag can be a
+ *  commit's only ref. `%S` names the ref that reached each commit, so the count
+ *  and the refs come out of one spawn. */
 async function unpushed(
 	entry: CheckoutEntry,
 	ctx: ReapContext,
@@ -951,7 +980,7 @@ async function unpushed(
 	// A worktree in sync with its upstream has nothing only local: `ahead 0`
 	// means every commit on HEAD is reachable from that remote ref.
 	if (entry.kind === "worktree" && status.upstream !== null && status.ahead === 0) return { ok: true, commits: 0, branches: [] };
-	const spec = entry.kind === "clone" ? "--branches" : "HEAD";
+	const spec = entry.kind === "clone" ? ["--branches", "HEAD", "--tags"] : ["HEAD"];
 	const result = await ctx.git(entry.path, [
 		"-c",
 		"color.ui=false",
@@ -959,7 +988,7 @@ async function unpushed(
 		"log.showSignature=false",
 		"log",
 		"--source",
-		spec,
+		...spec,
 		"--not",
 		"--remotes",
 		"--pretty=format:%H%x09%S",

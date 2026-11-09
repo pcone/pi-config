@@ -28,6 +28,7 @@ import subagentFactory, {
 	updateMetaJson,
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
+import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
@@ -453,6 +454,14 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		const { dir, worktreePath } = makeEntryFor(repo, "wiring-1", {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
+		// The handler also runs WO-2026-092's reaper, which walks
+		// `homedir()/Developer/wt` and `homedir()/.cache/cargo-target`: on the box's
+		// home that is every real checkout. Bun's `homedir()` is fixed at process
+		// start, so the pin is the module's home seam (and the cargo root hook the
+		// file's beforeAll already sets), not `HOME`.
+		const home = tempDir("pi-wiring-home-");
+		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
+		_testSetReaperHome(home);
 
 		// Register the extension for real and fire the captured handler: the reap
 		// is fire-and-forget inside session_start, so the effect (not a return
@@ -475,10 +484,51 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			);
 			expect(await waitFor(() => !existsSync(worktreePath), 20_000)).toBe(true);
 			expect(worktreeEntry(repo, worktreePath)).toBeNull();
+			// The general pass ran too, and wrote its report under the pinned home:
+			// with the wiring dropped there is no report at all.
+			expect(await waitFor(() => existsSync(join(home, "Developer", "wt", ".reaper-report.json")), 20_000)).toBe(true);
 		} finally {
 			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
 		}
-	});
+		// Two reaps and a report write on a loaded box.
+	}, 30_000);
+
+	it("a child session's start runs no reaper pass (PI_SUBAGENT_DEPTH)", async () => {
+		// N children would pay N passes and each would overwrite the report the
+		// parent announced. The child's start is not the pass.
+		const home = tempDir("pi-wiring-home-");
+		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
+		const depthBefore = process.env.PI_SUBAGENT_DEPTH;
+		_testSetReaperHome(home);
+		process.env.PI_SUBAGENT_DEPTH = "1";
+		try {
+			const handlers = new Map<string, Function>();
+			const pi: any = {
+				events: { emit: () => {} },
+				registerTool: () => {},
+				registerCommand: () => {},
+				on: (event: string, cb: Function) => handlers.set(event, cb),
+				sendUserMessage: () => {},
+				ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {} },
+			};
+			subagentFactory(pi);
+			_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "startup" },
+				{ cwd: home, sessionManager: { getSessionId: () => "sess-child-wiring" }, ui: {} },
+			);
+			// The pass is fire-and-forget: give it the same window the parent row
+			// gives, then assert it never wrote.
+			await Bun.sleep(500);
+			expect(existsSync(join(home, "Developer", "wt", ".reaper-report.json"))).toBe(false);
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+			if (depthBefore === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+			else process.env.PI_SUBAGENT_DEPTH = depthBefore;
+		}
+	}, 30_000);
 });
 
 // ── Reap: build output (WO-2026-091) ───────────────────────────────────────

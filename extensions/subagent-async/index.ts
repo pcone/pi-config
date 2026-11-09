@@ -1056,47 +1056,52 @@ export default function (pi: ExtensionAPI) {
 		// recorded identity, so a live foreign session's children are left
 		// alone. See `recoverOrphanedSubagents`.
 		try { recoverOrphanedSubagents(pi, ctx); } catch { /* best-effort */ }
-		// The reaper (WO-2026-092): every checkout under `~/Developer/wt`. 027's
-		// subtree goes first — its gates are its own — and the general pass takes
-		// its verdicts and the worktree paths its metas named, so the same tree is
-		// never decided twice. The last pass's report is announced now; this one
-		// replaces it and speaks up only when it removed something.
-		const wt = wtRoots();
-		const previous = readReaperReport(wt.root);
-		if (previous) {
-			pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "reaper", order: 25, text: summarizeReaperReport(previous) });
+		// A child session runs this handler too: one pass per child would cost
+		// N passes and each would overwrite the report the parent announced.
+		// The parent's own session start is the pass.
+		if (!process.env.PI_SUBAGENT_DEPTH) {
+			// The reaper (WO-2026-092): every checkout under `~/Developer/wt`. 027's
+			// subtree goes first — its gates are its own — and the general pass takes
+			// its verdicts and the worktree paths its metas named, so the same tree is
+			// never decided twice. The last pass's report is announced now; this one
+			// replaces it and speaks up only when it removed something.
+			const wt = wtRoots();
+			const previous = readReaperReport(wt.root);
+			if (previous) {
+				pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "reaper", order: 25, text: summarizeReaperReport(previous) });
+			}
+			const subagentMetaPaths = new Set<string>();
+			let subagentScopeFailed = false;
+			reapFinishedWorktrees(pi, ctx, { subagentMetaPaths })
+				.catch((e) => {
+					// Its subtree's ownership is unknown now, and a half-read meta set is
+					// not knowledge: the general pass reports that subtree and judges none
+					// of it (WO-2026-092, R10).
+					subagentScopeFailed = true;
+					debugLog(`reap: unhandled: ${e instanceof Error ? e.message : String(e)}`);
+					return [];
+				})
+				.then((subagentResults) =>
+					reapCheckouts({
+						root: wt.root,
+						subagentBase: wt.subagentBase,
+						subagentResults,
+						subagentMetaPaths,
+						subagentScopeFailed,
+						removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
+					}),
+				)
+				.then(({ report }) => {
+					if (report.removed.length === 0) return;
+					const lines = report.removed.map((row) => `${row.path}${row.removed?.orphaned ? " (orphaned)" : ""}`);
+					const text = `[Reaper] removed ${report.removed.length}: ${lines.slice(0, 6).join(", ")}${lines.length > 6 ? `, +${lines.length - 6} more` : ""} — /reaper`;
+					debugLog(text);
+					if (ctx.hasUI) ctx.ui.notify(text, "info");
+				})
+				.catch((e) => {
+					debugLog(`reaper: unhandled: ${e instanceof Error ? e.message : String(e)}`);
+				});
 		}
-		const subagentMetaPaths = new Set<string>();
-		let subagentScopeFailed = false;
-		reapFinishedWorktrees(pi, ctx, { subagentMetaPaths })
-			.catch((e) => {
-				// Its subtree's ownership is unknown now, and a half-read meta set is
-				// not knowledge: the general pass reports that subtree and judges none
-				// of it (WO-2026-092, R10).
-				subagentScopeFailed = true;
-				debugLog(`reap: unhandled: ${e instanceof Error ? e.message : String(e)}`);
-				return [];
-			})
-			.then((subagentResults) =>
-				reapCheckouts({
-					root: wt.root,
-					subagentBase: wt.subagentBase,
-					subagentResults,
-					subagentMetaPaths,
-					subagentScopeFailed,
-					removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
-				}),
-			)
-			.then(({ report }) => {
-				if (report.removed.length === 0) return;
-				const lines = report.removed.map((row) => `${row.path}${row.removed?.orphaned ? " (orphaned)" : ""}`);
-				const text = `[Reaper] removed ${report.removed.length}: ${lines.slice(0, 6).join(", ")}${lines.length > 6 ? `, +${lines.length - 6} more` : ""} — /reaper`;
-				debugLog(text);
-				if (ctx.hasUI) ctx.ui.notify(text, "info");
-			})
-			.catch((e) => {
-				debugLog(`reaper: unhandled: ${e instanceof Error ? e.message : String(e)}`);
-			});
 	});
 
 	pi.on("session_shutdown", () => {

@@ -16,7 +16,7 @@
  */
 
 import { afterAll, afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,6 +26,7 @@ import {
 	lsofProcessCwds,
 	readReaperReport,
 	reapCheckouts,
+	_testSetReaperHome,
 	reportPath,
 	summarizeReport,
 	walkCheckouts,
@@ -33,7 +34,7 @@ import {
 	type ProcessCwd,
 	type ReaperReport,
 } from "../extensions/lib/checkout-reaper.ts";
-import { removeWorktreeTree } from "../extensions/subagent-async/index.ts";
+import subagentFactory, { removeWorktreeTree } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 
 // Real git fixtures on a loaded box: clone, worktree add, push and a walk
@@ -320,6 +321,56 @@ describe("R4 — a merged branch beside one that exists only locally", () => {
 		const row = rowFor(report, clone);
 		expect(verdictOf(row)).toBe("kept:unpushed");
 		expect(row?.unsaved?.unpushedBranches).toEqual(["wip"]);
+		expect(existsSync(clone)).toBe(true);
+	});
+
+	it("keeps a clone left on a detached HEAD whose commit no branch names", async () => {
+		// `--branches` alone starts from `refs/heads/*`, so a clone left on a
+		// detached HEAD would look fully pushed and be deleted with the commit.
+		const f = fixture();
+		const { repo } = makeRepo(f.home, "clone-detached");
+		const clone = join(f.root, "clone-detached");
+		mustGit(f.home, ["clone", "-q", repo, clone]);
+		mustGit(clone, ["config", "user.email", "test@example.com"]);
+		mustGit(clone, ["config", "user.name", "Test"]);
+		mustGit(clone, ["checkout", "-q", "--detach", "main"]);
+		writeFileSync(join(clone, "detached.txt"), "only here\n");
+		mustGit(clone, ["add", "-A"]);
+		mustGit(clone, ["commit", "-q", "-m", "no branch names this"]);
+		backdate(join(clone, ".git"));
+		backdate(clone);
+
+		const { report } = await reap(f);
+		const row = rowFor(report, clone);
+		expect(verdictOf(row)).toBe("kept:unpushed");
+		expect(row?.unsaved?.unpushedCommits).toBe(1);
+		expect(row?.unsaved?.unpushedBranches).toEqual(["HEAD"]);
+		expect(existsSync(clone)).toBe(true);
+	});
+
+	it("keeps a clone whose only ref to a commit is a local tag", async () => {
+		// `--tags` is a decision, not an accident: a tag can be a commit's only
+		// ref, so leaving tags out would delete the commit with the clone.
+		const f = fixture();
+		const { repo } = makeRepo(f.home, "clone-tagged");
+		const clone = join(f.root, "clone-tagged");
+		mustGit(f.home, ["clone", "-q", repo, clone]);
+		mustGit(clone, ["config", "user.email", "test@example.com"]);
+		mustGit(clone, ["config", "user.name", "Test"]);
+		mustGit(clone, ["checkout", "-q", "--detach", "main"]);
+		writeFileSync(join(clone, "tagged.txt"), "only here\n");
+		mustGit(clone, ["add", "-A"]);
+		mustGit(clone, ["commit", "-q", "-m", "released here only"]);
+		const sha = mustGit(clone, ["rev-parse", "HEAD"]).trim();
+		mustGit(clone, ["checkout", "-q", "main"]);
+		mustGit(clone, ["tag", "release-only", sha]);
+		backdate(join(clone, ".git"));
+		backdate(clone);
+
+		const { report } = await reap(f);
+		const row = rowFor(report, clone);
+		expect(verdictOf(row)).toBe("kept:unpushed");
+		expect(row?.unsaved?.unpushedBranches).toEqual(["release-only"]);
 		expect(existsSync(clone)).toBe(true);
 	});
 });
@@ -624,6 +675,157 @@ describe("R13 — an orphaned worktree", () => {
 		const { repo: repo2 } = makeRepo(f.home, "repo2");
 		addWorktree(repo2, surviving, "wt-r13d");
 		expect(walkCheckouts({ root: f.root, subagentBase: f.subagentBase }).find((e) => e.path === surviving)?.orphaned).toBe(false);
+	});
+
+	it("keeps an orphan a process is working in", async () => {
+		// R13 removes debris: a directory someone has a cwd inside is not debris,
+		// so the orphan path still pays the unused probe.
+		const f = fixture();
+		const { repo } = makeRepo(f.home);
+		const orphan = join(f.subagentBase, "wo-landing-repo-999999999999");
+		addWorktree(repo, orphan, "wt-r13e", { push: false });
+		rmSync(repo, { recursive: true, force: true });
+
+		const { report } = await reap(f, {
+			listCwds: async () => ({ cwds: [{ pid: 2718, cwd: join(orphan, "src") }], problem: null }),
+		});
+		const row = rowFor(report, orphan);
+		expect(verdictOf(row)).toBe("kept:in-use");
+		expect(row?.unsaved?.pid).toBe(2718);
+		expect(existsSync(orphan)).toBe(true);
+	});
+});
+
+// ── Gate 4a — the lock ────────────────────────────────────────────────────
+
+describe("gate 4a — a worktree git has locked", () => {
+	it("is kept, and the row names the lock", async () => {
+		const f = fixture();
+		const { repo } = makeRepo(f.home);
+		// Clean, pushed, idle and unused: the lock is the only thing holding it.
+		const tree = join(f.subagentBase, "myrepo-lockedaaaaaa");
+		addWorktree(repo, tree, "wt-locked", { lock: true });
+		backdate(gitDirOf(tree));
+		backdate(tree);
+
+		const { report } = await reap(f);
+		const row = rowFor(report, tree);
+		expect(verdictOf(row)).toBe("kept:locked");
+		expect(row?.detail).toBe("git worktree lock");
+		expect(existsSync(tree)).toBe(true);
+	});
+});
+
+// ── Gate 1b — the stash ───────────────────────────────────────────────────
+
+describe("gate 1b — a stash entry of this checkout's own", () => {
+	it("keeps the branch's stash and leaves a sibling with none removable", async () => {
+		const f = fixture();
+		const { repo } = makeRepo(f.home);
+		const mine = join(f.subagentBase, "myrepo-stashmine000");
+		const sibling = join(f.subagentBase, "myrepo-stashother0");
+		addWorktree(repo, mine, "wt-stash-mine");
+		addWorktree(repo, sibling, "wt-stash-other");
+		writeFileSync(join(mine, "seed.txt"), "the only copy\n");
+		mustGit(mine, ["stash", "push", "-q", "-m", "keep me"]);
+		backdate(gitDirOf(mine));
+		backdate(mine);
+		backdate(gitDirOf(sibling));
+		backdate(sibling);
+
+		const { report } = await reap(f);
+		const kept = rowFor(report, mine);
+		expect(verdictOf(kept)).toBe("kept:stash");
+		expect(kept?.unsaved?.stashes).toBe(1);
+		expect(existsSync(mine)).toBe(true);
+		// The entry names `wt-stash-mine`, so the sibling's own branch holds none:
+		// a repo-wide reading of `refs/stash` would keep every sibling forever.
+		expect(verdictOf(rowFor(report, sibling))).toBe("removed:-");
+		expect(existsSync(sibling)).toBe(false);
+	});
+});
+
+// ── A probe that cannot answer ────────────────────────────────────────────
+
+describe("a probe that cannot answer", () => {
+	it("reports an unmeasurable ignored-byte count in problems and keeps gating", async () => {
+		const f = fixture();
+		const { repo } = makeRepo(f.home);
+		const tree = join(f.subagentBase, "myrepo-dufailure000");
+		addWorktree(repo, tree, "wt-du");
+		mkdirSync(join(tree, "target", "debug"), { recursive: true });
+		writeFileSync(join(tree, "target", "debug", "out"), "x".repeat(4096));
+		writeFileSync(join(tree, "untracked.txt"), "work\n");
+		backdate(gitDirOf(tree));
+
+		const { report } = await reap(f, {
+			run: async () => ({ stdout: "", stderr: "du: cannot read", exitCode: 1 }),
+		});
+		const row = rowFor(report, tree);
+		expect(verdictOf(row)).toBe("kept:dirty");
+		expect(row?.unsaved?.ignoredBytes).toBeUndefined();
+		expect(report.problems.join("\n")).toContain("ignored bytes not measured");
+		expect(existsSync(tree)).toBe(true);
+	});
+});
+
+// ── A symlink under wt/ ───────────────────────────────────────────────────
+
+describe("a symlink under wt/", () => {
+	it("is reported as other, and the tree it names is never traversed", async () => {
+		const f = fixture();
+		const { repo } = makeRepo(f.home);
+		// A live linked worktree outside the walk, and a link to it inside wt/.
+		// Following the link would classify the target as the link's entry, and
+		// 091 would remove the target rather than the link.
+		const target = join(f.home, "repos", "linked-target");
+		addWorktree(repo, target, "wt-target");
+		backdate(gitDirOf(target));
+		backdate(target);
+		const link = join(f.root, "linked-target");
+		symlinkSync(target, link);
+
+		const { report } = await reap(f);
+		expect(verdictOf(rowFor(report, link))).toBe("kept:other");
+		expect(existsSync(link)).toBe(true);
+		expect(existsSync(target)).toBe(true);
+		expect(mustGit(repo, ["worktree", "list", "--porcelain"])).toContain(target);
+	});
+});
+
+// ── /reaper ───────────────────────────────────────────────────────────────
+
+describe("/reaper", () => {
+	it("prints the last pass's report, and says when there is none", async () => {
+		const f = fixture();
+		// The handler reads `wtRoots()`, which reads `homedir()`, and Bun's
+		// `homedir()` is fixed at process start: pin the home with the module's
+		// test seam so the row reads the temp report and never the box's.
+		_testSetReaperHome(f.home);
+		try {
+			const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+			const pi: any = {
+				events: { emit: () => {} },
+				registerTool: () => {},
+				registerCommand: (name: string, def: { handler: (args: string, ctx: any) => Promise<void> }) =>
+					commands.set(name, def.handler),
+				on: () => {},
+				sendUserMessage: () => {},
+			};
+			subagentFactory(pi);
+			const notices: string[] = [];
+			const ui = { notify: (text: string) => notices.push(text), setStatus: () => {}, setWidget: () => {} };
+
+			await commands.get("reaper")!("", { ui });
+			expect(notices.at(-1)).toContain("No reaper report yet");
+
+			await reap(f);
+			await commands.get("reaper")!("", { ui });
+			expect(notices.at(-1)).toContain("nothing held");
+			expect(notices.at(-1)).toContain(".reaper-report.json");
+		} finally {
+			_testSetReaperHome(undefined);
+		}
 	});
 });
 
