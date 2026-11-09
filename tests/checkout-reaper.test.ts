@@ -482,6 +482,23 @@ describe("R10 — a subagent tree 027 still holds", () => {
 		const { report: ungated } = await reap(f);
 		expect(rowFor(ungated, held)?.state).toBe("removed");
 	});
+
+	it("judges no namespace checkout when 027's own reap failed", async () => {
+		// A half-read meta set is not knowledge: the general pass reports the
+		// subtree and decides none of it, even for a tree every gate would remove.
+		const f = fixture();
+		const { repo } = makeRepo(f.home);
+		const tree = join(f.subagentBase, "myrepo-888888888888");
+		addWorktree(repo, tree, "pi-subagent-888888888888");
+		backdate(gitDirOf(tree));
+		backdate(tree);
+
+		const { report } = await reap(f, { subagentScopeFailed: true });
+		const row = rowFor(report, tree);
+		expect(verdictOf(row)).toBe("kept:subagent");
+		expect(row?.detail).toContain("027's reap failed");
+		expect(existsSync(tree)).toBe(true);
+	});
 });
 
 // ── R11 ────────────────────────────────────────────────────────────────────

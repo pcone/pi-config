@@ -1067,8 +1067,13 @@ export default function (pi: ExtensionAPI) {
 			pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "reaper", order: 25, text: summarizeReaperReport(previous) });
 		}
 		const subagentMetaPaths = new Set<string>();
+		let subagentScopeFailed = false;
 		reapFinishedWorktrees(pi, ctx, { subagentMetaPaths })
 			.catch((e) => {
+				// Its subtree's ownership is unknown now, and a half-read meta set is
+				// not knowledge: the general pass reports that subtree and judges none
+				// of it (WO-2026-092, R10).
+				subagentScopeFailed = true;
 				debugLog(`reap: unhandled: ${e instanceof Error ? e.message : String(e)}`);
 				return [];
 			})
@@ -1078,6 +1083,7 @@ export default function (pi: ExtensionAPI) {
 					subagentBase: wt.subagentBase,
 					subagentResults,
 					subagentMetaPaths,
+					subagentScopeFailed,
 					removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
 				}),
 			)

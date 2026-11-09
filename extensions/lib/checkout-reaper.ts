@@ -592,8 +592,8 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 
 	for (const entry of checkouts) {
 		try {
-			if (entry.scope === "subagents" && governed.has(entry.path)) {
-				report.kept.push(subagentRow(entry, opts.subagentResults, report.generatedAt));
+			if (entry.scope === "subagents" && (opts.subagentScopeFailed || governed.has(entry.path))) {
+				report.kept.push(subagentRow(entry, opts.subagentResults, report.generatedAt, opts.subagentScopeFailed === true));
 				continue;
 			}
 			if (overBudget()) {
@@ -669,7 +669,10 @@ async function sizeScratch(
 	remainingMs: number,
 	report: ReaperReport,
 ): Promise<void> {
-	const rows = entries.map((entry) => ({ entry, row: { ...baseRow(entry, report.generatedAt), gate: "scratch" as KeepGate } }));
+	const rows = entries.map((entry) => ({
+		entry,
+		row: { ...baseRow(entry, report.generatedAt), gate: (entry.kind === "other" ? "other" : "scratch") as KeepGate },
+	}));
 	if (rows.length === 0) return;
 	// Only what the pass can still afford: `du` prints a directory's line as it
 	// finishes one, so a kill mid-way leaves the ones already measured, and the
@@ -707,12 +710,15 @@ function subagentRow(
 	entry: CheckoutEntry,
 	results: ReapCheckoutsOptions["subagentResults"],
 	checkedAt: string,
+	scopeFailed: boolean,
 ): ReaperRow {
 	const verdict = results?.find((r) => r.worktreePath === entry.path);
 	const row: ReaperRow = { ...baseRow(entry, checkedAt), gate: "subagent" };
 	row.detail = verdict
 		? `subagent ${verdict.outcome}${verdict.detail ? `: ${verdict.detail}` : ""}`
-		: "subagent tree held by 027's gates";
+		: scopeFailed
+			? "027's reap failed: its subtree is not judged by this pass"
+			: "subagent tree held by 027's gates";
 	return row;
 }
 
@@ -977,7 +983,10 @@ async function unpushed(
 async function ignoredBytesOf(entry: CheckoutEntry, ctx: ReapContext, ignored: readonly string[]): Promise<number | null> {
 	if (ignored.length === 0) return 0;
 	const result = await ctx.run("du", ["-csk", ...ignored], { cwd: entry.path });
-	if (result.exitCode !== 0) return null;
+	if (result.exitCode !== 0) {
+		ctx.report.problems.push(`${entry.path}: ignored bytes not measured: ${result.stderr.trim() || `du exit ${result.exitCode}`}`);
+		return null;
+	}
 	const total = result.stdout
 		.split("\n")
 		.map((line) => line.trim().split(/\s+/))
