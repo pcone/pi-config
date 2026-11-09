@@ -410,7 +410,10 @@ export function formatReport(report: ReaperReport): string {
 	}
 	const active = report.kept.filter((row) => row.gate === "active");
 	if (active.length > 0) {
-		lines.push(`active, not actionable (${active.length}): ${active.map((row) => shortPath(row.path)).join(", ")}`);
+		const shown = active.slice(0, 8).map((row) => shortPath(row.path));
+		lines.push(
+			`active, not actionable (${active.length}): ${shown.join(", ")}${active.length > shown.length ? `, +${active.length - shown.length} more` : ""}`,
+		);
 	}
 	if (report.deferred.length > 0) {
 		lines.push(`deferred past the ${report.budgetMs} ms budget (${report.deferred.length}) — evaluated at a later session start:`);

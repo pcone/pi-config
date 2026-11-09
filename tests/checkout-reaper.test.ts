@@ -376,6 +376,9 @@ describe("R6 — a checkout active inside the window", () => {
 		const { report } = await reap(f);
 		const row = rowFor(report, tree);
 		expect(verdictOf(row)).toBe("kept:active");
+		// The age screen is what stopped it, not the removal-time mtime walk: the
+		// row carries no "a file changed" detail.
+		expect(row?.detail).toBeUndefined();
 		expect(existsSync(tree)).toBe(true);
 		const text = formatReport(report);
 		expect(text).toContain("active, not actionable (1)");
