@@ -95,6 +95,100 @@ function depInfoEnvDepNamesPath(content: string, worktreePath: string): boolean 
 /** The dep-info locations cargo writes for one profile, relative to it. */
 const DEP_INFO_SUBDIRS = ["", "examples", "deps"] as const;
 
+/** One dep-info location of one profile, with the listing already taken. The
+ *  prune and the shared-`.d` check above both walk exactly these; a second copy
+ *  of the enumeration would scan a different set the day a fourth location is
+ *  added. */
+interface DepInfoLocation {
+	profile: string;
+	dir: string;
+	names: string[];
+}
+
+function depInfoLocations(cargoTargetDir: string, onProblem: (detail: string) => void): DepInfoLocation[] {
+	let profiles: string[];
+	try {
+		profiles = readdirSync(cargoTargetDir, { withFileTypes: true })
+			.filter((e) => e.isDirectory())
+			.map((e) => e.name);
+	} catch (e) {
+		onProblem(`${cargoTargetDir} not readable: ${e instanceof Error ? e.message : String(e)}`);
+		return [];
+	}
+	const locations: DepInfoLocation[] = [];
+	for (const profile of profiles) {
+		// Dep-info sits beside the artifacts it describes: a linked bin target at
+		// the profile root, an example under `examples/`, a crate unit under
+		// `deps/`. Which of the three holds an absolutized worktree path depends
+		// on the target kind, so all three are scanned (Q-091-b).
+		for (const sub of DEP_INFO_SUBDIRS) {
+			const dir = sub === "" ? join(cargoTargetDir, profile) : join(cargoTargetDir, profile, sub);
+			try {
+				locations.push({ profile, dir, names: readdirSync(dir) });
+			} catch (e) {
+				// Absent is the expected state for a location this profile never built
+				// (a library-only crate has no `examples/`). Anything else is a location
+				// the scan cannot read: it attributes nothing there, so it is reported.
+				if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+					onProblem(`${dir} not readable: ${e instanceof Error ? e.message : String(e)}`);
+				}
+			}
+		}
+	}
+	return locations;
+}
+
+export interface SharedDepInfo {
+	/** The `.d` file the prune takes. */
+	depInfo: string;
+	/** Other checkouts it also names: the artifacts under that stem are one copy,
+	 *  so the prune takes theirs too. */
+	checkouts: string[];
+}
+
+/**
+ * `.d` files under `cargoTargetDir` that name `worktreePath` **and** another
+ * checkout still on disk.
+ *
+ * Dep-info is keyed by crate unit, not by worktree, so one `.d` can name two
+ * worktrees — measured on this box: `tfd-d-487/release/tfd.d` named one tree in
+ * 255 source paths and another in two. Pruning either tree deletes that `.d`
+ * and the linked binary beside it, so the other tree rebuilds the unit; its own
+ * later removal then finds no `.d` naming it and degrades to the coarse route.
+ * The mechanism permits this (decision 048 §"A `.d` naming two worktrees…");
+ * this function is what lets the caller say so in its report instead of leaving
+ * the rebuild to be discovered.
+ *
+ * Read-only, and cheap enough to run per removal: this box's four shared dirs
+ * hold 42 dep-info files at these locations (~10 ms to read them all).
+ */
+export function sharedDepInfoFiles(
+	cargoTargetDir: string,
+	worktreePath: string,
+	checkouts: readonly string[],
+): SharedDepInfo[] {
+	const others = checkouts.filter((c) => c.length > 0 && c !== worktreePath);
+	if (others.length === 0) return [];
+	const found: SharedDepInfo[] = [];
+	for (const { dir, names } of depInfoLocations(cargoTargetDir, () => {})) {
+		for (const name of names) {
+			// An empty stem matches every dotfile in the directory, and the prune
+			// attributes nothing to one; Cargo writes none.
+			if (!name.endsWith(".d") || name.length === ".d".length) continue;
+			let content: string;
+			try {
+				content = readFileSync(join(dir, name), "utf8");
+			} catch {
+				continue;
+			}
+			if (!depInfoNamesPath(content, worktreePath)) continue;
+			const hit = others.filter((other) => content.includes(other));
+			if (hit.length > 0) found.push({ depInfo: join(dir, name), checkouts: hit });
+		}
+	}
+	return found;
+}
+
 export interface ExactPruneResult {
 	/** `.d` files read. */
 	depInfoScanned: number;
@@ -140,84 +234,57 @@ export function pruneExactArtifacts(cargoTargetDir: string, worktreePath: string
 		}
 	};
 
-	let profiles: string[];
-	try {
-		profiles = readdirSync(cargoTargetDir, { withFileTypes: true })
-			.filter((e) => e.isDirectory())
-			.map((e) => e.name);
-	} catch (e) {
-		result.problems.push(`${cargoTargetDir} not readable: ${e instanceof Error ? e.message : String(e)}`);
-		return result;
-	}
-
-	for (const profile of profiles) {
-		// Dep-info sits beside the artifacts it describes: a linked bin target at
-		// the profile root, an example under `examples/`, a crate unit under
-		// `deps/`. Which of the three holds an absolutized worktree path depends
-		// on the target kind, so all three are scanned (Q-091-b).
-		for (const sub of DEP_INFO_SUBDIRS) {
-			const depInfoDir = sub === "" ? join(cargoTargetDir, profile) : join(cargoTargetDir, profile, sub);
-			let entries: string[];
+	for (const { profile, dir: depInfoDir, names: entries } of depInfoLocations(cargoTargetDir, (detail) =>
+		result.problems.push(detail),
+	)) {
+		const stems = new Set<string>();
+		for (const name of entries) {
+			if (!name.endsWith(".d")) continue;
+			result.depInfoScanned++;
+			let content: string;
 			try {
-				entries = readdirSync(depInfoDir);
+				content = readFileSync(join(depInfoDir, name), "utf8");
 			} catch (e) {
-				// Absent is the expected state for a location this profile never built
-				// (a library-only crate has no `examples/`). Anything else is a location
-				// the scan cannot read: it attributes nothing there, so it is reported.
-				if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-					result.problems.push(`${depInfoDir} not readable: ${e instanceof Error ? e.message : String(e)}`);
-				}
+				result.problems.push(`${join(depInfoDir, name)} not readable: ${e instanceof Error ? e.message : String(e)}`);
 				continue;
 			}
-			const stems = new Set<string>();
-			for (const name of entries) {
-				if (!name.endsWith(".d")) continue;
-				result.depInfoScanned++;
-				let content: string;
-				try {
-					content = readFileSync(join(depInfoDir, name), "utf8");
-				} catch (e) {
-					result.problems.push(`${join(depInfoDir, name)} not readable: ${e instanceof Error ? e.message : String(e)}`);
-					continue;
-				}
-				// A file named exactly `.d` has an empty stem, and an empty stem matches
-				// every dotfile in the directory. It is counted above; nothing is
-				// attributed to it. Cargo writes none.
-				const stem = name.slice(0, -".d".length);
-				if (stem.length === 0) continue;
-				if (depInfoNamesPath(content, worktreePath)) stems.add(stem);
-				else if (depInfoEnvDepNamesPath(content, worktreePath)) result.depInfoEnvDepOnly++;
-			}
-			if (stems.size === 0) continue;
-			result.depInfoMatched += stems.size;
+			// A file named exactly `.d` has an empty stem, and an empty stem matches
+			// every dotfile in the directory. It is counted above; nothing is
+			// attributed to it. Cargo writes none.
+			const stem = name.slice(0, -".d".length);
+			if (stem.length === 0) continue;
+			if (depInfoNamesPath(content, worktreePath)) stems.add(stem);
+			else if (depInfoEnvDepNamesPath(content, worktreePath)) result.depInfoEnvDepOnly++;
+		}
+		if (stems.size === 0) continue;
+		result.depInfoMatched += stems.size;
 
-			for (const stem of stems) {
-				// Every artifact of the unit shares the stem: `lib<stem>.rlib` and
-				// `<stem>.rmeta` for a library target, `<stem>.<hash>.rcgu.o` parts, the
-				// `<stem>` binary for a bin target. Cargo prefixes library artifacts with
-				// `lib`, which the stem (taken from the `.d` name) does not carry.
-				const names = [stem, `lib${stem}`];
-				for (const name of entries) {
-					if (!names.some((n) => name === n || name.startsWith(`${n}.`))) continue;
-					dropPath(join(depInfoDir, name), false);
-				}
-				// `<pkg>-<hash>`: cargo uses the target name (`_`) for dep-info and the
-				// package name (`-`) for fingerprints and build-script output.
-				const cut = stem.lastIndexOf("-");
-				if (cut <= 0) continue;
-				const hash = stem.slice(cut + 1);
-				const pkgNames = new Set([stem.slice(0, cut), stem.slice(0, cut).replace(/_/g, "-")]);
-				for (const pkg of pkgNames) {
-					for (const [dir, isDir] of [[".fingerprint", true], ["build", true]] as const) {
-						const candidate = join(cargoTargetDir, profile, dir, `${pkg}-${hash}`);
-						let st;
-						try {
-							st = lstatSync(candidate);
-						} catch {
-							continue;
-						}
-						if (st.isDirectory()) dropPath(candidate, isDir);
+		for (const stem of stems) {
+			// Every artifact of the unit shares the stem: `lib<stem>.rlib` and
+			// `<stem>.rmeta` for a library target, `<stem>.<hash>.rcgu.o` parts, the
+			// `<stem>` binary for a bin target. Cargo prefixes library artifacts with
+			// `lib`, which the stem (taken from the `.d` name) does not carry.
+			const names = [stem, `lib${stem}`];
+			for (const name of entries) {
+				if (!names.some((n) => name === n || name.startsWith(`${n}.`))) continue;
+				dropPath(join(depInfoDir, name), false);
+			}
+			// `<pkg>-<hash>`: cargo uses the target name (`_`) for dep-info and the
+			// package name (`-`) for fingerprints and build-script output.
+			const cut = stem.lastIndexOf("-");
+			if (cut <= 0) continue;
+			const hash = stem.slice(cut + 1);
+			const pkgNames = new Set([stem.slice(0, cut), stem.slice(0, cut).replace(/_/g, "-")]);
+			for (const pkg of pkgNames) {
+				for (const [dir, isDir] of [[".fingerprint", true], ["build", true]] as const) {
+					const candidate = join(cargoTargetDir, profile, dir, `${pkg}-${hash}`);
+					let st;
+					try {
+						st = lstatSync(candidate);
+					} catch {
+						continue;
 					}
+					if (st.isDirectory()) dropPath(candidate, isDir);
 				}
 			}
 		}
@@ -234,7 +301,10 @@ export type CommandRunner = (
 	opts: { cwd: string; env?: Record<string, string> },
 ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
-const spawnRunner: CommandRunner = (cmd, args, opts) =>
+/** The real spawn behind every `CommandRunner` seam here: one call, one outcome,
+ *  never a throw. Exported because the checkout reaper's `lsof` / `du` probes
+ *  need the same shape. */
+export const spawnRunner: CommandRunner = (cmd, args, opts) =>
 	new Promise((resolve) => {
 		const env = { ...process.env, ...opts.env };
 		const child = spawn(cmd, args, { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
