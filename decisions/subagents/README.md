@@ -54,3 +54,4 @@ date: 2026-07-14
 | 046 | Per-dispatch turn cap (wind-down, 10-turn grace, `turn-cap` kill) + advisory no-progress tripwire; the cap number never reaches the child | done |
 | 047 | Every reasoning seat `:high` (orchestrator drops `:max`; scouts/compaction `:low`; oracle untouched) | done |
 | 048 | Build output dies with its worktree; shared cargo dir bounded at 20 GiB | done |
+| 049 | One reaper for every checkout under `~/Developer/wt` — gates, the kept-report, orphaned trees | done |
