@@ -41,7 +41,6 @@ import {
 } from "./build-output-reaper.ts";
 import { runGit } from "./git-run.ts";
 import { cargoTargetDirFor, cargoTargetRoot, repoNameFromWorktreePath, subagentWorktreeBase } from "./subagent-worktree.ts";
-import { listSubagentMetas } from "./subagent-state.ts";
 
 // ── The recorder's calls, as constants ─────────────────────────────────────
 
@@ -57,8 +56,8 @@ export const REAPER_PASS_BUDGET_MS = 1_800;
 /** Where the pass leaves what it kept. Written even when it kept nothing. */
 export const REAPER_REPORT_FILE = ".reaper-report.json";
 
-/** Files the scratch size walk stats before it stops and reports a floor. */
-const SCRATCH_WALK_CAP = 2_000;
+/** Files one tree walk stats before it stops and reports its numbers as floors. */
+const TREE_WALK_CAP = 2_000;
 
 const MS_PER_DAY = 86_400_000;
 
@@ -81,6 +80,10 @@ export interface CheckoutEntry {
 	parentCwd: string | null;
 	/** `<clone>/.git` or `<clone>/.git/worktrees/<name>`; null for scratch. */
 	gitDir: string | null;
+	/** A linked worktree whose gitdir is **gone**: the repository that owned it
+	 *  was deleted, so no git gate can run in it and `git worktree remove` has no
+	 *  repository to remove it from. */
+	orphaned: boolean;
 	/** Days since the newest write to the checkout's own git metadata, or null
 	 *  when none of it could be read. */
 	ageDays: number | null;
@@ -120,6 +123,8 @@ export function walkCheckouts(opts: WalkOptions): CheckoutEntry[] {
 	for (const [scope, parent] of [["wt", opts.root], ["subagents", opts.subagentBase]] as const) {
 		for (const name of readNames(parent)) {
 			const full = path.join(parent, name);
+			// The namespace directory is a scope, not a scratch entry inside it.
+			if (full === opts.subagentBase) continue;
 			if (seen.has(full)) continue;
 			seen.add(full);
 			entries.push(classify(full, scope, now));
@@ -142,30 +147,36 @@ function readNames(dir: string): string[] {
 }
 
 function classify(full: string, scope: CheckoutScope, now: number): CheckoutEntry {
+	const base = { path: full, scope, parentCwd: null, gitDir: null, orphaned: false };
 	let dotGit: fs.Stats;
 	try {
 		dotGit = fs.lstatSync(path.join(full, ".git"));
 	} catch {
-		return { path: full, kind: "scratch", scope, parentCwd: null, gitDir: null, ageDays: ageOf([full], now) };
+		return { ...base, kind: "scratch", ageDays: ageOf([full], now) };
 	}
 	if (dotGit.isFile()) {
 		const gitDir = readGitDirFile(path.join(full, ".git"));
-		if (!gitDir) return { path: full, kind: "other", scope, parentCwd: null, gitDir: null, ageDays: null };
+		if (!gitDir) return { ...base, kind: "other", ageDays: null };
+		// The owner's R13: a `.git` naming a gitdir that does not exist is an
+		// orphan, whatever the tree around it looks like. A gitdir that *does*
+		// exist is never judged this way, even when git then fails in the tree.
+		const orphaned = !fs.existsSync(gitDir);
 		return {
-			path: full,
+			...base,
 			kind: "worktree",
-			scope,
-			parentCwd: parentRepoOf(gitDir),
+			orphaned,
+			parentCwd: orphaned ? null : parentRepoOf(gitDir),
 			gitDir,
-			ageDays: ageOf(metaPaths(gitDir, "worktree"), now),
+			ageDays: orphaned ? null : ageOf(metaPaths(gitDir, "worktree"), now),
 		};
 	}
 	if (dotGit.isDirectory()) {
-		return { path: full, kind: "clone", scope, parentCwd: null, gitDir: path.join(full, ".git"), ageDays: ageOf(metaPaths(path.join(full, ".git"), "clone"), now) };
+		const gitDir = path.join(full, ".git");
+		return { ...base, kind: "clone", gitDir, ageDays: ageOf(metaPaths(gitDir, "clone"), now) };
 	}
 	// A symlinked `.git`, a socket, a directory whose `.git` is something else:
 	// not a shape this module judges, so not a shape it removes.
-	return { path: full, kind: "other", scope, parentCwd: null, gitDir: null, ageDays: null };
+	return { ...base, kind: "other", ageDays: null };
 }
 
 /** `gitdir: <path>` from a linked worktree's `.git` file. A relative gitdir is
@@ -267,6 +278,8 @@ export interface UnsavedFacts {
 export interface RemovedFacts {
 	/** The branch deleted with it, when one was. */
 	branchDeleted?: string | null;
+	/** R13: an orphaned worktree, deleted with no repository to remove it from. */
+	orphaned?: { gitdir: string };
 	/** 091's build-output line: `target/` and the clone's shared cargo dir. */
 	buildOutput?: string;
 	buildOutputReport?: BuildOutputReport;
@@ -376,6 +389,7 @@ export function formatReport(report: ReaperReport): string {
 		lines.push(`removed (${report.removed.length}):`);
 		for (const row of report.removed) {
 			const extras = [
+				row.removed?.orphaned ? "orphaned: no repository left to remove it from" : null,
 				row.removed?.branchDeleted ? `branch ${row.removed.branchDeleted}` : null,
 				row.removed?.buildOutput ?? null,
 				...(row.removed?.sharedWith ?? []).map(
@@ -493,9 +507,11 @@ export interface ReapCheckoutsOptions {
 	/** 027's verdicts for the subagent namespace, so its gates are not re-run
 	 *  here (a `ReapResult`, structurally). */
 	subagentResults?: ReadonlyArray<{ worktreePath: string; outcome: string; detail?: string }>;
-	/** The meta directory 027 reads. A namespace checkout a meta names is 027's
-	 *  to decide, whatever this pass makes of its age. */
-	metaDir?: string;
+	/** Every worktree path a subagent meta names, as 027's reap read them. A
+	 *  namespace checkout one of them names is 027's to decide, whatever this
+	 *  pass makes of its age. The set is handed over rather than re-read: the
+	 *  same scan costs ~0.4 s for this box's thousand metas. */
+	subagentMetaPaths?: Iterable<string>;
 	/** Injection seams: the real ones are `runGit`, lsof and `du`. */
 	git?: typeof runGit;
 	run?: CommandRunner;
@@ -511,10 +527,14 @@ export interface ReapCheckoutsResult {
 /**
  * One pass: walk, gate, remove what nothing else holds, report the rest.
  *
- * The gates run in the order that is cheapest to prove, so a checkout that is
- * young, locked or in use costs no spawn: scratch and namespace ownership,
- * the `locked` marker, age, the `lsof` cwd, then one `git status` — which four
- * of the remaining gates read from.
+ * The gates run cheapest first, so a checkout that is young or locked costs no
+ * spawn, and `git status` retires four of them at once. Two expensive probes are
+ * deferred until something needs them, because on a box where nothing is
+ * removable they must cost nothing:
+ *
+ * - the `lsof` cwd pass runs when the first candidate reaches the unused gate;
+ * - the scratch sizes are report-only, so they are measured after every checkout
+ *   and only when the pass still has most of its budget left.
  */
 export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapCheckoutsResult> {
 	const startedAt = Date.now();
@@ -529,13 +549,20 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 		deferred: [],
 		problems: [],
 	};
+	const run = opts.run ?? spawnRunner;
+	let probe: { cwds: ProcessCwd[]; problem: string | null } | null = null;
 	const ctx: ReapContext = {
 		home: opts.home ?? homedir(),
 		now,
 		git: opts.git ?? runGit,
-		run: opts.run ?? spawnRunner,
-		cwds: [],
-		cwdProbeFailed: false,
+		run,
+		cwds: async () => {
+			if (!probe) {
+				probe = opts.listCwds ? await opts.listCwds() : await lsofProcessCwds(run);
+				if (probe.problem) report.problems.push(probe.problem);
+			}
+			return probe;
+		},
 		checkedAt: report.generatedAt,
 		entries: [],
 		dryRun: opts.dryRun === true,
@@ -544,27 +571,24 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 
 	const entries = walkCheckouts({ root: opts.root, subagentBase: opts.subagentBase, now });
 	ctx.entries = entries;
-	const cwdProbe = opts.listCwds ? await opts.listCwds() : await lsofProcessCwds(ctx.run);
-	ctx.cwds = cwdProbe.cwds;
-	ctx.cwdProbeFailed = cwdProbe.problem !== null;
-	if (cwdProbe.problem) report.problems.push(cwdProbe.problem);
+	const governed = namespacePaths(opts);
+	const elapsed = (): number => Date.now() - startedAt;
+	const overBudget = (): boolean => !ctx.dryRun && elapsed() > budgetMs;
 
-	const governed = namespacePaths(opts, report);
-	const overBudget = (): boolean => !ctx.dryRun && Date.now() - startedAt > budgetMs;
+	// Orphans first (certainly dead and cheapest to decide), then oldest first: a
+	// pass that runs out of budget spends it on the checkouts most likely to be
+	// dead, and the order is stable from pass to pass. Scratch is last: it is
+	// report-only, so it must never take the budget a gate needed.
+	const checkouts = entries.filter((e) => e.kind === "worktree" || e.kind === "clone");
+	const others = entries.filter((e) => e.kind === "scratch" || e.kind === "other");
+	checkouts.sort((a, b) => {
+		const rank = (e: CheckoutEntry): number => (e.orphaned ? Number.MAX_SAFE_INTEGER : (e.ageDays ?? -1));
+		return rank(b) - rank(a) || a.path.localeCompare(b.path);
+	});
+	others.sort((a, b) => (b.ageDays ?? -1) - (a.ageDays ?? -1) || a.path.localeCompare(b.path));
 
-	// Oldest first: a pass that runs out of budget spends it on the checkouts
-	// most likely to be dead, and the order is stable from pass to pass.
-	const ordered = [...entries].sort((a, b) => (b.ageDays ?? -1) - (a.ageDays ?? -1) || a.path.localeCompare(b.path));
-	for (const entry of ordered) {
+	for (const entry of checkouts) {
 		try {
-			if (entry.kind === "scratch" || entry.kind === "other") {
-				if (overBudget()) {
-					report.deferred.push(deferredRow(entry, report.generatedAt, "size not measured"));
-					continue;
-				}
-				report.kept.push(scratchRow(entry, report.generatedAt));
-				continue;
-			}
 			if (entry.scope === "subagents" && governed.has(entry.path)) {
 				report.kept.push(subagentRow(entry, opts.subagentResults, report.generatedAt));
 				continue;
@@ -573,16 +597,18 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 				report.deferred.push(deferredRow(entry, report.generatedAt, "no gate ran"));
 				continue;
 			}
-			const outcome = await gateAndReap(entry, ctx);
-			if (outcome.state === "removed") report.removed.push(outcome);
-			else report.kept.push(outcome);
+			const row = await gateAndReap(entry, ctx);
+			if (row.state === "removed") report.removed.push(row);
+			else report.kept.push(row);
 		} catch (e) {
 			report.problems.push(`${entry.path}: ${e instanceof Error ? e.message : String(e)}`);
 			report.kept.push({ ...baseRow(entry, report.generatedAt), gate: "git-error", detail: "gate threw; see problems" });
 		}
 	}
 
-	report.elapsedMs = Date.now() - startedAt;
+	await sizeScratch(others, ctx, ctx.dryRun ? Number.POSITIVE_INFINITY : budgetMs - elapsed(), report);
+
+	report.elapsedMs = elapsed();
 	const target = reportPath(opts.root);
 	try {
 		writeReaperReport(opts.root, report);
@@ -597,28 +623,24 @@ interface ReapContext {
 	now: number;
 	git: typeof runGit;
 	run: CommandRunner;
-	cwds: readonly ProcessCwd[];
-	cwdProbeFailed: boolean;
+	/** The one `lsof` pass, run on first need and cached: a pass that removes
+	 *  nothing must not pay for it. */
+	cwds: () => Promise<{ cwds: ProcessCwd[]; problem: string | null }>;
 	checkedAt: string;
 	entries: readonly CheckoutEntry[];
 	dryRun: boolean;
 	removeWorktree: RemoveWorktreeFn;
 }
 
-/** Every worktree path a subagent meta names: 027's subtree, whose gates this
- *  pass does not second-guess. */
-function namespacePaths(opts: ReapCheckoutsOptions, report: ReaperReport): Set<string> {
+/** Every worktree path 027's subtree covers: the paths its metas name, and the
+ *  verdicts it reached. Its gates are not re-run here. */
+function namespacePaths(opts: ReapCheckoutsOptions): Set<string> {
 	const paths = new Set<string>();
 	for (const result of opts.subagentResults ?? []) {
 		if (typeof result.worktreePath === "string" && result.worktreePath.length > 0) paths.add(result.worktreePath);
 	}
-	if (!opts.metaDir) return paths;
-	try {
-		for (const { meta } of listSubagentMetas(opts.metaDir)) {
-			if (typeof meta.worktreePath === "string" && meta.worktreePath.length > 0) paths.add(meta.worktreePath);
-		}
-	} catch (e) {
-		report.problems.push(`subagent metas not read: ${e instanceof Error ? e.message : String(e)}`);
+	for (const path of opts.subagentMetaPaths ?? []) {
+		if (typeof path === "string" && path.length > 0) paths.add(path);
 	}
 	return paths;
 }
@@ -634,14 +656,45 @@ function baseRow(entry: CheckoutEntry, checkedAt: string): ReaperRow {
 // ── Scratch, and the subagent namespace ────────────────────────────────────
 
 /** A non-git directory under `wt/`: reported with its age and size, never
- *  deleted (owner ask 3). The size is a capped walk — a scratch tree of
- *  hundreds of thousands of files is named by its floor rather than sized at
- *  the expense of the whole pass. */
-function scratchRow(entry: CheckoutEntry, checkedAt: string): ReaperRow {
-	const sized = measureTree(entry.path, SCRATCH_WALK_CAP);
-	const row: ReaperRow = { ...baseRow(entry, checkedAt), gate: "scratch", bytes: sized.bytes };
-	if (sized.truncated) row.bytesLowerBound = true;
-	return row;
+ *  deleted (owner ask 3). Sizes are measured by one batched `du` for the whole
+ *  set, and only when the pass still has most of its budget — roughly 1.2 s for
+ *  this box's 40 dirs/t 1.44 GiB, which is why it never runs before a gate has
+ *  had its chance. Rows whose size was not measured say so. */
+async function sizeScratch(
+	entries: readonly CheckoutEntry[],
+	ctx: ReapContext,
+	remainingMs: number,
+	report: ReaperReport,
+): Promise<void> {
+	const rows = entries.map((entry) => ({ entry, row: { ...baseRow(entry, report.generatedAt), gate: "scratch" as KeepGate } }));
+	if (rows.length === 0) return;
+	// Only what the pass can still afford: `du` prints a directory's line as it
+	// finishes one, so a kill mid-way leaves the ones already measured, and the
+	// rest say so rather than reporting zero.
+	const sizes = await batchSizes(ctx.run, entries.map((e) => e.path), Math.min(remainingMs, 4_000));
+	for (const { entry, row } of rows) {
+		const bytes = sizes.get(entry.path);
+		if (bytes !== undefined) row.bytes = bytes;
+		else row.detail = "size not measured: the pass had no time left for it";
+		report.kept.push(row);
+	}
+}
+
+/** One `du -sk` for every path at once: `du` counts a shared extent once, and a
+ *  batched pass costs one walk instead of one spawn per directory. A path it did
+ *  not reach — killed at the bound, or unreadable — is absent from the answer
+ *  rather than reported as zero. */
+async function batchSizes(run: CommandRunner, paths: readonly string[], timeoutMs: number): Promise<Map<string, number>> {
+	const sizes = new Map<string, number>();
+	if (paths.length === 0 || timeoutMs <= 0) return sizes;
+	const result = await run("du", ["-sk", ...paths], { cwd: path.dirname(paths[0]), timeoutMs });
+	for (const line of result.stdout.split("\n")) {
+		// macOS separates with a tab, GNU du with spaces.
+		const match = /^(\d+)\s+(.+)$/.exec(line.trim());
+		if (!match) continue;
+		sizes.set(path.resolve(path.dirname(paths[0]), match[2].trim()), Number.parseInt(match[1], 10) * 1024);
+	}
+	return sizes;
 }
 
 /** The subagent namespace is 027's: report its verdict and leave the gates
@@ -665,6 +718,11 @@ function subagentRow(
 async function gateAndReap(entry: CheckoutEntry, ctx: ReapContext): Promise<ReaperRow> {
 	const keep = (gate: KeepGate, extra?: Partial<ReaperRow>): ReaperRow => ({ ...baseRow(entry, ctx.checkedAt), gate, ...extra });
 
+	// R13 — a `.git` file whose gitdir is gone. There is nowhere to run a gate
+	// (git fails in such a tree) and nowhere to remove a worktree from, so it is
+	// decided here, before the gates that need a repository.
+	if (entry.orphaned) return removeOrphaned(entry, ctx, keep);
+
 	// gate 4a — git's own "do not remove me".
 	if (entry.kind === "worktree" && entry.gitDir && fs.existsSync(path.join(entry.gitDir, "locked"))) {
 		return keep("locked", { detail: "git worktree lock" });
@@ -673,15 +731,11 @@ async function gateAndReap(entry: CheckoutEntry, ctx: ReapContext): Promise<Reap
 	if (entry.ageDays === null) return keep("age-unknown", { detail: "no readable git metadata" });
 	if (entry.ageDays < IDLE_DAYS) return keep("active");
 
-	// gate 4b — unused. Without the probe there is no evidence either way, and
-	// "probably fine" is a keep.
-	if (ctx.cwdProbeFailed) return keep("no-cwd-evidence", { detail: "lsof unavailable: not removing" });
-	const busy = processInside(ctx.cwds, entry.path);
-	if (busy) return keep("in-use", { unsaved: { pid: busy.pid, processCwd: busy.cwd } });
-
 	// gate 1 (+ 3's bytes) — one `git status` answers the working tree, the
 	// branch and the ignored paths.
-	const status = parseStatus(await ctx.git(entry.path, ["--no-optional-locks", "status", "--porcelain", "--branch", "--ignored=matching", "-uall"]));
+	const status = parseStatus(
+		await ctx.git(entry.path, ["--no-optional-locks", "status", "--porcelain", "--branch", "--ignored=matching", "-uall"]),
+	);
 	if (!status.ok) return keep("git-error", { detail: status.detail });
 	const unsaved: UnsavedFacts = { branch: status.branch, dirtyFiles: status.dirtyFiles };
 	const ignoredBytes = await ignoredBytesOf(entry, ctx, status.ignoredPaths);
@@ -707,6 +761,12 @@ async function gateAndReap(entry: CheckoutEntry, ctx: ReapContext): Promise<Reap
 		});
 	}
 
+	// gate 4b — unused, and the last expensive probe before a removal: a pass
+	// that removes nothing never pays for the `lsof` sweep. Without the probe
+	// there is no evidence either way, and "probably fine" is a keep.
+	const busy = await unusedCheck(entry, ctx);
+	if (busy) return keep(busy.gate, { unsaved: busy.unsaved, detail: busy.detail });
+
 	// Every gate holds. R12's scan runs before the removal deletes its evidence.
 	const sharedWith = sharedWithLive(entry, ctx);
 	const row: ReaperRow = { ...baseRow(entry, ctx.checkedAt), unsaved, removed: { sharedWith } };
@@ -714,8 +774,52 @@ async function gateAndReap(entry: CheckoutEntry, ctx: ReapContext): Promise<Reap
 	if (ctx.dryRun) return { ...row, gate: "dry-run", detail: "every gate holds: dry run, nothing removed" };
 
 	const removal = await removeCheckout(entry, ctx, status, sharedWith);
-	if (!removal.ok) return keep(removal.gate, { unsaved, detail: removal.detail });
+	if (!removal.ok) return keep(removal.gate ?? "git-error", { unsaved, detail: removal.detail });
 	return { ...row, state: "removed", gate: null, removed: { ...removal.facts, ...(sharedWith.length > 0 ? { sharedWith } : {}) } };
+}
+
+/** Gate 4b: the one `lsof` sweep, resolved on first need. The returned row is
+ *  set when the checkout cannot be shown unused, and names why. */
+async function unusedCheck(entry: CheckoutEntry, ctx: ReapContext): Promise<ReaperRow | null> {
+	const probe = await ctx.cwds();
+	if (probe.problem !== null) return { ...baseRow(entry, ctx.checkedAt), gate: "no-cwd-evidence", detail: "lsof unavailable: not removing" };
+	const busy = processInside(probe.cwds, entry.path);
+	if (!busy) return null;
+	return { ...baseRow(entry, ctx.checkedAt), gate: "in-use", unsaved: { pid: busy.pid, processCwd: busy.cwd } };
+}
+
+/**
+ * R13 — an orphaned worktree: `.git` is a file, and the gitdir it names does
+ * not exist because the repository that owned the checkout was deleted.
+ *
+ * This is the one removal that is not `removeWorktreeTree`, and it is the only
+ * one that can be: there is no repository to run `git worktree remove` in, no
+ * object store for a branch to live in, and no git gate to evaluate. The owner
+ * ruled it (2026-11-09, WO-2026-092 R13) — the directory goes, and the report
+ * says plainly that nothing was preserved because nothing could be. A gitdir
+ * that *does* exist means the tree is never treated this way, even when git
+ * then fails inside it.
+ */
+async function removeOrphaned(
+	entry: CheckoutEntry,
+	ctx: ReapContext,
+	keep: (gate: KeepGate, extra?: Partial<ReaperRow>) => ReaperRow,
+): Promise<ReaperRow> {
+	const sized = measureTree(entry.path, TREE_WALK_CAP);
+	const built: ReaperRow = { ...baseRow(entry, ctx.checkedAt), bytes: sized.bytes };
+	if (sized.truncated) built.bytesLowerBound = true;
+	if (sized.newestMtimeMs > 0) built.ageDays = (ctx.now - sized.newestMtimeMs) / MS_PER_DAY;
+	// Unused is still checked: a tree a process is working in is not debris.
+	const busy = await unusedCheck(entry, ctx);
+	if (busy) return { ...built, gate: busy.gate, unsaved: busy.unsaved, detail: busy.detail };
+	const detail = `orphaned worktree: gitdir ${entry.gitDir} does not exist, so no repository could remove it and nothing in it can be preserved`;
+	if (ctx.dryRun) return { ...built, gate: "dry-run", detail: `${detail} — dry run, nothing removed` };
+	try {
+		fs.rmSync(entry.path, { recursive: true, force: true });
+	} catch (e) {
+		return { ...built, gate: "git-error", detail: `${detail}; rm -rf failed: ${e instanceof Error ? e.message : String(e)}` };
+	}
+	return { ...built, state: "removed", gate: null, removed: { orphaned: { gitdir: entry.gitDir ?? "" } }, detail };
 }
 
 // ── Gate 1: `git status`, parsed once for four gates ───────────────────────
@@ -915,9 +1019,10 @@ export function treeNewestWithin(root: string, cutoff: number, ignored: readonly
 	return null;
 }
 
-function measureTree(dir: string, cap: number): { bytes: number; truncated: boolean } {
+function measureTree(dir: string, cap: number): { bytes: number; truncated: boolean; newestMtimeMs: number } {
 	let bytes = 0;
 	let seen = 0;
+	let newestMtimeMs = 0;
 	const walk = (d: string): boolean => {
 		let ents: fs.Dirent[];
 		try {
@@ -935,6 +1040,7 @@ function measureTree(dir: string, cap: number): { bytes: number; truncated: bool
 				continue;
 			}
 			seen++;
+			if (st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs;
 			if (st.isDirectory()) {
 				if (!walk(full)) return false;
 			} else {
@@ -944,7 +1050,7 @@ function measureTree(dir: string, cap: number): { bytes: number; truncated: bool
 		return true;
 	};
 	const complete = walk(dir);
-	return { bytes, truncated: !complete };
+	return { bytes, truncated: !complete, newestMtimeMs };
 }
 
 // ── R12: a `.d` that names two checkouts ───────────────────────────────────

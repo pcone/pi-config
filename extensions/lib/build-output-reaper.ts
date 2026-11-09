@@ -298,7 +298,13 @@ export function pruneExactArtifacts(cargoTargetDir: string, worktreePath: string
 export type CommandRunner = (
 	cmd: string,
 	args: string[],
-	opts: { cwd: string; env?: Record<string, string> },
+	opts: {
+		cwd: string;
+		env?: Record<string, string>;
+		/** Kill the child after this long and return what it printed. A measure
+		 *  that prints per item (a batched `du`) keeps the items it finished. */
+		timeoutMs?: number;
+	},
 ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
 /** The real spawn behind every `CommandRunner` seam here: one call, one outcome,
@@ -310,10 +316,20 @@ export const spawnRunner: CommandRunner = (cmd, args, opts) =>
 		const child = spawn(cmd, args, { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
+		const timer =
+			opts.timeoutMs !== undefined && opts.timeoutMs > 0
+				? setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs)
+				: null;
 		child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
 		child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-		child.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? 1 }));
-		child.on("error", (e: Error) => resolve({ stdout, stderr: stderr || e.message, exitCode: 1 }));
+		child.on("close", (code) => {
+			if (timer) clearTimeout(timer);
+			resolve({ stdout, stderr, exitCode: code ?? 1 });
+		});
+		child.on("error", (e: Error) => {
+			if (timer) clearTimeout(timer);
+			resolve({ stdout, stderr: stderr || e.message, exitCode: 1 });
+		});
 	});
 
 /** `[workspace] members = [...]` entries of a Cargo.toml, or null when the

@@ -363,6 +363,10 @@ export interface RecoveryScanDeps {
 	run?: CommandRunner;
 	/** Override for the bound's directory-size measure (tests). */
 	sizeOf?: (dir: string) => number | Promise<number>;
+	/** Filled with every worktree path a meta names. The general reaper takes
+	 *  this set instead of re-reading the thousand metas (WO-2026-092): a
+	 *  namespace checkout one of them names is 027's to decide. */
+	subagentMetaPaths?: Set<string>;
 }
 
 /**
@@ -618,6 +622,7 @@ export async function reapFinishedWorktrees(
 		const dir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		for (const { sid, meta } of listSubagentMetas(dir)) {
 			const worktreePath = typeof meta.worktreePath === "string" ? meta.worktreePath : null;
+			if (worktreePath && deps.subagentMetaPaths) deps.subagentMetaPaths.add(worktreePath);
 			const parentCwd = typeof meta.parentCwd === "string" ? meta.parentCwd : "";
 			const isolationBranch = typeof meta.isolationBranch === "string" ? meta.isolationBranch : null;
 			// A namespace path the disk no longer has is the bound's dead set (M3).
