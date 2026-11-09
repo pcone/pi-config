@@ -168,6 +168,7 @@ function classify(full: string, scope: CheckoutScope, now: number): CheckoutEntr
 	try {
 		link = fs.lstatSync(full);
 	} catch {
+		// Gone between the readdir and the stat: nothing to judge, nothing to keep.
 		return { ...base, kind: "other", ageDays: null };
 	}
 	if (link.isSymbolicLink()) return { ...base, kind: "other", ageDays: null };
