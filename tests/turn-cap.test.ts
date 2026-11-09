@@ -61,10 +61,15 @@ import subagentFactory, {
 } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { removeSpawnArtifacts, waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
+import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
 
 // The harness injects PI_SUBAGENT_* into every subagent; a row that spawns a
 // real child must not inherit a parent's allowlist or depth.
 const restoreEnv = scrubSubagentEnv();
+
+// E3b spawns with isolation out of a temp repo, so its worktree must not land
+// in the real ~/Developer/wt/subagents (tests/helpers/subagent-wt-root.ts).
+const wtRoot = isolateSubagentWorktrees("pi-turn-cap-wt-");
 
 // `getPiInvocation` re-invokes `process.argv[1]` — pi's entry when the extension
 // runs inside pi, this test file under `bun test`. The E rows need a child that
@@ -101,6 +106,7 @@ beforeAll(() => {
 afterAll(() => {
 	if (argv1Before !== undefined) process.argv[1] = argv1Before;
 	if (shimDir) rmSync(shimDir, { recursive: true, force: true });
+	wtRoot.dispose();
 	restoreEnv();
 });
 

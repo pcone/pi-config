@@ -20,7 +20,7 @@ import {
 	describeBuildOutput,
 	disposeWorktreeBuildOutput,
 } from "../lib/build-output-reaper.ts";
-import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
+import { cargoTargetDirFor, subagentWorktreePath, UnusableWorktreeRootError } from "../lib/subagent-worktree.ts";
 import { PI_ASYNC_DEBUG, debugLog, git, type RunningSubagent } from "./index.ts";
 
 // ── Worktree isolation ────────────────────────────────────────────────────
@@ -145,7 +145,11 @@ export async function createWorktree(
 			cargoTargetDir: cargoTargetDirFor(repoName),
 			...(carried !== undefined ? { carried } : {}),
 		};
-	} catch {
+	} catch (e) {
+		// A bad PI_SUBAGENT_WT_ROOT is a configuration error, not a failed
+		// creation. `null` says "not a git repo / worktree add failed"; folding
+		// the override error into it would hide which path was wrong.
+		if (e instanceof UnusableWorktreeRootError) throw e;
 		return null;
 	}
 }

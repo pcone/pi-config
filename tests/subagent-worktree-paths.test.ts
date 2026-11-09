@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { cargoTargetDirFor, subagentWorktreeBase, subagentWorktreePath } from "../extensions/lib/subagent-worktree.ts";
 import { buildSubagentEnv } from "../extensions/subagent-async/index.ts";
 import { isBlocked, makeGuardContext } from "../extensions/worktree-guard.ts";
+import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
 
 const HOME = "/Users/probe";
 
@@ -85,7 +86,10 @@ describe("guard discriminator", () => {
 
 /** End-to-end on the real function, not a mirror: a temp repo in, a worktree
  *  at the new location out. The branch name and the returned target dir are
- *  what the spawn site consumes. */
+ *  what the spawn site consumes.
+ *
+ *  `PI_SUBAGENT_WT_ROOT` is set for this row only: the rows above assert the
+ *  derivation from home, and the guard resolves its prefix at module load. */
 describe("createWorktree", () => {
 	test("creates the tree under the subagents namespace and reports the shared target dir", async () => {
 		const { createWorktree } = await import("../extensions/subagent-async/index.ts");
@@ -104,20 +108,23 @@ describe("createWorktree", () => {
 		git("commit", "-qm", "probe");
 
 		const sessionId = "subagent-0b5f1a2c-1111-2222-3333-abcdefabcdef";
-		const wt = await createWorktree(repo, sessionId);
+		const wtRoot = isolateSubagentWorktrees("pi-wt-path-");
 		try {
+			const wt = await createWorktree(repo, sessionId);
 			expect(wt).not.toBeNull();
+			expect(wt!.worktreePath).toBe(join(wtRoot.root, `${basename(repo)}-${sessionId.slice(-12)}`));
 			expect(wt!.worktreePath).toBe(subagentWorktreePath(basename(repo), sessionId.slice(-12)));
 			expect(existsSync(join(wt!.worktreePath, "file.txt"))).toBe(true);
 			expect(git("worktree", "list").toString()).toContain(wt!.worktreePath);
 			expect(git("-C", wt!.worktreePath, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe(`pi-subagent-${sessionId.slice(-12)}`);
 			expect(wt!.cargoTargetDir).toBe(cargoTargetDirFor(basename(repo)));
-		} finally {
 			git("worktree", "unlock", wt!.worktreePath);
 			git("worktree", "remove", "--force", wt!.worktreePath);
 			git("branch", "-D", wt!.branchName);
 			git("worktree", "prune");
+		} finally {
 			rmSync(repo, { recursive: true, force: true });
+			wtRoot.dispose();
 		}
 	});
 });

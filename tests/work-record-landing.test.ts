@@ -25,7 +25,13 @@ import * as path from "node:path";
 import subagentFactory, { _testSetLiveSessionCtx, metaPath, resolveRunningSession } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
+import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
 import { WO_RECORD_STUB } from "./helpers/wo-record-stub.ts";
+
+// R1 spawns isolated out of a temp `wo-landing-repo-*`; its worktree belongs
+// beside the temp repo, not in the real ~/Developer/wt/subagents, where it
+// outlives the repo (tests/helpers/subagent-wt-root.ts).
+const wtRoot = isolateSubagentWorktrees("pi-wo-landing-wt-");
 
 const WO_FILE = "work-orders/WO-2026-001-demo.md";
 const WO_ID = "WO-2026-001";
@@ -140,6 +146,10 @@ afterEach(async () => {
 		} catch { /* repo already gone */ }
 		fs.rmSync(repo, { recursive: true, force: true });
 	}
+});
+
+afterAll(() => {
+	wtRoot.dispose();
 });
 
 const GIT_ENV = () => childEnv({

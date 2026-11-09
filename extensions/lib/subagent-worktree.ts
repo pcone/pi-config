@@ -10,7 +10,7 @@
  * Decision: decisions/subagents/0NN-worktree-location.md.
  */
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /**
  * Human worktree root. Subagent trees get their own namespace inside it so
@@ -21,9 +21,44 @@ import { join } from "node:path";
  */
 export const SUBAGENT_WORKTREE_NAMESPACE = "Developer/wt/subagents";
 
-/** `~/Developer/wt/subagents`, the parent of every subagent worktree. */
-export function subagentWorktreeBase(home: string = homedir()): string {
-	return join(home, SUBAGENT_WORKTREE_NAMESPACE);
+/**
+ * Process-wide override for the worktree base. A subagent dispatch resolves its
+ * tree from inside the `subagent` tool, so a call argument cannot reach it — a
+ * test that spawns a worktree out of a temp repo redirects the base with this
+ * variable instead, and never touches the real `~/Developer/wt/subagents`.
+ */
+export const PI_SUBAGENT_WT_ROOT_ENV = "PI_SUBAGENT_WT_ROOT";
+
+/**
+ * `PI_SUBAGENT_WT_ROOT` is set but cannot name a base. Thrown, never absorbed:
+ * the override replaces the real path or fails the call, it never falls back to
+ * `~/Developer/wt/subagents` — a silent fallback is what puts a test's tree in
+ * a human's directory.
+ */
+export class UnusableWorktreeRootError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "UnusableWorktreeRootError";
+	}
+}
+
+/**
+ * `~/Developer/wt/subagents`, the parent of every subagent worktree, or
+ * `$PI_SUBAGENT_WT_ROOT` when that is set.
+ *
+ * An explicit `home` wins: it states where to derive from, so the derivation
+ * tests keep their meaning while the override is on.
+ */
+export function subagentWorktreeBase(home?: string): string {
+	if (home !== undefined) return join(home, SUBAGENT_WORKTREE_NAMESPACE);
+	const override = process.env[PI_SUBAGENT_WT_ROOT_ENV];
+	if (override === undefined) return join(homedir(), SUBAGENT_WORKTREE_NAMESPACE);
+	if (override.length === 0 || override.includes("\0") || !isAbsolute(override)) {
+		throw new UnusableWorktreeRootError(
+			`${PI_SUBAGENT_WT_ROOT_ENV} must be an absolute path, got ${JSON.stringify(override)}`,
+		);
+	}
+	return override;
 }
 
 /**
@@ -31,7 +66,7 @@ export function subagentWorktreeBase(home: string = homedir()): string {
  * is the session id tail, so the tree is identifiable from `git worktree
  * list` and by a human reaping a stale one.
  */
-export function subagentWorktreePath(repoName: string, suffix: string, home: string = homedir()): string {
+export function subagentWorktreePath(repoName: string, suffix: string, home?: string): string {
 	return join(subagentWorktreeBase(home), `${repoName}-${suffix}`);
 }
 
@@ -67,7 +102,7 @@ const WORKTREE_SUFFIX_LEN = 13;
  * pre-namespace path (`/var/folders/.../pi-subagent-wt-<suffix>`) is not a
  * subagent worktree this harness owns and answers null.
  */
-export function repoNameFromWorktreePath(worktreePath: string, home: string = homedir()): string | null {
+export function repoNameFromWorktreePath(worktreePath: string, home?: string): string | null {
 	const base = subagentWorktreeBase(home);
 	if (!worktreePath.startsWith(base + "/")) return null;
 	const name = worktreePath.slice(base.length + 1);

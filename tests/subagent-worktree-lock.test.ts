@@ -30,6 +30,12 @@ import subagentFactory, {
 } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
+import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
+
+// The rows spawn isolated out of a temp `pi-lock-repo-*`; without this the tree
+// is created in the real ~/Developer/wt/subagents and survives the repo
+// (tests/helpers/subagent-wt-root.ts).
+const wtRoot = isolateSubagentWorktrees("pi-lock-wt-");
 
 // ── Real git helpers ───────────────────────────────────────────────────────
 
@@ -137,6 +143,7 @@ afterAll(() => {
 	if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = agentDirBefore;
 	rmSync(fixtureRoot, { recursive: true, force: true });
+	wtRoot.dispose();
 });
 
 async function spawnIsolated(cwd: string, opts: { steers?: string[] } = {}) {
