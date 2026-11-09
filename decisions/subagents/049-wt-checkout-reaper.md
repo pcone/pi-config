@@ -18,7 +18,7 @@ removal drops).
   its verdicts and meta paths to the general pass, so no tree is decided twice.
 - **M2** a checkout is removable only when it is clean, holds nothing that
   exists only locally, has no stash entry of its own, is unused (no process cwd
-  inside), and is idle (7 days). Eleven gates, each with the probe of its own in
+  inside), and is idle (7 days). Eight gates, each with the probe of its own in
   the design doc's table.
 - **M3** everything that fails a gate is reported, never deleted:
   `~/Developer/wt/.reaper-report.json`, written on every pass, with the path,
@@ -99,7 +99,6 @@ Recorded so they are not re-argued as if the owner had ruled them.
 - **A symlink under `wt/` is never traversed.** It is reported as `other`.
   Following it would classify the tree the link names as the link's own entry,
   and 091 would remove that tree rather than the link.
-
 - **A seat-made tree's shared cargo dir is dropped by 091's exact route only.**
   `removeWorktreeTree` attributes by the subagent namespace rule; a tree at
   `~/Developer/wt/<name>` is not in it, so the reaper runs route 1 for
