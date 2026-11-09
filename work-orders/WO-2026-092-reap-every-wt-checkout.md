@@ -11,7 +11,7 @@
 - **estimated_complexity**: complex
 - **review_policy**: required
 - **turn_budget**: planned **110** turns, cap **150**. Report `planned / cap / actual`. Targeted rows only — never the full `bun test` (box-wide `flock` slot; the orchestrator gates it). Tell any reviewer you spawn the same.
-- **base**: the commit that lands WO-2026-091 (its `removeWorktreeTree` is a prerequisite; do not re-implement it).
+- **base**: `origin/main` at dispatch (`removeWorktreeTree` landed at `7db182d` and now lives in `extensions/subagent-async/worktree.ts:455`; do not re-implement it).
 
 ### Task Summary
 
@@ -80,6 +80,7 @@ Each case gets a row, and each row gets the mutation that reds it (name it, show
 - **R8** standalone clone with an unpushed commit → kept.
 - **R9** non-git scratch dir → reported, never deleted.
 - **R10** subagent tree whose child is still running → untouched (091's gate still governs that subtree).
+- **R12** **a `.d` naming two worktrees.** A shared `release/<pkg>.d` can name a dead worktree *and* a live one (this box: `tfd-d-487/release/tfd.d` names `…-210bf89ad757` in 255 source paths and `…-5c8863381bd8` in two). Reaping the dead one deletes the live one's `.d` and binary; the live tree rebuilds, and its own later removal degrades to the coarse route. The row pins the *report*: the reap names that it took a live tree's copy, so the rebuild is explained rather than discovered. Decision 048 §"A `.d` naming two worktrees takes the live one's copy with it" is the record; this order's job is to surface it, not to change the mechanism.
 - **R11** empty report writes the file, so "nothing held" is distinguishable from a stale report.
 
 ### Cost — measure, do not assert
