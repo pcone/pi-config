@@ -73,9 +73,33 @@ Recorded so they are not re-argued as if the owner had ruled them.
   branch, which the reflog names. A clone carries the whole repository with it,
   so every entry there is a keep. On this box `tfd` holds 2 stashes and `tfd-d`
   3, which under a repo-wide reading would have kept 40+ worktrees forever.
-- **A clone's pushed gate is `--branches`, a worktree's is `HEAD`.** A worktree
-  dies alone; a clone takes every local branch, so a commit on a branch that
-  exists only locally keeps it (R4).
+- **A clone's pushed gate is `--branches HEAD --tags`, a worktree's is `HEAD`.**
+  A worktree dies alone. A clone takes every local ref with it: `--branches` for
+  R4's shape (a commit on a branch that exists only locally), `HEAD` because
+  `--branches` starts from `refs/heads/*` and a clone left on a detached HEAD has
+  no branch naming that commit, and `--tags` because a local tag can be a
+  commit's only ref. The first two close a deletion-safety defect found in review
+  (a detached clone was `rm -rf`ed with its commit); `--tags` is a decision.
+- **The unsent-commit row names the ref, not the remote.** M3 asks for the
+  unpushed commits "with branch and remote". The row carries the count and the
+  refs git's `%S` reports — a branch by its short name, `HEAD`, or a tag's name —
+  and no remote. The gate tests the checkout against every remote ref it has, so
+  no single remote is the one missing a commit; naming a ref states what holds
+  the work. This is a narrowing of M3, recorded as a recorder's call.
+- **027's namespace is reported, not judged, and a failed 027 reap holds all of
+  it.** A namespace checkout a meta names is reported with 027's outcome. One no
+  meta names is nobody's record, so the general pass gates it. When 027's own
+  reap throws, the pass sets `subagentScopeFailed` and reports the whole subtree
+  without judging any of it: a half-read meta set is not knowledge.
+- **The budget is checked between candidates, and two probes carry no timeout.**
+  The bound stops the pass before a candidate's gates start; it is not a timer on
+  a probe. `lsof -d cwd` and the in-tree `du -csk` for ignored bytes run without
+  a timeout, so one can pass the bound and the pass stops at the next candidate.
+  The scratch `du -sk` is handed the remaining budget and killed at it.
+- **A symlink under `wt/` is never traversed.** It is reported as `other`.
+  Following it would classify the tree the link names as the link's own entry,
+  and 091 would remove that tree rather than the link.
+
 - **A seat-made tree's shared cargo dir is dropped by 091's exact route only.**
   `removeWorktreeTree` attributes by the subagent namespace rule; a tree at
   `~/Developer/wt/<name>` is not in it, so the reaper runs route 1 for
@@ -98,7 +122,7 @@ removable:
 
 | step | wall time |
 |---|---|
-| `walkCheckouts` (141 entries) | 87 ms |
+| `walkCheckouts` (141 entries) | 33–53 ms warm, 281 ms cold (re-measured 2026-11-09; an earlier run read 87 ms) |
 | gates for 97 checkouts (2 needed `git status`) | 150 ms |
 | batched `du -sk` over 40 scratch dirs (1.44 GiB) | 1062 ms |
 | `lsof -d cwd -Fpn` (once, on the passes that need it) | 388–1790 ms |

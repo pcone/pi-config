@@ -10,7 +10,7 @@ remove those, and write what it kept to `~/Developer/wt/.reaper-report.json`.
 
 | where | what |
 |---|---|
-| `extensions/subagent-async/index.ts` `session_start` | 027's reap (`reapFinishedWorktrees`) runs first; its verdicts and the worktree paths its metas name are handed to `reapCheckouts`, which gates everything else and reports 027's rows. Fire-and-forget. |
+| `extensions/subagent-async/index.ts` `session_start` | 027's reap (`reapFinishedWorktrees`) runs first; its verdicts and the worktree paths its metas name are handed to `reapCheckouts`, which gates everything else and reports 027's rows. Fire-and-forget, and skipped when `PI_SUBAGENT_DEPTH` is set: a spawned child starts no pass, because N children would pay N passes and each would overwrite the report the parent announced. |
 | `/reaper` | prints the last report. |
 | `walkCheckouts({root, subagentBase})` | classification only, no spawns. |
 | `reapCheckouts(opts)` | one full pass, report written. `dryRun` gates without removing. |
@@ -25,7 +25,12 @@ distinguishable from a report nobody wrote.
 | `worktree` | `.git` is a file naming a gitdir | `removeWorktreeTree` (091) |
 | `clone` | `.git` is a directory | `rm -rf` of the directory |
 | `scratch` | no `.git` | nothing: reported with age and size |
-| `other` | a `.git` this module will not judge (symlink, socket) | nothing: reported |
+| `other` | a `.git` this module will not judge (socket), or an entry that is itself a symlink | nothing: reported |
+
+A symlink is never traversed: `classify` stats the entry itself and answers
+`other`. Following it would classify the tree the link names as the link's
+entry, and 091 would then remove that tree — a linked worktree elsewhere on the
+box — rather than the link.
 
 `orphaned` is a state of `worktree`, not a fifth kind: `.git` names a gitdir
 that does not exist, because the repository that owned the checkout was
@@ -45,7 +50,7 @@ cheapest first, so a checkout that is young or locked costs no spawn.
 | idle | newest mtime among the checkout's **own** git metadata (`index`, `HEAD`, `ORIG_HEAD`, `MERGE_HEAD`, `REBASE_HEAD`, `locked`, `logs/HEAD`; a clone adds `packed-refs`, `FETCH_HEAD`) is ≥ 7 days old | 7 `stat`s |
 | clean | `git --no-optional-locks status --porcelain --branch --ignored=matching -uall` reports no changed path | 1 spawn |
 | no stash | `logs/refs/stash` holds no entry made on this worktree's branch (a clone: no entry at all) | file read |
-| nothing only local | `git log --source <HEAD\|--branches> --not --remotes` is empty; a worktree in sync with its upstream (`ahead 0` in the status header) skips the spawn | 0–1 spawn |
+| nothing only local | `git log --source <HEAD\|--branches HEAD --tags> --not --remotes` is empty; a worktree in sync with its upstream (`ahead 0` in the status header) skips the spawn | 0–1 spawn |
 | ignored bytes | `du -csk` over the paths git ignores — reported, never a blocker | 1 spawn, only when something is ignored |
 | idle again | the newest file mtime in the tree (`.git` and git-ignored paths excluded) is ≥ 7 days old | stat walk, removal candidates only |
 | unused | one `lsof -d cwd -Fpn` pass for the whole box, resolved on first need | 1 spawn per pass |
@@ -57,9 +62,25 @@ work) or caught by the clean and pushed gates. The removal re-checks the tree's
 own mtimes so a checkout whose content changed inside the window is still a
 keep.
 
-`--branches` for a clone and `HEAD` for a worktree is the difference between the
-two: a worktree dies alone, so only its own branch matters; a clone takes every
-local branch with it.
+`HEAD` for a worktree and `--branches HEAD --tags` for a clone is the difference
+between the two: a worktree dies alone, so only its own branch matters; a clone
+takes every local ref with it. `--branches` alone starts from `refs/heads/*`, so
+it cannot see a commit on a detached HEAD; `--tags` is there because a local tag
+can be a commit's only ref. Both keep a clone git would otherwise lose work
+from.
+
+## The subagent namespace
+
+027's `reapFinishedWorktrees` owns `wt/subagents`. It hands this pass the
+worktree paths its metas name and the verdicts it reached; a namespace checkout
+in that set is reported with 027's outcome and none of this pass's gates run on
+it.
+
+Two cases fall to the general gates. A namespace checkout that **no meta names**
+is nobody's record, so it is gated like any other entry. And when 027's own reap
+**throws**, `subagentScopeFailed` is set: a half-read meta set is not knowledge,
+so the pass reports that subtree and judges none of it, whatever its gates would
+have said.
 
 ## Removal
 
@@ -98,6 +119,13 @@ crates inside a session-start pass.
 `dirtyFiles`, `unpushedCommits` with `unpushedBranches`, `stashes`,
 `ignoredBytes`, `pid`, or `newestFileDays`.
 
+`unpushedBranches` names the refs git's `%S` reports for the commits no remote
+holds: a branch by its short name, `HEAD` for a detached HEAD, a tag by its tag
+name. The row does not name the remote those commits are missing from. M3 asked
+for "branch and remote"; the gate tests against every remote ref of the
+checkout, so no single remote is the one missing them, and the row carries the
+ref instead. That narrowing is the recorder's call, recorded in decision 049.
+
 `removed.sharedWith` is R12: dep-info is keyed by crate unit, so one `.d` can
 name two worktrees and the artifacts under its stem are one copy. Reaping either
 takes the other's copy; that tree rebuilds, and its own later removal degrades to
@@ -112,7 +140,7 @@ pass, `dryRun`, nothing removable:
 
 | step | wall time |
 |---|---|
-| `walkCheckouts`: 141 entries classified | 87 ms |
+| `walkCheckouts`: 141 entries classified | 33–53 ms warm, 281 ms cold (re-measured 2026-11-09; an earlier run on the same box read 87 ms) |
 | the checkouts' gates (17 locked, 71 active, 2 dirty — 2 `git status` spawns) | 150 ms |
 | one batched `du -sk` over the 40 scratch dirs (1.44 GiB) | 1062 ms |
 | the `lsof` pass, on a box where a candidate reached the unused gate | 388–1790 ms |
@@ -128,6 +156,12 @@ pay for it.
 Over budget (1800 ms) the gates stop and the candidates they did not reach are
 written as `deferred`, not as keeps: the next session start continues from the
 same oldest-first order.
+
+The bound is checked **between candidates**, before a candidate's gates start.
+It is not a timer on a probe: the `lsof -d cwd` sweep and the in-tree
+`du -csk` for ignored bytes run without a timeout, so one of them can pass the
+bound and the pass stops at the next candidate. The scratch `du -sk` is the one
+probe handed the remaining budget, and it is killed at it.
 
 ## Refusals
 
