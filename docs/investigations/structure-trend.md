@@ -1187,3 +1187,26 @@ it is the next thing the split made visible.
 
 **cost.** Module load 529 → 526 ms (±4 ms over 12 samples). Seat-sync adds 2–7 ms blocking per
 session start and 4–5 git invocations per seat session, zero for a `wt/` session.
+
+## Snapshot 2026-11-10 — WO-2026-092 (one reaper for every `wt/` checkout)
+
+**growth.** `git diff --numstat e536296..HEAD -- extensions/`: `extensions/lib/checkout-reaper.ts`
+**new, 1232 lines** (walk, gates, kept-report, orphaned trees); +26/−13 `recovery.ts` (769),
++11/−4 `index.ts` (2243), +22/−6 `subagent-state.ts` (823). No existing function gained a branch:
+the reaper is a new entry point (`reapCheckouts`) with one production call site, and the 027 handover
+moved data, not control flow. Candidate extractions, none taken: the report row builders
+(`baseRow`/`subagentRow`/`scratchRow`, ~90 lines) and the git probes (`pushedFacts`, `stashNames`,
+~120) are the two clusters that would define a `checkout-facts.ts`.
+
+**unification.** One removal path: `removeWorktreeTree` from 091, plus two removals the order names
+and no other — a clone's own directory and an orphaned worktree whose `.git` names a missing gitdir
+(`rg -n 'rmSync' extensions/lib/checkout-reaper.ts` → 2). The scan's "incomplete" signal is one
+funnel with four producers feeding one boolean (`rg -n 'scopeFailed\('
+extensions/subagent-async/recovery.ts` → definition + 4 calls). Two mechanisms this landing had to
+resist: a second meta reader (it reuses `listSubagentMetas`, gaining one callback) and a second
+removal-error reporter (it reports through the existing `kept` rows).
+
+**flag.** `checkout-reaper.ts` at 1232 lines is past the repo's 1,000-line floor for counting, and it
+is a first landing, so this is a note rather than a strike: its next chunk should extract the two
+clusters above before adding gates. `index.ts` at 2243 keeps its own carrier (WO-2026-095's
+remainder, `Q-095-a`).
