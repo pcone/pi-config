@@ -629,12 +629,13 @@ export async function reapFinishedWorktrees(
 		run: deps.run,
 		sizeOf: deps.sizeOf,
 	});
-	// The one funnel for "this subtree is ungoverned": the per-meta catch and the
-	// abort below are its only callers, so a throw anywhere on the meta path
-	// reaches the general pass instead of leaving the trees silently judged.
+	// The one funnel for "this subtree is ungoverned". Three callers: a meta file
+	// that yields nothing, a meta whose processing threw, and a list that could
+	// not be read. Every one of them reaches the general pass instead of leaving
+	// the trees silently judged.
 	const scopeFailed = (sid: string | null, e: unknown): void => {
 		const detail = e instanceof Error ? e.message : String(e);
-		debugLog(sid === null ? `reap: aborted: ${detail}` : `reap: ${sid} meta failed: ${detail}`);
+		debugLog(sid === null ? `reap: scan incomplete: ${detail}` : `reap: ${sid} meta failed: ${detail}`);
 		deps.onScopeFailed?.({ sid, error: detail });
 	};
 
@@ -739,6 +740,12 @@ export async function reapFinishedWorktrees(
 			// fails below is still named in `subagentMetaPaths`: the general pass
 			// reports its tree instead of judging it (decision 049).
 			const worktreePath = typeof meta.worktreePath === "string" ? meta.worktreePath : null;
+			// A path that is present but unreadable names a tree nothing can
+			// attribute, and there is no path to hand over. Absent is fine: a meta
+			// with no tree is a session 027 has no removal to consider for.
+			if (meta.worktreePath !== undefined && worktreePath === null) {
+				scopeFailed(sid, new Error(`meta names a worktreePath that is not a path`));
+			}
 			if (worktreePath && deps.subagentMetaPaths) deps.subagentMetaPaths.add(worktreePath);
 			try {
 				await reapMeta(sid, meta, dir, worktreePath);

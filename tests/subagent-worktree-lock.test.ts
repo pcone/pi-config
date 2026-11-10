@@ -30,7 +30,7 @@ import subagentFactory, {
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
 import { _testSetReaperHome, readReaperReport, reapCheckouts } from "../extensions/lib/checkout-reaper.ts";
-import { addWorktree, backdate, git, gitDirOf, makeRepo as reaperRepo } from "./helpers/reaper-fixtures.ts";
+import { addWorktree, backdate, git, gitDirOf, makeRepo as reaperRepo, mustGit } from "./helpers/reaper-fixtures.ts";
 import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
@@ -553,25 +553,43 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		});
 		const row = report.kept.find((r) => r.path === f.failing.worktreePath);
 		expect(row?.gate).toBe("subagent");
-		expect(row?.detail).toContain("027's reap failed");
+		expect(row?.detail).toContain("027's scan was incomplete");
 	}, 60_000);
 
-	it("a meta that will not parse leaves the namespace ungoverned, not judged by the general gates (R10)", async () => {
-		// One torn meta and one clean tree it would have named. Nothing can
-		// attribute that tree, so a scan that drops the meta silently leaves it to
-		// the general gates — which remove it.
-		const repo = makeRepo();
+	it("a meta that will not parse leaves the namespace ungoverned, and the readable metas after it still reap (R10)", async () => {
+		// Three metas, the first in scan order torn. A scan that stops at the drop
+		// leaves the other two trees behind; one that skips it silently leaves the
+		// torn meta's tree to the general gates, which remove it (clean, unlocked,
+		// backdated).
+		const repo = reaperRepo(tempDir("pi-tornmeta-repo-"));
 		const home = tempDir("pi-tornmeta-home-");
 		const root = join(home, "Developer", "wt");
 		const subagentBase = join(root, "subagents");
 		mkdirSync(subagentBase, { recursive: true });
 		const registry = tempDir("pi-tornmeta-registry-");
-		const entry = makeEntryFor(repo, "tornmeta-a", {
-			worktreePath: join(subagentBase, "myrepo-tornmeta-a"),
-			parentCwd: repo,
-			logLastLine: "── Completed (1 turns, exit 0) ──\n",
-		});
-		writeFileSync(join(registry, `pi-subagent-tornmeta-a.meta.json`), "{ not json");
+		const sids = ["tornmeta-a", "tornmeta-b", "tornmeta-c"];
+		const entries = sids.map((sid) =>
+			makeEntryFor(repo.repo, sid, {
+				worktreePath: join(subagentBase, `myrepo-${sid}`),
+				parentCwd: repo.repo,
+				logLastLine: "── Completed (1 turns, exit 0) ──\n",
+			}),
+		);
+		for (const entry of entries) {
+			for (const name of readdirSync(entry.dir)) {
+				writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+			}
+		}
+
+		const firstName = readdirSync(registry).filter((f) => f.endsWith(".meta.json"))[0];
+		const tornSid = firstName.slice("pi-subagent-".length, -".meta.json".length);
+		const tornPath = entries[sids.indexOf(tornSid)].worktreePath;
+		writeFileSync(join(registry, firstName), "{ not json");
+		// Nothing but 027's ownership keeps this tree: unlocked, clean, pushed, old.
+		mustGit(repo.repo, ["worktree", "unlock", tornPath]);
+		backdate(gitDirOf(tornPath));
+		backdate(tornPath);
+		const readable = sids.filter((sid) => sid !== tornSid);
 
 		const metaPaths = new Set<string>();
 		let scopeFailed = false;
@@ -584,7 +602,10 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			},
 		});
 
-		expect(results).toEqual([]);
+		// A scan that stopped at the torn meta leaves these behind.
+		expect(results.map((r) => r.sid).sort()).toEqual(readable.slice().sort());
+		expect(results.every((r) => r.outcome === "removed")).toBe(true);
+		for (const sid of readable) expect(existsSync(join(subagentBase, `myrepo-${sid}`))).toBe(false);
 		expect(scopeFailed).toBe(true);
 
 		const { report } = await reapCheckouts({
@@ -599,10 +620,11 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			listCwds: async () => ({ cwds: [], problem: null }),
 		});
 
-		const row = report.kept.find((r) => r.path === entry.worktreePath);
-		expect(row?.gate).toBe("subagent");
+		// The torn meta's tree is clean, unlocked and old: every general gate would
+		// remove it. Without the flag it is reported `removed`.
+		expect(report.kept.find((r) => r.path === tornPath)?.gate).toBe("subagent");
 		expect(report.removed).toEqual([]);
-		expect(existsSync(entry.worktreePath)).toBe(true);
+		expect(existsSync(tornPath)).toBe(true);
 	}, 60_000);
 
 	/** Register the extension for real and keep the handlers it captured. Every
@@ -749,7 +771,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			// gates judge it, which is the deletion a failed 027 reap must prevent.
 			const row = readReaperReport(f.root)?.kept.find((r) => r.path === f.failing.worktreePath);
 			expect(row?.gate).toBe("subagent");
-			expect(row?.detail).toContain("027's reap failed");
+			expect(row?.detail).toContain("027's scan was incomplete");
 			expect(existsSync(f.failing.worktreePath)).toBe(true);
 			// The metas after the failing one still ran through the handler too.
 			for (const entry of f.reaped) expect(existsSync(entry.worktreePath)).toBe(false);

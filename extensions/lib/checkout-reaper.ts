@@ -544,6 +544,10 @@ export interface ReapCheckoutsOptions {
 	 *  attribute must not be judged here, so every namespace checkout is
 	 *  reported as ungoverned and none is a removal candidate. */
 	subagentScopeFailed?: boolean;
+	/** Why the scan was incomplete, named by 027's reap: the meta file that
+	 *  yielded nothing, or the meta whose processing threw. Reported so the
+	 *  operator can tell a torn file to delete from a failure to investigate. */
+	subagentScopeDetail?: string;
 	/** Injection seams: the real ones are `runGit`, lsof and `du`. */
 	git?: typeof runGit;
 	run?: CommandRunner;
@@ -623,7 +627,15 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 	for (const entry of checkouts) {
 		try {
 			if (entry.scope === "subagents" && (opts.subagentScopeFailed || governed.has(entry.path))) {
-				report.kept.push(subagentRow(entry, opts.subagentResults, report.generatedAt, opts.subagentScopeFailed === true));
+				report.kept.push(
+					subagentRow(
+						entry,
+						opts.subagentResults,
+						report.generatedAt,
+						opts.subagentScopeFailed === true,
+						opts.subagentScopeDetail,
+					),
+				);
 				continue;
 			}
 			if (overBudget()) {
@@ -744,13 +756,14 @@ function subagentRow(
 	results: ReapCheckoutsOptions["subagentResults"],
 	checkedAt: string,
 	scopeFailed: boolean,
+	scopeDetail?: string,
 ): ReaperRow {
 	const verdict = results?.find((r) => r.worktreePath === entry.path);
 	const row: ReaperRow = { ...baseRow(entry, checkedAt), gate: "subagent" };
 	row.detail = verdict
 		? `subagent ${verdict.outcome}${verdict.detail ? `: ${verdict.detail}` : ""}`
 		: scopeFailed
-			? "027's reap failed: its subtree is not judged by this pass"
+			? `027's scan was incomplete${scopeDetail ? ` (${scopeDetail})` : ""}: its subtree is not judged by this pass`
 			: "subagent tree held by 027's gates";
 	return row;
 }

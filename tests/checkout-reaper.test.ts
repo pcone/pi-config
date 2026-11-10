@@ -484,7 +484,7 @@ describe("R10 — a subagent tree 027 still holds", () => {
 		const { report } = await reap(f, { subagentScopeFailed: true });
 		const row = rowFor(report, tree);
 		expect(verdictOf(row)).toBe("kept:subagent");
-		expect(row?.detail).toContain("027's reap failed");
+		expect(row?.detail).toContain("027's scan was incomplete");
 		expect(existsSync(tree)).toBe(true);
 	});
 });
