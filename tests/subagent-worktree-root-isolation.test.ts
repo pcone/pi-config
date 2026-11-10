@@ -8,49 +8,43 @@
  * real namespace and outlived the `$TMPDIR` repo it was branched from, leaving
  * a `.git` file pointing at nothing (149 of them on 2026-11-27).
  *
- * Row 1 is the mechanism. Row 2 is the whole set of files that spawn a
- * worktree, run with the override scrubbed so each file must isolate itself.
+ * The guarantee is structural, not a list of files: `bunfig.toml` preloads
+ * `tests/preload-worktree-root.ts`, which points the variable at a temp dir for
+ * the whole run, so a spawning file that never thinks about it still cannot
+ * reach the human namespace. Row 1 pins the preload, row 2 the creation path,
+ * row 3 the refusal. No row compares the human root before and after a nested
+ * run: live peer dispatches create and remove trees there, so that comparison
+ * was noise (a single directory created and deleted mid-run flipped it).
  *
  * Run: bun test tests/subagent-worktree-root-isolation.test.ts
  */
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, sep } from "node:path";
 import {
 	PI_SUBAGENT_WT_ROOT_ENV,
 	UnusableWorktreeRootError,
 	subagentWorktreeBase,
 } from "../extensions/lib/subagent-worktree.ts";
-import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
+import { childEnv } from "./helpers/subagent-env.ts";
 
-const REPO_ROOT = join(import.meta.dir, "..");
-
-/** The human tree. Read through the derivation, not the override this file sets. */
+/** The human tree. Read through the derivation with an explicit home, so it is
+ *  the human base whatever the run's override is. */
 const REAL_WT_ROOT = join(homedir(), "Developer", "wt");
 const REAL_BASE = subagentWorktreeBase(homedir());
 
-/**
- * Every test file that reaches `createWorktree`, found by running each spawning
- * file with the override set and reading the trees that appeared: the `subagent`
- * tool spawns in turn-cap, subagent-worktree-lock and work-record-landing; the
- * paths file calls `createWorktree` directly. A file added to the suite that
- * spawns a worktree without isolating itself shows up in row 2 as a new entry
- * under the real base, and belongs in this list.
- */
-const SPAWNING_FILES = [
-	"tests/subagent-worktree-paths.test.ts",
-	"tests/work-record-landing.test.ts",
-	"tests/subagent-worktree-lock.test.ts",
-	"tests/turn-cap.test.ts",
-];
-
-const wtRoot = isolateSubagentWorktrees("pi-wt-root-isolation-");
-afterAll(() => wtRoot.dispose());
+/** The run's base, set by the preload before this file loaded. */
+const RUN_ROOT = process.env[PI_SUBAGENT_WT_ROOT_ENV] ?? "";
 
 function git(cwd: string, ...args: string[]): string {
-	return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+	return execFileSync("git", args, {
+		cwd,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		env: childEnv(),
+	}).trim();
 }
 
 /** A temp repo with one commit — a worktree needs a HEAD to branch from. */
@@ -76,6 +70,18 @@ function snapshotRealWtRoot(): string[] {
 }
 
 describe("worktree root isolation", () => {
+	test("the preload points the base at a temp dir, so no file has to isolate itself", () => {
+		expect(RUN_ROOT.length).toBeGreaterThan(0);
+		expect(isAbsolute(RUN_ROOT)).toBe(true);
+		expect(statSync(RUN_ROOT).isDirectory()).toBe(true);
+		// Symlink-resolved: the guard compares realpath'd prefixes.
+		expect(RUN_ROOT).toBe(realpathSync(RUN_ROOT));
+		expect(RUN_ROOT.startsWith(realpathSync(tmpdir()) + sep)).toBe(true);
+		expect(RUN_ROOT.startsWith(homedir() + sep)).toBe(false);
+		// The derivation the spawn path uses answers it, not the human namespace.
+		expect(subagentWorktreeBase()).toBe(RUN_ROOT);
+	});
+
 	test("with the override set, createWorktree lands under it and the real base gains nothing", async () => {
 		const { createWorktree } = await import("../extensions/subagent-async/index.ts");
 		const repo = makeRepo("wt-root-row-");
@@ -86,7 +92,7 @@ describe("worktree root isolation", () => {
 		const wt = await createWorktree(repo, sessionId);
 		try {
 			expect(wt).not.toBeNull();
-			expect(wt!.worktreePath).toBe(join(wtRoot.root, expectedName));
+			expect(wt!.worktreePath).toBe(join(RUN_ROOT, expectedName));
 			expect(existsSync(join(wt!.worktreePath, "file.txt"))).toBe(true);
 			// The tree is registered in the temp repo, under the redirected path.
 			expect(git(repo, "worktree", "list")).toContain(wt!.worktreePath);
@@ -104,26 +110,6 @@ describe("worktree root isolation", () => {
 		expect(existsSync(join(REAL_BASE, expectedName))).toBe(false);
 		expect(snapshotRealWtRoot()).toEqual(realBefore);
 	});
-
-	test("the spawning test files leave the human worktree root unchanged", () => {
-		const before = snapshotRealWtRoot();
-		// The nested run must not inherit this file's override: each spawning file
-		// is what keeps its own trees out of the human namespace.
-		const env = { ...process.env };
-		delete env[PI_SUBAGENT_WT_ROOT_ENV];
-
-		const nested = Bun.spawnSync(["bun", "test", ...SPAWNING_FILES], {
-			cwd: REPO_ROOT,
-			env,
-			stdout: "pipe",
-			stderr: "pipe",
-			timeout: 540_000,
-		});
-		const output = `${nested.stdout.toString()}${nested.stderr.toString()}`;
-		if (nested.exitCode !== 0) throw new Error(`a spawning file failed under a scrubbed run:\n${output}`);
-
-		expect(snapshotRealWtRoot()).toEqual(before);
-	}, 600_000);
 
 	test("an override that cannot name a base is refused, never replaced by the human path", async () => {
 		const { createWorktree } = await import("../extensions/subagent-async/index.ts");
