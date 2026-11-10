@@ -16,7 +16,7 @@
  */
 
 import { afterAll, afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -35,7 +35,8 @@ import {
 	type ReaperReport,
 } from "../extensions/lib/checkout-reaper.ts";
 import subagentFactory, { removeWorktreeTree } from "../extensions/subagent-async/index.ts";
-import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { addWorktree, backdate, gitDirOf, makeRepo, mustGit } from "./helpers/reaper-fixtures.ts";
+import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
 
 // Real git fixtures on a loaded box: clone, worktree add, push and a walk
 // that back-dates every mtime all cost more than the 5 s default.
@@ -60,75 +61,6 @@ function roots(home: string): { root: string; subagentBase: string } {
 	const subagentBase = join(root, "subagents");
 	mkdirSync(subagentBase, { recursive: true });
 	return { root, subagentBase };
-}
-
-// ── Real git fixtures ──────────────────────────────────────────────────────
-
-function git(cwd: string, args: string[]): { code: number; out: string; err: string } {
-	const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", env: childEnv() });
-	return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
-}
-
-function mustGit(cwd: string, args: string[]): string {
-	const r = git(cwd, args);
-	if (r.code !== 0) throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.err}`);
-	return r.out;
-}
-
-/** A repo with a pushed `main` and a bare `origin`, both under the temp home.
- *  Returns the clone's path and its origin. */
-function makeRepo(home: string, name = "myrepo"): { repo: string; origin: string } {
-	const origin = join(home, "repos", `${name}.git`);
-	const repo = join(home, "repos", name);
-	mkdirSync(join(home, "repos"), { recursive: true });
-	mustGit(home, ["init", "-q", "--bare", origin]);
-	mustGit(home, ["clone", "-q", origin, repo]);
-	mustGit(repo, ["config", "user.email", "test@example.com"]);
-	mustGit(repo, ["config", "user.name", "Test"]);
-	mustGit(repo, ["config", "commit.gpgsign", "false"]);
-	writeFileSync(join(repo, "seed.txt"), "seed\n");
-	writeFileSync(join(repo, ".gitignore"), "target/\n");
-	mustGit(repo, ["add", "-A"]);
-	mustGit(repo, ["commit", "-q", "-m", "init"]);
-	mustGit(repo, ["push", "-q", "-u", "origin", "HEAD"]);
-	mustGit(repo, ["branch", "-q", "-m", "main"]);
-	mustGit(repo, ["push", "-q", "-u", "origin", "main"]);
-	return { repo, origin };
-}
-
-/** A linked worktree at `path` on branch `branch`, created at the repo's HEAD
- *  and pushed, so its commits exist on the origin. Subagent trees are locked by
- *  `createWorktree`; a seat-made gate/land tree is not. */
-function addWorktree(repo: string, path: string, branch: string, opts: { lock?: boolean; push?: boolean } = {}): string {
-	mkdirSync(join(path, ".."), { recursive: true });
-	mustGit(repo, ["worktree", "add", "-q", "-b", branch, path, "HEAD"]);
-	if (opts.push !== false) mustGit(repo, ["push", "-q", "origin", `refs/heads/${branch}:refs/heads/${branch}`]);
-	if (opts.lock) mustGit(repo, ["worktree", "lock", "--reason", "pi-subagent test", path]);
-	return path;
-}
-
-/** Push every mtime in `target` back `days`, so the idle gate sees a checkout
- *  nobody has touched. Returns nothing: the fixture is on disk. */
-function backdate(target: string, days = IDLE_DAYS + 3): void {
-	const when = new Date(Date.now() - days * 86_400_000);
-	const walk = (p: string): void => {
-		let st;
-		try {
-			st = lstatSync(p);
-		} catch {
-			return;
-		}
-		utimesSync(p, when, when);
-		if (!st.isDirectory()) return;
-		for (const name of readdirSync(p)) walk(join(p, name));
-	};
-	walk(target);
-}
-
-/** The gitdir a linked worktree's `.git` file names. */
-function gitDirOf(worktreePath: string): string {
-	const text = readFileSync(join(worktreePath, ".git"), "utf8");
-	return /^gitdir:\s*(.+)$/m.exec(text)![1].trim();
 }
 
 /** Seed one clone's shared cargo dir the way a build of `worktreePath` leaves
@@ -503,34 +435,39 @@ describe("R10 — a subagent tree 027 still holds", () => {
 		const f = fixture();
 		const { repo } = makeRepo(f.home);
 		// A tree every general gate would remove: clean, pushed, idle, unused,
-		// unlocked. Its meta is 027's reason to keep it.
+		// unlocked. 027's meta names it but reached no verdict — a meta whose child
+		// has no terminal footer is skipped — so `subagentMetaPaths` is the only
+		// thing that covers it here. A verdict for it would hide the handover.
 		const held = join(f.subagentBase, "myrepo-ffffffffffff");
 		addWorktree(repo, held, "pi-subagent-ffffffffffff");
 		backdate(gitDirOf(held));
 		backdate(held);
-		// A live child's tree: locked with a process inside, and 027 says why.
+		// A tree 027 did decide: its verdict, not the general gates, is its row.
 		const live = join(f.subagentBase, "myrepo-111111111111");
 		addWorktree(repo, live, "pi-subagent-111111111111", { lock: true });
 		backdate(gitDirOf(live));
 		backdate(live);
 
 		const { report } = await reap(f, {
-			subagentMetaPaths: [held, live],
-			subagentResults: [
-				{ worktreePath: held, outcome: "kept-git-error", detail: "git status failed" },
-				{ worktreePath: live, outcome: "kept-uncommitted" },
-			],
+			subagentMetaPaths: [held],
+			subagentResults: [{ worktreePath: live, outcome: "kept-uncommitted" }],
 			listCwds: async () => ({ cwds: [{ pid: 991, cwd: live }], problem: null }),
 		});
 
 		expect(verdictOf(rowFor(report, held))).toBe("kept:subagent");
+		expect(rowFor(report, held)?.detail).toContain("held by 027's gates");
 		expect(verdictOf(rowFor(report, live))).toBe("kept:subagent");
-		expect(rowFor(report, held)?.detail).toContain("subagent kept-git-error");
+		expect(rowFor(report, live)?.detail).toContain("subagent kept-uncommitted");
 		expect(existsSync(held)).toBe(true);
 		expect(existsSync(live)).toBe(true);
-		// R10's own mutation: with the meta set dropped, the general gates take
-		// the held tree, which is what "not second-guessed" prevents.
-		const { report: ungated } = await reap(f);
+		// R10's own mutation, one field at a time: with `subagentMetaPaths` dropped
+		// and the verdict set kept, the general gates take the held tree. 027's
+		// verdict for `live` cannot stand in for it — the two paths differ, which is
+		// why dropping both fields together pinned neither.
+		const { report: ungated } = await reap(f, {
+			subagentResults: [{ worktreePath: live, outcome: "kept-uncommitted" }],
+			listCwds: noProcesses,
+		});
 		expect(rowFor(ungated, held)?.state).toBe("removed");
 	});
 

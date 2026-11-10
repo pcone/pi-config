@@ -14,7 +14,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, {
@@ -24,20 +24,17 @@ import subagentFactory, {
 	metaPath,
 	readMetaJson,
 	reapFinishedWorktrees,
+	removeWorktreeTree,
 	resolveRunningSession,
 	updateMetaJson,
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
-import { _testSetReaperHome, IDLE_DAYS, readReaperReport } from "../extensions/lib/checkout-reaper.ts";
-import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { _testSetReaperHome, readReaperReport, reapCheckouts } from "../extensions/lib/checkout-reaper.ts";
+import { addWorktree, backdate, git, gitDirOf, makeRepo as reaperRepo } from "./helpers/reaper-fixtures.ts";
+import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
 // ── Real git helpers ───────────────────────────────────────────────────────
-
-function git(cwd: string, args: string[]): { code: number; out: string; err: string } {
-	const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", env: childEnv() });
-	return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
-}
 
 function makeRepo(): string {
 	const repo = mkdtempSync(join(tmpdir(), "pi-lock-repo-"));
@@ -336,70 +333,6 @@ function makeEntryFor(
 	return { dir, worktreePath };
 }
 
-// ── Reaper fixtures (WO-2026-092) ──────────────────────────────────────────
-// The shapes `tests/checkout-reaper.test.ts:124-160` builds, so a wiring row can
-// hand the real session_start pass a checkout every one of its gates clears.
-
-function mustGit(cwd: string, args: string[]): string {
-	const r = git(cwd, args);
-	if (r.code !== 0) throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.err}`);
-	return r.out;
-}
-
-/** A repo with a pushed `main` and a bare `origin`, both under `home` — so the
- *  walk sees the worktrees, never the repository. */
-function reaperRepo(home: string, name = "myrepo"): { repo: string; origin: string } {
-	const origin = join(home, "repos", `${name}.git`);
-	const repo = join(home, "repos", name);
-	mkdirSync(join(home, "repos"), { recursive: true });
-	mustGit(home, ["init", "-q", "--bare", origin]);
-	mustGit(home, ["clone", "-q", origin, repo]);
-	mustGit(repo, ["config", "user.email", "test@example.com"]);
-	mustGit(repo, ["config", "user.name", "Test"]);
-	mustGit(repo, ["config", "commit.gpgsign", "false"]);
-	writeFileSync(join(repo, "seed.txt"), "seed\n");
-	writeFileSync(join(repo, ".gitignore"), "target/\n");
-	mustGit(repo, ["add", "-A"]);
-	mustGit(repo, ["commit", "-q", "-m", "init"]);
-	mustGit(repo, ["push", "-q", "-u", "origin", "HEAD"]);
-	mustGit(repo, ["branch", "-q", "-m", "main"]);
-	mustGit(repo, ["push", "-q", "-u", "origin", "main"]);
-	return { repo, origin };
-}
-
-/** A linked worktree at `path` on `branch`, created at the repo's HEAD and
- *  pushed, so the branch has nothing only local. */
-function reaperWorktree(repo: string, path: string, branch: string): string {
-	mkdirSync(join(path, ".."), { recursive: true });
-	mustGit(repo, ["worktree", "add", "-q", "-b", branch, path, "HEAD"]);
-	mustGit(repo, ["push", "-q", "origin", `refs/heads/${branch}:refs/heads/${branch}`]);
-	return path;
-}
-
-/** The gitdir a linked worktree's `.git` file names. */
-function gitDirOf(worktreePath: string): string {
-	const text = readFileSync(join(worktreePath, ".git"), "utf8");
-	return /^gitdir:\s*(.+)$/m.exec(text)![1].trim();
-}
-
-/** Push every mtime in `target` back `days`, so the idle gate sees a checkout
- *  nobody has touched. */
-function backdate(target: string, days = IDLE_DAYS + 3): void {
-	const when = new Date(Date.now() - days * 86_400_000);
-	const walk = (p: string): void => {
-		let st;
-		try {
-			st = lstatSync(p);
-		} catch {
-			return;
-		}
-		utimesSync(p, when, when);
-		if (!st.isDirectory()) return;
-		for (const name of readdirSync(p)) walk(join(p, name));
-	};
-	walk(target);
-}
-
 describe("reapFinishedWorktrees (real git, injected registry)", () => {
 	it("removes a clean finished tree (unlock-then-remove, no --force)", async () => {
 		const repo = makeRepo();
@@ -513,6 +446,116 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		// alone, over the 5 s default on a loaded box.
 	}, 30_000);
 
+	// ── One failing meta among several (R10) ────────────────────────────────
+
+	interface PerMetaFixture {
+		home: string;
+		root: string;
+		subagentBase: string;
+		registry: string;
+		/** The meta whose processing throws, and the tree it names. */
+		failing: { sid: string; worktreePath: string };
+		/** The metas that must still be reaped. */
+		reaped: Array<{ sid: string; worktreePath: string }>;
+	}
+
+	/** Several metas in one registry dir, the first in the scan's own order
+	 *  corrupted so its processing throws: its tree is dirty, and its recorded
+	 *  isolation branch holds a byte no spawn accepts, so 027's own keep path
+	 *  (`dropKeptTarget` → git) rejects. The other metas are clean and finished,
+	 *  so the reap removes their trees. Which meta fails is read from `readdir`
+	 *  order, the order `listSubagentMetas` iterates, so the failing one is always
+	 *  first and every other meta is one a single-`try` loop would abandon. */
+	function perMetaFixture(): PerMetaFixture {
+		const repo = makeRepo();
+		const home = tempDir("pi-permeta-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		const registry = tempDir("pi-permeta-registry-");
+		const sids = ["permeta-a", "permeta-b", "permeta-c"];
+		const entries = sids.map((sid) =>
+			makeEntryFor(repo, sid, {
+				worktreePath: join(subagentBase, `myrepo-${sid}`),
+				parentCwd: repo,
+				logLastLine: "── Completed (1 turns, exit 0) ──\n",
+			}),
+		);
+		// One registry: `makeEntryFor` writes each meta and log into its own dir.
+		for (const entry of entries) {
+			for (const name of readdirSync(entry.dir)) {
+				writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+			}
+		}
+
+		const firstName = readdirSync(registry).filter((f) => f.endsWith(".meta.json"))[0];
+		const failingSid = firstName.slice("pi-subagent-".length, -".meta.json".length);
+		const failingPath = entries[sids.indexOf(failingSid)].worktreePath;
+		// Dirty, so the reap takes its keep path — the one that reaches the throw.
+		writeFileSync(join(failingPath, "uncommitted.txt"), "bytes\n");
+		const metaFile = join(registry, firstName);
+		const meta = JSON.parse(readFileSync(metaFile, "utf8"));
+		meta.isolationBranch = "pi-subagent-\u0000-corrupt";
+		writeFileSync(metaFile, JSON.stringify(meta));
+
+		return {
+			home,
+			root,
+			subagentBase,
+			registry,
+			failing: { sid: failingSid, worktreePath: failingPath },
+			reaped: entries
+				.map((entry, i) => ({ sid: sids[i], worktreePath: entry.worktreePath }))
+				.filter((entry) => entry.sid !== failingSid),
+		};
+	}
+
+	it("one meta's failure leaves the rest of the list reaped, and hands its own tree over ungoverned (R10)", async () => {
+		const f = perMetaFixture();
+		const metaPaths = new Set<string>();
+		let scopeFailed = false;
+
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: f.registry,
+			selfPid: process.pid,
+			subagentMetaPaths: metaPaths,
+			onScopeFailed: () => {
+				scopeFailed = true;
+			},
+		});
+
+		// The metas after the failing one still ran: their trees went, with a
+		// verdict each. Restoring the single `try` around the loop loses them.
+		expect(results.map((r) => r.sid).sort()).toEqual(f.reaped.map((entry) => entry.sid).sort());
+		expect(results.every((r) => r.outcome === "removed")).toBe(true);
+		for (const entry of f.reaped) expect(existsSync(entry.worktreePath)).toBe(false);
+		// The failed meta's tree keeps its bytes — 027 reached no verdict on it.
+		expect(existsSync(f.failing.worktreePath)).toBe(true);
+		expect(readFileSync(join(f.failing.worktreePath, "uncommitted.txt"), "utf8")).toBe("bytes\n");
+		// Its path was recorded before anything threw, and the failure was reported.
+		expect(metaPaths.has(f.failing.worktreePath)).toBe(true);
+		expect(scopeFailed).toBe(true);
+
+		// What the general pass does with that handover: 027's verdicts where it
+		// reached one, and "ungoverned" — never the general gates' judgement — for
+		// the failed meta's tree. Every general gate would remove that tree.
+		const { report } = await reapCheckouts({
+			root: f.root,
+			subagentBase: f.subagentBase,
+			home: f.home,
+			budgetMs: 60_000,
+			subagentResults: results,
+			subagentMetaPaths: metaPaths,
+			subagentScopeFailed: scopeFailed,
+			removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
+			listCwds: async () => ({ cwds: [], problem: null }),
+		});
+		const row = report.kept.find((r) => r.path === f.failing.worktreePath);
+		expect(row?.gate).toBe("subagent");
+		expect(row?.detail).toContain("027's reap failed");
+		expect(existsSync(f.failing.worktreePath)).toBe(true);
+	}, 60_000);
+
 	/** Register the extension for real and keep the handlers it captured. Every
 	 *  wiring row fires the captured `session_start`: the reap is fire-and-forget
 	 *  inside it, so the effect (not a return value) is what proves the wiring. */
@@ -575,7 +618,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		// only that the pass wrote a report; this tree shows what the report means.
 		const { repo } = reaperRepo(home);
 		const branch = "pi-subagent-wired00000001";
-		const tree = reaperWorktree(repo, join(root, "myrepo-wired"), branch);
+		const tree = addWorktree(repo, join(root, "myrepo-wired"), branch);
 		backdate(gitDirOf(tree));
 		backdate(tree);
 		_testSetReaperHome(home);
@@ -627,14 +670,45 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			);
 			expect(await waitFor(() => existsSync(join(root, ".reaper-report.json")), 20_000)).toBe(true);
 			const row = readReaperReport(root)?.kept.find((r) => r.path === worktreePath);
+			// What the handover changes is the row, not the tree: `makeEntryFor`
+			// locks the tree, so a general-pass judgement would report gate "locked"
+			// and keep it anyway. `existsSync` here would pass either way; these two
+			// lines are the ones a broken handoff reds.
 			expect(row?.gate).toBe("subagent");
 			expect(row?.detail).toBe("subagent kept-uncommitted");
-			expect(existsSync(worktreePath)).toBe(true);
 		} finally {
 			_testSetRecoveryScanDir(undefined);
 			_testSetReaperHome(undefined);
 		}
 		// 027's reap, then the general pass over the same registry.
+	}, 60_000);
+
+	it("hands one failed meta's tree over as ungoverned through the real handler (wiring)", async () => {
+		const f = perMetaFixture();
+		_testSetReaperHome(f.home);
+		_testSetRecoveryScanDir(f.registry);
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: f.root, sessionManager: { getSessionId: () => "sess-scope-wiring" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(join(f.root, ".reaper-report.json")), 20_000)).toBe(true);
+			// The flag's producer, end to end: without it this tree is reported as
+			// "held by 027's gates" — a verdict 027 never reached — and the general
+			// gates judge it, which is the deletion a failed 027 reap must prevent.
+			const row = readReaperReport(f.root)?.kept.find((r) => r.path === f.failing.worktreePath);
+			expect(row?.gate).toBe("subagent");
+			expect(row?.detail).toContain("027's reap failed");
+			expect(existsSync(f.failing.worktreePath)).toBe(true);
+			// The metas after the failing one still ran through the handler too.
+			for (const entry of f.reaped) expect(existsSync(entry.worktreePath)).toBe(false);
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+		// Two reaps over three trees, then the general pass.
 	}, 60_000);
 
 	it("a child session's start runs no reaper pass (PI_SUBAGENT_DEPTH)", async () => {
@@ -648,15 +722,17 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			const handlers = registerHandler();
 			_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
 			const reportFile = join(home, "Developer", "wt", ".reaper-report.json");
-			// Positive control: the same home and the same window write a report when
-			// the pass runs, so the child's silence below is the depth gate and not a
-			// fixture that never writes.
+			// Positive control: the same home and the same registry write a report
+			// when the pass runs, so the child's silence below is the depth gate and
+			// not a fixture that never writes.
 			delete process.env.PI_SUBAGENT_DEPTH;
+			const controlStart = Date.now();
 			await handlers.get("session_start")!(
 				{ type: "session_start", reason: "startup" },
 				{ cwd: home, sessionManager: { getSessionId: () => "sess-parent-control" }, ui: {} },
 			);
 			expect(await waitFor(() => existsSync(reportFile), 20_000)).toBe(true);
+			const controlMs = Date.now() - controlStart;
 			unlinkSync(reportFile);
 
 			process.env.PI_SUBAGENT_DEPTH = "1";
@@ -664,9 +740,10 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 				{ type: "session_start", reason: "startup" },
 				{ cwd: home, sessionManager: { getSessionId: () => "sess-child-wiring" }, ui: {} },
 			);
-			// The pass is fire-and-forget: give it the same window the parent row
-			// gives, then assert it never wrote.
-			await Bun.sleep(500);
+			// The pass is fire-and-forget, so the negative needs a window: the
+			// control's own measured time to write, doubled, with a floor — a fixed
+			// 500 ms would pass while a real pass was still gating.
+			await Bun.sleep(Math.max(1_000, controlMs * 2));
 			expect(existsSync(reportFile)).toBe(false);
 		} finally {
 			_testSetRecoveryScanDir(undefined);

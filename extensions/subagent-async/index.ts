@@ -1072,11 +1072,18 @@ export default function (pi: ExtensionAPI) {
 			}
 			const subagentMetaPaths = new Set<string>();
 			let subagentScopeFailed = false;
-			reapFinishedWorktrees(pi, ctx, { subagentMetaPaths })
+			reapFinishedWorktrees(pi, ctx, {
+				subagentMetaPaths,
+				onScopeFailed: () => {
+					// One meta's processing threw, or the list could not be read: those
+					// trees are ungoverned, so the general pass reports them and judges
+					// none of them (WO-2026-092, R10; decision 049).
+					subagentScopeFailed = true;
+				},
+			})
 				.catch((e) => {
-					// Its subtree's ownership is unknown now, and a half-read meta set is
-					// not knowledge: the general pass reports that subtree and judges none
-					// of it (WO-2026-092, R10).
+					// The reap failed outside any meta's turn (its bound pass, say): no
+					// verdicts at all, so the whole subtree is ungoverned.
 					subagentScopeFailed = true;
 					debugLog(`reap: unhandled: ${e instanceof Error ? e.message : String(e)}`);
 					return [];
