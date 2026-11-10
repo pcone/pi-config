@@ -895,12 +895,9 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 	}, 60_000);
 
 	it("an unlistable metas dir marks the namespace ungoverned (R10)", async () => {
-		// The dir arm of the same funnel: nothing can be attributed, so nothing in
-		// the namespace may be judged by the general gates.
-		const home = tempDir("pi-nodir-home-");
-		const root = join(home, "Developer", "wt");
-		const subagentBase = join(root, "subagents");
-		mkdirSync(subagentBase, { recursive: true });
+		// The dir arm of the same funnel. Nothing can be attributed, so the scan
+		// reports itself incomplete; the handover that follows is pinned by the
+		// wiring row above and by the torn-meta row.
 		const missing = join(tempDir("pi-nodir-parent-"), "not-there");
 
 		const causes: string[] = [];
@@ -914,7 +911,8 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 		expect(results).toEqual([]);
 		expect(causes).toHaveLength(1);
-		expect(causes[0]).toContain("unlistable metas dir");
+		// Which path, not only that one was unlistable.
+		expect(causes[0]).toContain(`unlistable metas dir ${missing}`);
 	}, 60_000);
 
 	it("a child session's start runs no reaper pass (PI_SUBAGENT_DEPTH)", async () => {

@@ -464,7 +464,7 @@ describe("the shared discovery (D1–D11 at the lib boundary)", () => {
 // the registry scan is limited to the ids the call reports. The absence of a
 // read is not observable here — the lib has no read seam — so X1 pins the
 // reported list and the arm skip in the source is its evidence.
-describe("discovery reads only what its caller uses (X1–X9)", () => {
+describe("discovery reads only what its caller uses (X1–X6, X8–X9)", () => {
 	it("X1: `socketsOnly` reports sockets only — a fresh log with no sock is not listed", () => {
 		const dir = tempDir();
 		const f = placeSession(dir, 30, { sock: 10_000, log: [logBody(1), 10_000] });

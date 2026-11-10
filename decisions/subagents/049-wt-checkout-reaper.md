@@ -105,6 +105,13 @@ Recorded so they are not re-argued as if the owner had ruled them.
 
   A meta that records `worktreePath: null` is not a failure: that is the
   "no tree" encoding every non-isolated spawn writes, so it raises nothing.
+  Residual, recorded so it is not folklore: the rows pick their victim by
+  `readdirSync` order, which is also `listSubagentMetas`'s iteration order. A
+  sort added inside that function would make the victim no longer first, and the
+  row that proves a scan does not stop at a drop would pass while testing
+  nothing. It is pinned by the row's assertions on the *other* metas being
+  reaped, not by the ordering claim.
+
   Four shapes do raise it, all of them a scan that cannot say which trees it
   covers: a meta file that yields no plain object (torn JSON, a scalar, an
   array), a metas directory that cannot be listed, a `worktreePath` that is
