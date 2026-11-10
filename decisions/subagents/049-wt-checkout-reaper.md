@@ -105,6 +105,10 @@ Recorded so they are not re-argued as if the owner had ruled them.
 
   A meta that records `worktreePath: null` is not a failure: that is the
   "no tree" encoding every non-isolated spawn writes, so it raises nothing.
+  Four shapes do raise it, all of them a scan that cannot say which trees it
+  covers: a meta file that yields no plain object (torn JSON, a scalar, an
+  array), a metas directory that cannot be listed, a `worktreePath` that is
+  present but not a string, and a meta whose processing threw.
 
   A second producer closed the same hole one layer down. `listSubagentMetas`
   skips a meta whose JSON will not parse, which names no tree at all — so no

@@ -92,13 +92,14 @@ A meta whose JSON will not parse is the same rule from below: it names no tree,
 so there is no path to hand over, and the scan reports itself incomplete
 instead. The same holds for a meta directory that cannot be listed, for a meta
 whose `worktreePath` is present but not a string, and for content that parses to
-anything but an object.
+anything but a plain object — an array is rejected too.
 
 `worktreePath: null` is not one of those. It is how a session with no worktree
 records itself, which is most spawns (reviewers do not isolate), so it means
-"nothing to remove here" and raises nothing. "Incomplete" is the operative word — one unreadable meta marks the
-whole namespace ungoverned, because a half-read meta set cannot say which trees
-it failed to attribute.
+"nothing to remove here" and raises nothing. "Incomplete" is the operative word: one unreadable meta marks the whole
+namespace ungoverned, because a half-read meta set cannot say which trees it
+failed to attribute. The report row carries the first cause and a count of the
+rest, so the operator sees what to fix rather than only that something is off.
 
 ## Removal
 

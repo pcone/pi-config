@@ -600,6 +600,8 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		expect(results.map((r) => r.sid)).toEqual(["nullmeta-a"]);
 		expect(results[0].outcome).toBe("removed");
 		expect(existsSync(withTree.worktreePath)).toBe(false);
+		// The meta that names no tree leaves its fixture tree alone.
+		expect(existsSync(noTree.worktreePath)).toBe(true);
 	}, 60_000);
 
 	it("a meta whose worktreePath is not a path marks the namespace ungoverned (R10)", async () => {
@@ -625,6 +627,9 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 		expect(causes).toHaveLength(1);
 		expect(causes[0]).toContain("worktreePath is not a path");
+		// Which value was wrong, not only that one was: the operator's next step
+		// is to find that meta.
+		expect(causes[0]).toContain("42");
 	}, 60_000);
 
 	it("a meta that will not parse leaves the namespace ungoverned, and the readable metas after it still reap (R10)", async () => {
@@ -857,6 +862,59 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			_testSetReaperHome(undefined);
 		}
 		// Two reaps over three trees, then the general pass.
+	}, 60_000);
+
+	it("names the cause in the report through the real handler, first cause plus a count (wiring)", async () => {
+		// Two causes, both real: a torn meta file (reported by the scan) and a meta
+		// whose processing throws (reported per meta). The row must carry the first
+		// cause and admit there is another, or an operator fixes one and re-runs to
+		// discover the second.
+		const f = perMetaFixture();
+		const tornName = `pi-subagent-torn-extra.meta.json`;
+		writeFileSync(join(f.registry, tornName), "{ not json");
+		_testSetReaperHome(f.home);
+		_testSetRecoveryScanDir(f.registry);
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: f.root, sessionManager: { getSessionId: () => "sess-scope-detail" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(join(f.root, ".reaper-report.json")), 20_000)).toBe(true);
+			const row = readReaperReport(f.root)?.kept.find((r) => r.path === f.failing.worktreePath);
+			expect(row?.gate).toBe("subagent");
+			expect(row?.detail).toContain("027's scan was incomplete");
+			// The scan's cause comes first and names the file; the throw is counted.
+			expect(row?.detail).toContain(tornName);
+			expect(row?.detail).toContain("1 more");
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+	}, 60_000);
+
+	it("an unlistable metas dir marks the namespace ungoverned (R10)", async () => {
+		// The dir arm of the same funnel: nothing can be attributed, so nothing in
+		// the namespace may be judged by the general gates.
+		const home = tempDir("pi-nodir-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		const missing = join(tempDir("pi-nodir-parent-"), "not-there");
+
+		const causes: string[] = [];
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: missing,
+			selfPid: process.pid,
+			onScopeFailed: ({ error }) => {
+				causes.push(error);
+			},
+		});
+
+		expect(results).toEqual([]);
+		expect(causes).toHaveLength(1);
+		expect(causes[0]).toContain("unlistable metas dir");
 	}, 60_000);
 
 	it("a child session's start runs no reaper pass (PI_SUBAGENT_DEPTH)", async () => {
