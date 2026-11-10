@@ -57,6 +57,7 @@ import extension, {
 	type OwnerProbe,
 	type SpawnMetaFields,
 } from "../extensions/subagent-async/index.ts";
+import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -581,6 +582,11 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		};
 		extension(pi);
 		_testSetRecoveryScanDir(dir);
+		// The same handler runs WO-2026-092's checkout reaper. Pin its home, or
+		// the row walks (and may reap) the box's own `~/Developer/wt`.
+		const home = mkdtempSync(path.join(tmpdir(), "pi-wiring-home-"));
+		tempDirs.push(home);
+		_testSetReaperHome(home);
 		try {
 			await handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx());
 			// Reaching the scan at all (and adopting the self-owned socket) proves
@@ -592,6 +598,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 				for (const s of [...rs.sockClients]) { try { s.destroy(); } catch { /* best-effort */ } }
 			}
 			_testRunning.clear();
+			_testSetReaperHome(undefined);
 			server.close();
 		}
 	});

@@ -464,7 +464,7 @@ describe("the shared discovery (D1–D11 at the lib boundary)", () => {
 // the registry scan is limited to the ids the call reports. The absence of a
 // read is not observable here — the lib has no read seam — so X1 pins the
 // reported list and the arm skip in the source is its evidence.
-describe("discovery reads only what its caller uses (X1–X6)", () => {
+describe("discovery reads only what its caller uses (X1–X6, X8–X9)", () => {
 	it("X1: `socketsOnly` reports sockets only — a fresh log with no sock is not listed", () => {
 		const dir = tempDir();
 		const f = placeSession(dir, 30, { sock: 10_000, log: [logBody(1), 10_000] });
@@ -520,6 +520,34 @@ describe("discovery reads only what its caller uses (X1–X6)", () => {
 		place(dir, `pi-subagent-${c.id}.meta.json`, '{"agentName":', 10_000);
 
 		expect(listSubagentMetas(dir, new Set([a.id]))).toEqual([{ sid: a.id, meta: { agentName: "a" } }]);
+	});
+
+	// Every way a file yields no meta is reported, not just the unparseable one:
+	// a meta that parses to a scalar names no worktree, and a caller deciding on
+	// the trees would otherwise drop it silently.
+	it("X8: a meta file that yields no object is reported to the caller's drop hook", () => {
+		const dir = tempDir();
+		const ids = [38, 39, 40, 41, 42].map((n) => fixture(n));
+		place(dir, `pi-subagent-${ids[0].id}.meta.json`, JSON.stringify({ agentName: "ok" }), 10_000);
+		place(dir, `pi-subagent-${ids[1].id}.meta.json`, "null", 10_000);
+		place(dir, `pi-subagent-${ids[2].id}.meta.json`, "7", 10_000);
+		place(dir, `pi-subagent-${ids[3].id}.meta.json`, "{ torn", 10_000);
+		place(dir, `pi-subagent-${ids[4].id}.meta.json`, "[]", 10_000);
+
+		const dropped: string[] = [];
+		const entries = listSubagentMetas(dir, undefined, (file) => dropped.push(file));
+
+		expect(entries.map((e) => e.sid)).toEqual([ids[0].id]);
+		expect(dropped.sort()).toEqual(
+			[ids[1], ids[2], ids[3], ids[4]].map((f) => `pi-subagent-${f.id}.meta.json`).sort(),
+		);
+	});
+
+	it("X9: a directory that cannot be listed is reported, not treated as an empty scan", () => {
+		const dropped: string[] = [];
+		const missing = join(tempDir(), "not-there");
+		expect(listSubagentMetas(missing, undefined, (file) => dropped.push(file))).toEqual([]);
+		expect(dropped).toEqual([missing]);
 	});
 
 	// The same answer as D3 and D5, over the default: this is the row that reds if

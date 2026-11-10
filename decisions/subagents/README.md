@@ -56,3 +56,4 @@ date: 2026-07-14
 | 048 | Build output dies with its worktree; shared cargo dir bounded at 20 GiB | done |
 | 049 | Subagent worktree base is process-wide injectable (`PI_SUBAGENT_WT_ROOT`); spawning tests isolate themselves | done |
 | 050 | The suite's worktree root comes from a `bunfig.toml` preload for the whole run; the nested-run snapshot row is deleted | done |
+| 051 | One reaper for every checkout under `~/Developer/wt` — gates, the kept-report, orphaned trees | done |

@@ -32,6 +32,9 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import extension, {
 	_testAttachSessionId,
 	_testLiveSessionCtx,
@@ -44,6 +47,7 @@ import extension, {
 	notifyChildDetached,
 	updateFooter,
 } from "../extensions/subagent-async/index.ts";
+import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 
@@ -184,11 +188,16 @@ function lastTimeoutCallback(): () => void {
 describe("subagent live-session lifetime (decision 026)", () => {
 	let stub: Stub;
 	let ctx: any;
+	let wiringHome: string;
 
 	beforeAll(async () => {
 		stub = createPiStub();
 		extension(stub.pi);
 		ctx = createCtx(stub.ctxUi);
+		// The real handler also runs WO-2026-092's checkout reaper. Pin its home,
+		// or this file walks (and may reap) the box's own `~/Developer/wt`.
+		wiringHome = mkdtempSync(join(tmpdir(), "pi-lifetime-home-"));
+		_testSetReaperHome(wiringHome);
 		// Fire the real session_start handler: it must record the live ctx.
 		await stub.handlers.get("session_start")!({ type: "session_start", reason: "new" }, ctx);
 		// The real handler scans /tmp and may connect to pre-existing orphan
@@ -219,6 +228,8 @@ describe("subagent live-session lifetime (decision 026)", () => {
 		// timers/caffeinate the footer may have started.
 		void stub.handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 		_testRunning.clear();
+		_testSetReaperHome(undefined);
+		rmSync(wiringHome, { recursive: true, force: true });
 		updateFooter();
 	});
 

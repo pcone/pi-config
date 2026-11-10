@@ -243,12 +243,24 @@ export function resolveSubagentMeta(
  * Every readable `pi-subagent-<sid>.meta.json` in `dir`, restricted to
  * `onlySids` when given. The filter runs on the file name, before the parse:
  * an id nobody asked for costs no read and cannot fail the scan.
+ *
+ * A file that yields no meta is skipped, and `onDropped` names it — an
+ * unparseable one, one whose content is not an object, and a directory that
+ * cannot be listed at all. A caller
+ * that decides on the trees these metas describe has to know the list is
+ * incomplete: the dropped meta may name a worktree nothing else can attribute.
  */
-export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR, onlySids?: ReadonlySet<string>): SubagentMetaEntry[] {
+export function listSubagentMetas(
+	dir: string = SUBAGENT_TMP_DIR,
+	onlySids?: ReadonlySet<string>,
+	onDropped?: (target: string, kind: "file" | "dir") => void,
+): SubagentMetaEntry[] {
 	let files: string[];
 	try {
 		files = fs.readdirSync(dir);
 	} catch {
+		// The directory itself is unreadable: every meta in it is unattributable.
+		onDropped?.(dir, "dir");
 		return [];
 	}
 	const entries: SubagentMetaEntry[] = [];
@@ -257,14 +269,24 @@ export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR, onlySids?: Rea
 		const sid = f.slice("pi-subagent-".length, -".meta.json".length);
 		if (!sid) continue;
 		if (onlySids && !onlySids.has(sid)) continue;
-		try {
-			const meta = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
-			if (meta && typeof meta === "object") entries.push({ sid, meta });
-		} catch {
-			/* torn or malformed meta — not a session we can classify */
-		}
+		// One exit for every way a file can yield no meta, so a new failure shape
+		// cannot become a silent skip.
+		const entry = readMeta(dir, f, sid);
+		if (entry === null) onDropped?.(f, "file");
+		else entries.push(entry);
 	}
 	return entries;
+}
+
+/** A meta file's content, or null when it yields nothing usable. */
+function readMeta(dir: string, file: string, sid: string): SubagentMetaEntry | null {
+	try {
+		const meta = JSON.parse(fs.readFileSync(path.join(dir, file), "utf-8"));
+		if (meta === null || typeof meta !== "object" || Array.isArray(meta)) return null;
+		return { sid, meta };
+	} catch {
+		return null;
+	}
 }
 
 // ── Four-state vocabulary (R3-3) ───────────────────────────────────────────

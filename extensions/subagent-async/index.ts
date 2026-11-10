@@ -30,6 +30,13 @@ import {
 } from "../lib/build-output-reaper.ts";
 import { discoverSessions } from "../lib/subagent-discovery.ts";
 import {
+	formatReport as formatReaperReport,
+	readReaperReport,
+	reapCheckouts,
+	summarizeReport as summarizeReaperReport,
+	wtRoots,
+} from "../lib/checkout-reaper.ts";
+import {
 	EXITED_FOOTER_WORD,
 	OUTCOME_WORD,
 	STOPPED_FOOTER_WORD,
@@ -1049,11 +1056,71 @@ export default function (pi: ExtensionAPI) {
 		// recorded identity, so a live foreign session's children are left
 		// alone. See `recoverOrphanedSubagents`.
 		try { recoverOrphanedSubagents(pi, ctx); } catch { /* best-effort */ }
-		// R3-2 reap: finished children's worktrees, two gates (027 + completion
-		// footer). Fire-and-forget — a failure must never block session start.
-		reapFinishedWorktrees(pi, ctx).catch((e) => {
-			debugLog(`reap: unhandled: ${e instanceof Error ? e.message : String(e)}`);
-		});
+		// A child session runs this handler too: one pass per child would cost
+		// N passes and each would overwrite the report the parent announced.
+		// The parent's own session start is the pass.
+		if (!process.env.PI_SUBAGENT_DEPTH) {
+			// The reaper (WO-2026-092): every checkout under `~/Developer/wt`. 027's
+			// subtree goes first — its gates are its own — and the general pass takes
+			// its verdicts and the worktree paths its metas named, so the same tree is
+			// never decided twice. The last pass's report is announced now; this one
+			// replaces it and speaks up only when it removed something.
+			const wt = wtRoots();
+			const previous = readReaperReport(wt.root);
+			if (previous) {
+				pi.events.emit(STARTUP_SUMMARY_EVENT, { key: "reaper", order: 25, text: summarizeReaperReport(previous) });
+			}
+			const subagentMetaPaths = new Set<string>();
+			let subagentScopeFailed = false;
+			const scopeCauses: string[] = [];
+			/** The first cause, plus how many others there were: a torn file must not
+			 *  hide the processing throw behind it. */
+			const scopeDetail = (): string | undefined =>
+				scopeCauses.length === 0
+					? undefined
+					: scopeCauses.length === 1
+						? scopeCauses[0]
+						: `${scopeCauses[0]}; ${scopeCauses.length - 1} more`;
+			reapFinishedWorktrees(pi, ctx, {
+				subagentMetaPaths,
+				onScopeFailed: ({ error }) => {
+					scopeCauses.push(error);
+					// One meta's processing threw, or the list could not be read: those
+					// trees are ungoverned, so the general pass reports them and judges
+					// none of them (WO-2026-092, R10; decision 051).
+					subagentScopeFailed = true;
+				},
+			})
+				.catch((e) => {
+					// The reap failed outside any meta's turn (its bound pass, say): no
+					// verdicts at all, so the whole subtree is ungoverned.
+					subagentScopeFailed = true;
+					scopeCauses.push(e instanceof Error ? e.message : String(e));
+					debugLog(`reap: unhandled: ${e instanceof Error ? e.message : String(e)}`);
+					return [];
+				})
+				.then((subagentResults) =>
+					reapCheckouts({
+						root: wt.root,
+						subagentBase: wt.subagentBase,
+						subagentResults,
+						subagentMetaPaths,
+						subagentScopeFailed,
+						subagentScopeDetail: scopeDetail(),
+						removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
+					}),
+				)
+				.then(({ report }) => {
+					if (report.removed.length === 0) return;
+					const lines = report.removed.map((row) => `${row.path}${row.removed?.orphaned ? " (orphaned)" : ""}`);
+					const text = `[Reaper] removed ${report.removed.length}: ${lines.slice(0, 6).join(", ")}${lines.length > 6 ? `, +${lines.length - 6} more` : ""} — /reaper`;
+					debugLog(text);
+					if (ctx.hasUI) ctx.ui.notify(text, "info");
+				})
+				.catch((e) => {
+					debugLog(`reaper: unhandled: ${e instanceof Error ? e.message : String(e)}`);
+				});
+		}
 	});
 
 	pi.on("session_shutdown", () => {
@@ -1077,6 +1144,18 @@ export default function (pi: ExtensionAPI) {
 			}
 			const lines = Array.from(running.values()).map((rs) => formatProgress(rs));
 			ctx.ui.notify(lines.join("\n\n"));
+		},
+	});
+
+	pi.registerCommand("reaper", {
+		description: "What the wt/ checkout reaper kept and why (the report at ~/Developer/wt/.reaper-report.json)",
+		handler: async (_args, ctx) => {
+			const report = readReaperReport(wtRoots().root);
+			if (!report) {
+				ctx.ui.notify("No reaper report yet — it is written at session start, and names every checkout it kept.", "info");
+				return;
+			}
+			ctx.ui.notify(formatReaperReport(report), "info");
 		},
 	});
 

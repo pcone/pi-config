@@ -25,7 +25,9 @@ const TOOLS = [
 	"wait",
 ];
 
-const COMMANDS = ["attach", "detach", "subagents", "watch"];
+/** The pre-split set, plus `reaper` (WO-2026-092: the wt/ checkout reaper's
+ *  on-demand view of the report it wrote at session start). */
+const COMMANDS = ["attach", "detach", "reaper", "subagents", "watch"];
 
 /** Every value name `tests/` and `extensions/` import from the entry point at
  *  5771f56. Types are erased and cannot be listed here; these are the ones a

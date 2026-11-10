@@ -363,6 +363,15 @@ export interface RecoveryScanDeps {
 	run?: CommandRunner;
 	/** Override for the bound's directory-size measure (tests). */
 	sizeOf?: (dir: string) => number | Promise<number>;
+	/** Filled with every worktree path a meta names. The general reaper takes
+	 *  this set instead of re-reading the thousand metas (WO-2026-092): a
+	 *  namespace checkout one of them names is 027's to decide. */
+	subagentMetaPaths?: Set<string>;
+	/** Called when a meta's own processing threw, or when the meta list could not
+	 *  be read. Those trees are ungoverned then, and a half-read meta set is not
+	 *  knowledge: the general pass reports them and judges none of them
+	 *  (decision 051). The reap carries on with the remaining metas either way. */
+	onScopeFailed?: (failure: { sid: string | null; error: string }) => void;
 }
 
 /**
@@ -596,6 +605,12 @@ export interface ReapResult {
  * helpers is not swallowed, and surfaces through the caller's `reap: unhandled`
  * log line.
  *
+ * Each meta is processed on its own. A throw inside one meta's turn is caught
+ * for that meta, reported through `onScopeFailed`, and the remaining metas still
+ * run: one unreadable meta must not hold every tree after it in the list. The
+ * failed meta's worktree path was read first, so it stays in
+ * `subagentMetaPaths` and the general pass reports it rather than judging it.
+ *
  * Build output (WO-2026-091) is not this function's: a removed tree loses its
  * `target/` and its share of the clone's shared cargo dir through
  * `removeWorktreeTree`, a kept one loses its `target/` once its branch has
@@ -614,98 +629,134 @@ export async function reapFinishedWorktrees(
 		run: deps.run,
 		sizeOf: deps.sizeOf,
 	});
+	// The one funnel for "this subtree is ungoverned". Four callers: a meta file
+	// that yields nothing, a meta whose `worktreePath` is not a path, a meta whose
+	// processing threw, and a metas dir that could not be listed. Every one of
+	// them reaches the general pass instead of leaving the trees silently judged.
+	const scopeFailed = (sid: string | null, e: unknown): void => {
+		const detail = e instanceof Error ? e.message : String(e);
+		debugLog(sid === null ? `reap: scan incomplete: ${detail}` : `reap: ${sid} meta failed: ${detail}`);
+		deps.onScopeFailed?.({ sid, error: detail });
+	};
+
+	/** One meta's turn. Split out so the try below bounds exactly one meta: a
+	 *  throw here must not abandon the metas after it in the list. */
+	const reapMeta = async (sid: string, meta: Record<string, any>, dir: string, worktreePath: string | null): Promise<void> => {
+		const parentCwd = typeof meta.parentCwd === "string" ? meta.parentCwd : "";
+		const isolationBranch = typeof meta.isolationBranch === "string" ? meta.isolationBranch : null;
+		// A namespace path the disk no longer has is the bound's dead set (M3).
+		if (worktreePath) buildOutput.noteGone(worktreePath, parentCwd);
+
+		if (running.has(sid)) return; // this process is still tracking it
+		if (
+			decideRecoveryAdoption(meta, {
+				selfPid: deps.selfPid,
+				selfSessionId: deps.selfSessionId ?? ctx.sessionManager.getSessionId(),
+				probe: deps.probe,
+			}) !== "adopt"
+		)
+			return;
+		if (!worktreePath) return;
+
+		const facts = gatherSubagentDiskFacts(sid, { meta, dir, probe: deps.probe });
+		if (!hasTerminalFooter(facts.logLastLine)) return; // child not provably finished
+
+		// A tree the reap keeps still loses its build output once the branch has
+		// landed or is gone (owner ask 2). The tree stays: resuming or inspecting
+		// it still works, only the multi-GB target goes.
+		const keep = async (outcome: ReapResult["outcome"], detail?: string): Promise<void> => {
+			const landed = await buildOutput.dropKeptTarget({ worktreePath, branch: isolationBranch, parentCwd });
+			if (landed.keptBecause) debugLog(`reap: ${sid} target/ kept: ${landed.keptBecause}`);
+			const joined = [detail, ...landed.notes].filter(Boolean).join("; ");
+			results.push({ sid, outcome, worktreePath, ...(joined ? { detail: joined } : {}) });
+		};
+
+		if (!fs.existsSync(worktreePath)) {
+			// The tree is gone, so nothing is left to remove. Its share of the
+			// clone's shared cargo dir is M3's: the dead set below carries every
+			// gone namespace path, and the bound's pass prunes them — one
+			// implementation, gated where the order puts it, instead of a
+			// `cargo clean -p` per dead meta on every reap.
+			results.push({ sid, outcome: "removed", worktreePath, detail: "directory already gone" });
+			return;
+		}
+
+		// Run git inside the worktree: its parent cwd may itself be gone.
+		const status = await git(["status", "--porcelain", "-uall"], worktreePath);
+		if (status.exitCode !== 0) {
+			debugLog(`reap: ${sid} git status failed: ${status.stderr.trim()}`);
+			await keep("kept-git-error", status.stderr.trim());
+			return;
+		}
+		if (status.stdout.trim().length > 0) {
+			debugLog(`reap: ${sid} kept — uncommitted work in ${worktreePath}`);
+			updateMetaAt(path.join(dir, `pi-subagent-${sid}.meta.json`), {
+				worktreeKept: { reason: "uncommitted work", at: new Date().toISOString() },
+			});
+			await keep("kept-uncommitted");
+			return;
+		}
+
+		const removal = await removeWorktreeTree(
+			{ run: deps.run, home: deps.home ?? cargoHomeOverride },
+			{
+				worktreePath,
+				isolationBranch,
+				parentHeadCommit: typeof meta.parentHeadCommit === "string" ? meta.parentHeadCommit : null,
+				// Empty when the meta predates the field: the removal then runs in the
+				// worktree itself, which reaches the same object store.
+				parentCwd,
+			},
+			{
+				// Never --force: the cleanliness check above is what makes a plain
+				// remove safe, and a race must not delete uncommitted work. No
+				// finalCommit either — the work lives on the branch, so it stays.
+				force: false,
+				finalCommit: null,
+				relockReason: `pi-subagent ${sid} (reap failed)`,
+			},
+		);
+		if (!removal.ok) {
+			// The shared removal already re-locked a tree it unlocked; nothing to
+			// restore. Never `--force`, never rmtree — the next reap retries.
+			debugLog(`reap: ${sid} ${removal.stage} failed: ${removal.detail}`);
+			await keep(removal.stage === "unlock" ? "kept-unlock-failed" : "kept-remove-failed", removal.detail);
+			return;
+		}
+		const detail = removal.buildOutput ? describeBuildOutput(removal.buildOutput) : null;
+		debugLog(`reap: removed finished worktree ${worktreePath} (${sid})${detail ? ` — ${detail}` : ""}`);
+		buildOutput.noteGone(worktreePath, parentCwd);
+		results.push({ sid, outcome: "removed", worktreePath, ...(detail ? { detail } : {}) });
+	};
+
 	try {
 		const dir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
-		for (const { sid, meta } of listSubagentMetas(dir)) {
+		for (const { sid, meta } of listSubagentMetas(dir, undefined, (target, kind) => {
+			// A meta file that yields nothing names a tree this reap cannot
+			// attribute, and an unlistable dir hides every meta at once: either way
+			// the scan is incomplete and nothing in it is governable.
+			scopeFailed(null, new Error(kind === "dir" ? `unlistable metas dir ${target}` : `unreadable meta ${target}`));
+		})) {
+			// The tree's path is read before anything that can throw, so a meta that
+			// fails below is still named in `subagentMetaPaths`: the general pass
+			// reports its tree instead of judging it (decision 051).
 			const worktreePath = typeof meta.worktreePath === "string" ? meta.worktreePath : null;
-			const parentCwd = typeof meta.parentCwd === "string" ? meta.parentCwd : "";
-			const isolationBranch = typeof meta.isolationBranch === "string" ? meta.isolationBranch : null;
-			// A namespace path the disk no longer has is the bound's dead set (M3).
-			if (worktreePath) buildOutput.noteGone(worktreePath, parentCwd);
-
-			if (running.has(sid)) continue; // this process is still tracking it
-			if (
-				decideRecoveryAdoption(meta, {
-					selfPid: deps.selfPid,
-					selfSessionId: deps.selfSessionId ?? ctx.sessionManager.getSessionId(),
-					probe: deps.probe,
-				}) !== "adopt"
-			)
-				continue;
-			if (!worktreePath) continue;
-
-			const facts = gatherSubagentDiskFacts(sid, { meta, dir, probe: deps.probe });
-			if (!hasTerminalFooter(facts.logLastLine)) continue; // child not provably finished
-
-			// A tree the reap keeps still loses its build output once the branch has
-			// landed or is gone (owner ask 2). The tree stays: resuming or inspecting
-			// it still works, only the multi-GB target goes.
-			const keep = async (outcome: ReapResult["outcome"], detail?: string): Promise<void> => {
-				const landed = await buildOutput.dropKeptTarget({ worktreePath, branch: isolationBranch, parentCwd });
-				if (landed.keptBecause) debugLog(`reap: ${sid} target/ kept: ${landed.keptBecause}`);
-				const joined = [detail, ...landed.notes].filter(Boolean).join("; ");
-				results.push({ sid, outcome, worktreePath, ...(joined ? { detail: joined } : {}) });
-			};
-
-			if (!fs.existsSync(worktreePath)) {
-				// The tree is gone, so nothing is left to remove. Its share of the
-				// clone's shared cargo dir is M3's: the dead set below carries every
-				// gone namespace path, and the bound's pass prunes them — one
-				// implementation, gated where the order puts it, instead of a
-				// `cargo clean -p` per dead meta on every reap.
-				results.push({ sid, outcome: "removed", worktreePath, detail: "directory already gone" });
-				continue;
+			// `null` is how a session with no tree records itself — not corruption.
+			// Only a value that is present, non-null and not a string is one.
+			if (meta.worktreePath != null && worktreePath === null) {
+				scopeFailed(sid, new Error(`worktreePath is not a path: ${JSON.stringify(meta.worktreePath)}`));
 			}
-
-			// Run git inside the worktree: its parent cwd may itself be gone.
-			const status = await git(["status", "--porcelain", "-uall"], worktreePath);
-			if (status.exitCode !== 0) {
-				debugLog(`reap: ${sid} git status failed: ${status.stderr.trim()}`);
-				await keep("kept-git-error", status.stderr.trim());
-				continue;
+			if (worktreePath && deps.subagentMetaPaths) deps.subagentMetaPaths.add(worktreePath);
+			try {
+				await reapMeta(sid, meta, dir, worktreePath);
+			} catch (e) {
+				// This meta's trees only. The rest of the list is still this reap's.
+				scopeFailed(sid, e);
 			}
-			if (status.stdout.trim().length > 0) {
-				debugLog(`reap: ${sid} kept — uncommitted work in ${worktreePath}`);
-				updateMetaAt(path.join(dir, `pi-subagent-${sid}.meta.json`), {
-					worktreeKept: { reason: "uncommitted work", at: new Date().toISOString() },
-				});
-				await keep("kept-uncommitted");
-				continue;
-			}
-
-			const removal = await removeWorktreeTree(
-				{ run: deps.run, home: deps.home ?? cargoHomeOverride },
-				{
-					worktreePath,
-					isolationBranch,
-					parentHeadCommit: typeof meta.parentHeadCommit === "string" ? meta.parentHeadCommit : null,
-					// Empty when the meta predates the field: the removal then runs in the
-					// worktree itself, which reaches the same object store.
-					parentCwd,
-				},
-				{
-					// Never --force: the cleanliness check above is what makes a plain
-					// remove safe, and a race must not delete uncommitted work. No
-					// finalCommit either — the work lives on the branch, so it stays.
-					force: false,
-					finalCommit: null,
-					relockReason: `pi-subagent ${sid} (reap failed)`,
-				},
-			);
-			if (!removal.ok) {
-				// The shared removal already re-locked a tree it unlocked; nothing to
-				// restore. Never `--force`, never rmtree — the next reap retries.
-				debugLog(`reap: ${sid} ${removal.stage} failed: ${removal.detail}`);
-				await keep(removal.stage === "unlock" ? "kept-unlock-failed" : "kept-remove-failed", removal.detail);
-				continue;
-			}
-			const detail = removal.buildOutput ? describeBuildOutput(removal.buildOutput) : null;
-			debugLog(`reap: removed finished worktree ${worktreePath} (${sid})${detail ? ` — ${detail}` : ""}`);
-			buildOutput.noteGone(worktreePath, parentCwd);
-			results.push({ sid, outcome: "removed", worktreePath, ...(detail ? { detail } : {}) });
 		}
 	} catch (e) {
-		debugLog(`reap: aborted: ${e instanceof Error ? e.message : String(e)}`);
+		// The meta list itself could not be read: no meta ran at all.
+		scopeFailed(null, e);
 	}
 
 	// The shared dir's bound (owner ask 3), once per session start: measure each

@@ -14,7 +14,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, {
@@ -24,11 +24,14 @@ import subagentFactory, {
 	metaPath,
 	readMetaJson,
 	reapFinishedWorktrees,
+	removeWorktreeTree,
 	resolveRunningSession,
 	updateMetaJson,
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
-import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { _testSetReaperHome, readReaperReport, reapCheckouts } from "../extensions/lib/checkout-reaper.ts";
+import { addWorktree, backdate, git, gitDirOf, makeRepo as reaperRepo, mustGit } from "./helpers/reaper-fixtures.ts";
+import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
 
@@ -38,11 +41,6 @@ import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
 const wtRoot = isolateSubagentWorktrees("pi-lock-wt-");
 
 // ── Real git helpers ───────────────────────────────────────────────────────
-
-function git(cwd: string, args: string[]): { code: number; out: string; err: string } {
-	const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", env: childEnv() });
-	return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
-}
 
 function makeRepo(): string {
 	const repo = mkdtempSync(join(tmpdir(), "pi-lock-repo-"));
@@ -455,15 +453,273 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		// alone, over the 5 s default on a loaded box.
 	}, 30_000);
 
-	it("the real session_start handler runs the reap (wiring)", async () => {
+	// ── One failing meta among several (R10) ────────────────────────────────
+
+	interface PerMetaFixture {
+		home: string;
+		root: string;
+		subagentBase: string;
+		registry: string;
+		/** The meta whose processing throws, and the tree it names. */
+		failing: { sid: string; worktreePath: string };
+		/** The metas that must still be reaped. */
+		reaped: Array<{ sid: string; worktreePath: string }>;
+	}
+
+	/** Several metas in one registry dir, the first in the scan's own order
+	 *  corrupted so its processing throws: its tree is dirty, and its recorded
+	 *  isolation branch holds a byte no spawn accepts, so 027's own keep path
+	 *  (`dropKeptTarget` → git) rejects. The other metas are clean and finished,
+	 *  so the reap removes their trees. Which meta fails is read from `readdir`
+	 *  order, the order `listSubagentMetas` iterates, so the failing one is always
+	 *  first and every other meta is one a single-`try` loop would abandon. */
+	function perMetaFixture(): PerMetaFixture {
 		const repo = makeRepo();
-		const { dir, worktreePath } = makeEntryFor(repo, "wiring-1", {
-			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		const home = tempDir("pi-permeta-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		const registry = tempDir("pi-permeta-registry-");
+		const sids = ["permeta-a", "permeta-b", "permeta-c"];
+		const entries = sids.map((sid) =>
+			makeEntryFor(repo, sid, {
+				worktreePath: join(subagentBase, `myrepo-${sid}`),
+				parentCwd: repo,
+				logLastLine: "── Completed (1 turns, exit 0) ──\n",
+			}),
+		);
+		// One registry: `makeEntryFor` writes each meta and log into its own dir.
+		for (const entry of entries) {
+			for (const name of readdirSync(entry.dir)) {
+				writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+			}
+		}
+
+		const firstName = readdirSync(registry).filter((f) => f.endsWith(".meta.json"))[0];
+		const failingSid = firstName.slice("pi-subagent-".length, -".meta.json".length);
+		const failingPath = entries[sids.indexOf(failingSid)].worktreePath;
+		// Dirty, so the reap takes its keep path — the one that reaches the throw.
+		writeFileSync(join(failingPath, "uncommitted.txt"), "bytes\n");
+		const metaFile = join(registry, firstName);
+		const meta = JSON.parse(readFileSync(metaFile, "utf8"));
+		meta.isolationBranch = "pi-subagent-\u0000-corrupt";
+		writeFileSync(metaFile, JSON.stringify(meta));
+
+		return {
+			home,
+			root,
+			subagentBase,
+			registry,
+			failing: { sid: failingSid, worktreePath: failingPath },
+			reaped: entries
+				.map((entry, i) => ({ sid: sids[i], worktreePath: entry.worktreePath }))
+				.filter((entry) => entry.sid !== failingSid),
+		};
+	}
+
+	it("one meta's failure leaves the rest of the list reaped, and hands its own tree over ungoverned (R10)", async () => {
+		const f = perMetaFixture();
+		const metaPaths = new Set<string>();
+		let scopeFailed = false;
+
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: f.registry,
+			selfPid: process.pid,
+			subagentMetaPaths: metaPaths,
+			onScopeFailed: () => {
+				scopeFailed = true;
+			},
 		});
 
-		// Register the extension for real and fire the captured handler: the reap
-		// is fire-and-forget inside session_start, so the effect (not a return
-		// value) is what proves the wiring. Dropping the call leaves the tree.
+		// The metas after the failing one still ran: their trees went, with a
+		// verdict each. Restoring the single `try` around the loop loses them.
+		expect(results.map((r) => r.sid).sort()).toEqual(f.reaped.map((entry) => entry.sid).sort());
+		expect(results.every((r) => r.outcome === "removed")).toBe(true);
+		for (const entry of f.reaped) expect(existsSync(entry.worktreePath)).toBe(false);
+		// The failed meta's tree keeps its bytes — 027 reached no verdict on it.
+		// (Its survival alone proves nothing: the tree is dirty, so the general
+		// gates would keep it as `dirty`. The `gate` assertion below is the pin.)
+		expect(readFileSync(join(f.failing.worktreePath, "uncommitted.txt"), "utf8")).toBe("bytes\n");
+		// Its path was recorded before anything threw, and the failure was reported.
+		expect(metaPaths.has(f.failing.worktreePath)).toBe(true);
+		expect(scopeFailed).toBe(true);
+
+		// What the general pass does with that handover: 027's verdicts where it
+		// reached one, and "ungoverned" — never the general gates' judgement — for
+		// the failed meta's tree. Every general gate would remove that tree.
+		const { report } = await reapCheckouts({
+			root: f.root,
+			subagentBase: f.subagentBase,
+			home: f.home,
+			budgetMs: 60_000,
+			subagentResults: results,
+			subagentMetaPaths: metaPaths,
+			subagentScopeFailed: scopeFailed,
+			removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
+			listCwds: async () => ({ cwds: [], problem: null }),
+		});
+		const row = report.kept.find((r) => r.path === f.failing.worktreePath);
+		expect(row?.gate).toBe("subagent");
+		expect(row?.detail).toContain("027's scan was incomplete");
+	}, 60_000);
+
+	it("a meta that records no worktree does not mark the namespace ungoverned (R10)", async () => {
+		// `buildSpawnMeta` writes `worktreePath: null` for every non-isolated spawn,
+		// which is most of them (reviewers isolate: false). Treating that as a
+		// corrupt meta would ungovern the namespace on every session start.
+		const repo = reaperRepo(tempDir("pi-nullmeta-repo-"));
+		const home = tempDir("pi-nullmeta-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		const registry = tempDir("pi-nullmeta-registry-");
+		const withTree = makeEntryFor(repo.repo, "nullmeta-a", {
+			worktreePath: join(subagentBase, "myrepo-nullmeta-a"),
+			parentCwd: repo.repo,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		const noTree = makeEntryFor(repo.repo, "nullmeta-b", {
+			worktreePath: join(subagentBase, "myrepo-nullmeta-b"),
+			parentCwd: repo.repo,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		for (const entry of [withTree, noTree]) {
+			for (const name of readdirSync(entry.dir)) {
+				writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+			}
+		}
+		// Exactly as the spawn writes it: the key present, the value null.
+		const noTreeMeta = join(registry, "pi-subagent-nullmeta-b.meta.json");
+		const meta = JSON.parse(readFileSync(noTreeMeta, "utf8"));
+		meta.worktreePath = null;
+		writeFileSync(noTreeMeta, JSON.stringify(meta));
+
+		const causes: string[] = [];
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: registry,
+			selfPid: process.pid,
+			onScopeFailed: ({ error }) => {
+				causes.push(error);
+			},
+		});
+
+		expect(causes).toEqual([]);
+		expect(results.map((r) => r.sid)).toEqual(["nullmeta-a"]);
+		expect(results[0].outcome).toBe("removed");
+		expect(existsSync(withTree.worktreePath)).toBe(false);
+		// The meta that names no tree leaves its fixture tree alone.
+		expect(existsSync(noTree.worktreePath)).toBe(true);
+	}, 60_000);
+
+	it("a meta whose worktreePath is not a path marks the namespace ungoverned (R10)", async () => {
+		const repo = reaperRepo(tempDir("pi-badpath-repo-"));
+		const registry = tempDir("pi-badpath-registry-");
+		const entry = makeEntryFor(repo.repo, "badpath-a", { parentCwd: repo.repo });
+		for (const name of readdirSync(entry.dir)) {
+			writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+		}
+		const metaFile = join(registry, "pi-subagent-badpath-a.meta.json");
+		const meta = JSON.parse(readFileSync(metaFile, "utf8"));
+		meta.worktreePath = 42;
+		writeFileSync(metaFile, JSON.stringify(meta));
+
+		const causes: string[] = [];
+		await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: registry,
+			selfPid: process.pid,
+			onScopeFailed: ({ error }) => {
+				causes.push(error);
+			},
+		});
+
+		expect(causes).toHaveLength(1);
+		expect(causes[0]).toContain("worktreePath is not a path");
+		// Which value was wrong, not only that one was: the operator's next step
+		// is to find that meta.
+		expect(causes[0]).toContain("42");
+	}, 60_000);
+
+	it("a meta that will not parse leaves the namespace ungoverned, and the readable metas after it still reap (R10)", async () => {
+		// Three metas, the first in scan order torn. A scan that stops at the drop
+		// leaves the other two trees behind; one that skips it silently leaves the
+		// torn meta's tree to the general gates, which remove it (clean, unlocked,
+		// backdated).
+		const repo = reaperRepo(tempDir("pi-tornmeta-repo-"));
+		const home = tempDir("pi-tornmeta-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		const registry = tempDir("pi-tornmeta-registry-");
+		const sids = ["tornmeta-a", "tornmeta-b", "tornmeta-c"];
+		const entries = sids.map((sid) =>
+			makeEntryFor(repo.repo, sid, {
+				worktreePath: join(subagentBase, `myrepo-${sid}`),
+				parentCwd: repo.repo,
+				logLastLine: "── Completed (1 turns, exit 0) ──\n",
+			}),
+		);
+		for (const entry of entries) {
+			for (const name of readdirSync(entry.dir)) {
+				writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+			}
+		}
+
+		const firstName = readdirSync(registry).filter((f) => f.endsWith(".meta.json"))[0];
+		const tornSid = firstName.slice("pi-subagent-".length, -".meta.json".length);
+		const tornPath = entries[sids.indexOf(tornSid)].worktreePath;
+		writeFileSync(join(registry, firstName), "{ not json");
+		// Nothing but 027's ownership keeps this tree: unlocked, clean, pushed, old.
+		mustGit(repo.repo, ["worktree", "unlock", tornPath]);
+		backdate(gitDirOf(tornPath));
+		backdate(tornPath);
+		const readable = sids.filter((sid) => sid !== tornSid);
+
+		const metaPaths = new Set<string>();
+		let scopeFailed = false;
+		let cause: string | undefined;
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: registry,
+			selfPid: process.pid,
+			subagentMetaPaths: metaPaths,
+			onScopeFailed: ({ error }) => {
+				scopeFailed = true;
+				cause ??= error;
+			},
+		});
+
+		// A scan that stopped at the torn meta leaves these behind.
+		expect(results.map((r) => r.sid).sort()).toEqual(readable.slice().sort());
+		expect(results.every((r) => r.outcome === "removed")).toBe(true);
+		for (const sid of readable) expect(existsSync(join(subagentBase, `myrepo-${sid}`))).toBe(false);
+		expect(scopeFailed).toBe(true);
+
+		const { report } = await reapCheckouts({
+			root,
+			subagentBase,
+			home,
+			budgetMs: 60_000,
+			subagentResults: results,
+			subagentMetaPaths: metaPaths,
+			subagentScopeFailed: scopeFailed,
+			subagentScopeDetail: cause,
+			removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
+			listCwds: async () => ({ cwds: [], problem: null }),
+		});
+
+		// The torn meta's tree is clean, unlocked and old: every general gate would
+		// remove it. Without the flag it is reported `removed`.
+		const tornRow = report.kept.find((r) => r.path === tornPath);
+		expect(tornRow?.gate).toBe("subagent");
+		// The row names the file, so a torn meta is actionable rather than mystery.
+		expect(tornRow?.detail).toContain(firstName);
+		expect(report.removed).toEqual([]);
+		expect(existsSync(tornPath)).toBe(true);
+	}, 60_000);
+
+	/** Register the extension for real and keep the handlers it captured. Every
+	 *  wiring row fires the captured `session_start`: the reap is fire-and-forget
+	 *  inside it, so the effect (not a return value) is what proves the wiring. */
+	function registerHandler(): Map<string, Function> {
 		const handlers = new Map<string, Function>();
 		const pi: any = {
 			events: { emit: () => {} },
@@ -474,6 +730,25 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {} },
 		};
 		subagentFactory(pi);
+		return handlers;
+	}
+
+	it("the real session_start handler runs the reap (wiring)", async () => {
+		const repo = makeRepo();
+		const { dir, worktreePath } = makeEntryFor(repo, "wiring-1", {
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		// The handler also runs WO-2026-092's reaper, which walks
+		// `homedir()/Developer/wt` and `homedir()/.cache/cargo-target`: on the box's
+		// home that is every real checkout. Bun's `homedir()` is fixed at process
+		// start, so the pin is the module's home seam (and the cargo root hook the
+		// file's beforeAll already sets), not `HOME`.
+		const home = tempDir("pi-wiring-home-");
+		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
+		_testSetReaperHome(home);
+
+		// Dropping the call leaves the tree.
+		const handlers = registerHandler();
 		_testSetRecoveryScanDir(dir);
 		try {
 			await handlers.get("session_start")!(
@@ -482,10 +757,212 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			);
 			expect(await waitFor(() => !existsSync(worktreePath), 20_000)).toBe(true);
 			expect(worktreeEntry(repo, worktreePath)).toBeNull();
+			// The general pass ran too, and wrote its report under the pinned home:
+			// with the wiring dropped there is no report at all.
+			expect(await waitFor(() => existsSync(join(home, "Developer", "wt", ".reaper-report.json")), 20_000)).toBe(true);
 		} finally {
 			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
 		}
-	});
+		// Two reaps and a report write on a loaded box.
+	}, 30_000);
+
+	// ── The general pass, driven through the same handler ──────────────────
+
+	it("the wired general pass removes a checkout its gates clear (wiring)", async () => {
+		const home = tempDir("pi-wiring-home-");
+		const root = join(home, "Developer", "wt");
+		mkdirSync(join(root, "subagents"), { recursive: true });
+		// A checkout every gate clears: clean, pushed to the origin under this home,
+		// idle past the window, nothing working in it. A bare `mkdir` here would show
+		// only that the pass wrote a report; this tree shows what the report means.
+		const { repo } = reaperRepo(home);
+		const branch = "pi-subagent-wired00000001";
+		const tree = addWorktree(repo, join(root, "myrepo-wired"), branch);
+		backdate(gitDirOf(tree));
+		backdate(tree);
+		_testSetReaperHome(home);
+		_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: repo, sessionManager: { getSessionId: () => "sess-reaper-wiring" }, ui: {} },
+			);
+			expect(await waitFor(() => !existsSync(tree), 20_000)).toBe(true);
+			// The removal the call site wires in, not an rmtree: the registration went
+			// with the tree, and the branch delete is inside that same sequence.
+			expect(worktreeEntry(repo, tree)).toBeNull();
+			expect(git(repo, ["branch", "--list", branch]).out.trim()).toBe("");
+			expect(await waitFor(() => existsSync(join(root, ".reaper-report.json")), 20_000)).toBe(true);
+			const row = readReaperReport(root)?.removed.find((r) => r.path === tree);
+			expect(row?.state).toBe("removed");
+			expect(row?.gate).toBeNull();
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+		// A real reap: the git gates, the lsof sweep and a worktree removal.
+	}, 60_000);
+
+	it("hands 027's verdict for a tree it keeps into the general report (wiring)", async () => {
+		const repo = makeRepo();
+		const home = tempDir("pi-wiring-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		// A tree 027 keeps: uncommitted work. Its verdict, not the general gates'
+		// (which would remove it), is the row the report must carry.
+		const { dir, worktreePath } = makeEntryFor(repo, "wiring-kept", {
+			worktreePath: join(subagentBase, "myrepo-wiring-kept"),
+			dirty: true,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		_testSetReaperHome(home);
+		_testSetRecoveryScanDir(dir);
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: repo, sessionManager: { getSessionId: () => "sess-verdict-wiring" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(join(root, ".reaper-report.json")), 20_000)).toBe(true);
+			const row = readReaperReport(root)?.kept.find((r) => r.path === worktreePath);
+			// What the handover changes is the row, not the tree: `makeEntryFor`
+			// locks the tree, so a general-pass judgement would report gate "locked"
+			// and keep it anyway. `existsSync` here would pass either way; these two
+			// lines are the ones a broken handoff reds.
+			expect(row?.gate).toBe("subagent");
+			expect(row?.detail).toBe("subagent kept-uncommitted");
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+		// 027's reap, then the general pass over the same registry.
+	}, 60_000);
+
+	it("hands one failed meta's tree over as ungoverned through the real handler (wiring)", async () => {
+		const f = perMetaFixture();
+		_testSetReaperHome(f.home);
+		_testSetRecoveryScanDir(f.registry);
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: f.root, sessionManager: { getSessionId: () => "sess-scope-wiring" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(join(f.root, ".reaper-report.json")), 20_000)).toBe(true);
+			// The flag's producer, end to end: without it this tree is reported as
+			// "held by 027's gates" — a verdict 027 never reached — and the general
+			// gates judge it, which is the deletion a failed 027 reap must prevent.
+			const row = readReaperReport(f.root)?.kept.find((r) => r.path === f.failing.worktreePath);
+			expect(row?.gate).toBe("subagent");
+			expect(row?.detail).toContain("027's scan was incomplete");
+			expect(existsSync(f.failing.worktreePath)).toBe(true);
+			// The metas after the failing one still ran through the handler too.
+			for (const entry of f.reaped) expect(existsSync(entry.worktreePath)).toBe(false);
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+		// Two reaps over three trees, then the general pass.
+	}, 60_000);
+
+	it("names the cause in the report through the real handler, first cause plus a count (wiring)", async () => {
+		// Two causes, both real: a torn meta file (reported by the scan) and a meta
+		// whose processing throws (reported per meta). The row must carry the first
+		// cause and admit there is another, or an operator fixes one and re-runs to
+		// discover the second.
+		const f = perMetaFixture();
+		const tornName = `pi-subagent-torn-extra.meta.json`;
+		writeFileSync(join(f.registry, tornName), "{ not json");
+		_testSetReaperHome(f.home);
+		_testSetRecoveryScanDir(f.registry);
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: f.root, sessionManager: { getSessionId: () => "sess-scope-detail" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(join(f.root, ".reaper-report.json")), 20_000)).toBe(true);
+			const row = readReaperReport(f.root)?.kept.find((r) => r.path === f.failing.worktreePath);
+			expect(row?.gate).toBe("subagent");
+			expect(row?.detail).toContain("027's scan was incomplete");
+			// The scan's cause comes first and names the file; the throw is counted.
+			expect(row?.detail).toContain(tornName);
+			expect(row?.detail).toContain("1 more");
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+	}, 60_000);
+
+	it("an unlistable metas dir marks the namespace ungoverned (R10)", async () => {
+		// The dir arm of the same funnel. Nothing can be attributed, so the scan
+		// reports itself incomplete; the handover that follows is pinned by the
+		// wiring row above and by the torn-meta row.
+		const missing = join(tempDir("pi-nodir-parent-"), "not-there");
+
+		const causes: string[] = [];
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: missing,
+			selfPid: process.pid,
+			onScopeFailed: ({ error }) => {
+				causes.push(error);
+			},
+		});
+
+		expect(results).toEqual([]);
+		expect(causes).toHaveLength(1);
+		// Which path, not only that one was unlistable.
+		expect(causes[0]).toContain(`unlistable metas dir ${missing}`);
+	}, 60_000);
+
+	it("a child session's start runs no reaper pass (PI_SUBAGENT_DEPTH)", async () => {
+		// N children would pay N passes and each would overwrite the report the
+		// parent announced. The child's start is not the pass.
+		const home = tempDir("pi-wiring-home-");
+		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
+		const depthBefore = process.env.PI_SUBAGENT_DEPTH;
+		_testSetReaperHome(home);
+		try {
+			const handlers = registerHandler();
+			_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
+			const reportFile = join(home, "Developer", "wt", ".reaper-report.json");
+			// Positive control: the same home and the same registry write a report
+			// when the pass runs, so the child's silence below is the depth gate and
+			// not a fixture that never writes.
+			delete process.env.PI_SUBAGENT_DEPTH;
+			const controlStart = Date.now();
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "startup" },
+				{ cwd: home, sessionManager: { getSessionId: () => "sess-parent-control" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(reportFile), 20_000)).toBe(true);
+			const controlMs = Date.now() - controlStart;
+			unlinkSync(reportFile);
+
+			process.env.PI_SUBAGENT_DEPTH = "1";
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "startup" },
+				{ cwd: home, sessionManager: { getSessionId: () => "sess-child-wiring" }, ui: {} },
+			);
+			// The pass is fire-and-forget, so the negative needs a window: the
+			// control's own measured time to write, doubled, with a floor — a fixed
+			// 500 ms would pass while a real pass was still gating.
+			await Bun.sleep(Math.max(1_000, controlMs * 2));
+			expect(existsSync(reportFile)).toBe(false);
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+			if (depthBefore === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+			else process.env.PI_SUBAGENT_DEPTH = depthBefore;
+		}
+	}, 30_000);
 });
 
 // ── Reap: build output (WO-2026-091) ───────────────────────────────────────
