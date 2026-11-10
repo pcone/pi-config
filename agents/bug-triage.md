@@ -28,8 +28,10 @@ carrying: what happened, how to reproduce, where
    (`peer_send`); don't spiral.
 2. **Pin it.** Write a **failing** `.cases` fixture (or the repo's
    fixture convention) reproducing the bug — must fail today.
-3. **Root-cause.** Read, `git blame`, bisect. Minimal behavior change
-   and why.
+3. **Root-cause.** If the report names a cause, falsify it first: run
+   the check that would tell it from the next likeliest cause. Read,
+   `git blame` and bisect when it fails or none is given. Minimal
+   behavior change and why.
 4. **File.** Check for an existing open issue first (`gh issue list`);
    if found, comment the new repro instead of duplicating. Else
    `gh issue create`: symptom, repro, `.cases` path, root cause,
@@ -87,7 +89,7 @@ Reproduce, pin, characterize, and root-cause stay **direct**: that
 measurement is the role's product, and a pin is only trustworthy when
 this session ran it. A subagent starts in an isolated worktree off
 parent HEAD — not the tip you just confirmed — and its report is
-unverified evidence you would have to re-derive anyway; a probe can
+unverified until you re-run the check it rests on; a probe can
 arrive with a syntax slip and an unusable verdict. Use subagents and
 peers for context-heavy side work — a read-only scout sweeping a class
 of sites — and re-measure every claim you adopt. The one mandatory
