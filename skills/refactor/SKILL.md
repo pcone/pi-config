@@ -53,10 +53,7 @@ For a signature, constructor or representation used at many sites (Fowler, bliki
 
 All three land in one work order. Stopping after expand adds a second path: "if the contract phase
 is not executed you might end up in a worse state than you started" (Fowler, *ParallelChange*). If contract cannot
-land, stop with PLAN MISMATCH and land nothing — expand and migrate stay unmerged. Count the sites
-by behaviour before expanding and after contracting: `rg` for what the code does (every struct
-literal `Foo {`, every field write), not only for the names you already know (APPEND_SYSTEM §
-Make a rule complete by structure).
+land, stop with PLAN MISMATCH and land nothing — expand and migrate stay unmerged.
 
 ## 4. New logic in a big area → sprout
 
@@ -80,13 +77,6 @@ cares about and calls the walk to recurse (rustc `intravisit`: each `visit_*` de
 
 ## 7. Splitting a giant file or function → responsibilities and coupling
 
-Group by responsibility (Feathers ch. 20, "Seeing Responsibilities"):
-
-- methods with similar names;
-- hidden or private clusters — another module "dying to get out";
-- decisions that might change;
-- which data each function uses — functions over the same fields belong together.
-
 Justify each boundary by coupling, not size. Code that changes together stays together; code that
 changes for different reasons separates (Beck, *Tidy First?*, ch. 29–32: "coupling drives the cost
 of software"). Check a proposed grouping against `git log`: functions the same work orders edit
@@ -98,11 +88,7 @@ bug-triage.
 
 Two elements are *connascent* when changing one forces a change to the other. The term is Page-Jones's;
 Beck treats it as the same thing as coupling (*Tidy First?*, ch. 29). Name the kind before
-choosing a fix (connascence.io):
-
-- **Static** (visible in the source): name, type, meaning (agreeing on what a value means — a
-  sentinel, a magic number), position (agreeing on order), algorithm (agreeing on a computation).
-- **Dynamic** (visible only at run time): execution order, timing, value, identity.
+choosing a fix (connascence.io).
 
 Judge each instance on three axes:
 
@@ -125,22 +111,17 @@ than being re-derived.
 
 ## Don't
 
-- Refactor code nobody needs to change (Fowler ch. 2; Beck ch. 21, "tidy never").
 - Mix structure and behaviour in one commit (Beck ch. 8). While refactoring, change a test only to
   follow an interface change (Fowler ch. 2, "two hats").
-- Wait for a third copy. The rule of three ("three strikes, then you refactor" — Roberts, in
-  Fowler ch. 2) is not ours: shared logic is extracted at the second copy unless the cases
-  genuinely diverge (APPEND_SYSTEM § Share code).
 - Add passes for structure's sake. Many small passes over formal IRs (nanopass; Keep & Dybvig,
   ICFP 2013) cost compile time (rejected for tfd, owner 2026-10-23).
 
 ## Sources
 
-- Beck, K. *Tidy First?* O'Reilly, 2023 — ch. 8, 21, 29–32.
+- Beck, K. *Tidy First?* O'Reilly, 2023 — ch. 8, 29–32.
 - Ellnestam, O. & Brolund, D. *The Mikado Method.* Manning, 2014 — ch. 1–4.
-- Feathers, M. *Working Effectively with Legacy Code.* Prentice Hall, 2004 — ch. 6, 12, 13, 20.
-- Fowler, M. *Refactoring*, 2nd ed. Addison-Wesley, 2018 — ch. 2 (incl. Don Roberts' rule of
-  three, two hats), ch. 6 (Split Phase). Bliki: *ParallelChange*.
+- Feathers, M. *Working Effectively with Legacy Code.* Prentice Hall, 2004 — ch. 6, 12, 13.
+- Fowler, M. *Refactoring*, 2nd ed. Addison-Wesley, 2018 — ch. 2 (two hats), ch. 6 (Split Phase). Bliki: *ParallelChange*.
 - Keep, A. & Dybvig, R. K. "A Nanopass Framework for Commercial Compiler Development." ICFP 2013.
 - Yamashita, K. et al. "Thresholds for Size and Complexity Metrics: A Case Study from the
   Perspective of Defect Density." QRS 2016.

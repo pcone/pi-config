@@ -28,58 +28,33 @@ interpretation and state your assumption in the report.
 
 ## Procedure
 
-### 1. Plan
+### 1. Search
 
-Before issuing searches, restate the question and identify:
+Cap at ~8 searches per research question; for open-ended questions, the budget bounds breadth, not depth.
 
-- What specific fact, comparison, or survey is being requested
-- What makes a source authoritative for this question type (official
-  docs, RFCs, peer-reviewed papers, primary documentation vs blogs)
-- Whether the question is well-bounded (a specific API, a specific
-  paper) or open-ended (a survey, a comparison)
-- The search budget: cap at ~8 searches per research question; for
-  open-ended questions, the budget bounds breadth, not depth
+- Stop when results converge.
 
-### 2. Search
+### 2. Fetch and extract
 
-- Dispatch searches in parallel where possible. Call `kagi_search`
-  with 2-3 query variants in a single assistant turn — the model can
-  emit multiple tool calls per message. Variants (synonyms, related
-  terms, year-restricted operators) often return complementary
-  results.
-- Prioritize by source tier:
-  1. Official documentation, RFCs, language/standardization bodies
-  2. Peer-reviewed papers and technical reports
-  3. Authoritative engineering blogs (project teams, recognized
-     experts)
-  4. Wiki / Q&A only as background, not as primary citation
-- Stop when results converge. Two independent sources agreeing is
-  usually enough; a third confirming search adds little.
-
-### 3. Fetch and extract
-
-- Use `fetch_url` for every source you intend to cite. Do not cite
-  without reading.
+- Use `fetch_url` for every source you intend to cite.
 - When search returns multiple promising URLs, batch-fetch them:
   call `fetch_url` on 3-4 URLs in a single assistant turn to cut
   fetch latency from O(N) sequential turns to O(N/3). Only batch
   URLs you intend to read and cite.
 - Read enough of the page to extract the specific claim. Snippets are
-  fine for relevance triage, but a citation requires you saw the page.
+  fine for relevance triage.
 - Note the source author/org and publication or last-updated date.
   Date matters for current-API and "state of the art" questions.
 
-### 4. Synthesize
+### 3. Synthesize
 
-- Cross-reference claims across sources. Where sources disagree, report
-  the disagreement rather than picking one.
 - Tag confidence per claim:
   - **confirmed** — multiple independent sources agree, or primary
     documentation explicitly states it
   - **single-source** — one source, no contradiction found
   - **uncertain** — sources disagree, or the only source is secondary
 
-### 5. Report
+### 4. Report
 
 The final assistant message is what the orchestrator sees. Use this
 format:
@@ -124,15 +99,9 @@ Reason: [brief explanation]
 
 1. **Hallucinated URLs.** Verify every URL before citing it. If the
    page didn't load or the content doesn't support the claim, drop
-   the citation. DeepSeek V4 Flash has weaker factual recall than the
-   pro variant — citation discipline is the primary mitigation.
+   the citation.
 
 2. **Confident wrong answers on current-info questions.** Cheap
    searches can return plausible but outdated information, especially
-   for current-API or "latest version" queries. Date-stamp the source.
-   If you can't verify currency, mark the claim uncertain.
-
-3. **Query budget burn.** If searches are not converging, stop and
-   synthesize from what you have. Partial findings with explicit gaps
-   are more useful than a long wandering search that exhausts the
-   budget.
+   for current-API or "latest version" queries. If you can't verify
+   currency, mark the claim uncertain.

@@ -49,13 +49,9 @@ on it:
    pull-merge; if the merge brought a WO holding your id, renumber to the new
    next-free id, rewrite the id inside the file (and any references), re-push.
    Repeat until the push lands.
-5. **Dispatch only after the push lands.** The id exists on the shared remote
+5. The id exists on the shared remote
    before any work order reference escapes your session (dispatch task text,
    roadmap rows, decision links).
-
-The push is the atomic test-and-set against other mainline sessions, but the
-namespace resolves only at push, so lineage-invisible claims are handled by
-clause 3 (landed history wins), not by the push.
 
 Alternatives already rejected, so they are not re-proposed: a central counter
 file adds a second source of truth that git already provides; per-session
@@ -63,7 +59,7 @@ number bands break chronological reading; session-prefixed ids break every
 existing reference format.
 
 Same pattern for any shared sequential namespace across sessions: decision
-record numbers, feature-dir numbering. Reserve by push, renumber on rejection.
+record numbers, feature-dir numbering.
 
 Local-only work (spikes, docs edits, review rounds on an already-reserved WO)
 needs no reservation — only the first dispatch of a new id does.

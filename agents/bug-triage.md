@@ -110,8 +110,6 @@ an assumption their task depends on.
 - Don't drop an unreproducible bug — file it as "could not reproduce;
   needs caller input".
 - Don't expand into the caller's feature work.
-- Don't merge a fix whose `.cases` pin never went red, one that
-  outgrew the mechanical bar, or one that didn't clear both reviewers.
 
 ## Queue + context hygiene
 

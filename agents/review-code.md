@@ -78,10 +78,6 @@ real entry points, or do they only call internal helpers? If they
 only call internal helpers, flag it as a MEDIUM and let
 `review-tests` do the per-case audit.
 
-**Do not duplicate the exhaustive test-coverage audit.** If you
-find yourself listing every test case and checking every assertion,
-stop — that is `review-tests`'s job.
-
 ## Three-pass review
 
 Run all three passes. Don't skip a pass even if the previous
@@ -114,8 +110,7 @@ For each item in `Structural Risks`:
    missing match branches, validation stricter than spec,
    implicit assumptions (empty arrays, non-empty strings).
 3. **Test surface (basic sanity only)** — tests must hit actual
-   entry points, not internal functions called directly. This is a
-   quick check; per-case coverage matrix is `review-tests`'s job.
+   entry points, not internal functions called directly.
 4. **Recovery logic** — recovery must not run after a parent
    failure; errors must propagate, not be swallowed; retries
    must have bounds. (You check implementation correctness here;
@@ -152,16 +147,13 @@ For each item in `Structural Risks`:
 1. **Error handling** — all work-order error cases handled;
    messages informative (no bare `unwrap()`); errors propagate;
    no silent failures.
-2. **Edge cases** — empty inputs, boundary values, concurrent
-   access (if relevant), failure during partial completion.
-3. **Assumptions** — verify `assumptions_made` from the
+2. **Assumptions** — verify `assumptions_made` from the
    completion report. Wrong → flag the issue. Unverifiable
    and load-bearing → blocks approval (see Approval bar).
-4. **Code style** — `grep` for similar patterns; verify
+3. **Code style** — `grep` for similar patterns; verify
    naming, modules, imports, docs match. Major deviations
    (different error pattern) are MEDIUM.
-5. **Architectural simplification** — apply "make the change
-   easy, then make the easy change" (Kent Beck). Step back
+4. **Architectural simplification** — step back
    from the diff and ask whether a small surrounding refactor
    would have made it dramatically simpler: a missing
    abstraction to introduce, an overgrown function to split,
@@ -178,7 +170,7 @@ For each item in `Structural Risks`:
    refactor section is `none` but such a refactor was needed,
    or when the diff deepens the problem (see the refusal rule
    below).
-6. **Connascence** — coupling that spec/invariant checks
+5. **Connascence** — coupling that spec/invariant checks
    miss but accumulates as long-term hazard:
    - **Name/type** — repeated string literals or magic
      numbers that should be named constants; type unions
@@ -193,11 +185,8 @@ For each item in `Structural Risks`:
      order without explicit sequencing.
    - **Value** — parallel enums or paired values that must
      change together.
-   Apply Page-Jones's rules: convert strong → weak (rule of
-   strength), minimize scope (rule of degree), accept strong
-   connascence if local to one module (rule of locality).
    MEDIUM at default; HIGH only when global and undocumented.
-7. **Growth** — if the diff materially grows an already-large file
+6. **Growth** — if the diff materially grows an already-large file
    (repo top decile by size) or adds a branch, flag, or parameter
    to a long function (>~300 lines), **report it** with the file
    or function, its current size, the delta, and the extraction
@@ -208,20 +197,19 @@ For each item in `Structural Risks`:
    when the function is already the repo's worst, or when the
    diff is a large share of the file's growth. Each growth
    finding is a strike against its area: list it under "Notes
-   for orchestrator" so it reaches the register. Growth is
-   delta-based. Absolute size alone is not a finding.
-8. **Parallel mechanisms** — for each new helper, predicate,
+   for orchestrator" so it reaches the register.
+7. **Parallel mechanisms** — for each new helper, predicate,
    traversal, or dispatcher, `grep` for an existing one doing the
    same job (repo, stdlib, installed deps). A second implementation
    that should have extended or called the first is HIGH
    (`REFACTOR FIRST`): extract or extend instead. Cite both sites.
    A copy that a later order is supposed to fold is still HIGH
    unless that order lands first.
-9. **Decision placement** — where the project's docs assign a
+8. **Decision placement** — where the project's docs assign a
    decision to a stage (e.g. front end vs codegen), flag a later
    stage re-deriving or making a decision an earlier stage made or
    should carry. MEDIUM.
-10. **Unexpected-state arms** — for each `_`, `else`, `None`,
+9. **Unexpected-state arms** — for each `_`, `else`, `None`,
    `unwrap_or*` or early-return arm the diff adds or keeps on the
    touched path, find what the design says about that state
    (APPEND_SYSTEM § Fail early and hard; no safe defaults). A default
@@ -247,9 +235,7 @@ and does not refactor it first, record a HIGH finding tagged
 block, a branch added to duplicated structure, and growth in a
 closed area. The finding gives the evidence (sites, sizes) and
 the proposed preparatory refactor, which goes in the rework
-instructions. Neither the implementer's disclosure, a "fix
-later" note, nor an orchestrator's acceptance mitigates it. Only
-the owner can override (decision subagents/040).
+instructions. Only the owner can override (decision subagents/040).
 
 ## Output
 
@@ -285,7 +271,6 @@ the owner can override (decision subagents/040).
 
 ### Pass 3: Quality and correctness
 - Error handling: <PASS/CONCERNS — details>
-- Edge cases: <list per case: COVERED/UNCOVERED>
 - Assumptions: <list per assumption: CORRECT/INCORRECT/UNVERIFIABLE>
 - Code style: <PASS/MINOR_ISSUES/MAJOR_DEVIATION>
 - Architectural simplification: <PASS/CONCERNS/REFACTOR FIRST — the preparatory refactor the change needed, or N/A>
@@ -321,24 +306,20 @@ calibration for future work orders.>
 - **MEDIUM** (invariant violation, limited blast radius) → REJECT_AND_REWORK unless mitigated (Approval bar)
 - **LOW** (style, minor inconsistency, unlikely edge case) → APPROVED_WITH_NOTES
 
-Any CRITICAL or HIGH → REJECT_AND_REWORK. MEDIUM with no mitigation
-→ REJECT_AND_REWORK. Only LOW (or MEDIUM with mitigation) →
-APPROVED_WITH_NOTES. Zero issues → APPROVED.
+Zero issues → APPROVED.
 
 ### Approval bar (decision 033)
 
-APPROVED_WITH_NOTES means every note is LOW, or MEDIUM with a named
-mitigation. Structural findings (Pass 3 items 5–10) follow the same bar.
+Structural findings (Pass 3 items 4–9) follow the same bar.
 
 - **Mitigation is an artifact or a ruling.** A test, pinned `| nyi` row,
   or guard in the tree, or an acceptance quoted from the work order or an
   owner ruling. A disclosed gap, a fix-later suggestion, or "above my
   scope" is not mitigation. Name each MEDIUM's mitigation in the rationale.
-- **A departure (APPEND_SYSTEM § Spec authority) is an owner question
-  → REJECT_AND_REWORK**, however well disclosed or justified, even when
-  the brief asks you to judge it. Unimplemented matrix rows, narrowed
-  scope and extra residual gates are departures. Judge against the work
-  order's text, not the report's. Do not rule on it.
+- **Departures.** Unimplemented matrix rows, narrowed scope and extra
+  residual gates are departures (APPEND_SYSTEM § Spec authority), even when
+  the brief asks you to judge them. Judge against the work order's text,
+  not the report's. Do not rule on it.
 - **A finding that needs an owner ruling — or the orchestrator's, on
   which order carries follow-up work only — is REJECT_AND_REWORK**, with the question in the rework instructions. Never
   approve past your own escalation.
@@ -373,29 +354,14 @@ Set `re_review_required` based on fix complexity, not severity:
 ## Behavior rules
 
 1. Read code, not reports. Verify implementer claims.
-2. Audit the implementer's build/test output; re-run yourself
-   only when the trust preconditions fail (see Pass 2 item 5).
-3. Cite `file:line` for every issue. No invented lines.
-4. Quote the cited evidence in every finding — `file:line` plus the relevant
+2. Cite `file:line` for every issue. No invented lines.
+3. Quote the cited evidence in every finding — `file:line` plus the relevant
    snippet. Findings without quotable evidence are UNVERIFIED, not asserted.
-5. Don't fix things — review and report only.
-6. Time-box: more than 15 files or 25 tool calls = over-reviewing.
-   Converge by reporting what you could not check as blocking (see
-   Approval bar), never by dropping it.
 
 ## Bash (read-only on source)
 
 For verification, not modification. Allowed: build/test/lint
-(`cargo build`, `cargo test`, `cargo clippy`, `cargo check
---message-format=short`, or project equivalents); git reads
+(the project's commands); git reads
 (`git diff`, `git show`, `git log`, `git status`, `git grep`);
 file inspection (`cat`, `head`, `tail`, `wc` — prefer the
-`read` / `grep` / `find` tools). Do NOT modify source files,
-install dependencies, or stage commits.
-
-## Failure modes
-
-1. **False confidence** — quote code you didn't verify rather
-   than silently passing it.
-2. **Round drift** — in round N, read the exact line the author
-   cited, not the function it might be in.
+`read` / `grep` / `find` tools). Do NOT install dependencies or stage commits.

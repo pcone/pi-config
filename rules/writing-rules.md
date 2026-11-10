@@ -33,7 +33,7 @@ Fields:
 
 ## Rules are short context injections
 
-Rules get injected into the model's context window. Every line counts.
+Rules get injected into the model's context window.
 
 - **Keep under 150 lines.** The extension warns past 150 and truncates past
   200. Use `<!-- allow-large -->` as the first non-empty line only when the rule
@@ -46,24 +46,18 @@ Rules get injected into the model's context window. Every line counts.
 
 ## Trigger paths
 
-Use `paths` with picomatch globs. Only rules with `paths` auto-trigger; rules without `paths` AND without `disable-model-invocation` get a warning. Negation patterns (`!pattern`) are stripped with a warning in v1.
+Only rules with `paths` auto-trigger; rules without `paths` AND without `disable-model-invocation` get a warning. Negation patterns (`!pattern`) are stripped with a warning in v1.
 
 ```yaml
 paths:
   - "**/*.rs"          # specific file type
   - "src/**/*.rs"       # directory scoped
-  - "src/**/*.rs"       # multiple patterns
   - "tests/**/*.rs"
 ```
 
 ## Rule modes
 
-| Mode | Trigger |
-|---|---|
-| Path-triggered | First read/edit/write of a matching file |
-| Manual-only (`disable-model-invocation: true`) | `/rule <name>` command |
-
-Rules inject once per session segment. After `session_compact`, rules re-inject on next matching touch. Use `/rule <name>` to force re-injection.
+After `session_compact`, rules re-inject on next matching touch. Use `/rule <name>` to force re-injection.
 
 ## Debugging
 

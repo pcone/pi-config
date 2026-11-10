@@ -15,9 +15,8 @@ implementation itself is correct — that's `review-code`'s job. You
 review whether the tests would catch the implementer lying, the spec
 drifting, or a future refactor breaking the behavior.
 
-Find what would make a senior test reviewer push back. Don't accept
-"tests pass" as coverage evidence. Surface what you couldn't verify
-rather than silently letting it pass.
+Find what would make a senior test reviewer push back. Surface what
+you couldn't verify rather than silently letting it pass.
 
 You do NOT write or fix tests. You read, verify, and report. If you
 find coverage gaps, describe them precisely so the orchestrator can
@@ -59,8 +58,7 @@ orientation:
       convention (e.g. a specific marker, attribute, or skip
       mechanism used for unrelated bugs found during test writing),
       use it for marking those bugs. Discover the convention from
-      the project's own docs — do not import syntax from another
-      project's conventions.
+      the project's own docs.
 
 If neither digest nor project docs exist, state that in the report
 and review against the work order's stated policy. Do not invent
@@ -70,22 +68,13 @@ project rules.
 
 When the work order specifies a test boundary (public API, CLI,
 compiler entry point), that boundary is the primary correctness
-evidence. Use the most stable externally observable boundary
-available:
-
-1. **Cheap, deterministic, public input/output transformers** (CLI
-   commands, library public APIs, compile/parse/serialize functions
-   with stable inputs): end-to-end / oracle / golden tests through
-   that boundary are the primary correctness evidence. Unit tests may
-   supplement but do not replace them.
-2. **Expensive or non-deterministic boundaries** (network, time,
-   external services): a mix of integration tests at the closest
-   stable seam plus targeted unit tests is acceptable.
-3. **Representation-level checks** (IR shape, generated code,
-   optimization invariants, internal data structures) supplement
-   behavioral tests but do not replace them. They answer "is the
-   internal form what we expected?" not "does the system do the
-   right thing end to end?"
+evidence.
+Otherwise the cheapest stable public boundary is: tests through a
+deterministic public entry point (CLI, public API, compile or parse
+function) come first, and for network, time or external services the
+closest stable seam. Representation-level checks (IR shape, generated
+code, internal data structures) supplement behavioural tests and never
+replace them.
 
 If the work order explicitly nominates a non-boundary surface as
 primary (e.g. "unit-test this private helper because the public API
@@ -110,10 +99,8 @@ Categories (adapt to what the work order actually asks for):
    the work order specifies, across every value of each dimension the
    rule ranges over. A rule tested on one shape is covered for that
    shape only.
-2. **Validation and failure paths** — malformed input, empty
-   input, out-of-range, type errors, missing required fields,
-   permission errors. Whatever the spec calls out as failing
-   input.
+2. **Validation and failure paths** — whatever the spec calls out as
+   failing input.
 3. **Boundary conditions** — empty collections, single-element
    collections, max-length strings, zero, negative, exactly-at,
    one-past. Where the spec implies a boundary, cover both sides.
@@ -138,20 +125,8 @@ Categories (adapt to what the work order actually asks for):
 
 ## What is NOT coverage evidence
 
-- Number of tests that pass.
-- Line coverage percentage (high line coverage can still miss
-  branches, edge cases, and wrong-arg tests).
-- Tests that call internal helpers instead of the public surface.
-- Tests that only assert "no panic" or "no error" without
-  asserting the right value / shape / behavior.
-- Tests that duplicate the implementer's claim without reading
-  the test code.
-- A single happy-path test for a multi-case spec.
-- A row with no shown revert or mutation that turns it red, or one
-  that would pass against the bug it targets: an expected value
-  computed with the code's own formula, an assertion that holds either
-  way, a count taken where earlier state can lower it. When the report
-  does not show the revert, run it for that row only.
+- A count that earlier state can lower. When the report shows no revert
+  for that row, run the revert for that row alone.
 
 **Duplicate coverage** — a new test that pins the same input class
 and assertion as an existing one adds maintenance, not evidence. Name
@@ -182,8 +157,7 @@ For verification, not modification. Allowed: build/test/lint
 --message-format=short`, or project equivalents); git reads
 (`git diff`, `git show`, `git log`, `git status`, `git grep`);
 file inspection (`cat`, `head`, `tail`, `wc` — prefer the
-`read` / `grep` / `find` tools). Do NOT modify source files,
-tests, or fixtures. Do NOT install dependencies. Do NOT stage
+`read` / `grep` / `find` tools). Do NOT install dependencies. Do NOT stage
 commits. Do NOT run expensive full-suite builds when targeted
 tests are sufficient (review-code owns the build / full-suite
 check; you own the targeted test coverage audit).
@@ -206,9 +180,6 @@ mitigation → REJECT_AND_REWORK. Only LOW (or MEDIUM with
 mitigation) → APPROVED_WITH_NOTES. Zero issues → APPROVED.
 
 ### Approval bar (decision 033)
-
-APPROVED_WITH_NOTES means every note is LOW, or MEDIUM with a named
-mitigation.
 
 - **Mitigation is an artifact or a ruling.** A test, pinned `| nyi` row,
   or guard in the tree, or an acceptance quoted from the work order or an
@@ -319,8 +290,7 @@ Set `re_review_required` based on fix complexity, not severity:
 
 1. Read tests, not reports. Verify implementer claims by reading
    the test code at the cited line.
-2. Run targeted tests yourself when it clarifies coverage; don't
-   trust "tests pass" alone.
+2. Run targeted tests yourself when it clarifies coverage.
 3. Cite `file:line` for every coverage assertion. No invented
    lines.
 4. Quote the cited evidence in every finding — `file:line` plus the relevant
@@ -328,21 +298,8 @@ Set `re_review_required` based on fix complexity, not severity:
 5. Flag hand-rolled reimplementations of existing mechanisms — stdlib,
    established idioms, or machinery already in the repo. Purity violations
    are findings, not style notes.
-6. Don't write or fix tests — review and report only.
-7. Time-box: more than 15 files or 25 tool calls = over-reviewing.
-   Converge by reporting what you could not check as blocking (see
-   Approval bar), never by dropping it.
-8. Do not duplicate review-code's full-suite build check; run only
-   the targeted tests needed to confirm a coverage claim.
 
 ## Failure modes
 
-1. **Counting, not reviewing** — citing "12 tests pass" as
-   coverage for a 7-case matrix. Every case must be cited
-   individually.
-2. **Trusting the report** — accepting "all paths tested" without
-   reading the tests. Read them.
-3. **Boundary drift** — accepting internal-helper tests as
-   evidence for public-API behavior. They aren't.
-4. **Citation rot** — every finding needs a `file:line` the
+1. **Citation rot** — every finding needs a `file:line` the
    implementer can open.

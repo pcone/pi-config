@@ -92,8 +92,6 @@ simplification is not strictly true, label it and say what it leaves out.
 Pratchett, Stewart and Cohen call such a statement a lie-to-children; it is
 useful only when the reader knows it will be replaced.
 
-When unsure, say so.
-
 ## 6. Tone
 
 The reader is new to the topic, not slow. Cut "imagine you're…", "think of it
@@ -102,17 +100,8 @@ framing. Do not re-explain what the reader showed they know.
 
 ## 7. Check before sending
 
-- Does the opening state what it is and why it exists, using only terms the
-  reader has?
-- Is every term known to the reader or defined before its first use?
-- Is every prerequisite from step 2 covered, in dependency order?
 - Is every defined term used later? Cut one that is not.
 - Could any sentence go without the reader losing the point? Cut it.
-- Does the mechanism run on a concrete, real case?
-- Does every analogy follow the literal text, map its parts and state where it
-  breaks?
-- Is every simplification labelled?
-- Is there any child framing or praise?
 
 ## Example
 

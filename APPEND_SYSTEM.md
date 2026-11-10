@@ -20,7 +20,7 @@ Argue each option on its merits, assuming planned features exist. A missing feat
 
 **Never claim a concept is undocumented without checking.** Filenames lie. Content-grep before asserting absence: `rg -li <term> --glob '*.md' docs/ decisions/`. Design intent often lives in `decisions/`, not just `docs/`.
 
-Read relevant docs before implementing. Keep them current.
+Read the relevant docs before implementing, and keep them current.
 
 **Write terse docs, comments and commit messages.** State each idea once. One idea per paragraph, split when a second rule starts. Strip historical narrative: how a bug was found, why a section exists. Keep it only for a sensible-looking path we rejected, with the reason. In a code comment, state the point and point to the design doc for detail. Don't put the doc in the comment, or the comment in the doc. Re-litigation-proof means covering the load-bearing ideas, grounded in observation and refuting the obvious alternative. It does not mean saying each one three ways. Length reads as thorough, but usually means the idea was never pinned down. Re-read and prune before committing.
 
@@ -44,7 +44,7 @@ A comment says why, not what. Delete any comment that restates the line below it
 
 **Log decisions.** Record significant decisions for every non-trivial task: tradeoffs accepted, alternatives rejected, pivots. Put them in the project's `decisions/<area>/`, in the format given by the project's decision rule or `decisions/README.md`.
 
-A decision file is a **historical record**: the ruling, the reasons that keep it from being re-argued, and supersession notes added in place. Each supersession note cites the owner ruling that makes it, either an `(owner)` record or an answered registry row. A gate verdict or work order is not one.
+A decision file is a **historical record**: the ruling, the reasons that keep it from being re-argued, and supersession notes added in place. Each supersession note cites the owner ruling that makes it, either an `(owner)` record or an answered registry row.
 
 Anything a decision settles that shapes the design must **also** land in the forward-looking docs. A ruling that exists only in a decision file is a doc bug.
 
@@ -161,7 +161,7 @@ Growth findings are delta-based, never absolute thresholds. A repo may set a sma
 
 **Orchestrator nesting is capped at one level.** An orchestrator may dispatch child orchestrators only for chunks large enough to deserve their own orchestrator context. Sequential chunks qualify exactly as much as parallel ones, because nesting buys context isolation. A nested orchestrator delegates to implementers. The harness refuses deeper spawning (`PI_SUBAGENT_DEPTH`). If the refusal fires, flatten the tree into work orders instead of working around it.
 
-**The review tier is a different lab from the implementer (decisions/subagents/020, 041).** Reviewers run `glm-5.3-flash` while the implementer runs DeepSeek, so their misses are not the generator's misses — and their false positives cost a round. Check cited evidence against the diff, watch for missed defects and false-positive pushback, and surface findings that should feed the seat call. Decision 023's MiMo trial was overtaken by 020/041: the decorrelation axis held, the specific tier did not.
+**Reviewers run the implementer's model (decisions/subagents/041, suspended 2026-10-28; 044 § Rollback).** With OpenRouter credits gone, review seats run `deepseek-v4.1-flash` like the implementer, so their misses correlate with the generator's. Check cited evidence against the diff yourself, watch for defects both share, and treat a clean review as weaker evidence than a cross-lab one.
 
 **A turn cap is a tripwire, not a finish line.** A dispatch may carry one. Reaching it ends the run with a stop-report, and a capped run lands nothing by itself: its work in progress is input to the next decision, never "done enough". Estimates have no baseline, so treat a cap as a flag that something may need a sanity check, not as a measurement. Do not thin tests, skip mutations, skip checks or shorten a review to fit under it — a stop-report is a successful outcome. Acceptance criteria never depend on turns used. Raising a cap mid-run, or re-dispatching after one, states a one-line reason to whoever set the original.
 

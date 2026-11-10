@@ -25,8 +25,7 @@ brief did not show, and can state what they are being asked to decide.
    into another document. Deliver one index document across the groups; never
    copy brief bodies into it.
 5. **Draft** each brief in the skeleton order.
-6. **Check:** every ask has a recommended default and a `DECIDE`/`FYI` marker;
-   every claim is sourced or observed; the comparison has a stated delta; every
+6. **Check:** every claim is sourced or observed; the comparison has a stated delta; every
    term is audience-known or defined at first use (check the project glossary);
    no sentence survives that does not change a decision.
 7. **Reader-test every item** (procedure below). Chunks run as parallel readers;
@@ -35,16 +34,6 @@ brief did not show, and can state what they are being asked to decide.
    session or the reviewer asks — then use the project's existing findings/
    investigation genre and link the sources; never a new genre. With multiple
    documents, the index doc is the entry point.
-9. **The brief is the ledger for its points.** As each point is settled, write the
-   ruling into the brief — its date and the shape it settled, including any
-   narrowing the discussion produced. A bare yes often leaves the mechanism
-   open, and the mechanism is what the implementer needs. A resolution that
-   lives only in a session transcript is lost work; an answer in conversation is
-   not a resolution until it is written down here.
-10. **A brief is closed when every point in it is marked resolved.** No work
-    order executes a brief's item before then, and a recommended default is not
-    an answer for anything that changes what the language accepts or does —
-    defaults serve bookkeeping and scope only.
 
 ## Layout
 
@@ -105,9 +94,6 @@ axis — the delta is.
 | `bugfix` | repro + wrong output | same repro + right output | pin row, root cause |
 | `internal` | architecture, before | architecture, after | invariants, blast radius; no user snippets |
 
-Always follow the comparison with the **stated delta** in one sentence. Never
-make the reader diff two blocks mentally.
-
 If the project has executable tests (e.g. `.cases` rows, `nyi`-pinned intent),
 the strongest After block names the test row that will prove it: failing today,
 green on landing. Prefer one complete small program over fragments; composition
@@ -121,16 +107,11 @@ The standard defines plain language by reader outcome. These checks apply them:
    term it names must be one the audience actually has — check the project
    glossary when there is one. A term that is neither audience-known nor defined
    at first use is a defect wherever it appears, audience line included.
-2. **Relevant — delete what doesn't change a decision.** Mechanism, archaeology,
-   and history are reference material unless the decision needs them.
-3. **Findable — fixed skeleton, informative headings.** Same order every time;
+2. **Findable — fixed skeleton, informative headings.** Same order every time;
    the reader builds a scanning habit.
-4. **Understandable — one idea per sentence, active voice.** Define a term at
-   first use if the audience line says it's new. Keep domain terms the audience
-   knows: plain language is audience-relative, not jargon-free.
-5. **Usable — every ask is a decision question with a recommended default,
+3. **Usable — every ask is a decision question with a recommended default,
    marked `DECIDE` or `FYI`.** If no default exists, say so and say why.
-6. **Never trade precision for plainness.** Keep conditions, numbers, and
+4. **Never trade precision for plainness.** Keep conditions, numbers, and
    qualifiers; compress the framing, not the facts.
 
 ## Reader test
@@ -167,8 +148,7 @@ For the index document, ask instead: which items need a decision, and which
 document covers a named item?
 
 Treat the output as a defect list: fix the document, re-test only the failed
-questions, and repeat until the answers are direct quotes. Check prose against
-tables — a summary contradicting its own table is the most common catch. Record
+questions, and repeat until the answers are direct quotes. Record
 the result with the batch (items covered, defects found and fixed).
 
 A gate failure is a document defect, not a reader error; never fix it by helping
@@ -184,25 +164,20 @@ The index document is the entry point and the triage view. It holds:
 - per-group dependency order when it matters;
 - the shared context: bases, audience, provenance.
 
-Rows: `<id> | Feature | Kind | Status | Decision asked`. Mark each ask `DECIDE`
-or `FYI`; within a group, `DECIDE` rows come first. The row is the brief's
+Rows: `<id> | Feature | Kind | Status | Decision asked`. Within a group, `DECIDE`
+rows come first. The row is the brief's
 header plus its ask — a projection, never an independently authored summary.
-Never copy brief bodies into the index.
 
 For a single item there is no index: the brief's first line is the row.
 
 ## Anti-patterns
 
 - Mechanism or history in the comprehension path.
-- A "One line" that describes the defect instead of the change.
 - A comparison with no stated delta.
 - An ask without a recommended default or a `DECIDE`/`FYI` marker.
 - A summary that contradicts its own table (the reader test catches this).
-- Ids, hashes, or dates in prose instead of Sources.
-- A new document genre for briefs when a view over existing docs will do.
 - Planned code rendered as if it already parses or runs. Label it.
 - A monolithic assembly plus per-group copies of the same briefs.
-- Sampling the reader gate; audience lines naming terms the glossary doesn't have.
 
 ## Worked examples
 

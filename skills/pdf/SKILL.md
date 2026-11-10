@@ -5,7 +5,7 @@ description: Convert PDF documents (local files or URLs) to Markdown. Load when 
 
 # PDF conversion
 
-PDFs are binary — never read raw bytes into context. No `read`/`cat`/`head`/`xxd` of a `.pdf`.
+PDFs are binary. No `read`/`cat`/`head`/`xxd` of a `.pdf`.
 
 ## Automatic paths
 

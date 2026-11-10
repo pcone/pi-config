@@ -9,8 +9,6 @@ description: Work order schema for delegating implementation tasks to subagents 
 
 You are generating a work order to dispatch to an implementation agent. Fill in every section that applies; omit the rest. When the repo keeps a short form (`work-orders/TEMPLATE.md`), write the order in that shape; this skill says what each part is for, and the short form keeps every guard below.
 
-Your work order quality directly determines whether the implementer succeeds on the first pass. If you cannot fully specify all invariants, set `invariant_exhaustiveness: implicit` so the implementer knows to enumerate them.
-
 ---
 
 ## Work Order
@@ -24,7 +22,7 @@ Your work order quality directly determines whether the implementer succeeds on 
 - **invariant_exhaustiveness**: explicit | implicit
 - **priority**: critical | normal | low
 - **estimated_complexity**: trivial | moderate | complex
-- **review_policy**: required | skip — default `required`. Set `skip` only for documentation-only changes or explicit justified exceptions (state the reason). The bullet is the prescribed form; a bare bold line (no dash) and the YAML `review_policy:` form are also accepted — see [Encoding](#encoding--use-the-bolded--metadata-block).
+- **review_policy**: required | skip — default `required`. Set `skip` only where no invariant can fail, such as a documentation-only change, and state the reason. The bullet is the prescribed form; a bare bold line (no dash) and the YAML `review_policy:` form are also accepted — see [Encoding](#encoding--use-the-bolded--metadata-block).
 
 ### Task Summary
 
@@ -43,21 +41,14 @@ stop, report `PREMISE FALSIFIED` with the evidence; nothing lands.
 Required (decision subagents/040: make the change easy, then make the easy change). Fill in one
 of:
 
-- **Refactor commit:** a behaviour-preserving refactor that lets the area take the change
-  without a second path. That means extending the existing mechanism, not copying it; folding
-  duplicated structure before adding a branch; or extracting before growing a large file or
-  function. Name the characterization tests that pin the behaviour it preserves, and add them
-  first where coverage is thin. The same implementer does the refactor and then the change, and
-  asks for one standard review, preferably with two commits: the refactor (green, existing tests
-  unchanged), then the change. Use a separate order only when the refactor belongs to another
-  chunk or is too large to review alongside the change.
+- **Refactor commit:** the behaviour-preserving refactor and the characterization tests that pin
+  it. Use a separate order only when the refactor belongs to another chunk or is too large to
+  review with the change. See APPEND_SYSTEM § Landing work.
 - **`none`**, with a one-line reason that holds against the code. For example: "the change
   extends `X` at one site; no copy, no branch on duplicated structure".
 
-Census the area before writing `none`. Grep for an existing mechanism the change would
-duplicate, and check the repo's refactor-needed register (`docs/investigations/structure-trend.md`).
-A closed area needs its refactor scheduled first, as this commit or as an earlier order. It never
-gets a note saying the debt will be folded later.
+Before writing `none`, check the repo's refactor-needed register (`docs/investigations/structure-trend.md`);
+a closed area needs its refactor scheduled first, as this commit or as an earlier order. See APPEND_SYSTEM § Landing work.
 
 ### Rulings
 
@@ -116,20 +107,15 @@ are the acceptance evidence: name them, and make characterization rows
 step 0 where the touched behaviour is not pinned. An existing row that
 must change means behaviour changed.
 
-For a rule that must hold on **every** path (all constructions of a type, all
-expected-type sites, all callers of a check), count the producers before
-writing the steps (`rg` the constructor). More than one means step 1 funnels
-them into one type-enforced path behind characterization rows, and the rule
-lives in the funnel. Never specify the rule as a list of paths each handled;
-the list goes in the acceptance rows as a lower bound.
+For a rule that must hold on every path, see APPEND_SYSTEM § Make a rule complete by structure.
 
 **Behavior and failure matrix**: <the cases the implementation must
 satisfy, organized as a non-overlapping matrix that the test reviewer
 can audit row by row. Cover at minimum:
 
-- **Dimensions.** Name each dimension the rule ranges over (node kind,
-  type width, spelling, registration shape) and vary every one, including
-  the values the change is likeliest to get wrong. Where one value was
+- **Dimensions.** Vary every dimension the rule ranges over (APPEND_SYSTEM §
+  Make a rule complete by structure), including the values the change is
+  likeliest to get wrong. Where one value was
   trivially right before the change and is not after, name it as the
   novel exposure and pin it beside the old one.
 - Success paths the work order requests
@@ -155,8 +141,7 @@ implement, what types it must produce/consume>
 
 ### Invariants
 
-List every invariant the implementer must preserve. This is the most critical section — invariants left unstated become silent bugs.
-
+List every invariant the implementer must preserve.
 **Cross-file conventions**:
 - <e.g., "All IR nodes must implement the `Visitable` trait">
 - <e.g., "All passes return `Result<Module, CompileError>`">
@@ -178,8 +163,6 @@ List every invariant the implementer must preserve. This is the most critical se
 - <e.g., "The work order references 'standard pass conventions' but does not enumerate them — the implementer must check `passes/mod.rs` for the full convention list">
 - <e.g., "Error recovery behavior for malformed IR is not specified — follow the pattern in the existing passes">
 
-> If you cannot enumerate all invariants, you MUST set `invariant_exhaustiveness: implicit` above. Do not mark `explicit` unless you are confident every invariant is stated.
-
 ### Verification Criteria
 
 The implementer must verify all of the following before reporting completion.
@@ -196,10 +179,6 @@ The implementer must verify all of the following before reporting completion.
 - <e.g., "`cargo test passes::constant_folding` — all tests pass">
 - <e.g., "Integration tests in `tests/end_to_end.rs` that exercise the new pass must pass">
 
-**Test surface requirements**: tests hit the **Required test boundary**
-declared above; internal-helper tests alone for a public-API change are
-INADEQUATE.
-
 **Build requirements**:
 - <e.g., "`cargo build` succeeds with no warnings related to this change">
 - <e.g., "Do not modify Cargo.toml unless adding a dependency that is explicitly required">
@@ -208,13 +187,9 @@ INADEQUATE.
 
 Risk patterns every order shares. The implementer checks each one.
 
-- [ ] **Route/path correctness**: Every endpoint, public function, or CLI command is at the path specified in the work order (not a variant or prefix of it)
-- [ ] **Input validation scope**: Validation accepts every input shape the spec allows — no over-constraining types or rejecting valid inputs
 - [ ] **Test surface**: Tests exercise the actual entry points (HTTP endpoints, public APIs, CLI commands), not internal functions called directly
 - [ ] **Recovery logic**: If error handling or retry logic is involved, recovery paths do not execute work after a parent failure has occurred
 - [ ] **No unrequested changes**: No files, routes, or structures modified beyond what the work order specifies
-- [ ] **Build config untouched**: Build configuration (tsconfig, Cargo.toml, CMakeLists) not modified unless explicitly requested
-- [ ] **No unsolicited features**: No features, refactors, or "improvements" added that were not requested in the work order
 - [ ] **No parallel path**: No second implementation of an existing mechanism, copied block, or branch on duplicated structure. If the change needs one, stop and return `REFACTOR FIRST`
 
 > The implementer must check every box above. If any check fails, the implementer must fix the issue before reporting completion or flag it in the completion report.
@@ -330,7 +305,6 @@ this rule, not a thorough one.
 - **Always set `invariant_exhaustiveness`**. Default to `implicit` if uncertain. When you set `implicit`, state what the enumeration must list — the list is the deliverable, and a *negative* result (no further sites) is a valid one. Do not write it up in a way that implies a find is expected.
 - **Cite constructs, not line numbers.** A number measured while writing the order is stale by dispatch — four landings moved one file by 21 lines inside a day — and a *wrong* number is worse than none: it sends the implementer into unrelated code (tfd WO-2026-143 cited a binding constructor at the line of a type-unification helper). Name the function and the enclosing construct, and add a grep anchor when the name alone is ambiguous.
 - **A control that silently no-ops is not a control.** Before a probe's result is written into an order, confirm the probe changed the measured outcome. A "forced" reference is only a force while its binding is non-inlinable — otherwise it is constant-substituted away and the test proves nothing (tfd item 19: `s.q.n + (d.n - d.n)` no-opped without the reshadow, and "still fails under forced capture" was an artifact of measuring nothing). Discriminate with a dump/IR or a passing-vs-failing pair.
-- **Always list files NOT to modify** when adjacent files could plausibly be touched — strongest signal against scope creep.
 - **Use repo-relative paths everywhere.** Subagents run in isolated worktrees; absolute parent-repo paths bypass isolation.
 - **Cross-reference AGENTS.md** for project-specific conventions.
 - **A contradiction between your own acceptance clauses is an owner question, raised before landing.**
