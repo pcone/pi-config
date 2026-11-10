@@ -14,7 +14,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, {
@@ -28,7 +28,7 @@ import subagentFactory, {
 	updateMetaJson,
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
-import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
+import { _testSetReaperHome, IDLE_DAYS, readReaperReport } from "../extensions/lib/checkout-reaper.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 
@@ -336,6 +336,70 @@ function makeEntryFor(
 	return { dir, worktreePath };
 }
 
+// ── Reaper fixtures (WO-2026-092) ──────────────────────────────────────────
+// The shapes `tests/checkout-reaper.test.ts:124-160` builds, so a wiring row can
+// hand the real session_start pass a checkout every one of its gates clears.
+
+function mustGit(cwd: string, args: string[]): string {
+	const r = git(cwd, args);
+	if (r.code !== 0) throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.err}`);
+	return r.out;
+}
+
+/** A repo with a pushed `main` and a bare `origin`, both under `home` — so the
+ *  walk sees the worktrees, never the repository. */
+function reaperRepo(home: string, name = "myrepo"): { repo: string; origin: string } {
+	const origin = join(home, "repos", `${name}.git`);
+	const repo = join(home, "repos", name);
+	mkdirSync(join(home, "repos"), { recursive: true });
+	mustGit(home, ["init", "-q", "--bare", origin]);
+	mustGit(home, ["clone", "-q", origin, repo]);
+	mustGit(repo, ["config", "user.email", "test@example.com"]);
+	mustGit(repo, ["config", "user.name", "Test"]);
+	mustGit(repo, ["config", "commit.gpgsign", "false"]);
+	writeFileSync(join(repo, "seed.txt"), "seed\n");
+	writeFileSync(join(repo, ".gitignore"), "target/\n");
+	mustGit(repo, ["add", "-A"]);
+	mustGit(repo, ["commit", "-q", "-m", "init"]);
+	mustGit(repo, ["push", "-q", "-u", "origin", "HEAD"]);
+	mustGit(repo, ["branch", "-q", "-m", "main"]);
+	mustGit(repo, ["push", "-q", "-u", "origin", "main"]);
+	return { repo, origin };
+}
+
+/** A linked worktree at `path` on `branch`, created at the repo's HEAD and
+ *  pushed, so the branch has nothing only local. */
+function reaperWorktree(repo: string, path: string, branch: string): string {
+	mkdirSync(join(path, ".."), { recursive: true });
+	mustGit(repo, ["worktree", "add", "-q", "-b", branch, path, "HEAD"]);
+	mustGit(repo, ["push", "-q", "origin", `refs/heads/${branch}:refs/heads/${branch}`]);
+	return path;
+}
+
+/** The gitdir a linked worktree's `.git` file names. */
+function gitDirOf(worktreePath: string): string {
+	const text = readFileSync(join(worktreePath, ".git"), "utf8");
+	return /^gitdir:\s*(.+)$/m.exec(text)![1].trim();
+}
+
+/** Push every mtime in `target` back `days`, so the idle gate sees a checkout
+ *  nobody has touched. */
+function backdate(target: string, days = IDLE_DAYS + 3): void {
+	const when = new Date(Date.now() - days * 86_400_000);
+	const walk = (p: string): void => {
+		let st;
+		try {
+			st = lstatSync(p);
+		} catch {
+			return;
+		}
+		utimesSync(p, when, when);
+		if (!st.isDirectory()) return;
+		for (const name of readdirSync(p)) walk(join(p, name));
+	};
+	walk(target);
+}
+
 describe("reapFinishedWorktrees (real git, injected registry)", () => {
 	it("removes a clean finished tree (unlock-then-remove, no --force)", async () => {
 		const repo = makeRepo();
@@ -449,6 +513,23 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		// alone, over the 5 s default on a loaded box.
 	}, 30_000);
 
+	/** Register the extension for real and keep the handlers it captured. Every
+	 *  wiring row fires the captured `session_start`: the reap is fire-and-forget
+	 *  inside it, so the effect (not a return value) is what proves the wiring. */
+	function registerHandler(): Map<string, Function> {
+		const handlers = new Map<string, Function>();
+		const pi: any = {
+			events: { emit: () => {} },
+			registerTool: () => {},
+			registerCommand: () => {},
+			on: (event: string, cb: Function) => handlers.set(event, cb),
+			sendUserMessage: () => {},
+			ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {} },
+		};
+		subagentFactory(pi);
+		return handlers;
+	}
+
 	it("the real session_start handler runs the reap (wiring)", async () => {
 		const repo = makeRepo();
 		const { dir, worktreePath } = makeEntryFor(repo, "wiring-1", {
@@ -463,19 +544,8 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
 		_testSetReaperHome(home);
 
-		// Register the extension for real and fire the captured handler: the reap
-		// is fire-and-forget inside session_start, so the effect (not a return
-		// value) is what proves the wiring. Dropping the call leaves the tree.
-		const handlers = new Map<string, Function>();
-		const pi: any = {
-			events: { emit: () => {} },
-			registerTool: () => {},
-			registerCommand: () => {},
-			on: (event: string, cb: Function) => handlers.set(event, cb),
-			sendUserMessage: () => {},
-			ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {} },
-		};
-		subagentFactory(pi);
+		// Dropping the call leaves the tree.
+		const handlers = registerHandler();
 		_testSetRecoveryScanDir(dir);
 		try {
 			await handlers.get("session_start")!(
@@ -494,6 +564,79 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		// Two reaps and a report write on a loaded box.
 	}, 30_000);
 
+	// ── The general pass, driven through the same handler ──────────────────
+
+	it("the wired general pass removes a checkout its gates clear (wiring)", async () => {
+		const home = tempDir("pi-wiring-home-");
+		const root = join(home, "Developer", "wt");
+		mkdirSync(join(root, "subagents"), { recursive: true });
+		// A checkout every gate clears: clean, pushed to the origin under this home,
+		// idle past the window, nothing working in it. A bare `mkdir` here would show
+		// only that the pass wrote a report; this tree shows what the report means.
+		const { repo } = reaperRepo(home);
+		const branch = "pi-subagent-wired00000001";
+		const tree = reaperWorktree(repo, join(root, "myrepo-wired"), branch);
+		backdate(gitDirOf(tree));
+		backdate(tree);
+		_testSetReaperHome(home);
+		_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: repo, sessionManager: { getSessionId: () => "sess-reaper-wiring" }, ui: {} },
+			);
+			expect(await waitFor(() => !existsSync(tree), 20_000)).toBe(true);
+			// The removal the call site wires in, not an rmtree: the registration went
+			// with the tree, and the branch delete is inside that same sequence.
+			expect(worktreeEntry(repo, tree)).toBeNull();
+			expect(git(repo, ["branch", "--list", branch]).out.trim()).toBe("");
+			expect(await waitFor(() => existsSync(join(root, ".reaper-report.json")), 20_000)).toBe(true);
+			const row = readReaperReport(root)?.removed.find((r) => r.path === tree);
+			expect(row?.state).toBe("removed");
+			expect(row?.gate).toBeNull();
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+		// A real reap: the git gates, the lsof sweep and a worktree removal.
+	}, 60_000);
+
+	it("hands 027's verdict for a tree it keeps into the general report (wiring)", async () => {
+		const repo = makeRepo();
+		const home = tempDir("pi-wiring-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		// A tree 027 keeps: uncommitted work. Its verdict, not the general gates'
+		// (which would remove it), is the row the report must carry.
+		const { dir, worktreePath } = makeEntryFor(repo, "wiring-kept", {
+			worktreePath: join(subagentBase, "myrepo-wiring-kept"),
+			dirty: true,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		_testSetReaperHome(home);
+		_testSetRecoveryScanDir(dir);
+
+		const handlers = registerHandler();
+		try {
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "reload" },
+				{ cwd: repo, sessionManager: { getSessionId: () => "sess-verdict-wiring" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(join(root, ".reaper-report.json")), 20_000)).toBe(true);
+			const row = readReaperReport(root)?.kept.find((r) => r.path === worktreePath);
+			expect(row?.gate).toBe("subagent");
+			expect(row?.detail).toBe("subagent kept-uncommitted");
+			expect(existsSync(worktreePath)).toBe(true);
+		} finally {
+			_testSetRecoveryScanDir(undefined);
+			_testSetReaperHome(undefined);
+		}
+		// 027's reap, then the general pass over the same registry.
+	}, 60_000);
+
 	it("a child session's start runs no reaper pass (PI_SUBAGENT_DEPTH)", async () => {
 		// N children would pay N passes and each would overwrite the report the
 		// parent announced. The child's start is not the pass.
@@ -501,19 +644,22 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
 		const depthBefore = process.env.PI_SUBAGENT_DEPTH;
 		_testSetReaperHome(home);
-		process.env.PI_SUBAGENT_DEPTH = "1";
 		try {
-			const handlers = new Map<string, Function>();
-			const pi: any = {
-				events: { emit: () => {} },
-				registerTool: () => {},
-				registerCommand: () => {},
-				on: (event: string, cb: Function) => handlers.set(event, cb),
-				sendUserMessage: () => {},
-				ui: { setStatus: () => {}, notify: () => {}, setWidget: () => {} },
-			};
-			subagentFactory(pi);
+			const handlers = registerHandler();
 			_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
+			const reportFile = join(home, "Developer", "wt", ".reaper-report.json");
+			// Positive control: the same home and the same window write a report when
+			// the pass runs, so the child's silence below is the depth gate and not a
+			// fixture that never writes.
+			delete process.env.PI_SUBAGENT_DEPTH;
+			await handlers.get("session_start")!(
+				{ type: "session_start", reason: "startup" },
+				{ cwd: home, sessionManager: { getSessionId: () => "sess-parent-control" }, ui: {} },
+			);
+			expect(await waitFor(() => existsSync(reportFile), 20_000)).toBe(true);
+			unlinkSync(reportFile);
+
+			process.env.PI_SUBAGENT_DEPTH = "1";
 			await handlers.get("session_start")!(
 				{ type: "session_start", reason: "startup" },
 				{ cwd: home, sessionManager: { getSessionId: () => "sess-child-wiring" }, ui: {} },
@@ -521,7 +667,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			// The pass is fire-and-forget: give it the same window the parent row
 			// gives, then assert it never wrote.
 			await Bun.sleep(500);
-			expect(existsSync(join(home, "Developer", "wt", ".reaper-report.json"))).toBe(false);
+			expect(existsSync(reportFile)).toBe(false);
 		} finally {
 			_testSetRecoveryScanDir(undefined);
 			_testSetReaperHome(undefined);
