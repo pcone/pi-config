@@ -1,11 +1,11 @@
 /**
  * Per-file redirect of the subagent worktree base.
  *
- * A test that spawns a `subagent` out of a temp repo reaches `createWorktree`
- * through the tool, so the base cannot be passed as an argument — it comes from
- * `subagentWorktreeBase()`, which honours `PI_SUBAGENT_WT_ROOT`. Without the
- * override the tree lands in the real `~/Developer/wt/subagents` and outlives
- * the temp repo it was branched from.
+ * The run's base is already a temp dir: `bunfig.toml` preloads
+ * `tests/preload-worktree-root.ts`, which sets `PI_SUBAGENT_WT_ROOT` before any
+ * test file loads (docs/design/subagent-worktree-root.md). This helper is for a
+ * file that needs a root of its own — a row asserting on that exact dir, or one
+ * that must scrub the ambient value.
  *
  * Owner ruling: the override replaces the real path or fails, never falls back
  * to it. So the env var is set to a real directory, and an unusable value is a

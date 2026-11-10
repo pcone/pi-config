@@ -23,9 +23,14 @@ export const SUBAGENT_WORKTREE_NAMESPACE = "Developer/wt/subagents";
 
 /**
  * Process-wide override for the worktree base. A subagent dispatch resolves its
- * tree from inside the `subagent` tool, so a call argument cannot reach it — a
- * test that spawns a worktree out of a temp repo redirects the base with this
- * variable instead, and never touches the real `~/Developer/wt/subagents`.
+ * tree from inside the `subagent` tool, so a call argument cannot reach it — the
+ * suite sets this to a temp dir for the whole run
+ * (`tests/preload-worktree-root.ts`), and never touches the real
+ * `~/Developer/wt/subagents`.
+ *
+ * Scope: it redirects every derivation from the *ambient* base — creation
+ * (`createWorktree`) and the guard's prefix. A caller that passes an explicit
+ * `home` is not redirected; see {@link subagentWorktreeBase}.
  */
 export const PI_SUBAGENT_WT_ROOT_ENV = "PI_SUBAGENT_WT_ROOT";
 
@@ -46,8 +51,15 @@ export class UnusableWorktreeRootError extends Error {
  * `~/Developer/wt/subagents`, the parent of every subagent worktree, or
  * `$PI_SUBAGENT_WT_ROOT` when that is set.
  *
- * An explicit `home` wins: it states where to derive from, so the derivation
- * tests keep their meaning while the override is on.
+ * An explicit `home` wins over the override: it states where to derive from, so
+ * a derivation test keeps its meaning while the override is on. That branch is
+ * also the override's limit — a caller that derives a path it was handed from
+ * the home that path belongs to is not redirected. Two of them in
+ * build-output-reaper.ts always pass one (`planCargoBound`, whose `home`
+ * defaults to `homedir()`, and the bound walk's `opts.home ?? homedir()`);
+ * `disposeWorktreeBuildOutput` passes the test seam's `opts.home`, and with none
+ * supplied it follows the ambient base like any other caller. See
+ * docs/design/subagent-worktree-root.md.
  */
 export function subagentWorktreeBase(home?: string): string {
 	if (home !== undefined) return join(home, SUBAGENT_WORKTREE_NAMESPACE);
@@ -101,6 +113,10 @@ const WORKTREE_SUFFIX_LEN = 13;
  * characters. Anything else under `~/Developer/wt` (a hand-made worktree) or a
  * pre-namespace path (`/var/folders/.../pi-subagent-wt-<suffix>`) is not a
  * subagent worktree this harness owns and answers null.
+ *
+ * Each of its three callers passes the home it is deriving for, so the explicit
+ * `home` reaches {@link subagentWorktreeBase} and the override does not apply —
+ * see that function for which callers that is.
  */
 export function repoNameFromWorktreePath(worktreePath: string, home?: string): string | null {
 	const base = subagentWorktreeBase(home);

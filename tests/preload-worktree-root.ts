@@ -19,6 +19,7 @@
  * `disposeWorktreeBuildOutput` — is not redirected. See
  * docs/design/subagent-worktree-root.md.
  */
+import { afterAll } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,13 +28,14 @@ import { PI_SUBAGENT_WT_ROOT_ENV } from "../extensions/lib/subagent-worktree.ts"
 const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-subagent-wt-run-")));
 process.env[PI_SUBAGENT_WT_ROOT_ENV] = root;
 
-// `exit` fires after the last test file, on a failed run too. Synchronous only:
-// an exit handler cannot await. A tree left behind here is a cleanup miss, not
-// the leak this pins — that one was the human namespace.
-process.on("exit", () => {
+// `afterAll` at preload scope runs once, after the process's last test file,
+// on a failed run too. Not `process.on("exit")`: bun test never emits it
+// (verified on 1.3.11 — an exit handler's file write never appears). A killed
+// run leaves the dir; it is empty and under `$TMPDIR`.
+afterAll(() => {
 	try {
 		rmSync(root, { recursive: true, force: true });
 	} catch {
-		/* best-effort */
+		/* best-effort: a leftover temp dir is not the leak this pins */
 	}
 });

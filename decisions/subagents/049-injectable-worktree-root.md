@@ -20,6 +20,12 @@ keeps testing the derivation while an override is on.
 dir and removes it in `afterAll`. Every test file that reaches
 `createWorktree` uses it.
 
+**Superseded 2026-11-10 (owner, work-order round 2):** the per-file helper is no
+longer the guarantee. `bunfig.toml` preloads `tests/preload-worktree-root.ts`,
+which sets the variable for the whole run — decision
+`050-worktree-root-preload.md`. The helper remains where a row asserts a temp
+root of its own.
+
 ## Why
 
 Tests spawn through the registered `subagent` tool, so the leaking code path

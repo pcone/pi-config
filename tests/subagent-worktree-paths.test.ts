@@ -5,11 +5,15 @@
  * path shape in any of them drifts silently — the guard would protect
  * nothing while still reporting a clean pass.
  *
- * Decision: decisions/subagents/0NN-worktree-location.md.
+ * `PI_SUBAGENT_WT_ROOT` redirects the two that derive from the ambient base:
+ * creation and the guard's prefix. The cargo consumers are handed the home
+ * they derive for (`planCargoBound`, `disposeWorktreeBuildOutput`) and are not
+ * redirected — docs/design/subagent-worktree-root.md.
+ *
+ * Decision: decisions/subagents/045-worktree-location.md.
  */
 import { describe, expect, test } from "bun:test";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cargoTargetDirFor, subagentWorktreeBase, subagentWorktreePath } from "../extensions/lib/subagent-worktree.ts";
 import { buildSubagentEnv } from "../extensions/subagent-async/index.ts";
 import { isBlocked, makeGuardContext } from "../extensions/worktree-guard.ts";
@@ -57,9 +61,10 @@ describe("spawn env", () => {
 	});
 });
 
-// Guard assertions use the real home: the module resolves its prefix once at
-// load from the running process's home directory, so a probe home would only
-// test the mismatch path.
+// Guard assertions derive their paths from the base the guard itself resolved:
+// the module resolves its prefix once at load from the ambient base, which
+// `bunfig.toml` preloads as a temp dir (tests/preload-worktree-root.ts), and
+// `isBlocked` compares symlink-resolved prefixes.
 describe("guard discriminator", () => {
 	test("a sibling subagent tree is blocked", () => {
 		const mine = subagentWorktreePath("tfd", "mine");
@@ -79,7 +84,7 @@ describe("guard discriminator", () => {
 		const ctx = makeGuardContext(subagentWorktreePath("tfd", "mine"), "");
 		// A hand-made tree lives BESIDE the subagents namespace, in the same
 		// parent directory — the case that makes the namespace load-bearing.
-		const humanWorktree = join(homedir(), "Developer/wt/tfd-425");
+		const humanWorktree = join(dirname(subagentWorktreeBase()), "tfd-425");
 		expect(isBlocked(join(humanWorktree, "src/foo.rs"), ctx).blocked).toBe(false);
 	});
 });
