@@ -5,16 +5,17 @@
  * path shape in any of them drifts silently — the guard would protect
  * nothing while still reporting a clean pass.
  *
- * `PI_SUBAGENT_WT_ROOT` redirects the two that derive from the ambient base:
- * creation and the guard's prefix. The cargo consumers are handed the home
- * they derive for (`planCargoBound`, `disposeWorktreeBuildOutput`) and are not
- * redirected — docs/design/subagent-worktree-root.md.
+ * `PI_SUBAGENT_WT_ROOT` redirects what derives from the ambient base: creation
+ * and the guard's prefix. `planCargoBound` always passes a home and is not
+ * redirected; `disposeWorktreeBuildOutput` passes the test seam's, so the
+ * dispatch path follows the ambient base — docs/design/subagent-worktree-root.md.
  *
  * Decision: decisions/subagents/045-worktree-location.md.
  */
 import { describe, expect, test } from "bun:test";
 import { dirname, join } from "node:path";
 import { cargoTargetDirFor, subagentWorktreeBase, subagentWorktreePath } from "../extensions/lib/subagent-worktree.ts";
+import { childEnv } from "./helpers/subagent-env.ts";
 import { buildSubagentEnv } from "../extensions/subagent-async/index.ts";
 import { isBlocked, makeGuardContext } from "../extensions/worktree-guard.ts";
 import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
@@ -104,7 +105,7 @@ describe("createWorktree", () => {
 		const { basename, join } = await import("node:path");
 
 		const repo = mkdtempSync(join(tmpdir(), "wt-path-repo-"));
-		const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+		const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", env: childEnv() });
 		git("init", "-q");
 		git("config", "user.email", "probe@example.invalid");
 		git("config", "user.name", "probe");

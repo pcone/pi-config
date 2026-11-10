@@ -114,9 +114,11 @@ const WORKTREE_SUFFIX_LEN = 13;
  * pre-namespace path (`/var/folders/.../pi-subagent-wt-<suffix>`) is not a
  * subagent worktree this harness owns and answers null.
  *
- * Each of its three callers passes the home it is deriving for, so the explicit
- * `home` reaches {@link subagentWorktreeBase} and the override does not apply —
- * see that function for which callers that is.
+ * Two callers pass the home they are deriving for, so the explicit `home`
+ * reaches {@link subagentWorktreeBase} and the override does not apply.
+ * `disposeWorktreeBuildOutput` passes the test seam's `opts.home`, which is
+ * absent on the dispatch path — there it follows the ambient base, override
+ * included. See that function for the scope.
  */
 export function repoNameFromWorktreePath(worktreePath: string, home?: string): string | null {
 	const base = subagentWorktreeBase(home);
