@@ -525,24 +525,25 @@ describe("discovery reads only what its caller uses (X1–X6)", () => {
 	// Every way a file yields no meta is reported, not just the unparseable one:
 	// a meta that parses to a scalar names no worktree, and a caller deciding on
 	// the trees would otherwise drop it silently.
-	it("X6: a meta file that yields no object is reported to the caller's drop hook", () => {
+	it("X8: a meta file that yields no object is reported to the caller's drop hook", () => {
 		const dir = tempDir();
-		const ids = [38, 39, 40, 41].map((n) => fixture(n));
+		const ids = [38, 39, 40, 41, 42].map((n) => fixture(n));
 		place(dir, `pi-subagent-${ids[0].id}.meta.json`, JSON.stringify({ agentName: "ok" }), 10_000);
 		place(dir, `pi-subagent-${ids[1].id}.meta.json`, "null", 10_000);
 		place(dir, `pi-subagent-${ids[2].id}.meta.json`, "7", 10_000);
 		place(dir, `pi-subagent-${ids[3].id}.meta.json`, "{ torn", 10_000);
+		place(dir, `pi-subagent-${ids[4].id}.meta.json`, "[]", 10_000);
 
 		const dropped: string[] = [];
 		const entries = listSubagentMetas(dir, undefined, (file) => dropped.push(file));
 
 		expect(entries.map((e) => e.sid)).toEqual([ids[0].id]);
 		expect(dropped.sort()).toEqual(
-			[ids[1], ids[2], ids[3]].map((f) => `pi-subagent-${f.id}.meta.json`).sort(),
+			[ids[1], ids[2], ids[3], ids[4]].map((f) => `pi-subagent-${f.id}.meta.json`).sort(),
 		);
 	});
 
-	it("X7: a directory that cannot be listed is reported, not treated as an empty scan", () => {
+	it("X9: a directory that cannot be listed is reported, not treated as an empty scan", () => {
 		const dropped: string[] = [];
 		const missing = join(tempDir(), "not-there");
 		expect(listSubagentMetas(missing, undefined, (file) => dropped.push(file))).toEqual([]);

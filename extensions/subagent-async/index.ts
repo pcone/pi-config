@@ -1072,11 +1072,19 @@ export default function (pi: ExtensionAPI) {
 			}
 			const subagentMetaPaths = new Set<string>();
 			let subagentScopeFailed = false;
-			let subagentScopeDetail: string | undefined;
+			const scopeCauses: string[] = [];
+			/** The first cause, plus how many others there were: a torn file must not
+			 *  hide the processing throw behind it. */
+			const scopeDetail = (): string | undefined =>
+				scopeCauses.length === 0
+					? undefined
+					: scopeCauses.length === 1
+						? scopeCauses[0]
+						: `${scopeCauses[0]}; ${scopeCauses.length - 1} more`;
 			reapFinishedWorktrees(pi, ctx, {
 				subagentMetaPaths,
 				onScopeFailed: ({ error }) => {
-					subagentScopeDetail ??= error;
+					scopeCauses.push(error);
 					// One meta's processing threw, or the list could not be read: those
 					// trees are ungoverned, so the general pass reports them and judges
 					// none of them (WO-2026-092, R10; decision 049).
@@ -1087,6 +1095,7 @@ export default function (pi: ExtensionAPI) {
 					// The reap failed outside any meta's turn (its bound pass, say): no
 					// verdicts at all, so the whole subtree is ungoverned.
 					subagentScopeFailed = true;
+					scopeCauses.push(e instanceof Error ? e.message : String(e));
 					debugLog(`reap: unhandled: ${e instanceof Error ? e.message : String(e)}`);
 					return [];
 				})
@@ -1097,7 +1106,7 @@ export default function (pi: ExtensionAPI) {
 						subagentResults,
 						subagentMetaPaths,
 						subagentScopeFailed,
-						subagentScopeDetail,
+						subagentScopeDetail: scopeDetail(),
 						removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
 					}),
 				)

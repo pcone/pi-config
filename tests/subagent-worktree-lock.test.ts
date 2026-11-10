@@ -556,6 +556,77 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		expect(row?.detail).toContain("027's scan was incomplete");
 	}, 60_000);
 
+	it("a meta that records no worktree does not mark the namespace ungoverned (R10)", async () => {
+		// `buildSpawnMeta` writes `worktreePath: null` for every non-isolated spawn,
+		// which is most of them (reviewers isolate: false). Treating that as a
+		// corrupt meta would ungovern the namespace on every session start.
+		const repo = reaperRepo(tempDir("pi-nullmeta-repo-"));
+		const home = tempDir("pi-nullmeta-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		const registry = tempDir("pi-nullmeta-registry-");
+		const withTree = makeEntryFor(repo.repo, "nullmeta-a", {
+			worktreePath: join(subagentBase, "myrepo-nullmeta-a"),
+			parentCwd: repo.repo,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		const noTree = makeEntryFor(repo.repo, "nullmeta-b", {
+			worktreePath: join(subagentBase, "myrepo-nullmeta-b"),
+			parentCwd: repo.repo,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		for (const entry of [withTree, noTree]) {
+			for (const name of readdirSync(entry.dir)) {
+				writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+			}
+		}
+		// Exactly as the spawn writes it: the key present, the value null.
+		const noTreeMeta = join(registry, "pi-subagent-nullmeta-b.meta.json");
+		const meta = JSON.parse(readFileSync(noTreeMeta, "utf8"));
+		meta.worktreePath = null;
+		writeFileSync(noTreeMeta, JSON.stringify(meta));
+
+		const causes: string[] = [];
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: registry,
+			selfPid: process.pid,
+			onScopeFailed: ({ error }) => {
+				causes.push(error);
+			},
+		});
+
+		expect(causes).toEqual([]);
+		expect(results.map((r) => r.sid)).toEqual(["nullmeta-a"]);
+		expect(results[0].outcome).toBe("removed");
+		expect(existsSync(withTree.worktreePath)).toBe(false);
+	}, 60_000);
+
+	it("a meta whose worktreePath is not a path marks the namespace ungoverned (R10)", async () => {
+		const repo = reaperRepo(tempDir("pi-badpath-repo-"));
+		const registry = tempDir("pi-badpath-registry-");
+		const entry = makeEntryFor(repo.repo, "badpath-a", { parentCwd: repo.repo });
+		for (const name of readdirSync(entry.dir)) {
+			writeFileSync(join(registry, name), readFileSync(join(entry.dir, name)));
+		}
+		const metaFile = join(registry, "pi-subagent-badpath-a.meta.json");
+		const meta = JSON.parse(readFileSync(metaFile, "utf8"));
+		meta.worktreePath = 42;
+		writeFileSync(metaFile, JSON.stringify(meta));
+
+		const causes: string[] = [];
+		await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: registry,
+			selfPid: process.pid,
+			onScopeFailed: ({ error }) => {
+				causes.push(error);
+			},
+		});
+
+		expect(causes).toHaveLength(1);
+		expect(causes[0]).toContain("worktreePath is not a path");
+	}, 60_000);
+
 	it("a meta that will not parse leaves the namespace ungoverned, and the readable metas after it still reap (R10)", async () => {
 		// Three metas, the first in scan order torn. A scan that stops at the drop
 		// leaves the other two trees behind; one that skips it silently leaves the
@@ -593,12 +664,14 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 
 		const metaPaths = new Set<string>();
 		let scopeFailed = false;
+		let cause: string | undefined;
 		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
 			dir: registry,
 			selfPid: process.pid,
 			subagentMetaPaths: metaPaths,
-			onScopeFailed: () => {
+			onScopeFailed: ({ error }) => {
 				scopeFailed = true;
+				cause ??= error;
 			},
 		});
 
@@ -616,13 +689,17 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			subagentResults: results,
 			subagentMetaPaths: metaPaths,
 			subagentScopeFailed: scopeFailed,
+			subagentScopeDetail: cause,
 			removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
 			listCwds: async () => ({ cwds: [], problem: null }),
 		});
 
 		// The torn meta's tree is clean, unlocked and old: every general gate would
 		// remove it. Without the flag it is reported `removed`.
-		expect(report.kept.find((r) => r.path === tornPath)?.gate).toBe("subagent");
+		const tornRow = report.kept.find((r) => r.path === tornPath);
+		expect(tornRow?.gate).toBe("subagent");
+		// The row names the file, so a torn meta is actionable rather than mystery.
+		expect(tornRow?.detail).toContain(firstName);
 		expect(report.removed).toEqual([]);
 		expect(existsSync(tornPath)).toBe(true);
 	}, 60_000);

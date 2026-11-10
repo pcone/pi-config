@@ -253,14 +253,14 @@ export function resolveSubagentMeta(
 export function listSubagentMetas(
 	dir: string = SUBAGENT_TMP_DIR,
 	onlySids?: ReadonlySet<string>,
-	onDropped?: (file: string) => void,
+	onDropped?: (target: string, kind: "file" | "dir") => void,
 ): SubagentMetaEntry[] {
 	let files: string[];
 	try {
 		files = fs.readdirSync(dir);
 	} catch {
 		// The directory itself is unreadable: every meta in it is unattributable.
-		onDropped?.(dir);
+		onDropped?.(dir, "dir");
 		return [];
 	}
 	const entries: SubagentMetaEntry[] = [];
@@ -272,7 +272,7 @@ export function listSubagentMetas(
 		// One exit for every way a file can yield no meta, so a new failure shape
 		// cannot become a silent skip.
 		const entry = readMeta(dir, f, sid);
-		if (entry === null) onDropped?.(f);
+		if (entry === null) onDropped?.(f, "file");
 		else entries.push(entry);
 	}
 	return entries;

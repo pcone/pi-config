@@ -103,6 +103,9 @@ Recorded so they are not re-argued as if the owner had ruled them.
   remaining metas still run; and the failure is reported, which is what makes
   `subagentScopeFailed` live.
 
+  A meta that records `worktreePath: null` is not a failure: that is the
+  "no tree" encoding every non-isolated spawn writes, so it raises nothing.
+
   A second producer closed the same hole one layer down. `listSubagentMetas`
   skips a meta whose JSON will not parse, which names no tree at all — so no
   path can be handed over on its behalf, and a silent skip leaves its tree to
