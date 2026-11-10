@@ -530,7 +530,8 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		expect(results.every((r) => r.outcome === "removed")).toBe(true);
 		for (const entry of f.reaped) expect(existsSync(entry.worktreePath)).toBe(false);
 		// The failed meta's tree keeps its bytes — 027 reached no verdict on it.
-		expect(existsSync(f.failing.worktreePath)).toBe(true);
+		// (Its survival alone proves nothing: the tree is dirty, so the general
+		// gates would keep it as `dirty`. The `gate` assertion below is the pin.)
 		expect(readFileSync(join(f.failing.worktreePath, "uncommitted.txt"), "utf8")).toBe("bytes\n");
 		// Its path was recorded before anything threw, and the failure was reported.
 		expect(metaPaths.has(f.failing.worktreePath)).toBe(true);
@@ -553,7 +554,55 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		const row = report.kept.find((r) => r.path === f.failing.worktreePath);
 		expect(row?.gate).toBe("subagent");
 		expect(row?.detail).toContain("027's reap failed");
-		expect(existsSync(f.failing.worktreePath)).toBe(true);
+	}, 60_000);
+
+	it("a meta that will not parse leaves the namespace ungoverned, not judged by the general gates (R10)", async () => {
+		// One torn meta and one clean tree it would have named. Nothing can
+		// attribute that tree, so a scan that drops the meta silently leaves it to
+		// the general gates — which remove it.
+		const repo = makeRepo();
+		const home = tempDir("pi-tornmeta-home-");
+		const root = join(home, "Developer", "wt");
+		const subagentBase = join(root, "subagents");
+		mkdirSync(subagentBase, { recursive: true });
+		const registry = tempDir("pi-tornmeta-registry-");
+		const entry = makeEntryFor(repo, "tornmeta-a", {
+			worktreePath: join(subagentBase, "myrepo-tornmeta-a"),
+			parentCwd: repo,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		writeFileSync(join(registry, `pi-subagent-tornmeta-a.meta.json`), "{ not json");
+
+		const metaPaths = new Set<string>();
+		let scopeFailed = false;
+		const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+			dir: registry,
+			selfPid: process.pid,
+			subagentMetaPaths: metaPaths,
+			onScopeFailed: () => {
+				scopeFailed = true;
+			},
+		});
+
+		expect(results).toEqual([]);
+		expect(scopeFailed).toBe(true);
+
+		const { report } = await reapCheckouts({
+			root,
+			subagentBase,
+			home,
+			budgetMs: 60_000,
+			subagentResults: results,
+			subagentMetaPaths: metaPaths,
+			subagentScopeFailed: scopeFailed,
+			removeWorktree: (deps, rs, policy) => removeWorktreeTree(deps, rs, policy),
+			listCwds: async () => ({ cwds: [], problem: null }),
+		});
+
+		const row = report.kept.find((r) => r.path === entry.worktreePath);
+		expect(row?.gate).toBe("subagent");
+		expect(report.removed).toEqual([]);
+		expect(existsSync(entry.worktreePath)).toBe(true);
 	}, 60_000);
 
 	/** Register the extension for real and keep the handlers it captured. Every

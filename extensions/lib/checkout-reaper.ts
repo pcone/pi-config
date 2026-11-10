@@ -539,6 +539,11 @@ export interface ReapCheckoutsOptions {
 	 *  pass makes of its age. The set is handed over rather than re-read: the
 	 *  same scan costs ~0.4 s for this box's thousand metas. */
 	subagentMetaPaths?: Iterable<string>;
+	/** 027's scan of the namespace was incomplete — an unreadable meta, a meta
+	 *  whose reap threw, or a list that could not be read. A tree it failed to
+	 *  attribute must not be judged here, so every namespace checkout is
+	 *  reported as ungoverned and none is a removal candidate. */
+	subagentScopeFailed?: boolean;
 	/** Injection seams: the real ones are `runGit`, lsof and `du`. */
 	git?: typeof runGit;
 	run?: CommandRunner;

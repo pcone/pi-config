@@ -95,14 +95,20 @@ Recorded so they are not re-argued as if the owner had ruled them.
   rest of the list.** Added 2026-11-10, during WO-2026-092's review, as a
   recorder's call — it narrows the bullet above, and it is not owner text.
   `reapFinishedWorktrees` wrapped every meta in one `try` whose catch only
-  logged, so one unreadable meta abandoned the metas after it and
+  logged, so one meta whose processing threw abandoned the metas after it and
   `subagentScopeFailed` could never be set: the general pass judged trees 027
   had not reached, and could remove a tree 027 would have kept. Each meta now
   runs in its own turn. The failing meta's worktree path is read before anything
   that can throw, so it stays in the set handed to the general pass; the
   remaining metas still run; and the failure is reported, which is what makes
-  `subagentScopeFailed` live. The signal stays one boolean for the subtree: a
-  brittle meta means a half-read meta set, so every namespace checkout is then
+  `subagentScopeFailed` live.
+
+  A second producer closed the same hole one layer down. `listSubagentMetas`
+  skips a meta whose JSON will not parse, which names no tree at all — so no
+  path can be handed over on its behalf, and a silent skip leaves its tree to
+  the general gates. It now reports each dropped file, and a dropped meta counts
+  as an incomplete scan. The signal stays one boolean for the subtree: a
+  half-read meta set is not knowledge, so every namespace checkout is then
   reported as ungoverned and judged by neither half. Deleting the flag instead
   would leave an ungoverned tree silently judged, which is the deletion hole, not
   a simplification.

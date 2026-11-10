@@ -243,8 +243,16 @@ export function resolveSubagentMeta(
  * Every readable `pi-subagent-<sid>.meta.json` in `dir`, restricted to
  * `onlySids` when given. The filter runs on the file name, before the parse:
  * an id nobody asked for costs no read and cannot fail the scan.
+ *
+ * A meta that will not parse is skipped, and `onDropped` names it. A caller
+ * that decides on the trees these metas describe has to know the list is
+ * incomplete: the dropped meta may name a worktree nothing else can attribute.
  */
-export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR, onlySids?: ReadonlySet<string>): SubagentMetaEntry[] {
+export function listSubagentMetas(
+	dir: string = SUBAGENT_TMP_DIR,
+	onlySids?: ReadonlySet<string>,
+	onDropped?: (file: string) => void,
+): SubagentMetaEntry[] {
 	let files: string[];
 	try {
 		files = fs.readdirSync(dir);
@@ -261,7 +269,9 @@ export function listSubagentMetas(dir: string = SUBAGENT_TMP_DIR, onlySids?: Rea
 			const meta = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
 			if (meta && typeof meta === "object") entries.push({ sid, meta });
 		} catch {
-			/* torn or malformed meta — not a session we can classify */
+			// Torn or malformed meta: not a session we can classify, and the tree it
+			// names cannot be attributed. The caller decides what that means.
+			onDropped?.(f);
 		}
 	}
 	return entries;

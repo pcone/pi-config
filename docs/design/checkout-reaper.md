@@ -88,6 +88,12 @@ before anything that can throw, and keeps going with the remaining metas. A
 clean finished tree after the failing one is still reaped; the failing meta's
 tree is reported as ungoverned, never judged by this pass's gates.
 
+A meta whose JSON will not parse is the same rule from below: it names no tree,
+so there is no path to hand over, and the scan reports itself incomplete
+instead. "Incomplete" is the operative word — one unreadable meta marks the
+whole namespace ungoverned, because a half-read meta set cannot say which trees
+it failed to attribute.
+
 ## Removal
 
 A worktree goes through `removeWorktreeTree` with `force: false` and both

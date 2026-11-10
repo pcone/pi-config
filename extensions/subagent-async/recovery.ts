@@ -730,7 +730,11 @@ export async function reapFinishedWorktrees(
 
 	try {
 		const dir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
-		for (const { sid, meta } of listSubagentMetas(dir)) {
+		for (const { sid, meta } of listSubagentMetas(dir, undefined, (file) => {
+			// A meta that will not parse names a tree this reap cannot attribute, so
+			// the namespace scan is incomplete and nothing in it is governable.
+			scopeFailed(null, new Error(`unreadable meta ${file}`));
+		})) {
 			// The tree's path is read before anything that can throw, so a meta that
 			// fails below is still named in `subagentMetaPaths`: the general pass
 			// reports its tree instead of judging it (decision 049).
