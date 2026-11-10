@@ -77,10 +77,16 @@ in that set is reported with 027's outcome and none of this pass's gates run on
 it.
 
 Two cases fall to the general gates. A namespace checkout that **no meta names**
-is nobody's record, so it is gated like any other entry. And when 027's own reap
-**throws**, `subagentScopeFailed` is set: a half-read meta set is not knowledge,
-so the pass reports that subtree and judges none of it, whatever its gates would
-have said.
+is nobody's record, so it is gated like any other entry. And when **any one of
+027's metas fails**, `subagentScopeFailed` is set: a half-read meta set is not
+knowledge, so the pass reports that subtree and judges none of it, whatever its
+gates would have said.
+
+One meta's failure holds its own trees, not the rest of the list. The reap
+processes each meta in its own turn, records the failing meta's worktree path
+before anything that can throw, and keeps going with the remaining metas. A
+clean finished tree after the failing one is still reaped; the failing meta's
+tree is reported as ungoverned, never judged by this pass's gates.
 
 ## Removal
 

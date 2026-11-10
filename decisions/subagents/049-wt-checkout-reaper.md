@@ -91,6 +91,21 @@ Recorded so they are not re-argued as if the owner had ruled them.
   meta names is nobody's record, so the general pass gates it. When 027's own
   reap throws, the pass sets `subagentScopeFailed` and reports the whole subtree
   without judging any of it: a half-read meta set is not knowledge.
+- **The meta loop is per-meta: one meta's failure holds its own trees, not the
+  rest of the list.** Added 2026-11-10, during WO-2026-092's review, as a
+  recorder's call — it narrows the bullet above, and it is not owner text.
+  `reapFinishedWorktrees` wrapped every meta in one `try` whose catch only
+  logged, so one unreadable meta abandoned the metas after it and
+  `subagentScopeFailed` could never be set: the general pass judged trees 027
+  had not reached, and could remove a tree 027 would have kept. Each meta now
+  runs in its own turn. The failing meta's worktree path is read before anything
+  that can throw, so it stays in the set handed to the general pass; the
+  remaining metas still run; and the failure is reported, which is what makes
+  `subagentScopeFailed` live. The signal stays one boolean for the subtree: a
+  brittle meta means a half-read meta set, so every namespace checkout is then
+  reported as ungoverned and judged by neither half. Deleting the flag instead
+  would leave an ungoverned tree silently judged, which is the deletion hole, not
+  a simplification.
 - **The budget is checked between candidates, and two probes carry no timeout.**
   The bound stops the pass before a candidate's gates start; it is not a timer on
   a probe. `lsof -d cwd` and the in-tree `du -csk` for ignored bytes run without
