@@ -59,6 +59,22 @@ Start after WO-2026-092 lands. Report green or red; on red, name each blocker wi
 what the fix would touch. Do not change `models.json`, `settings.json` beyond the one
 `cacheWarming` key, or `APPEND_SYSTEM.md.sec`.
 
+### Q-097-a (owner question) — the second cache-warming key
+
+The order permits one `settings.json` change at upgrade time (`cacheWarming`). The
+2026-11-13 audit found the warmed cost prints only with `showCacheMissNotices: true`
+(`settings-defaults.js:27`, default `false`; `addCacheWarmingUsage` returns early
+without it). Without it every warm is silent in the transcript, though it still lands
+in session cost as a `cache_warm` usage entry.
+
+- **(a)** Set `"cacheWarming": "idle"` and `"showCacheMissNotices": true` at upgrade
+  time, so the order's "review after a day" can be done from the transcript.
+- **(b)** Set only `cacheWarming` as the order says, and review cache spend from
+  session cost (`cache_warm` usage entries) instead.
+
+Recommendation: **(a)** — the review method the order names is otherwise unexecutable,
+and the key is display-only. Owner's call; nothing is set here.
+
 ### Verification
 
 - Each of items 1–6 has a written finding with the probe that produced it.
