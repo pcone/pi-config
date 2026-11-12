@@ -16,6 +16,7 @@ import type { SessionEntry, SessionHeader } from "@earendil-works/pi-coding-agen
 import sessionTrim, {
 	builtinsToRepair,
 	HINT_MIN_DROPPED_BYTES,
+	REPAIR_MARKER,
 	nextArchivePath,
 	planTrim,
 	restartHint,
@@ -462,9 +463,11 @@ describe("session_start repairs a transcript that lost the built-ins", () => {
 			const file = writeSession(dir, {});
 			// What pi's `_restoreToolsFromTranscript` yields for a branch whose
 			// built-in declaration left it: extension tools only.
-			const { handlers, notifications, active, toolState, ctxFor } = loadExtension(["subagent", "wait"]);
+			const { handlers, notifications, active, toolState, entries, ctxFor } = loadExtension(["subagent", "wait"]);
 			await handlers.get("session_start")!({ type: "session_start" }, ctxFor(file));
 			expect(active).toHaveLength(1);
+			// Durable in the transcript: the toast can be issued before the view is up.
+			expect(entries).toEqual([{ customType: REPAIR_MARKER, data: { tools: ["read", "write", "edit", "bash"] } }]);
 			expect(toolState.active.sort()).toEqual(["bash", "edit", "read", "subagent", "wait", "write"]);
 			expect(notifications.join(" ")).toContain("Re-activated read, write, edit, bash");
 		});
@@ -473,9 +476,10 @@ describe("session_start repairs a transcript that lost the built-ins", () => {
 	it("leaves a healthy loadout untouched", async () => {
 		await withDirAsync(async (dir) => {
 			const file = writeSession(dir, {});
-			const { handlers, notifications, active, ctxFor } = loadExtension(["read", "write", "edit", "bash", "subagent"]);
+			const { handlers, notifications, active, entries, ctxFor } = loadExtension(["read", "write", "edit", "bash", "subagent"]);
 			await handlers.get("session_start")!({ type: "session_start" }, ctxFor(file));
 			expect(active).toEqual([]);
+			expect(entries).toEqual([]);
 			expect(notifications.join(" ")).not.toContain("Re-activated");
 		});
 	});

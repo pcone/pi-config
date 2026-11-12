@@ -55,6 +55,7 @@ export function restartHint(droppedBytes: number): string | undefined {
 }
 
 /** Marker entry recording what a trim moved out, so a later process can cite the archive. */
+export const REPAIR_MARKER = "tool-loadout-repair";
 export const TRIM_MARKER = "session-trim";
 
 export interface TrimPlan {
@@ -319,6 +320,7 @@ export default function (pi: ExtensionAPI) {
 		const repair = builtinsToRepair(pi.getActiveTools());
 		if (repair.length === 0) return;
 		pi.setActiveTools([...pi.getActiveTools(), ...repair]);
+		pi.appendEntry(REPAIR_MARKER, { tools: repair });
 		if (ctx.hasUI) {
 			ctx.ui.notify(`Re-activated ${repair.join(", ")}: the session transcript lost its built-in tool declaration`, "warning");
 		}

@@ -10,7 +10,9 @@ date: 2026-11-13
 **Ruling.** `extensions/session-trim.ts` re-activates `read`, `write`, `edit` and
 `bash` on `session_start` when all four are missing from the active set and no
 tool-selection flag is on argv. The repair appends to whatever is active and
-notifies with a warning. It never fires for a partial set.
+notifies with a warning, and appends a `tool-loadout-repair` entry carrying the
+names, because a toast issued at that point can land before the view is up. It
+never fires for a partial set.
 
 **Why.** pi restores the tool loadout by replaying `toolsAdded`/`toolsRemoved`
 from the system messages on the branch, and built-in tools follow that replay
