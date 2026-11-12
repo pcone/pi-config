@@ -147,6 +147,13 @@ function fireSilenceKill(rs) {
 	dispatchKillSignals(rs, "progress-timeout");
 }
 
+// ── stillRunning — KEEP IN SYNC with sleep-guard.ts ─────────────────────────────
+// `killed` is set by any successful kill(), so it cannot answer whether the
+// child is still alive; exitCode and signalCode stay null until it ends.
+function stillRunning(proc) {
+	return proc.exitCode === null && proc.signalCode === null;
+}
+
 // ── dispatchKillSignals — KEEP IN SYNC with sleep-guard.ts ──────────────────────
 // Shared SIGTERM→SIGKILL dispatch used by both `subagent_kill` and stage 2 —
 // the single kill path. Sets killedExplicitly/killedVia BEFORE proc.kill,
@@ -166,7 +173,7 @@ function dispatchKillSignals(rs, via) {
 	if (!alreadyDead) {
 		try { rs.proc.kill("SIGTERM"); } catch { /* */ }
 		setTimeout(() => {
-			if (!rs.proc.killed && rs.proc.exitCode === null) {
+			if (stillRunning(rs.proc)) {
 				try { rs.proc.kill("SIGKILL"); } catch { /* */ }
 			}
 		}, HARD_KILL_DELAY_MS);
@@ -204,9 +211,10 @@ function makeChild({ silenceTimeoutMs } = {}) {
 		proc: {
 			killed: false,
 			exitCode: null,
+			signalCode: null,
 			kill: (sig) => {
 				procKills.push(sig);
-				if (sig === "SIGKILL") rs.proc.killed = true;
+				if (sig === "SIGKILL") { rs.proc.killed = true; rs.proc.signalCode = sig; }
 			},
 		},
 		isDone: false,

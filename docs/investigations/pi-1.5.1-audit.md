@@ -297,6 +297,12 @@ until the process group or the turn cap ends it. Pre-existing, not upgrade-cause
 and out of this order's scope: it wants its own fix order, and nothing in 1.5.1
 changes it either way.
 
+> **Fixed, WO-2026-100.** `dispatchKillSignals` and `subagent_stop`'s force-kill
+> fallback now test `exitCode === null && signalCode === null` (`stillRunning`,
+> `extensions/subagent-async/sleep-guard.ts`), so the SIGKILL fires on a child
+> that ignores SIGTERM. `tests/subagent-async-kill.test.ts` R1–R4 drive real node
+> children.
+
 ## 7. Full suite against 1.5.1
 
 ```

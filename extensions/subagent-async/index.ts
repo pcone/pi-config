@@ -149,6 +149,7 @@ import {
 	deliverResult,
 	dispatchKillSignals,
 	reconcileSleepGuards,
+	stillRunning,
 	terminalOutcome,
 } from "./sleep-guard.ts";
 import {
@@ -2135,7 +2136,7 @@ export default function (pi: ExtensionAPI) {
 					if (rs.proc) {
 						rs.proc.kill("SIGTERM");
 						setTimeout(() => {
-							if (rs.proc && !rs.proc.killed) rs.proc.kill("SIGKILL");
+							if (stillRunning(rs.proc)) rs.proc.kill("SIGKILL");
 							finish("[Force-stopped after timeout]");
 						}, HARD_KILL_DELAY_MS);
 					} else {
