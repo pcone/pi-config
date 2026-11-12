@@ -15,12 +15,10 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import subagentFactory, {
-	_testSetCargoHome,
 	_testSetLiveSessionCtx,
-	_testSetRecoveryScanDir,
 	metaPath,
 	readMetaJson,
 	reapFinishedWorktrees,
@@ -30,8 +28,11 @@ import subagentFactory, {
 	writeMetaJson,
 } from "../extensions/subagent-async/index.ts";
 import { _testSetReaperHome, readReaperReport, reapCheckouts } from "../extensions/lib/checkout-reaper.ts";
+import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { PI_SUBAGENT_CARGO_HOME_ENV, subagentCargoHome } from "../extensions/lib/subagent-worktree.ts";
+import { UnusableEnvPathError } from "../extensions/lib/env-path.ts";
 import { addWorktree, backdate, git, gitDirOf, makeRepo as reaperRepo, mustGit } from "./helpers/reaper-fixtures.ts";
-import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { scrubSubagentEnv, setEnvForRow } from "./helpers/subagent-env.ts";
 import { STANDIN_EPILOGUE } from "./helpers/standin-epilogue.ts";
 import { isolateSubagentWorktrees } from "./helpers/subagent-wt-root.ts";
 
@@ -87,6 +88,9 @@ function tempDir(prefix: string): string {
 let fixtureRoot: string;
 let argv1Before: string | undefined;
 let agentDirBefore: string | undefined;
+/** The file's cargo home for WO-2026-091's bound (WO-2026-099: process-wide
+ *  env, so the file pins it once and restores the preload's value in `afterAll`). */
+let restoreCargoHome: () => void = () => {};
 
 
 // The harness injects PI_SUBAGENT_* into every subagent, and the gate reads them
@@ -130,12 +134,13 @@ setInterval(() => {}, 1 << 30);
 	// WO-2026-091: the reap's bound walks `~/.cache/cargo-target` and, over the
 	// bound, runs `cargo clean -p`. No row here is about the bound (that is
 	// tests/build-output-reaper.test.ts), and no row may measure or clean the
-	// box's real shared dirs.
-	_testSetCargoHome(join(fixtureRoot, "home"));
+	// box's real shared dirs. WO-2026-099: process-wide, so the file pins it here
+	// rather than through a per-file setter.
+	restoreCargoHome = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, join(fixtureRoot, "home"));
 });
 
 afterAll(() => {
-	_testSetCargoHome(undefined);
+	restoreCargoHome();
 	restoreSubagentEnv();
 	if (argv1Before !== undefined) process.argv[1] = argv1Before;
 	if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -741,15 +746,15 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		// The handler also runs WO-2026-092's reaper, which walks
 		// `homedir()/Developer/wt` and `homedir()/.cache/cargo-target`: on the box's
 		// home that is every real checkout. Bun's `homedir()` is fixed at process
-		// start, so the pin is the module's home seam (and the cargo root hook the
-		// file's beforeAll already sets), not `HOME`.
+		// start, so the pin is the module's home seam (and the cargo home the
+		// file's beforeAll sets), not `HOME`.
 		const home = tempDir("pi-wiring-home-");
 		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
 		_testSetReaperHome(home);
 
 		// Dropping the call leaves the tree.
 		const handlers = registerHandler();
-		_testSetRecoveryScanDir(dir);
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, dir);
 		try {
 			await handlers.get("session_start")!(
 				{ type: "session_start", reason: "reload" },
@@ -761,7 +766,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			// with the wiring dropped there is no report at all.
 			expect(await waitFor(() => existsSync(join(home, "Developer", "wt", ".reaper-report.json")), 20_000)).toBe(true);
 		} finally {
-			_testSetRecoveryScanDir(undefined);
+			restore();
 			_testSetReaperHome(undefined);
 		}
 		// Two reaps and a report write on a loaded box.
@@ -782,7 +787,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		backdate(gitDirOf(tree));
 		backdate(tree);
 		_testSetReaperHome(home);
-		_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, tempDir("pi-wiring-registry-"));
 
 		const handlers = registerHandler();
 		try {
@@ -800,7 +805,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			expect(row?.state).toBe("removed");
 			expect(row?.gate).toBeNull();
 		} finally {
-			_testSetRecoveryScanDir(undefined);
+			restore();
 			_testSetReaperHome(undefined);
 		}
 		// A real reap: the git gates, the lsof sweep and a worktree removal.
@@ -820,7 +825,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 		_testSetReaperHome(home);
-		_testSetRecoveryScanDir(dir);
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, dir);
 
 		const handlers = registerHandler();
 		try {
@@ -837,7 +842,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			expect(row?.gate).toBe("subagent");
 			expect(row?.detail).toBe("subagent kept-uncommitted");
 		} finally {
-			_testSetRecoveryScanDir(undefined);
+			restore();
 			_testSetReaperHome(undefined);
 		}
 		// 027's reap, then the general pass over the same registry.
@@ -846,7 +851,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 	it("hands one failed meta's tree over as ungoverned through the real handler (wiring)", async () => {
 		const f = perMetaFixture();
 		_testSetReaperHome(f.home);
-		_testSetRecoveryScanDir(f.registry);
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, f.registry);
 
 		const handlers = registerHandler();
 		try {
@@ -865,7 +870,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			// The metas after the failing one still ran through the handler too.
 			for (const entry of f.reaped) expect(existsSync(entry.worktreePath)).toBe(false);
 		} finally {
-			_testSetRecoveryScanDir(undefined);
+			restore();
 			_testSetReaperHome(undefined);
 		}
 		// Two reaps over three trees, then the general pass.
@@ -880,7 +885,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		const tornName = `pi-subagent-torn-extra.meta.json`;
 		writeFileSync(join(f.registry, tornName), "{ not json");
 		_testSetReaperHome(f.home);
-		_testSetRecoveryScanDir(f.registry);
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, f.registry);
 
 		const handlers = registerHandler();
 		try {
@@ -896,7 +901,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			expect(row?.detail).toContain(tornName);
 			expect(row?.detail).toContain("1 more");
 		} finally {
-			_testSetRecoveryScanDir(undefined);
+			restore();
 			_testSetReaperHome(undefined);
 		}
 	}, 60_000);
@@ -929,9 +934,9 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 		mkdirSync(join(home, "Developer", "wt"), { recursive: true });
 		const depthBefore = process.env.PI_SUBAGENT_DEPTH;
 		_testSetReaperHome(home);
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, tempDir("pi-wiring-registry-"));
 		try {
 			const handlers = registerHandler();
-			_testSetRecoveryScanDir(tempDir("pi-wiring-registry-"));
 			const reportFile = join(home, "Developer", "wt", ".reaper-report.json");
 			// Positive control: the same home and the same registry write a report
 			// when the pass runs, so the child's silence below is the depth gate and
@@ -957,7 +962,7 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			await Bun.sleep(Math.max(1_000, controlMs * 2));
 			expect(existsSync(reportFile)).toBe(false);
 		} finally {
-			_testSetRecoveryScanDir(undefined);
+			restore();
 			_testSetReaperHome(undefined);
 			if (depthBefore === undefined) delete process.env.PI_SUBAGENT_DEPTH;
 			else process.env.PI_SUBAGENT_DEPTH = depthBefore;
@@ -1008,7 +1013,7 @@ describe("reap build output (real git, injected registry)", () => {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 
-		_testSetCargoHome(home);
+		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, home);
 		try {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 
@@ -1029,7 +1034,7 @@ describe("reap build output (real git, injected registry)", () => {
 			// target/ with the tree — see the row's note in the report.
 			expect(results[0].detail).toContain("(exact)");
 		} finally {
-			_testSetCargoHome(join(fixtureRoot, "home"));
+			restore();
 		}
 	});
 
@@ -1065,7 +1070,7 @@ describe("reap build output (real git, injected registry)", () => {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 
-		_testSetCargoHome(home);
+		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, home);
 		try {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
 
@@ -1074,7 +1079,7 @@ describe("reap build output (real git, injected registry)", () => {
 			expect(results[0].detail).toContain("not readable");
 		} finally {
 			chmodSync(unreadable, 0o644);
-			_testSetCargoHome(join(fixtureRoot, "home"));
+			restore();
 		}
 	});
 
@@ -1102,7 +1107,7 @@ describe("reap build output (real git, injected registry)", () => {
 		meta.ownerStartToken = "not-our-token";
 		writeFileSync(metaFile, JSON.stringify(meta));
 
-		_testSetCargoHome(home);
+		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, home);
 		try {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), {
 				dir: entry.dir,
@@ -1116,7 +1121,7 @@ describe("reap build output (real git, injected registry)", () => {
 			// ... so the bound is what pruned the dead path's share.
 			expect(existsSync(depInfo)).toBe(false);
 		} finally {
-			_testSetCargoHome(join(fixtureRoot, "home"));
+			restore();
 		}
 	});
 
@@ -1200,6 +1205,46 @@ describe("reap build output (real git, injected registry)", () => {
 		expect(existsSync(worktreePath)).toBe(true);
 		expect(existsSync(join(worktreePath, "target"))).toBe(false);
 		expect(results[0].detail).toContain("branch gone");
+	});
+});
+
+describe("the reap's cargo home is process-wide, not a per-file setter (WO-2026-099)", () => {
+	it("a set-but-unusable value throws, naming the variable and the value", () => {
+		for (const bad of ["", "relative/home"]) {
+			const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, bad);
+			try {
+				expect(() => subagentCargoHome()).toThrow(UnusableEnvPathError);
+				expect(() => subagentCargoHome()).toThrow(
+					`${PI_SUBAGENT_CARGO_HOME_ENV} must be an absolute path, got ${JSON.stringify(bad)}`,
+				);
+			} finally {
+				restore();
+			}
+		}
+	});
+
+	it("unset, it is still the box's own home — the production path", () => {
+		const before = process.env[PI_SUBAGENT_CARGO_HOME_ENV];
+		delete process.env[PI_SUBAGENT_CARGO_HOME_ENV];
+		try {
+			expect(subagentCargoHome()).toBe(homedir());
+		} finally {
+			if (before !== undefined) process.env[PI_SUBAGENT_CARGO_HOME_ENV] = before;
+		}
+	});
+
+	it("the reap resolves it with no `home` argument, and the refusal is not swallowed", async () => {
+		const dir = tempDir("pi-cargo-env-");
+		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, "relative/home");
+		try {
+			// No `deps.home`: the reap's own resolution is what must refuse, and the
+			// rejection must reach the caller instead of becoming an ungoverned scan.
+			await expect(
+				reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid }),
+			).rejects.toThrow(`${PI_SUBAGENT_CARGO_HOME_ENV} must be an absolute path`);
+		} finally {
+			restore();
+		}
 	});
 });
 

@@ -45,12 +45,12 @@ import * as path from "node:path";
 import extension, {
 	_testRunning,
 	_testSetLiveSessionCtx,
-	_testSetRecoveryScanDir,
 	buildSpawnMeta,
 	decideRecoveryAdoption,
 	defaultOwnerProbe,
 	isOwnerAlive,
 	processStartToken,
+	reapFinishedWorktrees,
 	recoverOrphanedSubagents,
 	selfStartToken,
 	updateFooter,
@@ -58,6 +58,9 @@ import extension, {
 	type SpawnMetaFields,
 } from "../extensions/subagent-async/index.ts";
 import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
+import { PI_SUBAGENT_META_DIR_ENV, SUBAGENT_TMP_DIR, subagentMetaDir } from "../extensions/lib/subagent-state.ts";
+import { UnusableEnvPathError } from "../extensions/lib/env-path.ts";
+import { setEnvForRow } from "./helpers/subagent-env.ts";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -105,7 +108,6 @@ const tempDirs: string[] = [];
 
 afterEach(() => {
 	_testSetLiveSessionCtx(null);
-	_testSetRecoveryScanDir(undefined);
 	_testRunning.clear();
 	// Stop the sleep-guard heartbeat/caffeinate the scan may have started via
 	// updateFooter: an empty running set tears them down.
@@ -581,7 +583,9 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 			ui: {},
 		};
 		extension(pi);
-		_testSetRecoveryScanDir(dir);
+		// WO-2026-099: the scan's dir is process-wide, not a per-file setter. This
+		// row drives the real handler, so it is one of the few that must set it.
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, dir);
 		// The same handler runs WO-2026-092's checkout reaper. Pin its home, or
 		// the row walks (and may reap) the box's own `~/Developer/wt`.
 		const home = mkdtempSync(path.join(tmpdir(), "pi-wiring-home-"));
@@ -599,6 +603,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 			}
 			_testRunning.clear();
 			_testSetReaperHome(undefined);
+			restore();
 			server.close();
 		}
 	});
@@ -769,5 +774,101 @@ describe("recoverOrphanedSubagents — discovery fold (WO-2026-083)", () => {
 
 		expect(connectCalls).toBe(0);
 		expect(_testRunning.size).toBe(0);
+	});
+});
+
+// ── The metas dir is process-wide, not a per-file hook (WO-2026-099) ────────
+//
+// The scan reads `/tmp` unless something says otherwise, and `/tmp` holds every
+// pi process's live `pi-subagent-*` files. A per-file setter made the redirect a
+// list of files that remembered. `PI_SUBAGENT_META_DIR` is set once by
+// `tests/preload-subagent-roots.ts`, so a file that never thinks about it cannot
+// reach the box's registry.
+describe("the metas dir is process-wide (WO-2026-099)", () => {
+	/** Register the extension for real and keep the handlers it captured. */
+	function register(): Map<string, Function> {
+		const handlers = new Map<string, Function>();
+		const pi: any = {
+			events: { emit() {} },
+			registerTool() {},
+			registerCommand() {},
+			on(event: string, cb: Function) { handlers.set(event, cb); },
+			sendUserMessage() {},
+			ui: {},
+		};
+		extension(pi);
+		return handlers;
+	}
+
+	it("resolves to the run's dir with no per-file setup", () => {
+		const run = process.env[PI_SUBAGENT_META_DIR_ENV];
+		expect(run).toBeDefined();
+		expect(subagentMetaDir()).toBe(run!);
+		expect(path.isAbsolute(subagentMetaDir())).toBe(true);
+		// The run's temp dir, not the box's live registry.
+		expect(subagentMetaDir()).not.toBe(SUBAGENT_TMP_DIR);
+	});
+
+	it("unset, it is still `/tmp` — 027's production path", () => {
+		const before = process.env[PI_SUBAGENT_META_DIR_ENV];
+		delete process.env[PI_SUBAGENT_META_DIR_ENV];
+		try {
+			expect(subagentMetaDir()).toBe("/tmp");
+			expect(SUBAGENT_TMP_DIR).toBe("/tmp");
+		} finally {
+			if (before !== undefined) process.env[PI_SUBAGENT_META_DIR_ENV] = before;
+		}
+	});
+
+	it("a set-but-unusable value throws, naming the variable and the value", () => {
+		for (const bad of ["", "relative/meta"]) {
+			const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, bad);
+			try {
+				const message = `${PI_SUBAGENT_META_DIR_ENV} must be an absolute path, got ${JSON.stringify(bad)}`;
+				expect(() => subagentMetaDir()).toThrow(UnusableEnvPathError);
+				expect(() => subagentMetaDir()).toThrow(message);
+				// The scan's own swallow-all catch does not keep it: a scan that ran
+				// on after this would be reading `/tmp`.
+				expect(() => recoverOrphanedSubagents(makePi().pi as any, makeCtx(), { selfPid: SELF_PID })).toThrow(message);
+			} finally {
+				restore();
+			}
+		}
+	});
+
+	it("the real session_start handler lets the refusal through", async () => {
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, "relative/meta");
+		try {
+			const handlers = register();
+			await expect(
+				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
+			).rejects.toThrow(`${PI_SUBAGENT_META_DIR_ENV} must be an absolute path`);
+		} finally {
+			restore();
+		}
+	});
+
+	it("a reap with no `dir` reads the override — the resolved path, never `/tmp`", async () => {
+		// A dir that cannot be listed: the reap's own resolution answers it, and
+		// the report names the path it resolved. `selfPid: -1` with a session id no
+		// meta carries means no meta is adoptable, so nothing is judged either way.
+		const missing = path.join(mkdtempSync(path.join(tmpdir(), "pi-nodir-parent-")), "not-there");
+		tempDirs.push(path.dirname(missing));
+		const cargoHome = mkdtempSync(path.join(tmpdir(), "pi-cargo-home-"));
+		tempDirs.push(cargoHome);
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, missing);
+		try {
+			const causes: string[] = [];
+			const results = await reapFinishedWorktrees({} as any, makeCtx(), {
+				selfPid: -1,
+				selfSessionId: "wo-099-no-such-session",
+				home: cargoHome,
+				onScopeFailed: ({ error }) => { causes.push(error); },
+			});
+			expect(results).toEqual([]);
+			expect(causes).toEqual([`unlistable metas dir ${missing}`]);
+		} finally {
+			restore();
+		}
 	});
 });

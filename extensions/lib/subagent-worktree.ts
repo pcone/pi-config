@@ -10,7 +10,8 @@
  * Decision: decisions/subagents/0NN-worktree-location.md.
  */
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
+import { absoluteEnvPath, UnusableEnvPathError } from "./env-path.ts";
 
 /**
  * Human worktree root. Subagent trees get their own namespace inside it so
@@ -25,7 +26,7 @@ export const SUBAGENT_WORKTREE_NAMESPACE = "Developer/wt/subagents";
  * Process-wide override for the worktree base. A subagent dispatch resolves its
  * tree from inside the `subagent` tool, so a call argument cannot reach it — the
  * suite sets this to a temp dir for the whole run
- * (`tests/preload-worktree-root.ts`), and never touches the real
+ * (`tests/preload-subagent-roots.ts`), and never touches the real
  * `~/Developer/wt/subagents`.
  *
  * Scope: it redirects every derivation from the *ambient* base — creation
@@ -39,8 +40,11 @@ export const PI_SUBAGENT_WT_ROOT_ENV = "PI_SUBAGENT_WT_ROOT";
  * the override replaces the real path or fails the call, it never falls back to
  * `~/Developer/wt/subagents` — a silent fallback is what puts a test's tree in
  * a human's directory.
+ *
+ * The worktree base's own name for {@link UnusableEnvPathError}, so a spawn
+ * path can keep naming this failure and one catch covers every override.
  */
-export class UnusableWorktreeRootError extends Error {
+export class UnusableWorktreeRootError extends UnusableEnvPathError {
 	constructor(message: string) {
 		super(message);
 		this.name = "UnusableWorktreeRootError";
@@ -63,14 +67,11 @@ export class UnusableWorktreeRootError extends Error {
  */
 export function subagentWorktreeBase(home?: string): string {
 	if (home !== undefined) return join(home, SUBAGENT_WORKTREE_NAMESPACE);
-	const override = process.env[PI_SUBAGENT_WT_ROOT_ENV];
-	if (override === undefined) return join(homedir(), SUBAGENT_WORKTREE_NAMESPACE);
-	if (override.length === 0 || override.includes("\0") || !isAbsolute(override)) {
-		throw new UnusableWorktreeRootError(
-			`${PI_SUBAGENT_WT_ROOT_ENV} must be an absolute path, got ${JSON.stringify(override)}`,
-		);
-	}
-	return override;
+	return absoluteEnvPath(
+		PI_SUBAGENT_WT_ROOT_ENV,
+		join(homedir(), SUBAGENT_WORKTREE_NAMESPACE),
+		(message) => new UnusableWorktreeRootError(message),
+	);
 }
 
 /**
@@ -99,6 +100,28 @@ export function cargoTargetDirFor(repoName: string, home: string = homedir()): s
 /** The parent of every clone's shared dir — what the bound walks. */
 export function cargoTargetRoot(home: string = homedir()): string {
 	return join(home, ".cache", "cargo-target");
+}
+
+/**
+ * Process-wide override for the home whose `~/.cache/cargo-target` the reap
+ * bounds and prunes. The `session_start` reap resolves it from inside the reap,
+ * so a call argument cannot reach it — the suite sets this to a temp home for
+ * the whole run (`tests/preload-subagent-roots.ts`), and no row measures — or,
+ * over the bound, `cargo clean -p`s — the box's real shared dirs.
+ */
+export const PI_SUBAGENT_CARGO_HOME_ENV = "PI_SUBAGENT_CARGO_HOME";
+
+/**
+ * `$PI_SUBAGENT_CARGO_HOME` when set, else `homedir()`.
+ *
+ * The same shape and rule as {@link subagentWorktreeBase}: an unusable value
+ * throws instead of falling back to the box's real cargo root. An explicit
+ * `home` argument still wins at the call site (`deps.home ?? subagentCargoHome()`
+ * in `reapFinishedWorktrees`), so a row about a home it names keeps its meaning
+ * while the override is on.
+ */
+export function subagentCargoHome(): string {
+	return absoluteEnvPath(PI_SUBAGENT_CARGO_HOME_ENV, homedir());
 }
 
 /** The 12-char session tail `subagentWorktreePath` appends, plus its separator. */

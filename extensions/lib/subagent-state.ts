@@ -15,6 +15,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { absoluteEnvPath } from "./env-path.ts";
 
 /** A log silent for this long is no longer evidence of a live child. Same
  *  window as subagent-async's stalled-turn watchdog. */
@@ -176,7 +177,33 @@ export function decideRecoveryAdoption(
 
 // ── Meta registry scan ─────────────────────────────────────────────────────
 
+/**
+ * The production metas dir: `/tmp`. Every pi process on the machine reads the
+ * same `pi-subagent-*` files there, so a scan of it reaches live children and
+ * other sessions' logs; {@link subagentMetaDir} is what a caller reads, so the
+ * suite can redirect it for the whole run (`tests/preload-subagent-roots.ts`).
+ */
 export const SUBAGENT_TMP_DIR = "/tmp";
+
+/**
+ * Process-wide override for the metas dir. The `session_start` recovery scan
+ * resolves it from inside the scan, so a call argument cannot reach it — the
+ * suite sets this to a fresh temp dir for the whole run, and no file has to
+ * isolate itself.
+ */
+export const PI_SUBAGENT_META_DIR_ENV = "PI_SUBAGENT_META_DIR";
+
+/**
+ * `$PI_SUBAGENT_META_DIR` when set, else {@link SUBAGENT_TMP_DIR}.
+ *
+ * An unusable value (empty, relative) throws instead of reading `/tmp`: the
+ * fallback is the leak, because a typo would put a test back on the box's live
+ * registry with no sign of it. An explicit `dir` argument still wins at every
+ * call site, so a row about a fixture dir it names keeps its meaning.
+ */
+export function subagentMetaDir(): string {
+	return absoluteEnvPath(PI_SUBAGENT_META_DIR_ENV, SUBAGENT_TMP_DIR);
+}
 
 export interface SubagentMetaEntry {
 	sid: string;

@@ -32,8 +32,11 @@ import {
 	resolveSubagentMeta,
 	resumeCallFor,
 	resolveTurnCap,
+	subagentMetaDir,
 	type OwnerProbe,
 } from "../lib/subagent-state.ts";
+import { rethrowIfUnusableEnvPath } from "../lib/env-path.ts";
+import { subagentCargoHome } from "../lib/subagent-worktree.ts";
 import { closeWorkRecord, commitRecordEntries, openRecordContext, sessionFinalText, type PersistedWorkRecord } from "./records.ts";
 import { removeWorktreeTree } from "./worktree.ts";
 import {
@@ -327,22 +330,6 @@ export function resolveTrackerKey(requestedId: string): string {
 	return requestedId;
 }
 
-/** @internal test hook — override the directory the real `session_start`
- *  recovery scan reads (defaults to /tmp). Lets a test fire the captured
- *  handler and observe adoption without touching real /tmp. */
-let recoveryScanDirOverride: string | undefined;
-export function _testSetRecoveryScanDir(dir: string | undefined): void {
-	recoveryScanDirOverride = dir;
-}
-
-/** @internal test hook — override the home whose shared cargo target root the
- *  reap's bound walks (defaults to the real one). A row must never measure —
- *  or, over the bound, `cargo clean -p` — the box's real shared dirs. */
-let cargoHomeOverride: string | undefined;
-export function _testSetCargoHome(home: string | undefined): void {
-	cargoHomeOverride = home;
-}
-
 // ── Orphan recovery scan ─────────────────────────────────────────────────────
 
 export interface RecoveryScanDeps {
@@ -381,16 +368,19 @@ export interface RecoveryScanDeps {
  *
  * Extracted with injectable directory / pid / probe / connection factory so the
  * adopt-skip matrix and the `unref` contract are unit-testable without touching
- * /tmp or opening real sockets. Best-effort: never throws (the caller also
- * wraps it, but keeping the scan self-contained makes every branch safe).
+ * /tmp or opening real sockets. Best-effort: a torn metas dir, socket or log is
+ * absorbed (the caller also wraps it, but keeping the scan self-contained makes
+ * every branch safe). The scan dir itself is resolved *before* that: an
+ * unusable `PI_SUBAGENT_META_DIR` (WO-2026-099) must reach the caller instead of
+ * silently reading `/tmp`.
  */
 export function recoverOrphanedSubagents(
 	pi: ExtensionAPI,
 	ctx: any,
 	deps: RecoveryScanDeps = {},
 ): void {
+	const sockDir = deps.dir ?? subagentMetaDir();
 	try {
-		const sockDir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		const connect = deps.connect ?? ((p: string) => net.createConnection(p));
 		// The tmp dir's SOCK scan, and only that (`socketsOnly`): no log-only
 		// arm, and no readdir, meta read or turn regex of its own (WO-2026-083).
@@ -572,7 +562,12 @@ export function recoverOrphanedSubagents(
 			running.set(sid, rs);
 			updateFooter();
 		}
-	} catch { /* best-effort */ }
+	} catch (e) {
+		// One torn session is not the pass: the rest of the scan still runs. An
+		// unusable override is not a torn session — reading `/tmp` after it failed
+		// is the leak the override exists to stop.
+		rethrowIfUnusableEnvPath(e);
+	}
 }
 
 /** Outcome of one finished-worktree reap decision. */
@@ -617,15 +612,23 @@ export interface ReapResult {
  * landed or is gone, and a shared dir over its bound is pruned. That half lives
  * in `lib/build-output-reaper.ts`; the bound is checked here, once per session
  * start, never on the spawn path.
+ *
+ * The two roots it reads from the environment — `PI_SUBAGENT_META_DIR` (the
+ * metas dir) and `PI_SUBAGENT_CARGO_HOME` (the home the bound walks) — are
+ * resolved before the first `try`, so neither a torn meta's catch nor the
+ * unlistable-dir catch can absorb a bad override and leave the pass reading the
+ * box's real `/tmp` and cargo root.
  */
 export async function reapFinishedWorktrees(
 	pi: ExtensionAPI,
 	ctx: any,
 	deps: RecoveryScanDeps = {},
 ): Promise<ReapResult[]> {
+	const dir = deps.dir ?? subagentMetaDir();
+	const home = deps.home ?? subagentCargoHome();
 	const results: ReapResult[] = [];
 	const buildOutput = createReapBuildOutput({
-		home: deps.home ?? cargoHomeOverride,
+		home,
 		run: deps.run,
 		sizeOf: deps.sizeOf,
 	});
@@ -698,7 +701,7 @@ export async function reapFinishedWorktrees(
 		}
 
 		const removal = await removeWorktreeTree(
-			{ run: deps.run, home: deps.home ?? cargoHomeOverride },
+			{ run: deps.run, home },
 			{
 				worktreePath,
 				isolationBranch,
@@ -730,7 +733,6 @@ export async function reapFinishedWorktrees(
 	};
 
 	try {
-		const dir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		for (const { sid, meta } of listSubagentMetas(dir, undefined, (target, kind) => {
 			// A meta file that yields nothing names a tree this reap cannot
 			// attribute, and an unlistable dir hides every meta at once: either way

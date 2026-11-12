@@ -41,6 +41,23 @@ export function scrubSubagentEnv(): () => void {
 }
 
 /**
+ * Set `name` for one row and return the restore to call from `finally`.
+ *
+ * The restore puts back what was there — the preload's temp root — rather than
+ * deleting the variable: an unset override is the production path, so a row
+ * that deletes it mid-file hands the next row the box's real `/tmp` or cargo
+ * root (WO-2026-099).
+ */
+export function setEnvForRow(name: string, value: string): () => void {
+	const previous = process.env[name];
+	process.env[name] = value;
+	return () => {
+		if (previous === undefined) delete process.env[name];
+		else process.env[name] = previous;
+	};
+}
+
+/**
  * The env to hand a child process explicitly: the live env plus `overrides`
  * (`undefined` removes a key). Never spawn without it — see the startup-snapshot
  * note above.

@@ -21,7 +21,7 @@ dir and removes it in `afterAll`. Every test file that reaches
 `createWorktree` uses it.
 
 **Superseded 2026-11-10 (owner, work-order round 2):** the per-file helper is no
-longer the guarantee. `bunfig.toml` preloads `tests/preload-worktree-root.ts`,
+longer the guarantee. `bunfig.toml` preloads `tests/preload-subagent-roots.ts`,
 which sets the variable for the whole run — decision
 `050-worktree-root-preload.md`. The helper remains where a row asserts a temp
 root of its own.

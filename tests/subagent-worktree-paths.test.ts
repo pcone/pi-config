@@ -64,7 +64,7 @@ describe("spawn env", () => {
 
 // Guard assertions derive their paths from the base the guard itself resolved:
 // the module resolves its prefix once at load from the ambient base, which
-// `bunfig.toml` preloads as a temp dir (tests/preload-worktree-root.ts), and
+// `bunfig.toml` preloads as a temp dir (tests/preload-subagent-roots.ts), and
 // `isBlocked` compares symlink-resolved prefixes.
 describe("guard discriminator", () => {
 	test("a sibling subagent tree is blocked", () => {

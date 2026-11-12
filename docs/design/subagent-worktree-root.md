@@ -21,7 +21,7 @@ through rather than folding it into the `null` that means "not a git repo, or
 
 ## The suite sets it for the whole run
 
-`bunfig.toml` preloads `tests/preload-worktree-root.ts`, which points the
+`bunfig.toml` preloads `tests/preload-subagent-roots.ts`, which points the
 variable at a fresh temp dir before any test file loads and removes it on exit.
 The root is realpath'd, because the guard compares symlink-resolved prefixes and
 `tmpdir()` is a symlink on macOS (`/var/folders/…` → `/private/var/folders/…`).
