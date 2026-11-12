@@ -48,10 +48,14 @@ avoid.
   and the setters stay the path a new test file copies.
 - **Fall back to `/tmp` / `homedir()` on an unusable value.** The fallback is the
   bug (049).
-- **Route `metaPath` and the spawn-time writers through `subagentMetaDir()` too.**
-  They are a separate leak (`metaPath` hardcodes `/tmp`, and the readers a spawn
-  test uses pair with it). Folding them in would desynchronise writer and reader
-  for every row that spawns, which is not this order.
+- **Route the other readers — `listSubagentMetas`, `resolveSubagentMeta`,
+  `discoverSessions` — through `subagentMetaDir()` too.** Their writer is
+  `metaPath`, which still hardcodes `/tmp`, so redirecting a reader alone would
+  make a meta written through `metaPath` invisible to it. Grounded: redirecting
+  `resolveSubagentMeta`'s default reds 12 rows in
+  `tests/subagent-id-resolution.test.ts`. The writer side is a separate order: it
+  moves the spawn-time registry, and dozens of rows read `/tmp/pi-subagent-*`
+  directly.
 - **Resolve the roots in the `session_start` handler and pass them as `dir` /
   `home`.** Leaves `reapFinishedWorktrees` unable to answer for itself, and puts
   the throw in a place the reap's own tests cannot reach.
@@ -64,6 +68,7 @@ avoid.
 - A row that wants the production default must delete the variable and restore
   the preload's value in a `finally` (`setEnvForRow`), never leave it unset: an
   unset root mid-file is the box's real `/tmp`.
-- The metas dir the suite redirects is not where a spawned child's meta is
-  written (`metaPath` still writes `/tmp`), so recovery rows that fabricate
-  children keep using `deps.dir`.
+- The metas dir the suite redirects is not where a meta written through
+  `metaPath` lands (`metaPath` still hardcodes `/tmp`), so a row that writes one
+  and reads it back through a defaulted reader keeps both on `/tmp`. Recovery
+  rows that fabricate children keep using `deps.dir`.
