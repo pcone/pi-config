@@ -72,6 +72,7 @@ import extension, {
 	_testSetLiveSessionCtx,
 	_testRunning,
 } from "../extensions/subagent-async/index.ts";
+import { childEnv } from "./helpers/subagent-env.ts";
 
 // ── Environment helpers ────────────────────────────────────────────────────
 
@@ -432,7 +433,7 @@ function spawnNode(script: string): {
 	ready: Promise<void>;
 	closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 } {
-	const proc = spawn("node", ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+	const proc = spawn("node", ["-e", script], { stdio: ["ignore", "pipe", "ignore"], env: childEnv() });
 	spawned.push(proc);
 	let readyResolve: () => void = () => {};
 	const ready = new Promise<void>((resolve) => { readyResolve = resolve; });
