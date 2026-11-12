@@ -211,6 +211,37 @@ export function treeNavigationBlocked(
 	return null;
 }
 
+/** The built-ins whose declarations pi replays from the transcript's system
+ *  messages (`_restoreToolsFromTranscript`). */
+const BUILTIN_TOOLS = ["read", "write", "edit", "bash"] as const;
+
+/** Tool-selection flags on this process's argv. Any of them states the built-in
+ *  set on purpose, so a repair would overrule the operator. */
+const TOOL_FLAGS = ["--tools", "-t", "--exclude-tools", "-xt", "--no-tools", "-nt", "--no-builtin-tools", "-nbt"];
+
+/**
+ * The built-ins to re-activate, or `[]`.
+ *
+ * pi replays the tool loadout from the branch's system messages, and built-ins
+ * follow that replay — unlike extension tools, which come back because they were
+ * registered after the transcript recorded its loadout
+ * (`_restoreToolsFromTranscript`). A message that declared `read`/`bash`/`edit`/
+ * `write` leaving the branch therefore disables them for good, and the next run
+ * records the loss as `toolsRemoved` in the transcript, cementing it. Observed on
+ * a tfd-d session: one `toolsRemoved: [read, bash, edit, write]` entry left every
+ * resume without bash.
+ *
+ * Only the whole built-in set is repaired: one missing built-in is what
+ * `--exclude-tools bash` looks like, and the operator meant it. `argv` is a
+ * parameter so the rows can drive it.
+ */
+export function builtinsToRepair(active: readonly string[], argv: readonly string[] = process.argv): string[] {
+	if (active.length === 0) return [];
+	if (argv.some((arg) => TOOL_FLAGS.some((flag) => arg === flag || arg.startsWith(`${flag}=`)))) return [];
+	const missing = BUILTIN_TOOLS.filter((name) => !active.includes(name));
+	return missing.length === BUILTIN_TOOLS.length ? missing : [];
+}
+
 export default function (pi: ExtensionAPI) {
 	/** Bytes of history this process has moved out of the file but still holds parsed. */
 	let trimmedInProcess = 0;
@@ -280,6 +311,17 @@ export default function (pi: ExtensionAPI) {
 		// A resume or fork swaps in a fresh SessionManager, so nothing is stranded.
 		trimmedInProcess = 0;
 		setHint(ctx);
+
+		// The runtime half of the replay rule documented on `planTrim`: a transcript
+		// that lost its built-in declaration comes back without them, and pi records
+		// the loss again on the next request. Re-activating here reverses both — the
+		// tools work now, and the transcript's next system message declares them.
+		const repair = builtinsToRepair(pi.getActiveTools());
+		if (repair.length === 0) return;
+		pi.setActiveTools([...pi.getActiveTools(), ...repair]);
+		if (ctx.hasUI) {
+			ctx.ui.notify(`Re-activated ${repair.join(", ")}: the session transcript lost its built-in tool declaration`, "warning");
+		}
 	});
 
 	pi.on("session_compact", async (_event, ctx) => {

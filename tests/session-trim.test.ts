@@ -14,6 +14,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import type { SessionEntry, SessionHeader } from "@earendil-works/pi-coding-agent";
 import sessionTrim, {
+	builtinsToRepair,
 	HINT_MIN_DROPPED_BYTES,
 	nextArchivePath,
 	planTrim,
@@ -250,6 +251,67 @@ describe("restartHint", () => {
 	});
 });
 
+function loadExtension(initialTools: string[] = []) {
+	const toolState = { active: [...initialTools] };
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
+	const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+	const entries: Array<{ customType: string; data: unknown }> = [];
+	const statuses: Array<[string, string | undefined]> = [];
+	const active: string[][] = [];
+	const pi = {
+		getActiveTools: () => toolState.active,
+		setActiveTools: (names: string[]) => {
+			toolState.active = [...names];
+			active.push([...names]);
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) {
+			handlers.set(event, handler);
+		},
+		registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+			commands.set(name, options.handler);
+		},
+		registerEntryRenderer() {},
+		appendEntry(customType: string, data: unknown) {
+			entries.push({ customType, data });
+		},
+	};
+	const notifications: string[] = [];
+	const ctxFor = (file: string) => ({
+		hasUI: true,
+		sessionManager: SessionManager.open(file),
+		ui: {
+			setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+			notify: (message: string) => notifications.push(message),
+		},
+	});
+	sessionTrim(pi as never);
+	return { handlers, commands, entries, statuses, notifications, active, toolState, ctxFor };
+}
+
+
+describe("builtinsToRepair", () => {
+	const all = ["read", "write", "edit", "bash"];
+
+	it("repairs only a loadout that lost the whole built-in set", () => {
+		expect(builtinsToRepair(["subagent", "wait"], ["pi"])).toEqual(all);
+		// One missing built-in is what `--exclude-tools bash` looks like.
+		expect(builtinsToRepair(["read", "write", "edit", "subagent"], ["pi"])).toEqual([]);
+		expect(builtinsToRepair(all, ["pi"])).toEqual([]);
+		// No tools at all is `--no-tools`, not a lost declaration.
+		expect(builtinsToRepair([], ["pi"])).toEqual([]);
+	});
+
+	it("stands down for every tool-selection flag, in both spellings", () => {
+		const flags = ["--tools", "-t", "--exclude-tools", "-xt", "--no-tools", "-nt", "--no-builtin-tools", "-nbt"];
+		for (const flag of flags) {
+			expect(builtinsToRepair(["subagent"], ["pi", flag, "bash"])).toEqual([]);
+			expect(builtinsToRepair(["subagent"], ["pi", `${flag}=bash`])).toEqual([]);
+			// A row that never asserts the plain form would pass on the `=` branch alone.
+			expect(builtinsToRepair(["subagent"], ["pi"])).toEqual(all);
+		}
+	});
+});
+
 describe("extension wiring", () => {
 	/** A session whose dropped prefix is large enough to trip the restart hint. */
 	function writeLargeSession(dir: string): string {
@@ -285,36 +347,6 @@ describe("extension wiring", () => {
 		];
 		writeFileSync(file, [header, ...body].map((entry) => `${JSON.stringify(entry)}\n`).join(""));
 		return file;
-	}
-
-	function loadExtension() {
-		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
-		const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
-		const entries: Array<{ customType: string; data: unknown }> = [];
-		const statuses: Array<[string, string | undefined]> = [];
-		const pi = {
-			on(event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) {
-				handlers.set(event, handler);
-			},
-			registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
-				commands.set(name, options.handler);
-			},
-			registerEntryRenderer() {},
-			appendEntry(customType: string, data: unknown) {
-				entries.push({ customType, data });
-			},
-		};
-		const notifications: string[] = [];
-		const ctxFor = (file: string) => ({
-			hasUI: true,
-			sessionManager: SessionManager.open(file),
-			ui: {
-				setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
-				notify: (message: string) => notifications.push(message),
-			},
-		});
-		sessionTrim(pi as never);
-		return { handlers, commands, entries, statuses, notifications, ctxFor };
 	}
 
 	it("/trim rewrites the file, records a marker and shows the restart hint", async () => {
@@ -420,6 +452,31 @@ describe("tool loadout survives the cut", () => {
 			expect(systemMessages([...plan.carried, ...plan.kept])).toEqual(
 				systemMessages(manager.getEntries()),
 			);
+		});
+	});
+});
+
+describe("session_start repairs a transcript that lost the built-ins", () => {
+	it("re-activates the four and says why", async () => {
+		await withDirAsync(async (dir) => {
+			const file = writeSession(dir, {});
+			// What pi's `_restoreToolsFromTranscript` yields for a branch whose
+			// built-in declaration left it: extension tools only.
+			const { handlers, notifications, active, toolState, ctxFor } = loadExtension(["subagent", "wait"]);
+			await handlers.get("session_start")!({ type: "session_start" }, ctxFor(file));
+			expect(active).toHaveLength(1);
+			expect(toolState.active.sort()).toEqual(["bash", "edit", "read", "subagent", "wait", "write"]);
+			expect(notifications.join(" ")).toContain("Re-activated read, write, edit, bash");
+		});
+	});
+
+	it("leaves a healthy loadout untouched", async () => {
+		await withDirAsync(async (dir) => {
+			const file = writeSession(dir, {});
+			const { handlers, notifications, active, ctxFor } = loadExtension(["read", "write", "edit", "bash", "subagent"]);
+			await handlers.get("session_start")!({ type: "session_start" }, ctxFor(file));
+			expect(active).toEqual([]);
+			expect(notifications.join(" ")).not.toContain("Re-activated");
 		});
 	});
 });
