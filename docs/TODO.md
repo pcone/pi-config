@@ -8,10 +8,10 @@ carrier" retires them by default.
   rejections: 1 + 8 + 9). A `null` `session_id` no longer rejects at the type boundary.
 - **`fetch_url.headers` accepts a scalar** (§1): a `headers: "x"` value passes where an
   array is required, and the tool then iterates a string.
-- **`Q-097-a`** — the second `settings.json` key (`showCacheMissNotices`) the warmed
-  cost needs, recorded in `work-orders/WO-2026-097-audit-pi-1.5.1-upgrade.md`, awaiting
-  the owner's ruling. (`Q-098-a` and `Q-099-a` were ruled on 2026-11-14: accept the
-  lower-level pins, and the split satisfies row 5.)
+- **`cacheWarming` + `showCacheMissNotices`** — `Q-097-a` was ruled on 2026-11-14 ("Set
+  both"): both keys land in `settings.json` at upgrade time, recorded in
+  `work-orders/WO-2026-097-audit-pi-1.5.1-upgrade.md`. (`Q-098-a` and `Q-099-a` were
+  ruled the same day: accept the lower-level pins, and the split satisfies row 5.)
 
 # Seat-config ruling batch — 2026-10-22 (landed; 042 pending)
 
