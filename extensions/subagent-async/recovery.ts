@@ -35,7 +35,6 @@ import {
 	subagentMetaDir,
 	type OwnerProbe,
 } from "../lib/subagent-state.ts";
-import { rethrowIfUnusableEnvPath } from "../lib/env-path.ts";
 import { subagentCargoHome } from "../lib/subagent-worktree.ts";
 import { closeWorkRecord, commitRecordEntries, openRecordContext, sessionFinalText, type PersistedWorkRecord } from "./records.ts";
 import { removeWorktreeTree } from "./worktree.ts";
@@ -343,8 +342,10 @@ export interface RecoveryScanDeps {
 	probe?: OwnerProbe;
 	/** Override for the socket client factory (tests). */
 	connect?: (sockPath: string) => net.Socket;
-	/** Override for the home the reap's bound walks (tests); defaults to the
-	 *  real one, whose `~/.cache/cargo-target` holds one dir per clone. */
+	/** Override for the cargo home the reap's bound walks (tests); defaults to
+	 *  `subagentCargoHome()`, whose `~/.cache/cargo-target` holds one dir per
+	 *  clone. Not the worktree base: that is ambient, and the two are separate
+	 *  values in production. */
 	home?: string;
 	/** Override for the reap's `cargo` / `git` calls (tests). */
 	run?: CommandRunner;
@@ -562,11 +563,9 @@ export function recoverOrphanedSubagents(
 			running.set(sid, rs);
 			updateFooter();
 		}
-	} catch (e) {
-		// One torn session is not the pass: the rest of the scan still runs. An
-		// unusable override is not a torn session — reading `/tmp` after it failed
-		// is the leak the override exists to stop.
-		rethrowIfUnusableEnvPath(e);
+	} catch {
+		/* best-effort: one torn session is not the pass. The `try` cannot absorb an
+		 * unusable override — {@link subagentMetaDir} is resolved above it. */
 	}
 }
 
@@ -618,6 +617,12 @@ export interface ReapResult {
  * resolved before the first `try`, so neither a torn meta's catch nor the
  * unlistable-dir catch can absorb a bad override and leave the pass reading the
  * box's real `/tmp` and cargo root.
+ *
+ * The cargo home is not the worktree base. A tree's clone name is derived from
+ * the *ambient* base (`PI_SUBAGENT_WT_ROOT`), the root `createWorktree` built it
+ * under; its share of the clone's shared cargo dir lives under the cargo home.
+ * Passing the cargo home as the base stops attribution whenever the two
+ * overrides differ, and the prune is then silently skipped.
  */
 export async function reapFinishedWorktrees(
 	pi: ExtensionAPI,
@@ -625,10 +630,10 @@ export async function reapFinishedWorktrees(
 	deps: RecoveryScanDeps = {},
 ): Promise<ReapResult[]> {
 	const dir = deps.dir ?? subagentMetaDir();
-	const home = deps.home ?? subagentCargoHome();
+	const cargoHome = deps.home ?? subagentCargoHome();
 	const results: ReapResult[] = [];
 	const buildOutput = createReapBuildOutput({
-		home,
+		cargoHome,
 		run: deps.run,
 		sizeOf: deps.sizeOf,
 	});
@@ -701,7 +706,7 @@ export async function reapFinishedWorktrees(
 		}
 
 		const removal = await removeWorktreeTree(
-			{ run: deps.run, home },
+			{ run: deps.run, cargoHome },
 			{
 				worktreePath,
 				isolationBranch,

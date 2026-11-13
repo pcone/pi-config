@@ -1183,7 +1183,9 @@ async function removeCheckout(
 	// same thing more strongly (gate 2: every commit on the branch is on a remote
 	// ref), so both facts it compares are the branch's own HEAD.
 	const removal = await ctx.removeWorktree(
-		{ run: ctx.run, home: ctx.home },
+		// This pass's world has one home: `wtRoots(home)` and `cargoTargetRoot(home)`
+		// both derive from it, so the tree's base and its cargo share agree.
+		{ run: ctx.run, baseHome: ctx.home, cargoHome: ctx.home },
 		{
 			worktreePath: entry.path,
 			isolationBranch: status.branch,

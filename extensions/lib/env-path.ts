@@ -17,9 +17,10 @@
  * fallback is the bug, because a typo would put a test's files in a human's
  * directory (or make a test read the box's live registry) silently.
  *
- * Every absorb-all path an override travels through calls
+ * An absorb-all path an override travels through calls
  * {@link rethrowIfUnusableEnvPath}: a recovery scan tolerates a torn meta, not a
- * root it could not resolve.
+ * root it could not resolve. A caller that can read the override outside its
+ * catch, or before the chain that would absorb it, does that instead.
  *
  * Decisions: decisions/subagents/049-injectable-worktree-root.md (the shape),
  * 052-recovery-scan-process-wide-root.md (the other two).

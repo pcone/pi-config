@@ -442,8 +442,14 @@ export interface RemovalDeps {
 	disposeBuildOutput?: (worktreePath: string, parentCwd: string) => Promise<BuildOutputReport>;
 	/** Injection seam for the pruner's `cargo` calls (tests). */
 	run?: CommandRunner;
-	/** Override for the home whose shared cargo dir the prune derives (tests). */
-	home?: string;
+	/** The home whose `.cache/cargo-target` the prune derives the share from.
+	 *  Omitted, the box's own home answers — never the worktree base's, which is
+	 *  a different root the suite sets independently. */
+	cargoHome?: string;
+	/** The home whose `Developer/wt/subagents` the tree's clone name is derived
+	 *  from. Omitted, the ambient base answers (`PI_SUBAGENT_WT_ROOT`), which is
+	 *  where every tree a caller of this function removes was created. */
+	baseHome?: string;
 }
 
 /**
@@ -505,7 +511,10 @@ export async function removeWorktreeTree(
 	// reported to the caller, never thrown, and never undoes the removal.
 	let buildOutput: BuildOutputReport;
 	try {
-		const dispose = deps.disposeBuildOutput ?? ((p: string, parent: string) => disposeWorktreeBuildOutput(p, parent, { run: deps.run, home: deps.home }));
+		const dispose =
+			deps.disposeBuildOutput ??
+			((p: string, parent: string) =>
+				disposeWorktreeBuildOutput(p, parent, { run: deps.run, cargoHome: deps.cargoHome, baseHome: deps.baseHome }));
 		buildOutput = await dispose(worktreePath, parentCwd);
 	} catch (e) {
 		const detail = `build-output prune failed: ${e instanceof Error ? e.message : String(e)}`;

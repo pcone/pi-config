@@ -18,6 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import { CHECKPOINT_MARKER } from "../extensions/lib/checkpoint-marker.ts";
+import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { setEnvForRow } from "./helpers/subagent-env.ts";
 import { FLEET_MODEL, FLEET_MODEL_SPEC, FLEET_PROVIDER } from "../extensions/lib/fleet-model.ts";
 
 // ---------------------------------------------------------------------------
@@ -88,18 +90,18 @@ await mock.module("@earendil-works/pi-coding-agent", () => ({
 
 // Imported after the mock is registered: `compaction-model.ts` binds the
 // mocked `compact()`. `checkpoint.ts` gets the rest of the package unchanged.
-const { default: checkpointExtension, _testSetInflightScanDir } = await import(
-	"../extensions/checkpoint.ts"
-);
+const { default: checkpointExtension } = await import("../extensions/checkpoint.ts");
 const { default: compactionModelExtension } = await import("../extensions/compaction-model.ts");
 
 // In-flight subagent scanning reads the real registry by default; an empty dir
-// keeps every composed summary in this file deterministic.
+// keeps every composed summary in this file deterministic. The redirect is the
+// process-wide override every meta reader resolves (WO-2026-099), set for the
+// file and restored on the way out.
 const emptyRegistry = await mkdtemp(join(tmpdir(), "summary-ownership-inflight-"));
-_testSetInflightScanDir(emptyRegistry);
+const restoreInflightRegistry = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, emptyRegistry);
 
 afterAll(async () => {
-	_testSetInflightScanDir(undefined);
+	restoreInflightRegistry();
 	await rm(emptyRegistry, { recursive: true, force: true });
 	mock.restore();
 });

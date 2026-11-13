@@ -41,16 +41,20 @@ export function scrubSubagentEnv(): () => void {
 }
 
 /**
- * Set `name` for one row and return the restore to call from `finally`.
+ * Set (or with `undefined`, unset) `name` for one row and return the restore to
+ * call from `finally`. The one save/restore in the suite: a row that sets a root
+ * and a row that must read the *unset* production default differ only in the
+ * value they pass.
  *
  * The restore puts back what was there — the preload's temp root — rather than
  * deleting the variable: an unset override is the production path, so a row
  * that deletes it mid-file hands the next row the box's real `/tmp` or cargo
  * root (WO-2026-099).
  */
-export function setEnvForRow(name: string, value: string): () => void {
+export function setEnvForRow(name: string, value: string | undefined): () => void {
 	const previous = process.env[name];
-	process.env[name] = value;
+	if (value === undefined) delete process.env[name];
+	else process.env[name] = value;
 	return () => {
 		if (previous === undefined) delete process.env[name];
 		else process.env[name] = previous;

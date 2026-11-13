@@ -19,7 +19,9 @@ a name prefix: `decisions/subagents/045-worktree-location.md`.
 The other two are the `session_start` recovery pass's. The scan reads
 `pi-subagent-*.{sock,log,meta.json}` from the metas dir, and the reap of the
 finished worktrees it adopts bounds each clone's shared cargo dir under
-`<cargo home>/.cache/cargo-target`. A subagent dispatch resolves its worktree
+`<cargo home>/.cache/cargo-target`. The metas dir is also the in-flight reader's
+registry — `listInFlightSubagents`, behind the wait source and checkpoint — so
+one variable redirects every meta *reader* the pass and its consumers have. A subagent dispatch resolves its worktree
 from inside the `subagent` tool, and the recovery pass resolves both of its roots
 from inside the pass, so no call argument reaches those sites.
 
@@ -32,11 +34,19 @@ logs and metas. `UnusableWorktreeRootError` is the worktree base's own name for
 the failure; the other two throw `UnusableEnvPathError`, which it extends.
 
 Absorb-all paths do not keep the failure. `recoverOrphanedSubagents` swallows a
-torn socket, log or metas dir — one broken child must not stop the pass — but a
-bad override is resolved before that `try`, and `rethrowIfUnusableEnvPath` lets
-it out of the two catches the `session_start` handler owns. A rejected
-`session_start` is the intended outcome: the alternative is a pass reading `/tmp`
-after its override failed.
+torn socket, log or metas dir — one broken child must not stop the pass — and
+resolves the metas dir before that `try`, so the scan's own catch cannot reach
+the override. A rejected `session_start` is the intended outcome: the
+alternative is a pass reading `/tmp` after its override failed.
+
+The cargo home is the case that needs a second read. The pass that resolves it
+runs in a chain `session_start` does not await, so a throw from inside the chain
+is an unhandled rejection rather than a failed start. The handler therefore reads
+the cargo home in its own frame, at the top of the reaper block, before the chain
+exists; `reapFinishedWorktrees` reads it again for itself, so a row that calls
+the pass directly reaches the same refusal. That is three roots read before the
+first `await` — the scan's metas dir, `wtRoots`'s base, and this cargo read — and
+why neither chain catch rethrows: nothing below them can raise the refusal.
 
 ## The suite sets all three for the whole run
 
@@ -48,12 +58,16 @@ symlink-resolved prefixes and `tmpdir()` is a symlink on macOS
 
 The guarantee is structural: a test file that never thinks about the override
 still cannot create a tree in the human namespace, read the box's registry, or
-measure its shared cargo dirs, and a nested `bun test` gets roots of its own.
+measure its shared cargo dirs, and a nested `bun test` gets roots of its own —
+and removes them when it exits, which one row pins by reading the child's roots
+back after it has gone.
+
 Asking each file to isolate itself is the shape this replaced — an enumeration
 presented as a guarantee, which misses every file added later. The per-file
 helper `tests/helpers/subagent-wt-root.ts` remains for a row that asserts a temp
-root of its own; `setEnvForRow` in `tests/helpers/subagent-env.ts` sets a root
-for one row and restores the preload's value, never an absence.
+root of its own; `setEnvForRow` in `tests/helpers/subagent-env.ts` sets a root —
+or, with `undefined`, unsets it — for one row and restores what was there, never
+an absence.
 
 ## Scope: the ambient path only
 
@@ -62,15 +76,29 @@ an explicit argument is not redirected: the argument states which path to derive
 from, so a derivation keeps its meaning while the override is on.
 `reapFinishedWorktrees` resolves `deps.dir ?? subagentMetaDir()` and
 `deps.home ?? subagentCargoHome()`, so a row that names a fixture keeps it.
+`listInFlightSubagents` resolves `opts.dir ?? subagentMetaDir()` and has no
+override of its own: it is the wait source's and checkpoint's reader of the same
+registry, so a per-process seam there would read the box's `/tmp` after every
+other reader was redirected.
 
-In `extensions/lib/build-output-reaper.ts`:
+`extensions/lib/build-output-reaper.ts` takes the two homes as two fields
+(`BuildOutputHomes`), because they name different things and move independently:
 
-- `planCargoBound` always passes a `home` (defaulting to `homedir()`), as does
-  the bound walk (`opts.home ?? homedir()`). They answer for a cargo dir under a
-  real home, so a test override does not reach them.
-- `disposeWorktreeBuildOutput` passes the test seam's `opts.home`. With none
-  supplied — the dispatch path — it follows the ambient base like any other
-  caller, which the reap now supplies as `subagentCargoHome()`.
+- `cargoHome` — the home whose `.cache/cargo-target` holds one dir per clone, so
+  the dir a tree's artifacts sit in.
+- `baseHome` — the home whose `Developer/wt/subagents` a tree's clone name is
+  derived from. Omitted, the ambient base answers.
+
+Production passes one: the reap supplies `cargoHome: deps.home ?? subagentCargoHome()`
+and no `baseHome`, because every tree it removes was created under the ambient
+base. The checkout reaper's world has one home — `wtRoots(home)` and
+`cargoTargetRoot(home)` both derive from it — so it passes the same value as
+both. A fixture that keeps its trees and their shared dir under one temp home
+passes both too.
+
+One field for both was the bug: whenever the two roots disagree, attribution
+looked for the tree under the cargo home's base, found nothing, and the shared
+dir's share was never pruned — silently, on the production path.
 
 `CARGO_TARGET_DIR` is not redirected (`cargoTargetDirFor` derives from a home),
 so a test spawn leaves a `~/.cache/cargo-target/<temp-repo>` behind: a separate

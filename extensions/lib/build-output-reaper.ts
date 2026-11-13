@@ -26,6 +26,22 @@ import { cargoTargetDirFor, cargoTargetRoot, repoNameFromWorktreePath } from "./
  *  order's premise figures were reported in. */
 export const CARGO_TARGET_BOUND_BYTES = 20 * 1024 ** 3;
 
+/**
+ * The two homes a build-output pass derives from. Two values, not one: a tree's
+ * clone name comes from the *worktree base's* home, while its share of the
+ * clone's shared cargo dir comes from the *cargo* home. A single field for both
+ * silently drops the prune whenever the two disagree — the suite now sets them
+ * to different temp dirs — because attribution falls outside the base it was
+ * handed (WO-2026-099 round 2).
+ */
+export interface BuildOutputHomes {
+	/** The home whose `.cache/cargo-target` holds one dir per clone. */
+	cargoHome?: string;
+	/** The home whose `Developer/wt/subagents` holds the trees. Omitted, the
+	 *  ambient base answers (`PI_SUBAGENT_WT_ROOT`, else `homedir()`). */
+	baseHome?: string;
+}
+
 export function formatBytes(bytes: number): string {
 	const gib = bytes / 1024 ** 3;
 	if (gib >= 1) return `${gib.toFixed(1)} GiB`;
@@ -467,13 +483,13 @@ export interface BuildOutputReport {
 export async function disposeWorktreeBuildOutput(
 	worktreePath: string,
 	parentCwd: string,
-	opts: { run?: CommandRunner; home?: string } = {},
+	opts: { run?: CommandRunner } & BuildOutputHomes = {},
 ): Promise<BuildOutputReport> {
 	const problems: string[] = [];
 	const targetRemoved = removeWorktreeTarget(worktreePath, (detail) => problems.push(detail));
-	const repoName = repoNameFromWorktreePath(worktreePath, opts.home);
+	const repoName = repoNameFromWorktreePath(worktreePath, opts.baseHome);
 	if (!repoName) return { targetRemoved, problems }; // not a subagent worktree: no shared dir
-	const cargo = await pruneCargoArtifactsFor(cargoTargetDirFor(repoName, opts.home), worktreePath, {
+	const cargo = await pruneCargoArtifactsFor(cargoTargetDirFor(repoName, opts.cargoHome), worktreePath, {
 		parentCwd,
 		run: opts.run,
 	});
@@ -620,16 +636,16 @@ export function planCargoBound(
 	dirSizes: Array<{ cargoTargetDir: string; bytes: number }>,
 	dead: DeadWorktree[],
 	boundBytes: number = CARGO_TARGET_BOUND_BYTES,
-	home: string = homedir(),
+	homes: BuildOutputHomes = {},
 ): CargoBoundAction[] {
 	const actions: CargoBoundAction[] = [];
 	for (const dir of dirSizes) {
 		if (dir.bytes <= boundBytes) continue;
 		const paths: string[] = [];
 		for (const candidate of dead) {
-			const repoName = repoNameFromWorktreePath(candidate.worktreePath, home);
+			const repoName = repoNameFromWorktreePath(candidate.worktreePath, homes.baseHome);
 			if (!repoName) continue;
-			if (cargoTargetDirFor(repoName, home) !== dir.cargoTargetDir) continue;
+			if (cargoTargetDirFor(repoName, homes.cargoHome) !== dir.cargoTargetDir) continue;
 			if (!paths.includes(candidate.worktreePath)) paths.push(candidate.worktreePath);
 		}
 		actions.push({ cargoTargetDir: dir.cargoTargetDir, worktreePaths: paths, coarsePrune: true });
@@ -666,9 +682,7 @@ export interface CargoBoundReport {
 	problems: string[];
 }
 
-export interface CargoBoundOptions {
-	/** The home whose `~/.cache/cargo-target` holds one dir per clone. */
-	home?: string;
+export interface CargoBoundOptions extends BuildOutputHomes {
 	deadWorktrees: DeadWorktree[];
 	boundBytes?: number;
 	/** Injection seams: a real 20 GB fixture is not how R5 gets tested. */
@@ -687,8 +701,7 @@ export interface CargoBoundOptions {
 export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<CargoBoundReport> {
 	const sizeOf = opts.sizeOf ?? dirSizeBytes;
 	const boundBytes = opts.boundBytes ?? CARGO_TARGET_BOUND_BYTES;
-	const home = opts.home ?? homedir();
-	const cacheRoot = cargoTargetRoot(home);
+	const cacheRoot = cargoTargetRoot(opts.cargoHome);
 	const report: CargoBoundReport = { boundBytes, entries: [], problems: [] };
 
 	let cloneDirs: string[];
@@ -725,11 +738,11 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 	}
 	const parentCwdFor = (cargoTargetDir: string): string | undefined =>
 		opts.deadWorktrees.find((d) => {
-			const repoName = repoNameFromWorktreePath(d.worktreePath, home);
-			return repoName !== null && cargoTargetDirFor(repoName, home) === cargoTargetDir && d.parentCwd.length > 0;
+			const repoName = repoNameFromWorktreePath(d.worktreePath, opts.baseHome);
+			return repoName !== null && cargoTargetDirFor(repoName, opts.cargoHome) === cargoTargetDir && d.parentCwd.length > 0;
 		})?.parentCwd;
 
-	for (const action of planCargoBound(dirSizes, opts.deadWorktrees, boundBytes, home)) {
+	for (const action of planCargoBound(dirSizes, opts.deadWorktrees, boundBytes, opts)) {
 		const entry: CargoBoundEntryReport = {
 			cargoTargetDir: action.cargoTargetDir,
 			beforeBytes: dirSizes.find((d) => d.cargoTargetDir === action.cargoTargetDir)!.bytes,
@@ -808,9 +821,7 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 
 // ── The reap's build-output half ───────────────────────────────────────────
 
-export interface ReapBuildOutputOptions {
-	/** The home whose `~/.cache/cargo-target` holds one dir per clone. */
-	home?: string;
+export interface ReapBuildOutputOptions extends BuildOutputHomes {
 	/** Injection seams, passed through to the bound and M4. */
 	run?: CommandRunner;
 	sizeOf?: (dir: string) => number | Promise<number>;
@@ -845,7 +856,6 @@ export interface ReapBuildOutput {
 }
 
 export function createReapBuildOutput(opts: ReapBuildOutputOptions = {}): ReapBuildOutput {
-	const home = opts.home ?? homedir();
 	const dead = new Map<string, DeadWorktree>();
 	return {
 		noteGone(worktreePath, parentCwd) {
@@ -864,7 +874,8 @@ export function createReapBuildOutput(opts: ReapBuildOutputOptions = {}): ReapBu
 		async enforceBound() {
 			const lines: string[] = [];
 			const bound = await enforceCargoTargetBound({
-				home,
+				cargoHome: opts.cargoHome,
+				baseHome: opts.baseHome,
 				deadWorktrees: [...dead.values()],
 				run: opts.run,
 				sizeOf: opts.sizeOf,

@@ -59,6 +59,7 @@ import extension, {
 } from "../extensions/subagent-async/index.ts";
 import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
 import { PI_SUBAGENT_META_DIR_ENV, SUBAGENT_TMP_DIR, subagentMetaDir } from "../extensions/lib/subagent-state.ts";
+import { PI_SUBAGENT_CARGO_HOME_ENV } from "../extensions/lib/subagent-worktree.ts";
 import { UnusableEnvPathError } from "../extensions/lib/env-path.ts";
 import { setEnvForRow } from "./helpers/subagent-env.ts";
 
@@ -810,13 +811,12 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 	});
 
 	it("unset, it is still `/tmp` — 027's production path", () => {
-		const before = process.env[PI_SUBAGENT_META_DIR_ENV];
-		delete process.env[PI_SUBAGENT_META_DIR_ENV];
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, undefined);
 		try {
 			expect(subagentMetaDir()).toBe("/tmp");
 			expect(SUBAGENT_TMP_DIR).toBe("/tmp");
 		} finally {
-			if (before !== undefined) process.env[PI_SUBAGENT_META_DIR_ENV] = before;
+			restore();
 		}
 	});
 
@@ -827,8 +827,8 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 				const message = `${PI_SUBAGENT_META_DIR_ENV} must be an absolute path, got ${JSON.stringify(bad)}`;
 				expect(() => subagentMetaDir()).toThrow(UnusableEnvPathError);
 				expect(() => subagentMetaDir()).toThrow(message);
-				// The scan's own swallow-all catch does not keep it: a scan that ran
-				// on after this would be reading `/tmp`.
+				// The scan refuses before its swallow-all `try`: resolution is hoisted,
+				// so the rule is pinned here and the catch cannot reach it.
 				expect(() => recoverOrphanedSubagents(makePi().pi as any, makeCtx(), { selfPid: SELF_PID })).toThrow(message);
 			} finally {
 				restore();
@@ -844,6 +844,24 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
 			).rejects.toThrow(`${PI_SUBAGENT_META_DIR_ENV} must be an absolute path`);
 		} finally {
+			restore();
+		}
+	});
+
+	it("the real session_start handler refuses a bad cargo home too", async () => {
+		// The reap chain below is not awaited, so a throw from inside it is an
+		// unhandled rejection rather than a failed start. The handler reads the
+		// cargo home in its own frame for that reason (decision 052).
+		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, "relative/cargo");
+		// Only a parent session runs the reaper block, and this process is a child.
+		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
+		try {
+			const handlers = register();
+			await expect(
+				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
+			).rejects.toThrow(`${PI_SUBAGENT_CARGO_HOME_ENV} must be an absolute path`);
+		} finally {
+			restoreDepth();
 			restore();
 		}
 	});

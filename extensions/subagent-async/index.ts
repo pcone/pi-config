@@ -21,7 +21,7 @@ import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
 import { registerWaitSource } from "../lib/waits.ts";
 import { rethrowIfUnusableEnvPath } from "../lib/env-path.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
-import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
+import { cargoTargetDirFor, subagentCargoHome, subagentWorktreePath } from "../lib/subagent-worktree.ts";
 import {
 	type CommandRunner,
 	type BuildOutputReport,
@@ -1062,6 +1062,14 @@ export default function (pi: ExtensionAPI) {
 		// N passes and each would overwrite the report the parent announced.
 		// The parent's own session start is the pass.
 		if (!process.env.PI_SUBAGENT_DEPTH) {
+			// The three roots this block's chain reads are resolved here, synchronously,
+			// before the chain exists: `recoverOrphanedSubagents` above read the metas
+			// dir, `wtRoots` reads the worktree base, and this reads the cargo home.
+			// The pass has to resolve them for itself so a row that calls it directly
+			// reaches the same refusal (decision 052); this handler has to read them
+			// too, because a throw three frames into a chain it does not await is an
+			// unhandled rejection, not a refused start (WO-2026-099 round 2).
+			subagentCargoHome();
 			// The reaper (WO-2026-092): every checkout under `~/Developer/wt`. 027's
 			// subtree goes first — its gates are its own — and the general pass takes
 			// its verdicts and the worktree paths its metas named, so the same tree is
@@ -1094,9 +1102,6 @@ export default function (pi: ExtensionAPI) {
 				},
 			})
 				.catch((e) => {
-					// A bad override is not a failed pass: the general pass would then walk
-					// the box's real `~/Developer/wt`, which is the leak (WO-2026-099).
-					rethrowIfUnusableEnvPath(e);
 					// The reap failed outside any meta's turn (its bound pass, say): no
 					// verdicts at all, so the whole subtree is ungoverned.
 					subagentScopeFailed = true;
@@ -1123,7 +1128,6 @@ export default function (pi: ExtensionAPI) {
 					if (ctx.hasUI) ctx.ui.notify(text, "info");
 				})
 				.catch((e) => {
-					rethrowIfUnusableEnvPath(e);
 					debugLog(`reaper: unhandled: ${e instanceof Error ? e.message : String(e)}`);
 				});
 		}

@@ -58,12 +58,11 @@ export class UnusableWorktreeRootError extends UnusableEnvPathError {
  * An explicit `home` wins over the override: it states where to derive from, so
  * a derivation test keeps its meaning while the override is on. That branch is
  * also the override's limit — a caller that derives a path it was handed from
- * the home that path belongs to is not redirected. Two of them in
- * build-output-reaper.ts always pass one (`planCargoBound`, whose `home`
- * defaults to `homedir()`, and the bound walk's `opts.home ?? homedir()`);
- * `disposeWorktreeBuildOutput` passes the test seam's `opts.home`, and with none
- * supplied it follows the ambient base like any other caller. See
- * docs/design/subagent-worktree-root.md.
+ * the home that path belongs to is not redirected. Production callers pass none:
+ * `createWorktree` builds every tree under the ambient base, and the
+ * build-output passes that name a tree's clone supply `baseHome` only from a
+ * fixture (see `BuildOutputHomes` in build-output-reaper.ts).
+ * See docs/design/subagent-worktree-root.md.
  */
 export function subagentWorktreeBase(home?: string): string {
 	if (home !== undefined) return join(home, SUBAGENT_WORKTREE_NAMESPACE);
@@ -115,10 +114,12 @@ export const PI_SUBAGENT_CARGO_HOME_ENV = "PI_SUBAGENT_CARGO_HOME";
  * `$PI_SUBAGENT_CARGO_HOME` when set, else `homedir()`.
  *
  * The same shape and rule as {@link subagentWorktreeBase}: an unusable value
- * throws instead of falling back to the box's real cargo root. An explicit
- * `home` argument still wins at the call site (`deps.home ?? subagentCargoHome()`
- * in `reapFinishedWorktrees`), so a row about a home it names keeps its meaning
- * while the override is on.
+ * throws instead of falling back to the box's real cargo root. It is not the
+ * worktree base: the base names where a tree lives, this names whose shared
+ * cargo dir the tree's artifacts sit in, and the two roots move independently.
+ * An explicit `cargoHome` argument still wins at the call site
+ * (`deps.home ?? subagentCargoHome()` in `reapFinishedWorktrees`), so a row
+ * about a home it names keeps its meaning while the override is on.
  */
 export function subagentCargoHome(): string {
 	return absoluteEnvPath(PI_SUBAGENT_CARGO_HOME_ENV, homedir());
@@ -137,11 +138,11 @@ const WORKTREE_SUFFIX_LEN = 13;
  * pre-namespace path (`/var/folders/.../pi-subagent-wt-<suffix>`) is not a
  * subagent worktree this harness owns and answers null.
  *
- * Two callers pass the home they are deriving for, so the explicit `home`
- * reaches {@link subagentWorktreeBase} and the override does not apply.
- * `disposeWorktreeBuildOutput` passes the test seam's `opts.home`, which is
- * absent on the dispatch path — there it follows the ambient base, override
- * included. See that function for the scope.
+ * Two callers pass the home they are deriving for (the bound walk's `baseHome`),
+ * so the explicit `home` reaches {@link subagentWorktreeBase} and the override
+ * does not apply. The removal path passes none: the tree being removed was
+ * created under the ambient base, so that is the base its name is in. See
+ * `BuildOutputHomes` in build-output-reaper.ts.
  */
 export function repoNameFromWorktreePath(worktreePath: string, home?: string): string | null {
 	const base = subagentWorktreeBase(home);

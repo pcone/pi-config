@@ -30,7 +30,7 @@ import {
 	subagentWorktreeBase,
 } from "../extensions/lib/subagent-worktree.ts";
 import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
-import { childEnv } from "./helpers/subagent-env.ts";
+import { childEnv, setEnvForRow } from "./helpers/subagent-env.ts";
 
 /** The human tree. Read through the derivation with an explicit home, so it is
  *  the human base whatever the run's override is. */
@@ -120,20 +120,21 @@ describe("worktree root isolation", () => {
 		const { createWorktree } = await import("../extensions/subagent-async/index.ts");
 		const repo = makeRepo("wt-root-row-");
 		const realBefore = snapshotRealWtRoot();
-		const override = process.env[PI_SUBAGENT_WT_ROOT_ENV];
 		try {
 			for (const bad of ["", "relative/wt", "Developer/wt/subagents"]) {
-				process.env[PI_SUBAGENT_WT_ROOT_ENV] = bad;
-				expect(() => subagentWorktreeBase()).toThrow(UnusableWorktreeRootError);
-				// The spawn path fails loud too: `null` says "not a git repo or
-				// worktree add failed", and this is neither.
-				await expect(createWorktree(repo, "subagent-0b5f1a2c-2222-3333-4444-abcdefabcdef")).rejects.toThrow(
-					UnusableWorktreeRootError,
-				);
+				const restore = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, bad);
+				try {
+					expect(() => subagentWorktreeBase()).toThrow(UnusableWorktreeRootError);
+					// The spawn path fails loud too: `null` says "not a git repo or
+					// worktree add failed", and this is neither.
+					await expect(createWorktree(repo, "subagent-0b5f1a2c-2222-3333-4444-abcdefabcdef")).rejects.toThrow(
+						UnusableWorktreeRootError,
+					);
+				} finally {
+					restore();
+				}
 			}
 		} finally {
-			if (override === undefined) delete process.env[PI_SUBAGENT_WT_ROOT_ENV];
-			else process.env[PI_SUBAGENT_WT_ROOT_ENV] = override;
 			rmSync(repo, { recursive: true, force: true });
 		}
 		expect(snapshotRealWtRoot()).toEqual(realBefore);
@@ -175,6 +176,8 @@ test("the nested run's roots are its own", () => {
 		expect(root).not.toBe((PARENT as Record<string, string>)[name]);
 	}
 	expect(subagentMetaDir()).not.toBe("/tmp");
+	// The parent reads these back to pin that the preload's cleanup ran.
+	console.log("ROOTS " + JSON.stringify(roots));
 });
 `,
 		);
@@ -190,6 +193,14 @@ test("the nested run's roots are its own", () => {
 			// not actionable.
 			expect(report).toContain("1 pass");
 			expect(run.status).toBe(0);
+			// The preload removes its temp dirs after the process's last file
+			// (WO-2026-099): the child's roots are gone once it has exited, so a run
+			// does not accumulate three empty dirs per invocation.
+			const childRoots = JSON.parse(report.split("ROOTS ")[1]?.split("\n")[0] ?? "{}") as Record<string, string>;
+			expect(Object.keys(childRoots).sort()).toEqual(["cargo", "meta", "wt"]);
+			for (const [name, root] of Object.entries(childRoots)) {
+				expect({ name, exists: existsSync(root) }).toEqual({ name, exists: false });
+			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

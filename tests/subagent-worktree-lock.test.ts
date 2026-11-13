@@ -29,7 +29,7 @@ import subagentFactory, {
 } from "../extensions/subagent-async/index.ts";
 import { _testSetReaperHome, readReaperReport, reapCheckouts } from "../extensions/lib/checkout-reaper.ts";
 import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
-import { PI_SUBAGENT_CARGO_HOME_ENV, subagentCargoHome } from "../extensions/lib/subagent-worktree.ts";
+import { PI_SUBAGENT_CARGO_HOME_ENV, PI_SUBAGENT_WT_ROOT_ENV, subagentCargoHome } from "../extensions/lib/subagent-worktree.ts";
 import { UnusableEnvPathError } from "../extensions/lib/env-path.ts";
 import { addWorktree, backdate, git, gitDirOf, makeRepo as reaperRepo, mustGit } from "./helpers/reaper-fixtures.ts";
 import { scrubSubagentEnv, setEnvForRow } from "./helpers/subagent-env.ts";
@@ -1013,6 +1013,9 @@ describe("reap build output (real git, injected registry)", () => {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 
+		// The two roots are separate values in production; this row's fixture puts
+		// the tree and its shared cargo dir under one home, so both point there.
+		const restoreWtRoot = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, join(home, "Developer/wt/subagents"));
 		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, home);
 		try {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
@@ -1034,6 +1037,7 @@ describe("reap build output (real git, injected registry)", () => {
 			// target/ with the tree — see the row's note in the report.
 			expect(results[0].detail).toContain("(exact)");
 		} finally {
+			restoreWtRoot();
 			restore();
 		}
 	});
@@ -1070,6 +1074,9 @@ describe("reap build output (real git, injected registry)", () => {
 			logLastLine: "── Completed (1 turns, exit 0) ──\n",
 		});
 
+		// The two roots are separate values in production; this row's fixture puts
+		// the tree and its shared cargo dir under one home, so both point there.
+		const restoreWtRoot = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, join(home, "Developer/wt/subagents"));
 		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, home);
 		try {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
@@ -1079,6 +1086,7 @@ describe("reap build output (real git, injected registry)", () => {
 			expect(results[0].detail).toContain("not readable");
 		} finally {
 			chmodSync(unreadable, 0o644);
+			restoreWtRoot();
 			restore();
 		}
 	});
@@ -1107,6 +1115,9 @@ describe("reap build output (real git, injected registry)", () => {
 		meta.ownerStartToken = "not-our-token";
 		writeFileSync(metaFile, JSON.stringify(meta));
 
+		// The two roots are separate values in production; this row's fixture puts
+		// the tree and its shared cargo dir under one home, so both point there.
+		const restoreWtRoot = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, join(home, "Developer/wt/subagents"));
 		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, home);
 		try {
 			const results = await reapFinishedWorktrees({} as any, scanCtx(), {
@@ -1121,6 +1132,7 @@ describe("reap build output (real git, injected registry)", () => {
 			// ... so the bound is what pruned the dead path's share.
 			expect(existsSync(depInfo)).toBe(false);
 		} finally {
+			restoreWtRoot();
 			restore();
 		}
 	});
@@ -1208,6 +1220,122 @@ describe("reap build output (real git, injected registry)", () => {
 	});
 });
 
+describe("the worktree base and the cargo home are separate roots (WO-2026-099)", () => {
+	/** A tree under the worktree base and its share of the clone's shared dir
+	 *  under a *different* cargo home: the shape the suite now runs in, since the
+	 *  preload gives each root its own temp dir. Every row here is red when the
+	 *  prune is handed one root for both — attribution then names no clone and the
+	 *  share survives. */
+	function splitRoots(repoName: string) {
+		const base = tempDir("pi-reap-base-");
+		const cargoHome = tempDir("pi-reap-home-");
+		const worktreePath = join(base, `${repoName}-4add98737109`);
+		const deps = join(cargoHome, ".cache", "cargo-target", repoName, "debug", "deps");
+		mkdirSync(deps, { recursive: true });
+		return { base, cargoHome, worktreePath, deps, depInfo: join(deps, `${repoName}-abc123.d`) };
+	}
+
+	/** Point both overrides at the row's two roots; returns the restore. */
+	function pointAt(base: string, cargoHome: string): () => void {
+		const restoreWtRoot = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, base);
+		const restoreCargo = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, cargoHome);
+		return () => {
+			restoreWtRoot();
+			restoreCargo();
+		};
+	}
+
+	it("a reaped tree under the WT root loses its share from a cargo home set elsewhere", async () => {
+		const repo = makeRepo();
+		const repoName = repo.split("/").pop()!;
+		const r = splitRoots(repoName);
+		writeFileSync(r.depInfo, `${join(r.deps, `lib${repoName}-abc123.rlib`)}: ${r.worktreePath}/src/lib.rs\n`);
+		writeFileSync(join(r.deps, `lib${repoName}-abc123.rlib`), "dead\n");
+		const { dir } = makeEntryFor(repo, "split-roots-removed", {
+			worktreePath: r.worktreePath,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+
+		const restore = pointAt(r.base, r.cargoHome);
+		try {
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), { dir, selfPid: process.pid });
+
+			expect(results.map((x) => x.outcome)).toEqual(["removed"]);
+			expect(existsSync(r.worktreePath)).toBe(false);
+			// Route 1, not the coarse pass: the `.d` was attributed to the clone.
+			expect(existsSync(r.depInfo)).toBe(false);
+			expect(results[0].detail).toContain("(exact)");
+		} finally {
+			restore();
+		}
+	});
+
+	it("the bound attributes a gone tree from the WT root, not the cargo home", async () => {
+		const repo = makeRepo();
+		const repoName = repo.split("/").pop()!;
+		const r = splitRoots(repoName);
+		// The tree is already gone: only the bound can reach its share.
+		writeFileSync(r.depInfo, `${r.worktreePath}/src/lib.rs: ${r.worktreePath}/src/lib.rs\n`);
+		const entry = makeEntryFor(repo, "split-roots-bound", {
+			worktreePath: join(tempDir("pi-reap-wt-"), "tree"),
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		// A foreign, dead owner: the reap's own loop skips the meta, so the bound
+		// below is the only pass that can act on the path.
+		const metaFile = join(entry.dir, "pi-subagent-split-roots-bound.meta.json");
+		const meta = JSON.parse(readFileSync(metaFile, "utf8"));
+		meta.worktreePath = r.worktreePath;
+		meta.ownerPid = process.pid === 1 ? 2 : process.ppid;
+		meta.ownerStartToken = "not-our-token";
+		writeFileSync(metaFile, JSON.stringify(meta));
+
+		const restore = pointAt(r.base, r.cargoHome);
+		try {
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+				dir: entry.dir,
+				selfPid: -1,
+				probe: { exists: () => false, startToken: () => null },
+				sizeOf: () => 25 * 1024 ** 3,
+			});
+
+			expect(results).toEqual([]);
+			expect(existsSync(r.depInfo)).toBe(false);
+		} finally {
+			restore();
+		}
+	});
+
+	it("an explicit `deps.home` wins over the override", async () => {
+		const repo = makeRepo();
+		const repoName = repo.split("/").pop()!;
+		const r = splitRoots(repoName);
+		const overrideHome = tempDir("pi-reap-override-");
+		writeFileSync(r.depInfo, `${join(r.deps, `lib${repoName}-abc123.rlib`)}: ${r.worktreePath}/src/lib.rs\n`);
+		writeFileSync(join(r.deps, `lib${repoName}-abc123.rlib`), "dead\n");
+		const { dir } = makeEntryFor(repo, "deps-home-wins", {
+			worktreePath: r.worktreePath,
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+
+		// The override points at a home with no shared dir; `deps.home` names the
+		// one the row's fixture uses, and the row is red if the override wins.
+		const restore = pointAt(r.base, overrideHome);
+		try {
+			const results = await reapFinishedWorktrees({} as any, scanCtx(), {
+				dir,
+				selfPid: process.pid,
+				home: r.cargoHome,
+			});
+
+			expect(results.map((x) => x.outcome)).toEqual(["removed"]);
+			expect(existsSync(r.depInfo)).toBe(false);
+			expect(results[0].detail).toContain("(exact)");
+		} finally {
+			restore();
+		}
+	});
+});
+
 describe("the reap's cargo home is process-wide, not a per-file setter (WO-2026-099)", () => {
 	it("a set-but-unusable value throws, naming the variable and the value", () => {
 		for (const bad of ["", "relative/home"]) {
@@ -1224,12 +1352,11 @@ describe("the reap's cargo home is process-wide, not a per-file setter (WO-2026-
 	});
 
 	it("unset, it is still the box's own home — the production path", () => {
-		const before = process.env[PI_SUBAGENT_CARGO_HOME_ENV];
-		delete process.env[PI_SUBAGENT_CARGO_HOME_ENV];
+		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, undefined);
 		try {
 			expect(subagentCargoHome()).toBe(homedir());
 		} finally {
-			if (before !== undefined) process.env[PI_SUBAGENT_CARGO_HOME_ENV] = before;
+			restore();
 		}
 	});
 

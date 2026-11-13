@@ -613,17 +613,6 @@ export function gatherSubagentDiskFacts(
 
 // ── In-flight listing (R3-1) ───────────────────────────────────────────────
 
-/**
- * @internal test hook — the registry directory the in-flight scan reads
- * (default /tmp). One override for every reader, so a test that fabricates
- * children cannot have one reader see the fabricated set and another see the
- * real registry.
- */
-let inflightScanDirOverride: string | undefined;
-export function _testSetInflightScanDir(dir: string | undefined): void {
-	inflightScanDirOverride = dir;
-}
-
 export interface InFlightSubagent {
 	sid: string;
 	agentName: string | null;
@@ -651,11 +640,15 @@ export function resumeCallFor(sid: string, meta: Record<string, any> | null): st
  * process owner, or owner gone — a live foreign owner's child is another
  * session's business, a legacy meta is unattributable) AND a state of running
  * or orphaned. Completed and dead children are not in flight.
+ *
+ * The registry dir is `opts.dir` or {@link subagentMetaDir}, the same override
+ * every other meta reader resolves (WO-2026-099): a reader on an in-memory seam
+ * of its own would see the box's real `/tmp` after the others were redirected.
  */
 export function listInFlightSubagents(
 	opts: { dir?: string; selfPid?: number; selfSessionId?: string; probe?: OwnerProbe; now?: number } = {},
 ): InFlightSubagent[] {
-	const dir = opts.dir ?? inflightScanDirOverride ?? SUBAGENT_TMP_DIR;
+	const dir = opts.dir ?? subagentMetaDir();
 	const out: InFlightSubagent[] = [];
 	for (const { sid, meta } of listSubagentMetas(dir)) {
 		if (
