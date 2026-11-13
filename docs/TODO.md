@@ -1,3 +1,17 @@
+# Carriers owed before the pi 1.5.1 upgrade (2026-11-13)
+
+From `docs/investigations/pi-1.5.1-audit.md` (WO-2026-097). None blocks the upgrade;
+each needs an order id or a decision to drop, or the rule "deferred debt names its
+carrier" retires them by default.
+
+- **Soft-typed `subagent_*` arguments after the pi-schema move** (§1, 18 lost
+  rejections: 1 + 8 + 9). A `null` `session_id` no longer rejects at the type boundary.
+- **`fetch_url.headers` accepts a scalar** (§1): a `headers: "x"` value passes where an
+  array is required, and the tool then iterates a string.
+- **`Q-097-a`** — the second `settings.json` key (`showCacheMissNotices`) the warmed
+  cost needs, recorded in `work-orders/WO-2026-097-audit-pi-1.5.1-upgrade.md`, awaiting
+  the owner's ruling.
+
 # Seat-config ruling batch — 2026-10-22 (landed; 042 pending)
 
 - **3bf7b2f** decision `subagents/041` — review seats ×3 → `openrouter/z-ai/glm-5.3-flash:high` (owner 2026-10-22; the 2026-10-19 mimo-flash recommendation below was NOT taken).
