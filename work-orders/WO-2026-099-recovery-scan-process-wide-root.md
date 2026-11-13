@@ -91,8 +91,8 @@ Row 5 as written asks for "one row that calls `reapFinishedWorktrees` with no `d
 env sees the `/tmp` default (assert the resolved *path*)". Taken literally it contradicts
 itself: the reap must list the directory it resolves, which is a read of the real `/tmp`,
 and the same row says not to read it. Round 1 landed the two halves instead —
-`tests/subagent-recovery-ownership.test.ts:812-820` (unset `subagentMetaDir()` → `/tmp`,
-asserted as a path, never listed) and `:851-873` (a reap with no `dir` observes the
+`tests/subagent-recovery-ownership.test.ts:813-821` (unset `subagentMetaDir()` → `/tmp`,
+asserted as a path, never listed) and `:897-918` (a reap with no `dir` observes the
 *override* it resolved) — which together entail the row's intent, because
 `deps.dir ?? subagentMetaDir()` is one expression.
 
