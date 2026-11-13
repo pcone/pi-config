@@ -110,7 +110,10 @@ function reaperHome(): string {
 	return homeOverride ?? homedir();
 }
 
-/** `~/Developer/wt` and the subagent namespace inside it, for one home. */
+/** `~/Developer/wt` and the subagent namespace inside it, for one home. The home
+ *  is explicit, so this never reads `PI_SUBAGENT_WT_ROOT`: a caller that wants the
+ *  override refused must read the base itself (the `session_start` handler does,
+ *  before the reap chain exists). */
 export function wtRoots(home: string = reaperHome()): { root: string; subagentBase: string } {
 	const subagentBase = subagentWorktreeBase(home);
 	return { root: path.dirname(subagentBase), subagentBase };
@@ -1121,7 +1124,7 @@ function measureTree(dir: string, cap: number): { bytes: number; truncated: bool
  *  Only dirs that exist come back. */
 function sharedDirsFor(entry: CheckoutEntry, home: string): string[] {
 	const dirs: string[] = [];
-	const namespaced = repoNameFromWorktreePath(entry.path, home);
+	const namespaced = repoNameFromWorktreePath(entry.path, subagentWorktreeBase(home));
 	if (namespaced) dirs.push(cargoTargetDirFor(namespaced, home));
 	const root = cargoTargetRoot(home);
 	for (const name of [path.basename(entry.path), entry.parentCwd ? path.basename(entry.parentCwd) : ""]) {
@@ -1183,7 +1186,9 @@ async function removeCheckout(
 	// same thing more strongly (gate 2: every commit on the branch is on a remote
 	// ref), so both facts it compares are the branch's own HEAD.
 	const removal = await ctx.removeWorktree(
-		{ run: ctx.run, home: ctx.home },
+		// This pass's world has one home: `wtRoots(home)` and `cargoTargetRoot(home)`
+		// both derive from it, so the tree's base and its cargo share agree.
+		{ run: ctx.run, base: subagentWorktreeBase(ctx.home), cargoHome: ctx.home },
 		{
 			worktreePath: entry.path,
 			isolationBranch: status.branch,

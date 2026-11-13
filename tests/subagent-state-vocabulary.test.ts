@@ -30,10 +30,11 @@ import {
 	listInFlightSubagents,
 	readSubagentState,
 	resumeCallFor,
+	PI_SUBAGENT_META_DIR_ENV,
 	type SubagentDiskFacts,
 } from "../extensions/lib/subagent-state.ts";
 import subagentFactory from "../extensions/subagent-async/index.ts";
-import { childEnv } from "./helpers/subagent-env.ts";
+import { childEnv, setEnvForRow } from "./helpers/subagent-env.ts";
 
 const created: string[] = [];
 const dirs: string[] = [];
@@ -289,6 +290,21 @@ describe("listInFlightSubagents — adoption gate + state", () => {
 		expect(entries.find((e) => e.sid === "orphaned-1")?.resumeCall).toContain("subagent_resume(");
 		expect(entries.find((e) => e.sid === "running-1")?.resumeCall).toBeNull();
 		expect(entries.find((e) => e.sid === "running-1")?.branch).toBe("b-running");
+	});
+
+	it("with no `dir`, reads the metas-dir override — not the box's `/tmp`", () => {
+		// WO-2026-099: the in-flight reader resolves the same root as every other
+		// meta reader. Its own default was the box's `/tmp`, so every call site that
+		// passed no `dir` — the wait source and checkpoint — read the live registry.
+		const dir = tempDir();
+		writeFileSync(join(dir, "pi-subagent-env-1.meta.json"), JSON.stringify({ ownerPid: process.pid, agentName: "implement" }));
+		writeFileSync(join(dir, "pi-subagent-env-1.log"), "working\n");
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, dir);
+		try {
+			expect(listInFlightSubagents().map((entry) => entry.sid)).toEqual(["env-1"]);
+		} finally {
+			restore();
+		}
 	});
 
 	it("does not adopt another session's dead-owner child", () => {

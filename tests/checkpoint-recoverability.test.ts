@@ -18,8 +18,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import checkpointFactory, { _testSetInflightScanDir } from "../extensions/checkpoint.ts";
-import { childEnv } from "./helpers/subagent-env.ts";
+import checkpointFactory from "../extensions/checkpoint.ts";
+import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { childEnv, setEnvForRow } from "./helpers/subagent-env.ts";
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 
@@ -101,15 +102,17 @@ const SUMMARY_TEXT = [
 
 let dir: string;
 let registryDir: string;
+/** The registry root this file's rows read; restored to the preload's after each. */
+let restoreRegistryDir: () => void;
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "pi-checkpoint-recover-"));
 	registryDir = mkdtempSync(join(tmpdir(), "pi-checkpoint-registry-"));
-	_testSetInflightScanDir(registryDir);
+	restoreRegistryDir = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, registryDir);
 });
 
 afterEach(() => {
-	_testSetInflightScanDir(undefined);
+	restoreRegistryDir();
 	rmSync(dir, { recursive: true, force: true });
 	rmSync(registryDir, { recursive: true, force: true });
 });

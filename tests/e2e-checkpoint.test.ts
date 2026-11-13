@@ -36,9 +36,24 @@ import {
 	SettingsManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import checkpointExtension, { _testSetInflightScanDir } from "../extensions/checkpoint";
+import checkpointExtension from "../extensions/checkpoint";
 import { takePendingGo } from "../extensions/go.ts";
-import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { childEnv, scrubSubagentEnv, setEnvForRow } from "./helpers/subagent-env.ts";
+
+/**
+ * The in-flight registry a row reads, through the same ambient override the
+ * production reader resolves (WO-2026-099). Both clear a no-op, so a row that
+ * clears twice or clears what it never set changes nothing.
+ */
+let restoreInflightRegistry: () => void = () => {};
+function setInflightRegistry(dir: string): void {
+	restoreInflightRegistry = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, dir);
+}
+function clearInflightRegistry(): void {
+	restoreInflightRegistry();
+	restoreInflightRegistry = () => {};
+}
 
 const CHECKPOINT_EXTENSION = join(
 	import.meta.dir,
@@ -1113,7 +1128,7 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 				sessionFile: join(registryDir, "orphan.session.jsonl"),
 			}),
 		);
-		_testSetInflightScanDir(registryDir);
+		setInflightRegistry(registryDir);
 		try {
 			const head = sh(sourceCwd, ["git", "rev-parse", "HEAD"]);
 			const branch = sh(sourceCwd, ["git", "rev-parse", "--abbrev-ref", "HEAD"]);
@@ -1179,7 +1194,7 @@ describe("checkpoint: summary schema, observability, git binding", () => {
 			expect(seeded.message.content[0].text).toBe(meta.summary);
 			expect(switched.followUp?.[0]).toBe("NEXT-STEP");
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(sourceCwd, { recursive: true, force: true });
 			await rm(targetCwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
@@ -1619,7 +1634,7 @@ describe("checkpoint: the injection is what answers", () => {
 async function composeFixture() {
 	const h = makeCheckpointHarness();
 	const registryDir = await mkdtemp(join(tmpdir(), "ckpt-compose-registry-"));
-	_testSetInflightScanDir(registryDir);
+	setInflightRegistry(registryDir);
 	const cwd = await mkdtemp(join(tmpdir(), "ckpt-compose-"));
 	const ctx = h.makeCtx(cwd);
 	await h.emit("session_start", ctx);
@@ -1673,7 +1688,7 @@ describe("checkpoint: composed summary and machine block", () => {
 		const h = makeCheckpointHarness();
 		const cwd = await gitFixture();
 		const registryDir = await mkdtemp(join(tmpdir(), "ckpt-compose-registry-"));
-		_testSetInflightScanDir(registryDir);
+		setInflightRegistry(registryDir);
 		try {
 			const head = sh(cwd, ["git", "rev-parse", "HEAD"]);
 			const branch = sh(cwd, ["git", "rev-parse", "--abbrev-ref", "HEAD"]);
@@ -1725,7 +1740,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			const meta = await readMeta(archivePath);
 			expect(meta.summary).toBe(authored);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1762,7 +1777,7 @@ describe("checkpoint: composed summary and machine block", () => {
 				expect(line).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
 			}
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1779,7 +1794,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			expect(machineSection(summary)).toContain("- files read: none");
 			expect(machineSection(summary)).toContain("- tokens: 1,000 → after: unknown");
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1820,7 +1835,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			expect(compaction.summary).toContain("- files modified: old/mod.ts");
 			expect(compaction.summary).not.toContain("off/branch.ts");
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1840,7 +1855,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			expect(summary).toContain("[haystack_1.ts]");
 			expect(summary).toContain(NEEDLES[0]);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1866,7 +1881,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			);
 			expect(summary).not.toContain(NEEDLES[1]);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1885,7 +1900,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			expect(summary).toMatch(/changed since read — re-read if needed: haystack_1\.ts/);
 			expect(summary).not.toContain(NEEDLES[0]);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1906,7 +1921,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			expect(h.sent).toHaveLength(0);
 			expect(summary).toContain(NEEDLES[0]);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -1916,7 +1931,7 @@ describe("checkpoint: composed summary and machine block", () => {
 		const { cwd, remote } = await gitFixtureWithUpstream();
 		const h = makeCheckpointHarness();
 		const registryDir = await mkdtemp(join(tmpdir(), "ckpt-compose-registry-"));
-		_testSetInflightScanDir(registryDir);
+		setInflightRegistry(registryDir);
 		try {
 			const head = sh(cwd, ["git", "rev-parse", "HEAD"]);
 			const ctx = h.makeCtx(cwd);
@@ -1945,7 +1960,7 @@ describe("checkpoint: composed summary and machine block", () => {
 				`- git: main @ ${head.slice(0, 7)} (dirty; ahead 1, behind 0)`,
 			);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(remote, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
@@ -1974,7 +1989,7 @@ describe("checkpoint: composed summary and machine block", () => {
 			expect(inFlight).toBeGreaterThan(0);
 			expect(machine).toBeGreaterThan(inFlight);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -2014,7 +2029,7 @@ describe("checkpoint: field validation", () => {
 			// Nothing staged for /go.
 			expect(takePendingGo()).toBeNull();
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(target, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
@@ -2035,7 +2050,7 @@ describe("checkpoint: field validation", () => {
 			expect(h.compactCalls).toHaveLength(0);
 			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -2056,7 +2071,7 @@ describe("checkpoint: field validation", () => {
 			expect(text).toContain("nothing to resume");
 			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -2072,7 +2087,7 @@ describe("checkpoint: field validation", () => {
 			const { compact } = await queueCheckpoint(h, ctx, { summary: summaryFields({ constraints: "none" }) });
 			expect(String(compact.customInstructions)).toContain("Constraints: none");
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -2104,7 +2119,7 @@ describe("checkpoint: field validation", () => {
 			expect(h.compactCalls).toHaveLength(0);
 			expect(existsSync(join(cwd, ".pi", "checkpoints"))).toBe(false);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -2132,7 +2147,7 @@ describe("checkpoint: field validation", () => {
 			expect(meta.summaryFields).toEqual(fields);
 			expect(meta.summary.startsWith("Goal: Minimal but real\n")).toBe(true);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}
@@ -2161,7 +2176,7 @@ describe("checkpoint: field validation", () => {
 			// No summariser call happens, so there is no usage to record (decision 005).
 			expect("usage" in compaction).toBe(false);
 		} finally {
-			_testSetInflightScanDir(undefined);
+			clearInflightRegistry();
 			await rm(cwd, { recursive: true, force: true });
 			await rm(registryDir, { recursive: true, force: true });
 		}

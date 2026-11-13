@@ -24,10 +24,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import checkpointFactory, { _testSetInflightScanDir } from "../extensions/checkpoint.ts";
+import checkpointFactory from "../extensions/checkpoint.ts";
 import { takePendingGo } from "../extensions/go.ts";
 import { CHECKPOINT_MARKER } from "../extensions/lib/checkpoint-marker.ts";
-import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { childEnv, scrubSubagentEnv, setEnvForRow } from "./helpers/subagent-env.ts";
 
 // ---------------------------------------------------------------------------
 // Stubs
@@ -257,16 +258,18 @@ function pendingCheckpointKeys(): string[] {
 
 let dir: string;
 let registry: string;
+/** The registry root this file's rows read; restored to the preload's after each. */
+let restoreRegistry: () => void;
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "pi-checkpoint-preamble-"));
 	registry = join(dir, "registry");
 	mkdirSync(registry, { recursive: true });
-	_testSetInflightScanDir(registry);
+	restoreRegistry = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, registry);
 });
 
 afterEach(() => {
-	_testSetInflightScanDir(undefined);
+	restoreRegistry();
 	takePendingGo();
 	rmSync(dir, { recursive: true, force: true });
 });

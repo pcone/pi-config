@@ -109,6 +109,12 @@ child's completion (dispatch 7s → exit 27s), zero stale-ctx errors, zero
 `recoverOrphanedSubagents`, `unref` on the recovery client, `_testSetRecoveryScanDir`
 test seam), `tests/subagent-recovery-ownership.test.ts`, this decision, index.
 
+**Superseded file list (2026-11-13, WO-2026-099):** the
+`_testSetRecoveryScanDir` seam is deleted. The scan's dir is
+`$PI_SUBAGENT_META_DIR` — decision
+`053-recovery-scan-process-wide-root.md`, which keeps 027's adoption gate as
+written and changes only how the dir is supplied.
+
 **Test coverage:** `tests/subagent-recovery-ownership.test.ts` — the
 adopt/skip matrix (live foreign → skip, dead → adopt, recycled pid → adopt,
 unreadable/missing/empty token → skip, same-process → adopt, legacy → skip);

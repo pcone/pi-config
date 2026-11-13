@@ -19,6 +19,7 @@ import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
 import { registerWaitSource } from "../lib/waits.ts";
+import { rethrowIfUnusableEnvPath } from "../lib/env-path.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
 import { cargoTargetDirFor, subagentWorktreePath } from "../lib/subagent-worktree.ts";
 import {
@@ -127,11 +128,10 @@ import {
 	readSessionCwd,
 	reapFinishedWorktrees,
 	recoverOrphanedSubagents,
+	recoveryRoots,
 	reportDeclaresOwnerAsks,
 	resolveTrackerKey,
 	validateResumeMeta,
-	_testSetCargoHome,
-	_testSetRecoveryScanDir,
 	type RecoveryScanDeps,
 	type SpawnMetaFields,
 } from "./recovery.ts";
@@ -224,8 +224,6 @@ export {
 // WO-2026-095 split: recovery.ts owns the ownership gate and the session-start
 // scan (adoption + the finished-worktree reap).
 export {
-	_testSetCargoHome,
-	_testSetRecoveryScanDir,
 	buildSpawnMeta,
 	describeUnknownSession,
 	findRunningByQuery,
@@ -1100,11 +1098,24 @@ export default function (pi: ExtensionAPI) {
 		// Decision 027: the scan gates adoption on the spawning process's
 		// recorded identity, so a live foreign session's children are left
 		// alone. See `recoverOrphanedSubagents`.
-		try { recoverOrphanedSubagents(pi, ctx); } catch { /* best-effort */ }
+		try { recoverOrphanedSubagents(pi, ctx); } catch (e) {
+			// The scan absorbs a torn socket, meta or log of its own; an unusable
+			// `PI_SUBAGENT_META_DIR` is not one of those and must abort the start
+			// rather than leave the pass on the box's real `/tmp` (WO-2026-099).
+			rethrowIfUnusableEnvPath(e);
+		}
 		// A child session runs this handler too: one pass per child would cost
 		// N passes and each would overwrite the report the parent announced.
 		// The parent's own session start is the pass.
 		if (!process.env.PI_SUBAGENT_DEPTH) {
+			// Every ambient override this block's chain reads is resolved here,
+			// synchronously, before the chain exists — one call, so an override added to
+			// the pass reaches this refusal by being a field of `RecoveryRoots`, not by
+			// someone remembering a line. A throw from inside the chain is an unhandled
+			// rejection, not a refused start (decision 052); for the base it is worse,
+			// because `wtRoots` below takes an explicit home and never reads the
+			// override (WO-2026-099 rounds 3-4).
+			recoveryRoots();
 			// The reaper (WO-2026-092): every checkout under `~/Developer/wt`. 027's
 			// subtree goes first — its gates are its own — and the general pass takes
 			// its verdicts and the worktree paths its metas named, so the same tree is

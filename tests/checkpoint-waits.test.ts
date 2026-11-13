@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import checkpointFactory, { _testSetInflightScanDir } from "../extensions/checkpoint.ts";
+import checkpointFactory from "../extensions/checkpoint.ts";
 import { takePendingGo } from "../extensions/go.ts";
 import peerLink from "../extensions/peer-link/index.ts";
 import subagentAsyncFactory from "../extensions/subagent-async/index.ts";
@@ -30,10 +30,15 @@ import {
 	pendingWaits,
 	type Wait,
 } from "../extensions/lib/waits.ts";
+import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { setEnvForRow } from "./helpers/subagent-env.ts";
 
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
+
+/** Set by a row that needs its own registry; `afterEach` restores the preload's. */
+let restoreRegistry: (() => void) | undefined;
 
 interface Sent {
 	text: string;
@@ -218,7 +223,10 @@ beforeEach(() => {
 
 afterEach(() => {
 	_testClearWaitSources();
-	_testSetInflightScanDir(undefined);
+	// Rows that point the in-flight reader at their own registry restore it here;
+	// the preload's temp dir is what the rest of the file expects.
+	restoreRegistry?.();
+	restoreRegistry = undefined;
 });
 
 afterAll(async () => {
@@ -464,7 +472,7 @@ describe("derived: subagent", () => {
 	it("row 5: a running child stops an unset continue; with the child gone, it continues", async () => {
 		const { h } = await freshHarness();
 		const registry = await tmp("wo064-registry-");
-		_testSetInflightScanDir(registry);
+		restoreRegistry = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, registry);
 		registerSubagentSource();
 		const sid = "3f2a11cd-1111-2222-3333-444455556666";
 		await runningChild(registry, sid);
@@ -770,7 +778,7 @@ describe("fork", () => {
 		const { h } = await freshHarness();
 		const target = await tmp("wo064-fork-kickoff-");
 		const registry = await tmp("wo064-fork-registry-");
-		_testSetInflightScanDir(registry);
+		restoreRegistry = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, registry);
 		registerSubagentSource();
 		await runningChild(registry, "5c4d3e2f-1111-2222-3333-444455556666");
 		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });
@@ -805,7 +813,7 @@ describe("fork", () => {
 		const { h } = await freshHarness();
 		const target = await tmp("wo064-fork-manual-");
 		const registry = await tmp("wo064-fork-registry-");
-		_testSetInflightScanDir(registry);
+		restoreRegistry = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, registry);
 		registerSubagentSource();
 		await runningChild(registry, "9a8b7c6d-1111-2222-3333-444455556666");
 		await h.waitFor({ reason: "restart to pick up the new extension", kind: "restart" });

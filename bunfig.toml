@@ -1,6 +1,6 @@
-# The suite's worktree base is process-wide, so it is redirected for the whole
-# run rather than per file: tests/preload-worktree-root.ts sets
-# PI_SUBAGENT_WT_ROOT to a fresh temp dir before any test file loads, and
-# removes it on exit.
+# The suite's subagent roots are process-wide, so they are redirected for the
+# whole run rather than per file: tests/preload-subagent-roots.ts sets
+# PI_SUBAGENT_WT_ROOT, PI_SUBAGENT_META_DIR and PI_SUBAGENT_CARGO_HOME to fresh
+# temp dirs before any test file loads, and removes them on exit.
 [test]
-preload = ["./tests/preload-worktree-root.ts"]
+preload = ["./tests/preload-subagent-roots.ts"]

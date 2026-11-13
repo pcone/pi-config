@@ -9,7 +9,7 @@
  * a `.git` file pointing at nothing (149 of them on 2026-11-27).
  *
  * The guarantee is structural, not a list of files: `bunfig.toml` preloads
- * `tests/preload-worktree-root.ts`, which points the variable at a temp dir for
+ * `tests/preload-subagent-roots.ts`, which points the variable at a temp dir for
  * the whole run, so a spawning file that never thinks about it still cannot
  * reach the human namespace. Row 1 pins the preload, row 2 the creation path,
  * row 3 the refusal. No row compares the human root before and after a nested
@@ -19,16 +19,18 @@
  * Run: bun test tests/subagent-worktree-root-isolation.test.ts
  */
 import { describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, sep } from "node:path";
 import {
+	PI_SUBAGENT_CARGO_HOME_ENV,
 	PI_SUBAGENT_WT_ROOT_ENV,
 	UnusableWorktreeRootError,
 	subagentWorktreeBase,
 } from "../extensions/lib/subagent-worktree.ts";
-import { childEnv } from "./helpers/subagent-env.ts";
+import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { childEnv, setEnvForRow } from "./helpers/subagent-env.ts";
 
 /** The human tree. Read through the derivation with an explicit home, so it is
  *  the human base whatever the run's override is. */
@@ -37,6 +39,9 @@ const REAL_BASE = subagentWorktreeBase(homedir());
 
 /** The run's base, set by the preload before this file loaded. */
 const RUN_ROOT = process.env[PI_SUBAGENT_WT_ROOT_ENV] ?? "";
+
+/** The repo root, so a child `bun test` reads the same `bunfig.toml`. */
+const REPO_ROOT = join(import.meta.dir, "..");
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, {
@@ -115,22 +120,89 @@ describe("worktree root isolation", () => {
 		const { createWorktree } = await import("../extensions/subagent-async/index.ts");
 		const repo = makeRepo("wt-root-row-");
 		const realBefore = snapshotRealWtRoot();
-		const override = process.env[PI_SUBAGENT_WT_ROOT_ENV];
 		try {
 			for (const bad of ["", "relative/wt", "Developer/wt/subagents"]) {
-				process.env[PI_SUBAGENT_WT_ROOT_ENV] = bad;
-				expect(() => subagentWorktreeBase()).toThrow(UnusableWorktreeRootError);
-				// The spawn path fails loud too: `null` says "not a git repo or
-				// worktree add failed", and this is neither.
-				await expect(createWorktree(repo, "subagent-0b5f1a2c-2222-3333-4444-abcdefabcdef")).rejects.toThrow(
-					UnusableWorktreeRootError,
-				);
+				const restore = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, bad);
+				try {
+					expect(() => subagentWorktreeBase()).toThrow(UnusableWorktreeRootError);
+					// The spawn path fails loud too: `null` says "not a git repo or
+					// worktree add failed", and this is neither.
+					await expect(createWorktree(repo, "subagent-0b5f1a2c-2222-3333-4444-abcdefabcdef")).rejects.toThrow(
+						UnusableWorktreeRootError,
+					);
+				} finally {
+					restore();
+				}
 			}
 		} finally {
-			if (override === undefined) delete process.env[PI_SUBAGENT_WT_ROOT_ENV];
-			else process.env[PI_SUBAGENT_WT_ROOT_ENV] = override;
 			rmSync(repo, { recursive: true, force: true });
 		}
 		expect(snapshotRealWtRoot()).toEqual(realBefore);
 	});
+
+	// WO-2026-099 asks for the same property for the two roots the recovery scan
+	// and the reap read. A child `bun test` is a separate process whose preload
+	// runs again — so it must get roots of its own, not inherit this run's.
+	test("a nested bun test gets roots of its own", () => {
+		const parent = {
+			wt: RUN_ROOT,
+			meta: process.env[PI_SUBAGENT_META_DIR_ENV] ?? "",
+			cargo: process.env[PI_SUBAGENT_CARGO_HOME_ENV] ?? "",
+		};
+		const dir = mkdtempSync(join(tmpdir(), "wt-root-nested-"));
+		const file = join(dir, "nested-roots.test.ts");
+		writeFileSync(
+			file,
+			`import { expect, test } from "bun:test";
+import { realpathSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { sep } from "node:path";
+import { subagentMetaDir } from ${JSON.stringify(join(REPO_ROOT, "extensions/lib/subagent-state.ts"))};
+import { subagentCargoHome } from ${JSON.stringify(join(REPO_ROOT, "extensions/lib/subagent-worktree.ts"))};
+
+const PARENT = ${JSON.stringify(parent)};
+
+test("the nested run's roots are its own", () => {
+	const tmp = realpathSync(tmpdir()) + sep;
+	const roots: Record<string, string> = {
+		wt: process.env.PI_SUBAGENT_WT_ROOT ?? "",
+		meta: subagentMetaDir(),
+		cargo: subagentCargoHome(),
+	};
+	for (const [name, root] of Object.entries(roots)) {
+		expect(root.length).toBeGreaterThan(0);
+		expect(statSync(root).isDirectory()).toBe(true);
+		expect(root.startsWith(tmp)).toBe(true);
+		expect(root).not.toBe((PARENT as Record<string, string>)[name]);
+	}
+	expect(subagentMetaDir()).not.toBe("/tmp");
+	// The parent reads these back to pin that the preload's cleanup ran.
+	console.log("ROOTS " + JSON.stringify(roots));
+});
+`,
+		);
+		try {
+			const run = spawnSync("bun", ["test", file], {
+				cwd: REPO_ROOT,
+				env: childEnv(),
+				encoding: "utf8",
+				timeout: 120_000,
+			});
+			const report = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+			// The child's own verdict, quoted, or a red row that says only "1" is
+			// not actionable.
+			expect(report).toContain("1 pass");
+			expect(run.status).toBe(0);
+			// The preload removes its temp dirs after the process's last file
+			// (WO-2026-099): the child's roots are gone once it has exited, so a run
+			// does not accumulate three empty dirs per invocation.
+			const childRoots = JSON.parse(report.split("ROOTS ")[1]?.split("\n")[0] ?? "{}") as Record<string, string>;
+			expect(Object.keys(childRoots).sort()).toEqual(["cargo", "meta", "wt"]);
+			for (const [name, root] of Object.entries(childRoots)) {
+				expect({ name, exists: existsSync(root) }).toEqual({ name, exists: false });
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 120_000);
 });

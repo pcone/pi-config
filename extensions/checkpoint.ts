@@ -457,12 +457,6 @@ async function prepareCheckpoint(
 	};
 }
 
-/**
- * Test hook: point the meta-registry scan at `dir` instead of /tmp. Owned by
- * the registry module — the subagent wait source reads the same override.
- */
-export { _testSetInflightScanDir } from "./lib/subagent-state.ts";
-
 // ---------------------------------------------------------------------------
 // File injection
 // ---------------------------------------------------------------------------

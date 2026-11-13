@@ -7,7 +7,7 @@ leak, round 2
 
 ## What
 
-`bunfig.toml` preloads `tests/preload-worktree-root.ts`, which sets
+`bunfig.toml` preloads `tests/preload-subagent-roots.ts`, which sets
 `PI_SUBAGENT_WT_ROOT` to a fresh realpath'd temp dir before any test file loads
 and removes it on exit. Every process that runs the suite gets one: a nested
 `bun test` included.

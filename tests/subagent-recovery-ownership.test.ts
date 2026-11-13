@@ -45,12 +45,12 @@ import * as path from "node:path";
 import extension, {
 	_testRunning,
 	_testSetLiveSessionCtx,
-	_testSetRecoveryScanDir,
 	buildSpawnMeta,
 	decideRecoveryAdoption,
 	defaultOwnerProbe,
 	isOwnerAlive,
 	processStartToken,
+	reapFinishedWorktrees,
 	recoverOrphanedSubagents,
 	selfStartToken,
 	updateFooter,
@@ -58,6 +58,10 @@ import extension, {
 	type SpawnMetaFields,
 } from "../extensions/subagent-async/index.ts";
 import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
+import { PI_SUBAGENT_META_DIR_ENV, SUBAGENT_TMP_DIR, subagentMetaDir } from "../extensions/lib/subagent-state.ts";
+import { PI_SUBAGENT_CARGO_HOME_ENV, PI_SUBAGENT_WT_ROOT_ENV } from "../extensions/lib/subagent-worktree.ts";
+import { UnusableEnvPathError } from "../extensions/lib/env-path.ts";
+import { setEnvForRow } from "./helpers/subagent-env.ts";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -105,7 +109,6 @@ const tempDirs: string[] = [];
 
 afterEach(() => {
 	_testSetLiveSessionCtx(null);
-	_testSetRecoveryScanDir(undefined);
 	_testRunning.clear();
 	// Stop the sleep-guard heartbeat/caffeinate the scan may have started via
 	// updateFooter: an empty running set tears them down.
@@ -114,6 +117,18 @@ afterEach(() => {
 		try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
 	}
 });
+
+/** Pin the checkout reaper's home for a row that drives the real handler. Each
+ *  such row's red proof removes one refusal in front of the reap chain, and that
+ *  chain reads the box's own `~/Developer/wt` unless this is set: unpinned, a
+ *  mutation proves the row red by walking a human's checkouts and `cargo clean
+ *  -p`-ing their real shared dirs (WO-2026-099 rounds 3-4). */
+function pinReaperHome(): () => void {
+	const home = mkdtempSync(path.join(tmpdir(), "pi-handler-home-"));
+	tempDirs.push(home);
+	_testSetReaperHome(home);
+	return () => _testSetReaperHome(undefined);
+}
 
 // ── Pure decision matrix ───────────────────────────────────────────────────
 
@@ -581,12 +596,12 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 			ui: {},
 		};
 		extension(pi);
-		_testSetRecoveryScanDir(dir);
+		// WO-2026-099: the scan's dir is process-wide, not a per-file setter. This
+		// row drives the real handler, so it is one of the few that must set it.
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, dir);
 		// The same handler runs WO-2026-092's checkout reaper. Pin its home, or
 		// the row walks (and may reap) the box's own `~/Developer/wt`.
-		const home = mkdtempSync(path.join(tmpdir(), "pi-wiring-home-"));
-		tempDirs.push(home);
-		_testSetReaperHome(home);
+		const unpin = pinReaperHome();
 		try {
 			await handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx());
 			// Reaching the scan at all (and adopting the self-owned socket) proves
@@ -598,7 +613,8 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 				for (const s of [...rs.sockClients]) { try { s.destroy(); } catch { /* best-effort */ } }
 			}
 			_testRunning.clear();
-			_testSetReaperHome(undefined);
+			unpin();
+			restore();
 			server.close();
 		}
 	});
@@ -769,5 +785,156 @@ describe("recoverOrphanedSubagents — discovery fold (WO-2026-083)", () => {
 
 		expect(connectCalls).toBe(0);
 		expect(_testRunning.size).toBe(0);
+	});
+});
+
+// ── The metas dir is process-wide, not a per-file hook (WO-2026-099) ────────
+//
+// The scan reads `/tmp` unless something says otherwise, and `/tmp` holds every
+// pi process's live `pi-subagent-*` files. A per-file setter made the redirect a
+// list of files that remembered. `PI_SUBAGENT_META_DIR` is set once by
+// `tests/preload-subagent-roots.ts`, so a file that never thinks about it cannot
+// reach the box's registry.
+describe("the metas dir is process-wide (WO-2026-099)", () => {
+	/** Register the extension for real and keep the handlers it captured. */
+	function register(): Map<string, Function> {
+		const handlers = new Map<string, Function>();
+		const pi: any = {
+			events: { emit() {} },
+			registerTool() {},
+			registerCommand() {},
+			on(event: string, cb: Function) { handlers.set(event, cb); },
+			sendUserMessage() {},
+			ui: {},
+		};
+		extension(pi);
+		return handlers;
+	}
+
+	it("resolves to the run's dir with no per-file setup", () => {
+		const run = process.env[PI_SUBAGENT_META_DIR_ENV];
+		expect(run).toBeDefined();
+		expect(subagentMetaDir()).toBe(run!);
+		expect(path.isAbsolute(subagentMetaDir())).toBe(true);
+		// The run's temp dir, not the box's live registry.
+		expect(subagentMetaDir()).not.toBe(SUBAGENT_TMP_DIR);
+	});
+
+	it("unset, it is still `/tmp` — 027's production path", () => {
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, undefined);
+		try {
+			expect(subagentMetaDir()).toBe("/tmp");
+			expect(SUBAGENT_TMP_DIR).toBe("/tmp");
+		} finally {
+			restore();
+		}
+	});
+
+	it("a set-but-unusable value throws, naming the variable and the value", () => {
+		for (const bad of ["", "relative/meta"]) {
+			const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, bad);
+			try {
+				const message = `${PI_SUBAGENT_META_DIR_ENV} must be an absolute path, got ${JSON.stringify(bad)}`;
+				expect(() => subagentMetaDir()).toThrow(UnusableEnvPathError);
+				expect(() => subagentMetaDir()).toThrow(message);
+				// The scan refuses before its swallow-all `try`: resolution is hoisted,
+				// so the rule is pinned here and the catch cannot reach it.
+				expect(() => recoverOrphanedSubagents(makePi().pi as any, makeCtx(), { selfPid: SELF_PID })).toThrow(message);
+			} finally {
+				restore();
+			}
+		}
+	});
+
+	it("the real session_start handler lets the refusal through", async () => {
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, "relative/meta");
+		// Red proof: two independent reads refuse this override — the in-flight
+		// listing at `index.ts:1023` (`listInFlightSubagents` defaults to the same
+		// dir) and the pre-flight `recoveryRoots()`. This row reds only when both
+		// stop reading the ambient value, so no single deletion shows it red; the
+		// chain cannot run in either case. No home is pinned here, unlike its two
+		// neighbours, because neither read reaches the reaper.
+		const unpin = pinReaperHome();
+		try {
+			const handlers = register();
+			await expect(
+				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
+			).rejects.toThrow(`${PI_SUBAGENT_META_DIR_ENV} must be an absolute path`);
+		} finally {
+			unpin();
+			restore();
+		}
+	});
+
+	it("the real session_start handler refuses a bad worktree base too", async () => {
+		// The base cannot ride on `wtRoots()`: it passes an explicit home, so it
+		// never reads the override, and the chain's one ambient read —
+		// `disposeWorktreeBuildOutput` deriving the clone name — sits inside
+		// `removeWorktreeTree`'s best-effort catch, which turns a bad root into a
+		// reported prune problem. A bad override would prune nothing and say nothing
+		// about it, so the handler reads the base in its own frame (decision 052).
+		const restore = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, "relative/wt");
+		// Only a parent session runs the reaper block, and this process is a child.
+		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
+		// And pin the checkout reaper's home: this row passes only because the
+		// pre-flight refuses, and a mutation that removes it lets the chain through
+		// to a `wtRoots()` that would walk the box's own `~/Developer/wt`.
+		const unpin = pinReaperHome();
+		try {
+			const handlers = register();
+			await expect(
+				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
+			).rejects.toThrow(`${PI_SUBAGENT_WT_ROOT_ENV} must be an absolute path, got "relative/wt"`);
+		} finally {
+			unpin();
+			restoreDepth();
+			restore();
+		}
+	});
+
+	it("the real session_start handler refuses a bad cargo home too", async () => {
+		// The reap chain below is not awaited, so a throw from inside it is an
+		// unhandled rejection rather than a failed start. The handler reads the
+		// cargo home in its own frame for that reason (decision 052).
+		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, "relative/cargo");
+		// Only a parent session runs the reaper block, and this process is a child.
+		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
+		// As in the base row: the red proof removes the pre-flight, and the chain
+		// behind it reads `~/Developer/wt` before the pass resolves the cargo home.
+		const unpin = pinReaperHome();
+		try {
+			const handlers = register();
+			await expect(
+				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
+			).rejects.toThrow(`${PI_SUBAGENT_CARGO_HOME_ENV} must be an absolute path`);
+		} finally {
+			unpin();
+			restoreDepth();
+			restore();
+		}
+	});
+
+	it("a reap with no `dir` reads the override — the resolved path, never `/tmp`", async () => {
+		// A dir that cannot be listed: the reap's own resolution answers it, and
+		// the report names the path it resolved. `selfPid: -1` with a session id no
+		// meta carries means no meta is adoptable, so nothing is judged either way.
+		const missing = path.join(mkdtempSync(path.join(tmpdir(), "pi-nodir-parent-")), "not-there");
+		tempDirs.push(path.dirname(missing));
+		const cargoHome = mkdtempSync(path.join(tmpdir(), "pi-cargo-home-"));
+		tempDirs.push(cargoHome);
+		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, missing);
+		try {
+			const causes: string[] = [];
+			const results = await reapFinishedWorktrees({} as any, makeCtx(), {
+				selfPid: -1,
+				selfSessionId: "wo-099-no-such-session",
+				home: cargoHome,
+				onScopeFailed: ({ error }) => { causes.push(error); },
+			});
+			expect(results).toEqual([]);
+			expect(causes).toEqual([`unlistable metas dir ${missing}`]);
+		} finally {
+			restore();
+		}
 	});
 });

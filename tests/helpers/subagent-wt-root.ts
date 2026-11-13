@@ -2,7 +2,7 @@
  * Per-file redirect of the subagent worktree base.
  *
  * The run's base is already a temp dir: `bunfig.toml` preloads
- * `tests/preload-worktree-root.ts`, which sets `PI_SUBAGENT_WT_ROOT` before any
+ * `tests/preload-subagent-roots.ts`, which sets `PI_SUBAGENT_WT_ROOT` before any
  * test file loads (docs/design/subagent-worktree-root.md). This helper is for a
  * file that needs a root of its own — a row asserting on that exact dir, or one
  * that must scrub the ambient value.

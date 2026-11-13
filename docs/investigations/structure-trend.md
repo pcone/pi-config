@@ -1210,3 +1210,90 @@ removal-error reporter (it reports through the existing `kept` rows).
 is a first landing, so this is a note rather than a strike: its next chunk should extract the two
 clusters above before adding gates. `index.ts` at 2243 keeps its own carrier (WO-2026-095's
 remainder, `Q-095-a`).
+
+## Snapshot 2026-11-13 — WO-2026-099 (recovery-scan roots: env, not per-file hooks)
+
+**growth.** `git diff --numstat cfe0e12..HEAD -- extensions/`: `env-path.ts` **new, 68**
+(one absolute-or-throw rule, three resolvers); `subagent-state.ts` +32/−12 (843, the third
+hook deleted, `subagentMetaDir` added); `build-output-reaper.ts` +30/−19 (897, one `home`
+field became two); `recovery.ts` +32/−25 (776), `index.ts` +16/−6 (2253), `worktree.ts`
++12/−3 (612), `subagent-worktree.ts` +46/−22 (154), `checkpoint.ts` −6 (its re-export of the
+deleted hook). No function gained a branch: every site either resolves a root once at the
+top, or passes one of two named fields where it passed one conflated field.
+
+**unification.** Three per-process seams became one ambient rule: `rg -n
+'_testSetRecoveryScanDir|_testSetCargoHome|_testSetInflightScanDir' extensions/ tests/` →
+**0**. `rg -n 'absoluteEnvPath\(' extensions/` → **2** (the definition and
+`subagent-worktree`'s two callers through it); every resolver funnels through it.
+Test-side, five files' hand-rolled save/restore became `setEnvForRow`, which now also
+unsets: `rg -n 'process\.env\[PI_SUBAGENT' tests/` → 8, all reads or the preload's own writes.
+
+**strike, worked the same landing.** `RemovalDeps.home` was one field meaning two things —
+the home a tree's clone name derives from and the home its shared cargo dir lives under. The
+landing split it (`cargoHome` / `baseHome`) rather than patching the call site, because the
+two roots move independently and the failure was silent (attribution null → no prune).
+
+**flag.** `tests/build-output-reaper.test.ts` now passes both homes from one local `homesAt`
+helper — fine for a fixture whose roots genuinely agree, but it is the shape a second landing
+would copy into a case where they do not. The rows that keep them apart belong in
+`tests/subagent-worktree-lock.test.ts` and are three of them now.
+
+### Round 3 (same landing, 2026-11-13) — the base's read, and a re-run of round 2's counts
+
+**growth.** `git diff --numstat 8e80ce8..HEAD`: `index.ts` +9/−8 (2254 — one call, one
+import, a corrected comment block), `checkout-reaper.ts` +4/−1 (1237, doc only), the rest
+docs. No new function, no new branch: the round-3 change is one synchronous line in the
+`session_start` handler.
+
+**unification.** Round 2's snapshot counted `rg -n 'absoluteEnvPath\(' extensions/` as 2;
+re-run at this tip it is **4** lines — the definition and three call sites
+(`subagent-worktree.ts:69,125`, `subagent-state.ts:205`). The miscount does not change the
+claim (every resolver funnels through the one rule); the number is corrected here so a
+later landing does not inherit the wrong baseline.
+
+**strike, already recorded, now worked.** The one-field-two-meanings strike on the removal
+deps was worked in round 2 (`cargoHome`/`baseHome`). Round 3 found the second half of the
+same defect class on the read side: `wtRoots()` takes an explicit home, so *no* read in the
+`session_start` frame reached `PI_SUBAGENT_WT_ROOT`, and the chain's only ambient base read
+sat inside the removal's best-effort catch. The fix is a read, not a new seam — the base now
+joins the cargo home in the handler's pre-flight, pinned by a row that goes red when the
+line is removed.
+
+**flag, carried out of this order.** Two same-class ambient seams remain and are *not* this
+order's scope, both named by round 1: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:104`,
+the checkout reaper's own per-process home, whose default is `homedir()` and which the
+handler's `wtRoots()` reads), and `metaPath`'s hardcoded `/tmp` writer (decision 052 §
+Alternatives, the writer-side order). Neither should be picked up by a feature landing in
+this family; each needs its own order. `index.ts` at 2254 stays inside its existing carrier
+(WO-2026-095 remainder, `Q-095-a`) — this landing added one line.
+
+### Round 4 (same landing, 2026-11-13) — the roots in one place, the base threaded
+
+**growth.** `git diff --numstat 960ccb2 -- extensions/`: `recovery.ts` +64/−13 (827, one
+9-line resolver and a pass that threads its values), `build-output-reaper.ts` +16/−11 (902,
+one field renamed and its four readers), `subagent-worktree.ts` +8/−10 (152),
+`index.ts` +8/−8 (2254, the two pre-flight calls became one), `checkout-reaper.ts` +2/−2,
+`worktree.ts` +8/−5 (615). No function gained a branch; the pass lost one resolution per root
+per call and gained one at the top.
+
+**unification.** The pass's ambient roots are named once: `rg -n 'subagentMetaDir\(\)|subagentCargoHome\(\)|subagentWorktreeBase\(\)'
+extensions/subagent-async/ extensions/lib/checkout-reaper.ts` → **4** lines, three of them the
+bodies of `recoveryRoots()` and the fourth the scan's own metas read (a different frame: it
+sits inside the handler's catch, which rethrows the refusal, and it must not force the cargo
+home's — folding it in would make the scan refuse for a root it never reads, and would take the
+cargo row's red proof with it). `rg -n 'recoveryRoots\(' extensions/ tests/` → 2 call sites.
+`rg -n 'baseHome' extensions/ tests/` → **0**: the one field that meant "a home the base is
+derived from" became `base`, the value the resolver already had, so a fixture can no longer
+hand the pass a home it cannot express the override in.
+
+**census correction, re-run at the tip.** `rg -n 'absoluteEnvPath\(' extensions/` → **4**, as
+round 3 recorded; unchanged by this landing. Round 3's prose claim of "the chain's one ambient
+base read" is corrected in decision 052 and the design doc: there were two (the removal's
+clone-name derivation inside its catch, the bound's outside every `try`), and both now take the
+base the pass resolved.
+
+**flag, carried out of this order.** The two seams round 3 carried remain, unchanged and still
+not this order's: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:105`, now also the
+pin that keeps the three handler-refusal rows hermetic under their named mutations) and
+`metaPath`'s hardcoded `/tmp` writer (decision 052 § Alternatives). `recovery.ts` at 827 stays
+under the 1,000-line floor for counting.

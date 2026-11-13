@@ -32,8 +32,10 @@ import {
 	resolveSubagentMeta,
 	resumeCallFor,
 	resolveTurnCap,
+	subagentMetaDir,
 	type OwnerProbe,
 } from "../lib/subagent-state.ts";
+import { subagentCargoHome, subagentWorktreeBase } from "../lib/subagent-worktree.ts";
 import { closeWorkRecord, commitRecordEntries, openRecordContext, sessionFinalText, type PersistedWorkRecord } from "./records.ts";
 import { removeWorktreeTree } from "./worktree.ts";
 import {
@@ -327,20 +329,41 @@ export function resolveTrackerKey(requestedId: string): string {
 	return requestedId;
 }
 
-/** @internal test hook — override the directory the real `session_start`
- *  recovery scan reads (defaults to /tmp). Lets a test fire the captured
- *  handler and observe adoption without touching real /tmp. */
-let recoveryScanDirOverride: string | undefined;
-export function _testSetRecoveryScanDir(dir: string | undefined): void {
-	recoveryScanDirOverride = dir;
+// ── The pass's ambient roots, named once ─────────────────────────────────────
+
+/**
+ * Every root the `session_start` recovery pass reads from the environment: the
+ * metas dir the scan and the reap list, the cargo home the bound walks, and the
+ * worktree base every tree the chain touches was created under.
+ *
+ * The set is a value, not a list each call site remembers. The handler resolves
+ * it before its chain exists, and `reapFinishedWorktrees` resolves it again for
+ * itself and threads the values down. A root added here therefore reaches the
+ * handler's refusal by being a field, and reaches the pass's readers by the
+ * caller that resolved it — neither needs a remembered line. A root that missed
+ * the handler's frame would be read from inside a chain nobody awaits, which is
+ * a rejection, not a refused start (decision 052).
+ */
+export interface RecoveryRoots {
+	/** `$PI_SUBAGENT_META_DIR`, else `/tmp`. */
+	metaDir: string;
+	/** `$PI_SUBAGENT_CARGO_HOME`, else `homedir()`. */
+	cargoHome: string;
+	/** `$PI_SUBAGENT_WT_ROOT`, else `~/Developer/wt/subagents`. */
+	worktreeBase: string;
 }
 
-/** @internal test hook — override the home whose shared cargo target root the
- *  reap's bound walks (defaults to the real one). A row must never measure —
- *  or, over the bound, `cargo clean -p` — the box's real shared dirs. */
-let cargoHomeOverride: string | undefined;
-export function _testSetCargoHome(home: string | undefined): void {
-	cargoHomeOverride = home;
+/**
+ * All three, resolved in the caller's frame. A set-but-unusable value throws
+ * here, once, through that root's own resolver: every caller wants the refusal
+ * rather than the root it would have fallen back to.
+ */
+export function recoveryRoots(): RecoveryRoots {
+	return {
+		metaDir: subagentMetaDir(),
+		cargoHome: subagentCargoHome(),
+		worktreeBase: subagentWorktreeBase(),
+	};
 }
 
 // ── Orphan recovery scan ─────────────────────────────────────────────────────
@@ -356,8 +379,10 @@ export interface RecoveryScanDeps {
 	probe?: OwnerProbe;
 	/** Override for the socket client factory (tests). */
 	connect?: (sockPath: string) => net.Socket;
-	/** Override for the home the reap's bound walks (tests); defaults to the
-	 *  real one, whose `~/.cache/cargo-target` holds one dir per clone. */
+	/** Override for the cargo home the reap's bound walks (tests); defaults to
+	 *  `subagentCargoHome()`, whose `~/.cache/cargo-target` holds one dir per
+	 *  clone. Not the worktree base: that is ambient, and the two are separate
+	 *  values in production. */
 	home?: string;
 	/** Override for the reap's `cargo` / `git` calls (tests). */
 	run?: CommandRunner;
@@ -381,16 +406,22 @@ export interface RecoveryScanDeps {
  *
  * Extracted with injectable directory / pid / probe / connection factory so the
  * adopt-skip matrix and the `unref` contract are unit-testable without touching
- * /tmp or opening real sockets. Best-effort: never throws (the caller also
- * wraps it, but keeping the scan self-contained makes every branch safe).
+ * /tmp or opening real sockets. Best-effort: a torn metas dir, socket or log is
+ * absorbed (the caller also wraps it, but keeping the scan self-contained makes
+ * every branch safe). The scan dir itself is resolved *before* that: an
+ * unusable `PI_SUBAGENT_META_DIR` (WO-2026-099) must reach the caller instead of
+ * silently reading `/tmp`.
  */
 export function recoverOrphanedSubagents(
 	pi: ExtensionAPI,
 	ctx: any,
 	deps: RecoveryScanDeps = {},
 ): void {
+	// One root, not {@link recoveryRoots}: this frame's catch rethrows the refusal,
+	// and the scan does not read the cargo home or the base — resolving them here
+	// would refuse a start over a root this function never touches.
+	const sockDir = deps.dir ?? subagentMetaDir();
 	try {
-		const sockDir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		const connect = deps.connect ?? ((p: string) => net.createConnection(p));
 		// The tmp dir's SOCK scan, and only that (`socketsOnly`): no log-only
 		// arm, and no readdir, meta read or turn regex of its own (WO-2026-083).
@@ -572,7 +603,10 @@ export function recoverOrphanedSubagents(
 			running.set(sid, rs);
 			updateFooter();
 		}
-	} catch { /* best-effort */ }
+	} catch {
+		/* best-effort: one torn session is not the pass. The `try` cannot absorb an
+		 * unusable override — {@link subagentMetaDir} is resolved above it. */
+	}
 }
 
 /** Outcome of one finished-worktree reap decision. */
@@ -617,15 +651,40 @@ export interface ReapResult {
  * landed or is gone, and a shared dir over its bound is pruned. That half lives
  * in `lib/build-output-reaper.ts`; the bound is checked here, once per session
  * start, never on the spawn path.
+ *
+ * The three roots it reads from the environment — the metas dir, the cargo home
+ * and the worktree base — are resolved together by {@link recoveryRoots} before
+ * the first `try`, so neither a torn meta's catch nor the unlistable-dir catch
+ * can absorb a bad override and leave the pass reading the box's real `/tmp`,
+ * cargo root or checkouts. The base is then *passed down* to both of its
+ * readers, the removal's clone-name derivation and the bound's, so no frame
+ * below this one reaches `PI_SUBAGENT_WT_ROOT` for itself: the second of those
+ * sits outside every `try` in this function and would otherwise reject the whole
+ * pass after its trees were already judged (round 4).
+ *
+ * The cargo home is not the worktree base. A tree's clone name is derived from
+ * the base (`PI_SUBAGENT_WT_ROOT`), the root `createWorktree` built it under; its
+ * share of the clone's shared cargo dir lives under the cargo home. Passing the
+ * cargo home as the base stops attribution whenever the two overrides differ,
+ * and the prune is then silently skipped.
+ *
+ * `deps.dir` and `deps.home` still win as values, but they no longer suppress
+ * the resolution: a row that names a fixture dir is still a process with a
+ * `PI_SUBAGENT_META_DIR` in its environment, and an unusable one must refuse
+ * here rather than be papered over by the argument.
  */
 export async function reapFinishedWorktrees(
 	pi: ExtensionAPI,
 	ctx: any,
 	deps: RecoveryScanDeps = {},
 ): Promise<ReapResult[]> {
+	const roots = recoveryRoots();
+	const dir = deps.dir ?? roots.metaDir;
+	const cargoHome = deps.home ?? roots.cargoHome;
 	const results: ReapResult[] = [];
 	const buildOutput = createReapBuildOutput({
-		home: deps.home ?? cargoHomeOverride,
+		cargoHome,
+		base: roots.worktreeBase,
 		run: deps.run,
 		sizeOf: deps.sizeOf,
 	});
@@ -698,7 +757,7 @@ export async function reapFinishedWorktrees(
 		}
 
 		const removal = await removeWorktreeTree(
-			{ run: deps.run, home: deps.home ?? cargoHomeOverride },
+			{ run: deps.run, cargoHome, base: roots.worktreeBase },
 			{
 				worktreePath,
 				isolationBranch,
@@ -730,7 +789,6 @@ export async function reapFinishedWorktrees(
 	};
 
 	try {
-		const dir = deps.dir ?? recoveryScanDirOverride ?? "/tmp";
 		for (const { sid, meta } of listSubagentMetas(dir, undefined, (target, kind) => {
 			// A meta file that yields nothing names a tree this reap cannot
 			// attribute, and an unlistable dir hides every meta at once: either way

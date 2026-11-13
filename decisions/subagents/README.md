@@ -58,3 +58,4 @@ date: 2026-07-14
 | 050 | The suite's worktree root comes from a `bunfig.toml` preload for the whole run; the nested-run snapshot row is deleted | done |
 | 051 | One reaper for every checkout under `~/Developer/wt` — gates, the kept-report, orphaned trees | done |
 | 052 | A duplicate evaluation of the extension is harmless — one `globalThis` registry, an owner-tagged live session, no path canonicalisation | active |
+| 053 | The recovery scan's metas dir and cargo home are process-wide env overrides, not per-file test hooks | done |

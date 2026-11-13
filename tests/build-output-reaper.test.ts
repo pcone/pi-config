@@ -31,8 +31,14 @@ import {
 	removeWorktreeTarget,
 	type CommandRunner,
 } from "../extensions/lib/build-output-reaper.ts";
+import { subagentWorktreeBase } from "../extensions/lib/subagent-worktree.ts";
 
 const scratch: string[] = [];
+
+/** Both roots at one fixture home. This file's trees and their shared cargo
+ *  dirs live under the same temp dir, so the two agree — the rows that keep them
+ *  apart are the reap's (`tests/subagent-worktree-lock.test.ts`). */
+const homesAt = (home: string) => ({ cargoHome: home, base: subagentWorktreeBase(home) });
 
 function tempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -650,7 +656,7 @@ describe("planCargoBound (M3)", () => {
 		const cargoTargetDir = sharedFor("tfd-d");
 		const dead = [{ worktreePath: deadUnder("tfd-d", "77a40e201285"), parentCwd: "/fake/home/Developer/tfd-d" }];
 
-		const actions = planCargoBound([{ cargoTargetDir, bytes: 21 * GiB }], dead, CARGO_TARGET_BOUND_BYTES, home);
+		const actions = planCargoBound([{ cargoTargetDir, bytes: 21 * GiB }], dead, CARGO_TARGET_BOUND_BYTES, homesAt(home));
 
 		expect(actions).toEqual([{ cargoTargetDir, worktreePaths: [dead[0].worktreePath], coarsePrune: true }]);
 	});
@@ -659,15 +665,15 @@ describe("planCargoBound (M3)", () => {
 		const cargoTargetDir = sharedFor("tfd-d");
 		const dead = [{ worktreePath: deadUnder("tfd-d", "77a40e201285"), parentCwd: "/fake/home/Developer/tfd-d" }];
 
-		expect(planCargoBound([{ cargoTargetDir, bytes: 19 * GiB }], dead, CARGO_TARGET_BOUND_BYTES, home)).toEqual([]);
+		expect(planCargoBound([{ cargoTargetDir, bytes: 19 * GiB }], dead, CARGO_TARGET_BOUND_BYTES, homesAt(home))).toEqual([]);
 	});
 
 	it("treats exactly the bound as under it", () => {
 		const cargoTargetDir = sharedFor("tfd-d");
 
-		expect(planCargoBound([{ cargoTargetDir, bytes: CARGO_TARGET_BOUND_BYTES }], [], CARGO_TARGET_BOUND_BYTES, home)).toEqual([]);
+		expect(planCargoBound([{ cargoTargetDir, bytes: CARGO_TARGET_BOUND_BYTES }], [], CARGO_TARGET_BOUND_BYTES, homesAt(home))).toEqual([]);
 		expect(
-			planCargoBound([{ cargoTargetDir, bytes: CARGO_TARGET_BOUND_BYTES + 1 }], [], CARGO_TARGET_BOUND_BYTES, home),
+			planCargoBound([{ cargoTargetDir, bytes: CARGO_TARGET_BOUND_BYTES + 1 }], [], CARGO_TARGET_BOUND_BYTES, homesAt(home)),
 		).toHaveLength(1);
 	});
 
@@ -678,7 +684,7 @@ describe("planCargoBound (M3)", () => {
 			{ worktreePath: join(home, "Developer", "wt", "tfd-hand-made"), parentCwd: "/x" },
 		];
 
-		const actions = planCargoBound([{ cargoTargetDir, bytes: 21 * GiB }], dead, CARGO_TARGET_BOUND_BYTES, home);
+		const actions = planCargoBound([{ cargoTargetDir, bytes: 21 * GiB }], dead, CARGO_TARGET_BOUND_BYTES, homesAt(home));
 
 		expect(actions).toEqual([{ cargoTargetDir, worktreePaths: [], coarsePrune: true }]);
 	});
@@ -703,7 +709,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		const { run, calls } = fakeRunner();
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [{ worktreePath: deadPath, parentCwd }],
 			sizeOf: () => 25 * GiB,
 			run,
@@ -739,7 +745,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		};
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [{ worktreePath: deadPath, parentCwd: "" }],
 			sizeOf: sizes(),
 			run: fakeRunner().run,
@@ -755,7 +761,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		expect(existsSync(depInfo)).toBe(false);
 
 		const lines = await createReapBuildOutput({
-			home,
+			...homesAt(home),
 			sizeOf: sizes(),
 			run: fakeRunner().run,
 		}).enforceBound();
@@ -769,7 +775,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		const { run, calls } = fakeRunner();
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [],
 			sizeOf: () => {
 				throw new Error("du: permission denied");
@@ -789,7 +795,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		let measure = 0;
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [],
 			sizeOf: () => {
 				measure++;
@@ -815,7 +821,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		let measure = 0;
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [{ worktreePath: deadPath, parentCwd }],
 			sizeOf: () => {
 				measure++;
@@ -848,7 +854,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		const { run } = fakeRunner();
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [{ worktreePath: deadPath, parentCwd: "" }],
 			sizeOf: (dir) => {
 				if (dir === unmeasurable) throw new Error("du: permission denied");
@@ -878,7 +884,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		const walkOrder = readdirSync(root).map((name) => join(root, name));
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [],
 			sizeOf: async (dir) => {
 				// Delay the failure that comes first in walk order, so a result folded
@@ -901,7 +907,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		const { home } = fakeHome("tfd-d");
 		const { run, calls } = fakeRunner();
 
-		const report = await enforceCargoTargetBound({ home, deadWorktrees: [], sizeOf: () => 5 * GiB, run });
+		const report = await enforceCargoTargetBound({ ...homesAt(home), deadWorktrees: [], sizeOf: () => 5 * GiB, run });
 
 		expect(report.entries).toEqual([]);
 		expect(calls).toEqual([]);
@@ -924,7 +930,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		);
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [
 				{ worktreePath: deadPath, parentCwd: "" },
 				{ worktreePath: deadPath2, parentCwd: "" },
@@ -945,7 +951,7 @@ describe("enforceCargoTargetBound (M3)", () => {
 		const { run, calls } = fakeRunner();
 
 		const report = await enforceCargoTargetBound({
-			home,
+			...homesAt(home),
 			deadWorktrees: [{ worktreePath: deadPath, parentCwd: tempDir("pi-reaper-parent-") }],
 			sizeOf: () => 25 * GiB,
 			run,

@@ -15,6 +15,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { absoluteEnvPath } from "./env-path.ts";
 
 /** A log silent for this long is no longer evidence of a live child. Same
  *  window as subagent-async's stalled-turn watchdog. */
@@ -176,7 +177,33 @@ export function decideRecoveryAdoption(
 
 // ── Meta registry scan ─────────────────────────────────────────────────────
 
+/**
+ * The production metas dir: `/tmp`. Every pi process on the machine reads the
+ * same `pi-subagent-*` files there, so a scan of it reaches live children and
+ * other sessions' logs; {@link subagentMetaDir} is what a caller reads, so the
+ * suite can redirect it for the whole run (`tests/preload-subagent-roots.ts`).
+ */
 export const SUBAGENT_TMP_DIR = "/tmp";
+
+/**
+ * Process-wide override for the metas dir. The `session_start` recovery scan
+ * resolves it from inside the scan, so a call argument cannot reach it — the
+ * suite sets this to a fresh temp dir for the whole run, and no file has to
+ * isolate itself.
+ */
+export const PI_SUBAGENT_META_DIR_ENV = "PI_SUBAGENT_META_DIR";
+
+/**
+ * `$PI_SUBAGENT_META_DIR` when set, else {@link SUBAGENT_TMP_DIR}.
+ *
+ * An unusable value (empty, relative) throws instead of reading `/tmp`: the
+ * fallback is the leak, because a typo would put a test back on the box's live
+ * registry with no sign of it. An explicit `dir` argument still wins at every
+ * call site, so a row about a fixture dir it names keeps its meaning.
+ */
+export function subagentMetaDir(): string {
+	return absoluteEnvPath(PI_SUBAGENT_META_DIR_ENV, SUBAGENT_TMP_DIR);
+}
 
 export interface SubagentMetaEntry {
 	sid: string;
@@ -586,17 +613,6 @@ export function gatherSubagentDiskFacts(
 
 // ── In-flight listing (R3-1) ───────────────────────────────────────────────
 
-/**
- * @internal test hook — the registry directory the in-flight scan reads
- * (default /tmp). One override for every reader, so a test that fabricates
- * children cannot have one reader see the fabricated set and another see the
- * real registry.
- */
-let inflightScanDirOverride: string | undefined;
-export function _testSetInflightScanDir(dir: string | undefined): void {
-	inflightScanDirOverride = dir;
-}
-
 export interface InFlightSubagent {
 	sid: string;
 	agentName: string | null;
@@ -624,11 +640,15 @@ export function resumeCallFor(sid: string, meta: Record<string, any> | null): st
  * process owner, or owner gone — a live foreign owner's child is another
  * session's business, a legacy meta is unattributable) AND a state of running
  * or orphaned. Completed and dead children are not in flight.
+ *
+ * The registry dir is `opts.dir` or {@link subagentMetaDir}, the same override
+ * every other meta reader resolves (WO-2026-099): a reader on an in-memory seam
+ * of its own would see the box's real `/tmp` after the others were redirected.
  */
 export function listInFlightSubagents(
 	opts: { dir?: string; selfPid?: number; selfSessionId?: string; probe?: OwnerProbe; now?: number } = {},
 ): InFlightSubagent[] {
-	const dir = opts.dir ?? inflightScanDirOverride ?? SUBAGENT_TMP_DIR;
+	const dir = opts.dir ?? subagentMetaDir();
 	const out: InFlightSubagent[] = [];
 	for (const { sid, meta } of listSubagentMetas(dir)) {
 		if (
