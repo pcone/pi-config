@@ -114,18 +114,18 @@ only in how the agent dir reaches that staged set:
 
 | arm | tree | `lstat` of `<agentDir>/extensions` | pre-fix | post-fix |
 |---|---|---|---|---|
-| `field` | `<root>/link-agent/extensions` → `<root>/stage/extensions` | symlink | **red**, 30 s deadline, `deliverResult: no live session … dropping result` | green, 5.9 s |
+| `field` | `<root>/field-agent/extensions` → `<root>/stage/extensions` | symlink | **red**, 30 s deadline, `deliverResult: no live session … dropping result` | green, 5.9 s |
 | `control` | `<root>/plain-agent/extensions` | real directory | green, 5.2 s | green |
 
 The `control` arm: same processes, same extension files, same
-chain. It wakes before the fix, so the link arm's park is the symlinked spelling
+chain. It wakes before the fix, so the field arm's park is the symlinked spelling
 and not a broken chain. `buildTree` measures each tree against the shape its arm
 declares, so an arm cannot silently degrade into the other one.
 
 Two differences remain between the arms, not one. The spelling is the mechanism;
-the second is the staged tree's position — outside the agent dir in the link arm,
+the second is the staged tree's position — outside the agent dir in the field arm,
 at `<agentDir>/extensions` in the control. The field's install points outside the
-agent dir too, so the link arm is the shape that reproduces it, and nothing reads
+agent dir too, so the field arm is the shape that reproduces it, and nothing reads
 the position: the module census is identical per arm apart from the spelling.
 
 Why the staged tree and not the live checkout: the scripted provider has to sit
@@ -135,7 +135,8 @@ spelling — is identical either way.
 
 Module-record census of one field-shaped pid,
 `~/Developer/notes/wo-098/r4/probe-field-census.ts`, output kept in
-`~/Developer/notes/wo-098/r4/eval-census.log`:
+`~/Developer/notes/wo-098/r4/eval-census.log`. It was recorded before the arms
+were renamed: `link` is today's `field`, `plain` is today's `control`.
 
 ```
 === link
@@ -151,7 +152,7 @@ Module-record census of one field-shaped pid,
   EVAL index.ts    url=<root>/link+settings-agent/extensions/subagent-async/index.ts
 ```
 
-`index.ts` twice in the link arm, once in the plain arm; `worktree.ts` once in
+`index.ts` twice in the field arm, once in the control; `worktree.ts` once in
 both. The staged copy carried an `EVAL` line appended from `index.ts` and
 `worktree.ts` at module load, which is how the records are counted.
 
@@ -161,6 +162,19 @@ still counts two records, not three: relative extension entries resolve against
 the agent dir and dedupe against the discovered path, so settings cannot supply a
 second *registered* evaluation. That is why the owner tag on `clearLiveSession`
 never fires on this pi; `decisions/subagents/052` says what it guards instead.
+
+## Order row 4's second clause, pinned a level lower
+
+Row 4 asks that "a completion still cancels the timer". That cannot be pinned
+end to end: on completion `spawn.ts` deletes the child from `running` before
+delivery, so the timer callback's own `running.size === 0` guard skips its steer
+whether or not `clearActiveWait()` ran — the delivered-message stream is
+identical either way. What is pinned instead: the timer's replace semantics and
+`clearActiveWait`'s behaviour on real timers
+(`tests/subagent-session-lifetime.test.ts` rows 8-10), plus a wiring assertion
+that the close handler calls it. The end-to-end half would need a second child
+that stays running past the deadline, which is a different behaviour, not the
+cancel.
 
 ## Why the suite's preload did not cover this
 

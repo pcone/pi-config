@@ -13,13 +13,13 @@
  *
  * The two arms differ in how the agent dir reaches the extension set:
  *
- *   link — `<root>/link-agent/extensions` is a symlink to `<root>/stage/extensions`
- *   plain — `<root>/plain-agent/extensions` is a real directory
+ *   field   — `<root>/field-agent/extensions` is a symlink to `<root>/stage/extensions`
+ *   control — `<root>/control-agent/extensions` is a real directory
  *
- * The staged tree also sits outside the agent dir in the link arm and at
- * `<agentDir>/extensions` in the control, which is a second difference; the
- * field's install points outside the agent dir too, so the link arm is the shape
- * that reproduces the field. Nothing reads the tree's position — the module
+ * The staged tree also sits outside the agent dir in the field arm and at
+ * `<agentDir>/extensions` in the control, which is a second difference; this
+ * box's install points outside the agent dir too, so the field arm is the shape
+ * that reproduces it. Nothing reads the tree's position — the module
  * census is identical per arm save the spelling
  * (`~/Developer/notes/wo-098/r4/eval-census.log`). `buildTree` measures the tree
  * it built against the shape its arm declares, so a row cannot drive the control
@@ -383,7 +383,7 @@ describe("a parked wait wakes when its child completes", () => {
 		// callback's own `running.size === 0` guard skips its steer whether or not
 		// the cancel ran. The cancel is pinned in
 		// `tests/subagent-session-lifetime.test.ts` rows 8-10 instead — see
-		// WO-2026-098's plan mismatch on the order's row 4.
+		// the acceptance-row note in `docs/investigations/subagent-wake-2026-11.md`.
 		const result = await runChain({ arm: "field", waitSeconds: 30, tailMs: 6_000 });
 		const why = `delivered:\n${result.delivered.join("\n---\n")}\n${result.stderr}`;
 

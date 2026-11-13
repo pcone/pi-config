@@ -96,14 +96,17 @@ only the one that set a ctx should. The tag records which evaluation set it and
 Be precise about what this guards, because the obvious story is false. The
 duplicate record's factory is never handed to `initializeExtension`
 (`loader.js:513,535`), so it registers no handlers at all and never receives
-`session_shutdown`. On pi 1.4.0 the tag's check does not fire: the only
-`session_shutdown` emitter is reload (`agent-session.js:2998-3002`), and it shuts
-the old set down *before* the new set loads, so at that moment the owner is
-still the evaluation shutting down. A second *registered* evaluation would make
+`session_shutdown`. On pi 1.4.0 the tag's check cannot misfire, because every
+emitter runs while the owner is the evaluation shutting down: reload
+(`agent-session.js:3001`) shuts the old set down before the new set loads, and
+teardown/dispose (`agent-session-runtime.js:106,297`) fire on the live set on the
+same ordering. A second *registered* evaluation would make
 it live — and settings.json cannot supply one, because its relative entries
 resolve against the agent dir (`package-manager.js:719,734`) and dedupe against
-the discovered path (`loader.js:671-677`, `path.resolve` at `:673`); the census arm with the field's
-settings file in place still shows two records for `index.ts`, not three
+the discovered path, canonicalised, in the CLI's own path merge
+(`package-manager.js:2117-2128`, `resource-loader.js:786-798`); a census arm with
+a settings file of that shape — two relative entries, not the field's fifteen —
+still shows two records for `index.ts`, not three
 (`~/Developer/notes/wo-098/r4/eval-census.log`).
 
 So the tag is a guard, not a live path: it makes the clear correct by ownership

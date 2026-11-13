@@ -695,11 +695,12 @@ export function setLiveSession(ctx: any): void {
  *
  *  Every evaluation can reach the registry (that is what makes the duplicate
  *  harmless), so a clear is only correct for the evaluation that set the ctx.
- *  On pi 1.4.0 the check never fires: its only `session_shutdown` emitter is
- *  reload (`agent-session.js:2998-3002`), which shuts the old set down before
- *  the new one loads, and the duplicate record never runs a factory at all, so
- *  it registers no handler. It is kept so the clear rests on ownership rather
- *  than on that ordering surviving a pi release —
+ *  On pi 1.4.0 the check cannot misfire: reload
+ *  (`agent-session.js:3001`) and teardown/dispose
+ *  (`agent-session-runtime.js:106,297`) all run while the owner is the
+ *  evaluation shutting down, and the duplicate record never runs a factory at
+ *  all, so it registers no handler. It is kept so the clear rests on ownership
+ *  rather than on that ordering surviving a pi release —
  *  `decisions/subagents/052-duplicate-extension-evaluation.md`. */
 export function clearLiveSession(): void {
 	if (runner.liveSession?.owner === EVALUATION_ID) runner.liveSession = null;
