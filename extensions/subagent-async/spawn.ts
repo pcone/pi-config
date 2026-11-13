@@ -651,7 +651,7 @@ export async function spawnSubagent(
 					// Auto-detach: if the user is attached to this session,
 					// restore the default editor and clear the attach widget
 					// so it isn't orphaned after the child completes.
-					if (attachedSessionId === sessionId) {
+					if (attachedSessionId() === sessionId) {
 						detach();
 						notifyChildDetached(rs);
 					}
@@ -746,7 +746,7 @@ export async function spawnSubagent(
 		// session when it died (crash, kill, timeout), restore the default
 		// editor so it isn't orphaned. The isDone path above handles the
 		// normal-completion case; this catches abnormal termination.
-		if (attachedSessionId === sessionId) {
+		if (attachedSessionId() === sessionId) {
 			detach();
 			notifyChildDetached(rs);
 		}

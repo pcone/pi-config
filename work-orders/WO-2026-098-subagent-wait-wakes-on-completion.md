@@ -56,6 +56,26 @@ and 1.4.0's steer delivery (`dist` of the installed pi, `sendUserMessage` /
 5. **No live session → no crash.** The parked-session path whose `liveSessionCtx` is
    gone stays silent (the comment at `:963-966` names the crash this guards).
 
+### Q-098-a (owner question) — row 4's second clause cannot be pinned end to end
+
+Row 4 says "a completion still cancels the timer". Asked of the running code, that
+sentence has no behavioural witness: on a completion `spawn.ts` removes the child from
+`running` before delivery, so the timer callback's own `running.size === 0` guard skips
+its steer whether or not `clearActiveWait()` ran. The delivered-message stream is
+identical on both paths, and no row can tell them apart.
+
+- **(a) Land the substitution.** Pin the timer's replace semantics and
+  `clearActiveWait`'s behaviour on real timers, plus a wiring assertion that the close
+  handler calls it. What lands is row 4 minus its second clause, at a lower level.
+  **Recommended:** the outcome the row exists for is already pinned; the end-to-end
+  witness it asks for needs a second child that outlives the deadline, which tests a
+  different behaviour.
+- **(b) Rewrite row 4** to say what is observable: "a completion before the deadline
+  delivers once, and no timer steer follows it".
+
+Landed under (a) in `docs/investigations/subagent-wake-2026-11.md` § "Order row 4's
+second clause, pinned a level lower", pending the owner's choice.
+
 ### Sequencing
 
 Standalone. Reports `PLAN MISMATCH` with the evidence if the repro rows pass on

@@ -411,7 +411,7 @@ export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: n
 	// try/catch): the child's own session file and
 	// /tmp/pi-subagent-<id>.log retain the full output.
 	// See decisions/subagents/026-subagent-events-after-session-disposal.md.
-	if (!liveSessionCtx) {
+	if (!liveSessionCtx()) {
 		debugLog(`deliverResult: no live session — dropping result for ${rs.sessionId} (output retained in ${rs.logPath})`);
 		return;
 	}
