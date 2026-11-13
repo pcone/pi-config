@@ -299,6 +299,29 @@ until the process group or the turn cap ends it. Pre-existing, not upgrade-cause
 and out of this order's scope: nothing in 1.5.1 changes it either way. Carried by
 **WO-2026-100**.
 
+> **Fixed, WO-2026-100.** `dispatchKillSignals` and `subagent_stop`'s force-kill
+> fallback now test `exitCode === null && signalCode === null` (`stillRunning`,
+> `extensions/subagent-async/sleep-guard.ts`), so the SIGKILL fires on a child
+> that ignores SIGTERM. `tests/subagent-async-kill.test.ts` R1–R4 drive real node
+> children; R5 is a stub handle with a throwing `kill()`.
+>
+> The order's scope was every site in `extensions/subagent-async/` that decides
+> liveness from `proc.killed`. `rg -n '\.killed' extensions/` returns 45 hits in
+> six files; the ones that ask whether a *process handle* is alive, rather than
+> reading the runner's own `killedExplicitly`/`killedVia` bookkeeping or the
+> `OUTCOME_WORD.killed` vocabulary, are these:
+>
+> | site | verdict |
+> | --- | --- |
+> | `sleep-guard.ts:241` — `alreadyDead` for the dispatch | **Was the defect.** `rs.proc.killed \|\| rs.proc.exitCode !== null` read a SIGTERM'd live child (`killed=true, exitCode=null, signalCode=null`) as dead, so `subagent_kill` inside `subagent_stop`'s 5 s window reported “already dead” and armed no escalation of its own. Now `!stillRunning(rs.proc)`. |
+> | `sleep-guard.ts:257` — the delayed SIGKILL's guard | Fixed with the order: `stillRunning(proc)`, was `proc && !proc.killed && proc.exitCode === null`. |
+> | `index.ts:2144` — `subagent_stop`'s own force-kill fallback | Fixed with the order: `stillRunning(rs.proc)`, was `rs.proc && !rs.proc.killed`. |
+> | `test-progress-kill-timeout.cjs:175,179` — the mirror's copies of both | Same verdict as their originals: `alreadyDead` is now `!stillRunning`, and `stillRunning` keeps the real helper's `proc !== null` guard. |
+> | `test-progress-kill-timeout.cjs:222` — the mirror's proc stub | Writes `killed = true` on any signal, which is what Node does; it is the stub's fidelity, not a liveness read. |
+> | `spawn.ts:623`, `index.ts:2208`, `sleep-guard.ts:173,203,204,309,342,353,365,366,368,370` | Not a liveness read: `killedExplicitly`/`killedVia` are the runner's own intent flags, and `OUTCOME_WORD.killed` is footer vocabulary. No verdict needed. |
+> | `extensions/lib/git-run.ts:59` — `(err as {killed?}).killed` | Different mechanism: `execFile`'s own timeout flag on an `ExecException`, not a `ChildProcess` liveness read. Out of this order's scope. |
+> | `extensions/subagent/_index.ts.off:459` — `if (!proc.killed) proc.kill("SIGKILL")` | The same defect in a dead file: `.off`, never compiled or imported. Left untouched; deleting the file is separate work. |
+
 ## 7. Full suite against 1.5.1
 
 ```

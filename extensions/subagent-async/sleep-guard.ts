@@ -44,6 +44,16 @@ let heartbeatTimer: NodeJS.Timeout | null = null;
 let lastHeartbeatMs = 0;
 let caffeinateProc: ChildProcess | null = null;
 
+/** Whether `proc` is still running — the one liveness rule for a child, used by
+ *  both the kill dispatch's `alreadyDead` and its SIGKILL fallback. `killed` is
+ *  not a liveness signal: Node sets it on any successful `kill()`, so it is true
+ *  from the moment the SIGTERM leaves — which is exactly the state the SIGKILL
+ *  fallback asks about. `exitCode` and `signalCode` stay null until the child
+ *  actually ends (pi 1.5.1's `exec.js` tests the same pair;
+ *  `docs/investigations/pi-1.5.1-audit.md` §6). */
+export function stillRunning(proc: ChildProcess | null): proc is ChildProcess {
+	return proc !== null && proc.exitCode === null && proc.signalCode === null;
+}
 
 // ── Sleep guard: caffeinate + sleep-aware silence accounting ──────────────
 //
@@ -225,7 +235,10 @@ export function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "pro
 	// `spawnSubagent`, since tool bodies do not share that closure.
 	appendRunningLogLine(rs, `── Killed via ${viaLabel} (SIGTERM sent, SIGKILL in ${HARD_KILL_DELAY_MS / 1000}s if needed) ──`);
 
-	const alreadyDead = rs.proc.killed || rs.proc.exitCode !== null;
+	// Liveness, not the `killed` flag: that flag is already true after the raw
+	// SIGTERM `subagent_stop`'s force-kill sends, so a frozen child would be
+	// reported dead here and this dispatch would arm no escalation of its own.
+	const alreadyDead = !stillRunning(rs.proc);
 	if (!alreadyDead) {
 		try {
 			rs.proc.kill("SIGTERM");
@@ -235,12 +248,14 @@ export function dispatchKillSignals(rs: RunningSubagent, via: "kill-tool" | "pro
 			// deliver the result. Swallow.
 		}
 		setTimeout(() => {
-			// Re-check `rs.proc` here rather than trusting the dispatch-time
-			// check: the handle could be gone by the time the fallback fires.
+			// Re-check the handle here rather than trusting the dispatch-time
+			// check: the handle could be gone by the time the fallback fires,
+			// and the child may have died of the SIGTERM in the meantime.
 			// Guarding the callback itself keeps every `rs.proc` dereference
 			// behind a non-null check (WO-2026-043 verification requirement).
-			if (rs.proc && !rs.proc.killed && rs.proc.exitCode === null) {
-				try { rs.proc.kill("SIGKILL"); } catch { /* */ }
+			const proc = rs.proc;
+			if (stillRunning(proc)) {
+				try { proc.kill("SIGKILL"); } catch { /* */ }
 			}
 		}, HARD_KILL_DELAY_MS);
 	}

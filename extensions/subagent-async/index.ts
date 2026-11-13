@@ -149,6 +149,7 @@ import {
 	deliverResult,
 	dispatchKillSignals,
 	reconcileSleepGuards,
+	stillRunning,
 	terminalOutcome,
 } from "./sleep-guard.ts";
 import {
@@ -270,7 +271,7 @@ export const TURN_CAP_WIND_DOWN_STEER =
 export const STALL_STEER =
 	"[No-progress check] No new commit for a long stretch of turns. Stop and check whether your current " +
 	"approach is working: if it is, carry on; if it is not, change approach or report what is blocking you.";
-const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+export const STOP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 export const HARD_KILL_DELAY_MS = 5000;
 // Stalled-turn watchdog: if a subagent hasn't completed a turn in
 // SUBAGENT_STALE_TURN_MS, wake the caller (do NOT kill the subagent)
@@ -2133,9 +2134,16 @@ export default function (pi: ExtensionAPI) {
 				// resolves via finish() so the stop tool returns.
 				const fallbackTimeout = setTimeout(() => {
 					if (rs.proc) {
-						rs.proc.kill("SIGTERM");
+						// A `kill()` can throw when the OS reaped the child before
+						// Node set `exitCode`/`signalCode`. Swallow both: a throw here
+						// escapes an already-returned promise executor as an uncaught
+						// exception and skips `finish`, leaving the stop tool pending
+						// forever (same swallow as `dispatchKillSignals`).
+						try { rs.proc.kill("SIGTERM"); } catch { /* */ }
 						setTimeout(() => {
-							if (rs.proc && !rs.proc.killed) rs.proc.kill("SIGKILL");
+							if (stillRunning(rs.proc)) {
+								try { rs.proc.kill("SIGKILL"); } catch { /* */ }
+							}
 							finish("[Force-stopped after timeout]");
 						}, HARD_KILL_DELAY_MS);
 					} else {
