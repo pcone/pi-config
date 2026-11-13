@@ -1,7 +1,9 @@
 # The parked `wait` that never wakes — investigation
 
-WO-2026-098. Rounds 1–2 recorded a falsified trigger. This round names the
-mechanism by probe and carries the fix.
+WO-2026-098. Rounds 1–2 recorded a falsified trigger. Round 3 named the
+mechanism by probe and carried the fix; round 4 pinned the reproduction to the
+spelling this box actually installs the extension under. The fix is decision
+`decisions/subagents/052-duplicate-extension-evaluation.md`.
 
 ## The mechanism
 
@@ -12,8 +14,8 @@ module-level binding.
 jiti resolves a relative import through the **realpath** of the importing file.
 pi's loader hands jiti the path as configured, **without** realpath
 (`loader.js:527-531`: `resolvePath(extensionPath, cwd)` then
-`jiti.import(resolvedPath)`). When the extension sits under a symlinked
-ancestor, the root evaluation and its own cycle re-entry disagree about the
+`jiti.import(resolvedPath)`). When the extension's path runs through a symlinked
+component, the root evaluation and its own cycle re-entry disagree about the
 module id:
 
 ```
@@ -76,6 +78,67 @@ cause was misattributed.
 deliverer".** Also wrong, for the same reason: the depth-1 child is merely the
 first process in the chain whose `agentDir` sits under the symlinked temp root.
 
+## The field's spelling
+
+The field does not need a temp dir to supply the second spelling. The extension
+is installed behind a symlinked `extensions` entry:
+
+```
+$ ls -ld ~/.pi/agent/extensions
+lrwxr-xr-x  1 scott  staff  43 13 Apr 2026 /Users/scott/.pi/agent/extensions -> /Users/scott/Developer/pi-config/extensions
+
+$ realpath ~/.pi/agent/extensions/subagent-async/index.ts
+/Users/scott/Developer/pi-config/extensions/subagent-async/index.ts
+```
+
+pi discovers the entry as `~/.pi/agent/extensions/subagent-async/index.ts`
+(`discoverExtensionsInDir` joins the agent dir with `extensions` and never
+realpaths), so the factory is registered under that spelling, and the cycle
+re-entry resolves to the checkout's real path. Two records, every session that
+loads the extension from the install — the field's shape, not a probe artefact.
+
+The `agentDir` being a real path, as it is in the field (`~/.pi/agent`), is
+irrelevant: the symlink is one level down, on `extensions` itself.
+
+### The reproduction, and the control that pins it
+
+`tests/subagent-wait-wake-e2e.test.ts` stages the checkout's `subagent-async` and
+`lib` beside the scripted provider and runs the nested chain twice, differing
+only in how the agent dir reaches that staged set:
+
+| arm | spelling | `lstat` of `<agentDir>/extensions` | pre-fix | post-fix |
+|---|---|---|---|---|
+| `link` | `<root>/link-agent/extensions` → `<root>/stage/extensions` | symlink | **red**, 30 s deadline, `deliverResult: no live session … dropping result` | green, 5.9 s |
+| `plain` | `<root>/plain-agent/extensions` | real directory | green, 5.2 s | green |
+
+The `plain` arm is the control: same processes, same extension files, same
+chain. It wakes before the fix, so the link arm's park is the symlinked spelling
+and not a broken chain. Row 4 asserts each tree really has the shape its arm
+claims, so the A/B cannot silently degrade into two plain arms.
+
+Why the staged tree and not the live checkout: the scripted provider has to sit
+in the same `extensions` directory, and `cpSync`ing the checkout's files is the
+same set. The symlinked `extensions` entry — the thing that produces the second
+spelling — is identical either way.
+
+Module-record census of one field-shaped pid,
+`~/Developer/notes/wo-098/r4/probe-field-census.ts`, output kept in
+`~/Developer/notes/wo-098/r4/eval-census.log`:
+
+```
+=== link
+  EVAL index.ts    url=<root>/stage/extensions/subagent-async/index.ts   ← cycle re-entry
+  EVAL worktree.ts url=<root>/stage/extensions/subagent-async/worktree.ts
+  EVAL index.ts    url=<root>/link-agent/extensions/subagent-async/index.ts  ← the factory
+=== plain
+  EVAL worktree.ts url=<root>/plain-agent/extensions/subagent-async/worktree.ts
+  EVAL index.ts    url=<root>/plain-agent/extensions/subagent-async/index.ts
+```
+
+`index.ts` twice in the link arm, once in the plain arm; `worktree.ts` once in
+both. The staged copy carried an `EVAL` line appended from `index.ts` and
+`worktree.ts` at module load, which is how the records are counted.
+
 ## Why the suite's preload did not cover this
 
 `tests/preload-worktree-root.ts:20` realpaths the temp root it hands to
@@ -95,10 +158,13 @@ path itself to be spelled two ways.
   subagent session dirs are never followed by a completion". See the transcript
   census below; its classification, not its conclusion, was wrong (reviewers
   found subagent transcripts filed under `wt-subagents`).
-- The six stuck subagent parks share one shape (implementer dispatched both
-  reviewers, then parked) and the field's `agentDir` is `~/.pi/agent`, a real
-  path, so the field parks are **not** this mechanism. They remain unexplained by
-  this record, and the fix below does not claim them.
+- The six stuck subagent parks of 2026-11-10 share one shape (implementer
+  dispatched both reviewers, then parked) and the install spelling of this box
+  gives every session loading it the duplicate, so the fix covers them. Round 3
+  wrote that the field's real `agentDir` put those parks outside this mechanism;
+  that was wrong — it looked one level too high, at `agentDir` instead of at
+  `extensions`. Which of the six is explained by the drop is a census question
+  this record does not answer; the mechanism is present in the field install.
 
 ## Probes
 
@@ -107,4 +173,5 @@ path itself to be spelled two ways.
 (real `pi` processes, scripted model, no network), `probe-lifecycle.ts`,
 `bisect.sh`. Round 3: `r3/probe-double-eval.ts` (spelling A/B on a bare
 extension), `r3/probe5-nested-wait.ts` (the nested shape against an instrumented
-copy in `r3/instr/`).
+copy in `r3/instr/`). Round 4: `r4/probe-field-census.ts` (the field's symlinked
+`extensions` entry, with `r4/eval-census.log`).
