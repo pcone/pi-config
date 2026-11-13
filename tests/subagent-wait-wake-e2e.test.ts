@@ -63,6 +63,9 @@ interface ChainResult {
 	subjectWoke: boolean;
 	/** Model calls the subject made: dispatch, `wait`, and one per wake-up. */
 	subjectCalls: number;
+	/** Every user-role message the subject ended a turn on, in order — the
+	 *  wake-up steer arrives here. */
+	delivered: string[];
 	elapsedMs: number;
 	stderr: string;
 }
@@ -145,7 +148,19 @@ function buildTree(): { root: string; agentDir: string; cwd: string; fauxLog: st
  * rather than sleeping a fixed interval, so a slow machine costs a longer poll
  * and not a flipped verdict.
  */
-async function runChain(spelling: "link" | "real", deadlineMs = 30_000): Promise<ChainResult> {
+interface ChainOptions {
+	spelling: "link" | "real";
+	/** The subject's `wait` argument; omitted means the no-timer form. */
+	waitSeconds?: number;
+	/** How long to keep watching after the subject woke, to catch a timer that
+	 *  was never cancelled firing late. */
+	tailMs?: number;
+	deadlineMs?: number;
+}
+
+async function runChain(opts: ChainOptions): Promise<ChainResult> {
+	const { spelling, waitSeconds, tailMs = 0 } = opts;
+	const deadlineMs = opts.deadlineMs ?? 30_000;
 	const { root, cwd, fauxLog } = buildTree();
 	const metaBefore = metaFiles();
 	const started = Date.now();
@@ -161,7 +176,7 @@ async function runChain(spelling: "link" | "real", deadlineMs = 30_000): Promise
 				PI_FAUX_LOG: fauxLog,
 				PI_FAUX_SCRIPT_DEPTH_0: JSON.stringify([
 					{ call: "subagent", args: { agent: "probe-mid", task: "delegate once", isolate: false, review_policy: "skip" } },
-					{ call: "wait", args: {} },
+					{ call: "wait", args: waitSeconds === undefined ? {} : { seconds: waitSeconds } },
 					{ text: "SUBJECT-WOKE" },
 				]),
 				PI_FAUX_SCRIPT_DEPTH_1: JSON.stringify([
@@ -184,7 +199,25 @@ async function runChain(spelling: "link" | "real", deadlineMs = 30_000): Promise
 		stderr.push(chunk.toString());
 		if (stderr.length > 200) stderr.shift();
 	});
-	child.stdout!.resume();
+
+	const delivered: string[] = [];
+	let stream = "";
+	child.stdout!.on("data", (chunk: Buffer) => {
+		stream += chunk.toString();
+		let newline: number;
+		while ((newline = stream.indexOf("\n")) >= 0) {
+			const line = stream.slice(0, newline);
+			stream = stream.slice(newline + 1);
+			if (!line.trim()) continue;
+			let event: any;
+			try { event = JSON.parse(line); } catch { continue; }
+			if (event.type !== "message_end" || event.message?.role !== "user") continue;
+			const text = Array.isArray(event.message.content)
+				? event.message.content.filter((part: any) => part?.type === "text").map((part: any) => part.text).join("\n")
+				: String(event.message.content ?? "");
+			delivered.push(text);
+		}
+	});
 
 	child.stdin!.write(JSON.stringify({ id: "p1", type: "prompt", message: "dispatch then wait" }) + "\n");
 
@@ -207,6 +240,10 @@ async function runChain(spelling: "link" | "real", deadlineMs = 30_000): Promise
 	const { midWoke, subjectWoke } = woke();
 	const subjectCalls = readFauxLog(fauxLog).filter((c) => c.depth === "0").length;
 
+	// Keep watching past the wake-up: a `wait(seconds)` timer that the close
+	// handler failed to cancel fires its own steer on top of the completion.
+	if (tailMs > 0) await wait(tailMs);
+
 	// Kill the tree, then verify the kill landed: `child.killed` only says a
 	// signal was sent, so a `!child.killed` guard never escalates.
 	try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
@@ -221,30 +258,42 @@ async function runChain(spelling: "link" | "real", deadlineMs = 30_000): Promise
 	for (const meta of metaFiles()) if (!metaBefore.has(meta)) removeSpawnArtifacts(sidOf(meta));
 	rmSync(root, { recursive: true, force: true });
 
-	return { midWoke, subjectWoke, subjectCalls, elapsedMs, stderr: stderr.join("").slice(-800) };
+	return { midWoke, subjectWoke, subjectCalls, delivered, elapsedMs, stderr: stderr.join("").slice(-800) };
 }
 
 describe("a parked wait wakes when its child completes", () => {
 	it("1: nested parks wake at both levels, with the extension loaded from a symlinked spelling", async () => {
-		const result = await runChain("link");
+		const result = await runChain({ spelling: "link" });
 		const why = `after ${result.elapsedMs}ms\n${result.stderr}`;
 		expect(result.midWoke, `the mid's wait never woke — its child's completion was dropped. ${why}`).toBe(true);
 		expect(result.subjectWoke, `the subject's wait never woke. ${why}`).toBe(true);
 	}, 90_000);
 
 	it("2: control — the same shape from the extension tree's own spelling wakes at both levels", async () => {
-		const result = await runChain("real");
+		const result = await runChain({ spelling: "real" });
 		const why = `after ${result.elapsedMs}ms\n${result.stderr}`;
 		expect(result.midWoke, `the mid's wait never woke. ${why}`).toBe(true);
 		expect(result.subjectWoke, `the subject's wait never woke. ${why}`).toBe(true);
 	}, 90_000);
 
-	it("3: one completion is one wake-up — the subject runs no turn the delivery did not create", async () => {
-		// Three model calls: dispatch, `wait`, and the turn the wake-up creates.
-		// A duplicate delivery (close handler + turn cap + worktree path all call
-		// `sendUserMessage`) runs a fourth, on a script already exhausted — which
-		// is what the fixture's `repeat` flag names.
-		const result = await runChain("link");
-		expect(result.subjectCalls, `the subject ran ${result.subjectCalls} turns for one completion`).toBe(3);
-	}, 90_000);
+	it("3: one completion is one delivery, and no timer steer follows it", async () => {
+		// `wait(5)`: the child completes long before the timer would fire, so the
+		// wake-up can only be the close handler's. A duplicate delivery shows as
+		// a second completion message; watching six more seconds after the wake-up
+		// catches a timer steer on top of the completion. The cancel itself is
+		// pinned in `tests/subagent-session-lifetime.test.ts` rows 8-10 — with the
+		// only child gone, the timer callback's own `running.size === 0` guard
+		// skips its steer either way, so no end-to-end row can see the cancel.
+		const result = await runChain({ spelling: "link", waitSeconds: 5, tailMs: 6_000 });
+		const why = `delivered:\n${result.delivered.join("\n---\n")}\n${result.stderr}`;
+
+		const completions = result.delivered.filter((m) => m.includes("[Subagent probe-mid finished]"));
+		expect(completions.length, `one completion, one delivery. ${why}`).toBe(1);
+		const timerSteers = result.delivered.filter((m) => m.includes("[wait timer]"));
+		expect(timerSteers, `the completion did not cancel the wait timer. ${why}`).toEqual([]);
+		// Three model calls: dispatch, `wait`, and the single turn the delivery
+		// creates. The fixture's log marks a fourth as a repeat of an exhausted
+		// script, which is what a second delivery would be.
+		expect(result.subjectCalls, `the subject ran ${result.subjectCalls} turns for one completion. ${why}`).toBe(3);
+	}, 120_000);
 });

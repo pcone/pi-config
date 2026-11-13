@@ -32,7 +32,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, {
@@ -42,6 +42,7 @@ import extension, {
 	_testSetAttachState,
 	_testSetLiveSessionCtx,
 	bumpStaleWatchdog,
+	clearActiveWait,
 	detach,
 	deliverResult,
 	notifyChildDetached,
@@ -372,5 +373,59 @@ describe("subagent live-session lifetime (decision 026)", () => {
 		const sentBefore = stub.sentMessages.length;
 		expect(() => deadCallback()).not.toThrow();
 		expect(stub.sentMessages.length).toBe(sentBefore);
+	});
+
+	it("8: clearActiveWait cancels the armed timer — real timers, the call the child's close handler makes", async () => {
+		// The timer path above fires the scheduled callback by hand. This row
+		// leaves the real timer to run: a completion arrives and the close
+		// handler cancels the timer, so the "still running" steer it would have
+		// sent never arrives.
+		_testSetLiveSessionCtx(ctx);
+		const rs = stubRunningSubagent("cancel-agent");
+		_testRunning.clear();
+		_testRunning.set(rs.sessionId, rs);
+		stub.sentMessages.length = 0;
+		const waitTool = stub.tools.get("wait");
+
+		await waitTool.execute("call-1", { seconds: 0.05 });
+		clearActiveWait();
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect(stub.sentMessages).toEqual([]);
+
+		// Not vacuous: the same arm without the cancel does fire.
+		await waitTool.execute("call-2", { seconds: 0.05 });
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect(stub.sentMessages.length).toBe(1);
+		expect(stub.sentMessages[0]).toContain("[wait timer]");
+	});
+
+	it("9: a second arm replaces the first, so one wait leaves one timer", async () => {
+		_testSetLiveSessionCtx(ctx);
+		const rs = stubRunningSubagent("rearm-agent");
+		_testRunning.clear();
+		_testRunning.set(rs.sessionId, rs);
+		stub.sentMessages.length = 0;
+		const waitTool = stub.tools.get("wait");
+
+		await waitTool.execute("call-1", { seconds: 0.05 });
+		await waitTool.execute("call-2", { seconds: 0.05 });
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		expect(stub.sentMessages.length).toBe(1);
+	});
+
+	it("10: the child's close handler cancels the wait timer before delivering the result", () => {
+		// The wiring, not the mechanism: the close handler is registered inside
+		// `spawnSubagent` against a real child process, so no unit row can drive
+		// it. The cancel's effect is unobservable end to end once the only child
+		// has completed — the timer callback's own `running.size === 0` guard
+		// skips the steer anyway — so the call site is pinned directly.
+		const source = readFileSync(join(import.meta.dir, "..", "extensions", "subagent-async", "spawn.ts"), "utf8");
+		const closeHandler = source.indexOf('proc.on("close"');
+		expect(closeHandler).toBeGreaterThan(-1);
+		const cancel = source.indexOf("clearActiveWait();", closeHandler);
+		const deliver = source.indexOf("deliverCloseResult(", closeHandler);
+		expect(cancel).toBeGreaterThan(closeHandler);
+		expect(deliver).toBeGreaterThan(cancel);
 	});
 });
