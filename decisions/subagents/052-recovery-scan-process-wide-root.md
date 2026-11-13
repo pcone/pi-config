@@ -20,8 +20,10 @@ Two roots the `session_start` recovery pass reads resolve from one rule, in
 
 A set-but-unusable value (empty, relative, NUL-bearing) throws. The failure is
 not absorbed: both roots are resolved before the pass's swallow-all `try`s, and
-`rethrowIfUnusableEnvPath` lets it out of the `session_start` handler's two
-catches. The hooks are deleted, with their re-exports.
+`rethrowIfUnusableEnvPath` lets it out of the `session_start` handler's catch
+around the scan (one call site; the reaper block's own chain is not a `try`, so
+it refuses by reading its roots before the chain exists — round 2).
+The hooks are deleted, with their re-exports.
 
 `tests/preload-subagent-roots.ts` (renamed from `preload-worktree-root.ts`) sets
 all three override variables before any test file loads and removes the temp dirs
@@ -125,14 +127,57 @@ the worktree base, and the difference is which reader the chain reaches:
   returns: a bad override would leave a removed tree's share of the shared cargo
   dir unpruned and say nothing.
 
+  *Corrected in round 4: "one" was wrong. There were two readers. The second is
+  the bound's — `createReapBuildOutput` was built with `cargoHome` only, so
+  `enforceBound` → `enforceCargoTargetBound` → `planCargoBound` derived the clone
+  name from the ambient base too, and `buildOutput.enforceBound()` is awaited
+  outside every `try` in the pass: a bad override rejected the pass after its
+  trees had already been judged. Round 4 resolves the base once and hands it to
+  both readers.*
+
 So the handler reads `subagentWorktreeBase()` beside `subagentCargoHome()`, one
 synchronous line before `wtRoots()`. Same shape as the cargo read, different
 reason: the cargo read refuses an override the pass would otherwise swallow three
 frames down, this one refuses an override nothing else would read before the
-chain. The pass itself is unchanged — it still derives the base ambiently at the
-point of use, and a row that drives it directly keeps its fixture homes through
-`deps.baseHome`.
+chain.
+
+*Corrected in round 4: "the pass itself is unchanged" did not survive, and
+`deps.baseHome` never existed — the pass has `deps.home` for the cargo home and no
+base override at all. See below.*
 
 Row: `tests/subagent-recovery-ownership.test.ts` («the real session_start handler
 refuses a bad worktree base too»), red when the pre-flight line is removed — the
 handler resolves instead of rejecting, which is the silent prune.
+
+## Round 4 (2026-11-13) — one place names the roots, and the base is threaded
+
+Round 3 fixed one of the two ambient base reads and claimed there was only one.
+Round 4 is the correction plus the shape the order exists to enforce.
+
+- **The roots are named once.** `recoveryRoots()` in
+  `extensions/subagent-async/recovery.ts` returns `{ metaDir, cargoHome,
+  worktreeBase }`. The `session_start` handler calls it as its pre-flight and
+  `reapFinishedWorktrees` calls it for itself; the pass then threads the values
+  down instead of re-resolving them. A fourth root read by the chain is a field of
+  `RecoveryRoots`, so the handler's refusal reaches it without anyone remembering
+  a line — the enumeration the round-3 pre-flight had become. The scan's own metas
+  read stays where it was: it sits in the handler's frame inside the catch that
+  rethrows the refusal, not in the unawaited chain.
+- **The base reaches both of its readers as a value.** `BuildOutputHomes.base` and
+  `RemovalDeps.base` carry the resolved base, not a home to derive it from:
+  `PI_SUBAGENT_WT_ROOT` names the base directly and need not be
+  `<home>/Developer/wt/subagents`, so a home could not express it. The reap passes
+  the base it resolved to the removal's clone-name derivation and to the bound's.
+  The 052-rejected alternative stands untouched: the pass still resolves its own
+  roots, and `deps.dir` / `deps.home` still win as values. They no longer suppress
+  resolution — a row with a fixture dir is still a process with overrides, and an
+  unusable one must refuse.
+- **An explicit argument and the refusal are separate questions.** The design doc
+  now says so, and so does the preload's comment.
+
+Rows: `tests/subagent-worktree-lock.test.ts` («a bad WT root refuses the reap
+before it judges a tree» — red on round 3's code, which removed the clean tree and
+only then rejected in the bound). `tests/subagent-recovery-ownership.test.ts`: the
+three handler-refusal rows pin the checkout reaper's home, so each one's named
+mutation removes a pre-flight without walking the box's own `~/Developer/wt`
+(round 3 pinned only the base row).

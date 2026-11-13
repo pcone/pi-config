@@ -1245,6 +1245,40 @@ describe("the worktree base and the cargo home are separate roots (WO-2026-099)"
 		};
 	}
 
+	it("a bad WT root refuses the reap before it judges a tree", async () => {
+		// The pass reads its three roots up front and threads the base down
+		// (WO-2026-099 round 4). Read at its two points of use instead — the
+		// removal's clone-name derivation, inside its best-effort catch, and the
+		// bound's, outside every `try` — this row goes red the other way: the clean,
+		// finished tree is removed first (with the prune failure swallowed), and
+		// only then does the over-bound measurement reach the base and reject the
+		// pass. A refusal after the work is not a refusal.
+		const repo = makeRepo();
+		const repoName = repo.split("/").pop()!;
+		const cargoHome = tempDir("pi-bad-base-home-");
+		// A clone dir that exists and measures over the bound, so the bound reaches
+		// clone-name attribution instead of returning on an absent cache root.
+		mkdirSync(join(cargoHome, ".cache", "cargo-target", repoName), { recursive: true });
+		const { dir, worktreePath } = makeEntryFor(repo, "bad-base-1", {
+			logLastLine: "── Completed (1 turns, exit 0) ──\n",
+		});
+		const restore = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, "relative/wt");
+		try {
+			await expect(
+				reapFinishedWorktrees({} as any, scanCtx(), {
+					dir,
+					selfPid: process.pid,
+					home: cargoHome,
+					sizeOf: () => 25 * 1024 ** 3,
+				}),
+			).rejects.toThrow(`${PI_SUBAGENT_WT_ROOT_ENV} must be an absolute path, got "relative/wt"`);
+			expect(existsSync(worktreePath)).toBe(true);
+			expect(worktreeEntry(repo, worktreePath)).not.toBeNull();
+		} finally {
+			restore();
+		}
+	});
+
 	it("a reaped tree under the WT root loses its share from a cargo home set elsewhere", async () => {
 		const repo = makeRepo();
 		const repoName = repo.split("/").pop()!;

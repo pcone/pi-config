@@ -1124,7 +1124,7 @@ function measureTree(dir: string, cap: number): { bytes: number; truncated: bool
  *  Only dirs that exist come back. */
 function sharedDirsFor(entry: CheckoutEntry, home: string): string[] {
 	const dirs: string[] = [];
-	const namespaced = repoNameFromWorktreePath(entry.path, home);
+	const namespaced = repoNameFromWorktreePath(entry.path, subagentWorktreeBase(home));
 	if (namespaced) dirs.push(cargoTargetDirFor(namespaced, home));
 	const root = cargoTargetRoot(home);
 	for (const name of [path.basename(entry.path), entry.parentCwd ? path.basename(entry.parentCwd) : ""]) {
@@ -1188,7 +1188,7 @@ async function removeCheckout(
 	const removal = await ctx.removeWorktree(
 		// This pass's world has one home: `wtRoots(home)` and `cargoTargetRoot(home)`
 		// both derive from it, so the tree's base and its cargo share agree.
-		{ run: ctx.run, baseHome: ctx.home, cargoHome: ctx.home },
+		{ run: ctx.run, base: subagentWorktreeBase(ctx.home), cargoHome: ctx.home },
 		{
 			worktreePath: entry.path,
 			isolationBranch: status.branch,

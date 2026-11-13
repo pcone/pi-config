@@ -22,8 +22,10 @@
  * is `/var/folders/…`, whose realpath is `/private/var/folders/…`.
  *
  * Limit: an explicit argument wins over every override, so a consumer that
- * derives from a path it was handed — `subagentWorktreeBase(home)`,
- * `reapFinishedWorktrees({ dir, home })` — is not redirected. See
+ * derives from a path it was handed — `subagentWorktreeBase(home)` — is not
+ * redirected, and `reapFinishedWorktrees({ dir, home })` uses the fixture it is
+ * given. The pass still resolves the overrides (and refuses an unusable one):
+ * the argument names a value, it does not switch the rule off. See
  * docs/design/subagent-worktree-root.md.
  */
 import { afterAll } from "bun:test";

@@ -31,13 +31,14 @@ import {
 	removeWorktreeTarget,
 	type CommandRunner,
 } from "../extensions/lib/build-output-reaper.ts";
+import { subagentWorktreeBase } from "../extensions/lib/subagent-worktree.ts";
 
 const scratch: string[] = [];
 
-/** Both homes at one fixture home. This file's trees and their shared cargo
+/** Both roots at one fixture home. This file's trees and their shared cargo
  *  dirs live under the same temp dir, so the two agree — the rows that keep them
  *  apart are the reap's (`tests/subagent-worktree-lock.test.ts`). */
-const homesAt = (home: string) => ({ cargoHome: home, baseHome: home });
+const homesAt = (home: string) => ({ cargoHome: home, base: subagentWorktreeBase(home) });
 
 function tempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));

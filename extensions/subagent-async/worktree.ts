@@ -446,10 +446,13 @@ export interface RemovalDeps {
 	 *  Omitted, the box's own home answers — never the worktree base's, which is
 	 *  a different root the suite sets independently. */
 	cargoHome?: string;
-	/** The home whose `Developer/wt/subagents` the tree's clone name is derived
-	 *  from. Omitted, the ambient base answers (`PI_SUBAGENT_WT_ROOT`), which is
-	 *  where every tree a caller of this function removes was created. */
-	baseHome?: string;
+	/** The subagent worktree base the tree's clone name is derived from (a base
+	 *  path, not the home it is derived from). The `session_start` reap passes the
+	 *  base it resolved before its pass, so this call cannot be the one that first
+	 *  reads an unusable override — inside this function's best-effort catch.
+	 *  Omitted (post-delivery cleanup), the ambient base answers: every tree this
+	 *  function removes was created under it. */
+	base?: string;
 }
 
 /**
@@ -514,7 +517,7 @@ export async function removeWorktreeTree(
 		const dispose =
 			deps.disposeBuildOutput ??
 			((p: string, parent: string) =>
-				disposeWorktreeBuildOutput(p, parent, { run: deps.run, cargoHome: deps.cargoHome, baseHome: deps.baseHome }));
+				disposeWorktreeBuildOutput(p, parent, { run: deps.run, cargoHome: deps.cargoHome, base: deps.base }));
 		buildOutput = await dispose(worktreePath, parentCwd);
 	} catch (e) {
 		const detail = `build-output prune failed: ${e instanceof Error ? e.message : String(e)}`;

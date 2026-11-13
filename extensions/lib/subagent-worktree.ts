@@ -59,9 +59,9 @@ export class UnusableWorktreeRootError extends UnusableEnvPathError {
  * a derivation test keeps its meaning while the override is on. That branch is
  * also the override's limit — a caller that derives a path it was handed from
  * the home that path belongs to is not redirected. Production callers pass none:
- * `createWorktree` builds every tree under the ambient base, and the
- * build-output passes that name a tree's clone supply `baseHome` only from a
- * fixture (see `BuildOutputHomes` in build-output-reaper.ts).
+ * `createWorktree` builds every tree under the ambient base, and every caller
+ * that names a tree's clone supplies the base it resolved (see
+ * `BuildOutputHomes` in build-output-reaper.ts).
  * See docs/design/subagent-worktree-root.md.
  */
 export function subagentWorktreeBase(home?: string): string {
@@ -138,14 +138,12 @@ const WORKTREE_SUFFIX_LEN = 13;
  * pre-namespace path (`/var/folders/.../pi-subagent-wt-<suffix>`) is not a
  * subagent worktree this harness owns and answers null.
  *
- * Two callers pass the home they are deriving for (the bound walk's `baseHome`),
- * so the explicit `home` reaches {@link subagentWorktreeBase} and the override
- * does not apply. The removal path passes none: the tree being removed was
- * created under the ambient base, so that is the base its name is in. See
- * `BuildOutputHomes` in build-output-reaper.ts.
+ * `base` is the resolved subagent worktree base, not a home: an override may
+ * name a directory that is not `<home>/Developer/wt/subagents` at all, so the
+ * base is the only value that survives being passed down. Omitted, the ambient
+ * base answers. See `BuildOutputHomes` in build-output-reaper.ts.
  */
-export function repoNameFromWorktreePath(worktreePath: string, home?: string): string | null {
-	const base = subagentWorktreeBase(home);
+export function repoNameFromWorktreePath(worktreePath: string, base: string = subagentWorktreeBase()): string | null {
 	if (!worktreePath.startsWith(base + "/")) return null;
 	const name = worktreePath.slice(base.length + 1);
 	if (name.length <= WORKTREE_SUFFIX_LEN || name.includes("/")) return null;

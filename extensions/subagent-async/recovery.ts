@@ -35,7 +35,7 @@ import {
 	subagentMetaDir,
 	type OwnerProbe,
 } from "../lib/subagent-state.ts";
-import { subagentCargoHome } from "../lib/subagent-worktree.ts";
+import { subagentCargoHome, subagentWorktreeBase } from "../lib/subagent-worktree.ts";
 import { closeWorkRecord, commitRecordEntries, openRecordContext, sessionFinalText, type PersistedWorkRecord } from "./records.ts";
 import { removeWorktreeTree } from "./worktree.ts";
 import {
@@ -329,6 +329,43 @@ export function resolveTrackerKey(requestedId: string): string {
 	return requestedId;
 }
 
+// ── The pass's ambient roots, named once ─────────────────────────────────────
+
+/**
+ * Every root the `session_start` recovery pass reads from the environment: the
+ * metas dir the scan and the reap list, the cargo home the bound walks, and the
+ * worktree base every tree the chain touches was created under.
+ *
+ * The set is a value, not a list each call site remembers. The handler resolves
+ * it before its chain exists, and `reapFinishedWorktrees` resolves it again for
+ * itself and threads the values down. A root added here therefore reaches the
+ * handler's refusal by being a field, and reaches the pass's readers by the
+ * caller that resolved it — neither needs a remembered line. A root that missed
+ * the handler's frame would be read from inside a chain nobody awaits, which is
+ * a rejection, not a refused start (decision 052).
+ */
+export interface RecoveryRoots {
+	/** `$PI_SUBAGENT_META_DIR`, else `/tmp`. */
+	metaDir: string;
+	/** `$PI_SUBAGENT_CARGO_HOME`, else `homedir()`. */
+	cargoHome: string;
+	/** `$PI_SUBAGENT_WT_ROOT`, else `~/Developer/wt/subagents`. */
+	worktreeBase: string;
+}
+
+/**
+ * All three, resolved in the caller's frame. A set-but-unusable value throws
+ * here, once, through that root's own resolver: every caller wants the refusal
+ * rather than the root it would have fallen back to.
+ */
+export function recoveryRoots(): RecoveryRoots {
+	return {
+		metaDir: subagentMetaDir(),
+		cargoHome: subagentCargoHome(),
+		worktreeBase: subagentWorktreeBase(),
+	};
+}
+
 // ── Orphan recovery scan ─────────────────────────────────────────────────────
 
 export interface RecoveryScanDeps {
@@ -380,6 +417,9 @@ export function recoverOrphanedSubagents(
 	ctx: any,
 	deps: RecoveryScanDeps = {},
 ): void {
+	// One root, not {@link recoveryRoots}: this frame's catch rethrows the refusal,
+	// and the scan does not read the cargo home or the base — resolving them here
+	// would refuse a start over a root this function never touches.
 	const sockDir = deps.dir ?? subagentMetaDir();
 	try {
 		const connect = deps.connect ?? ((p: string) => net.createConnection(p));
@@ -612,28 +652,39 @@ export interface ReapResult {
  * in `lib/build-output-reaper.ts`; the bound is checked here, once per session
  * start, never on the spawn path.
  *
- * The two roots it reads from the environment — `PI_SUBAGENT_META_DIR` (the
- * metas dir) and `PI_SUBAGENT_CARGO_HOME` (the home the bound walks) — are
- * resolved before the first `try`, so neither a torn meta's catch nor the
- * unlistable-dir catch can absorb a bad override and leave the pass reading the
- * box's real `/tmp` and cargo root.
+ * The three roots it reads from the environment — the metas dir, the cargo home
+ * and the worktree base — are resolved together by {@link recoveryRoots} before
+ * the first `try`, so neither a torn meta's catch nor the unlistable-dir catch
+ * can absorb a bad override and leave the pass reading the box's real `/tmp`,
+ * cargo root or checkouts. The base is then *passed down* to both of its
+ * readers, the removal's clone-name derivation and the bound's, so no frame
+ * below this one reaches `PI_SUBAGENT_WT_ROOT` for itself: the second of those
+ * sits outside every `try` in this function and would otherwise reject the whole
+ * pass after its trees were already judged (round 4).
  *
  * The cargo home is not the worktree base. A tree's clone name is derived from
- * the *ambient* base (`PI_SUBAGENT_WT_ROOT`), the root `createWorktree` built it
- * under; its share of the clone's shared cargo dir lives under the cargo home.
- * Passing the cargo home as the base stops attribution whenever the two
- * overrides differ, and the prune is then silently skipped.
+ * the base (`PI_SUBAGENT_WT_ROOT`), the root `createWorktree` built it under; its
+ * share of the clone's shared cargo dir lives under the cargo home. Passing the
+ * cargo home as the base stops attribution whenever the two overrides differ,
+ * and the prune is then silently skipped.
+ *
+ * `deps.dir` and `deps.home` still win as values, but they no longer suppress
+ * the resolution: a row that names a fixture dir is still a process with a
+ * `PI_SUBAGENT_META_DIR` in its environment, and an unusable one must refuse
+ * here rather than be papered over by the argument.
  */
 export async function reapFinishedWorktrees(
 	pi: ExtensionAPI,
 	ctx: any,
 	deps: RecoveryScanDeps = {},
 ): Promise<ReapResult[]> {
-	const dir = deps.dir ?? subagentMetaDir();
-	const cargoHome = deps.home ?? subagentCargoHome();
+	const roots = recoveryRoots();
+	const dir = deps.dir ?? roots.metaDir;
+	const cargoHome = deps.home ?? roots.cargoHome;
 	const results: ReapResult[] = [];
 	const buildOutput = createReapBuildOutput({
 		cargoHome,
+		base: roots.worktreeBase,
 		run: deps.run,
 		sizeOf: deps.sizeOf,
 	});
@@ -706,7 +757,7 @@ export async function reapFinishedWorktrees(
 		}
 
 		const removal = await removeWorktreeTree(
-			{ run: deps.run, cargoHome },
+			{ run: deps.run, cargoHome, base: roots.worktreeBase },
 			{
 				worktreePath,
 				isolationBranch,

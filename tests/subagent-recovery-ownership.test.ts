@@ -118,6 +118,18 @@ afterEach(() => {
 	}
 });
 
+/** Pin the checkout reaper's home for a row that drives the real handler. Each
+ *  such row's red proof removes a pre-flight, and the chain that then runs reads
+ *  the box's own `~/Developer/wt` unless this is set — with the reaper's home
+ *  unpinned, a mutation proves the row red by walking a human's checkouts and
+ *  `cargo clean -p`-ing their real shared dirs (WO-2026-099 rounds 3-4). */
+function pinReaperHome(): () => void {
+	const home = mkdtempSync(path.join(tmpdir(), "pi-handler-home-"));
+	tempDirs.push(home);
+	_testSetReaperHome(home);
+	return () => _testSetReaperHome(undefined);
+}
+
 // ── Pure decision matrix ───────────────────────────────────────────────────
 
 describe("decideRecoveryAdoption (decision 027, narrowed by ownership)", () => {
@@ -589,9 +601,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, dir);
 		// The same handler runs WO-2026-092's checkout reaper. Pin its home, or
 		// the row walks (and may reap) the box's own `~/Developer/wt`.
-		const home = mkdtempSync(path.join(tmpdir(), "pi-wiring-home-"));
-		tempDirs.push(home);
-		_testSetReaperHome(home);
+		const unpin = pinReaperHome();
 		try {
 			await handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx());
 			// Reaching the scan at all (and adopting the self-owned socket) proves
@@ -603,7 +613,7 @@ describe("recoverOrphanedSubagents (decision 027)", () => {
 				for (const s of [...rs.sockClients]) { try { s.destroy(); } catch { /* best-effort */ } }
 			}
 			_testRunning.clear();
-			_testSetReaperHome(undefined);
+			unpin();
 			restore();
 			server.close();
 		}
@@ -838,12 +848,16 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 
 	it("the real session_start handler lets the refusal through", async () => {
 		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, "relative/meta");
+		// The red proof removes `rethrowIfUnusableEnvPath`; the chain then runs with
+		// the bad override, so its home is pinned like the other two rows'.
+		const unpin = pinReaperHome();
 		try {
 			const handlers = register();
 			await expect(
 				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
 			).rejects.toThrow(`${PI_SUBAGENT_META_DIR_ENV} must be an absolute path`);
 		} finally {
+			unpin();
 			restore();
 		}
 	});
@@ -859,18 +873,16 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 		// Only a parent session runs the reaper block, and this process is a child.
 		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
 		// And pin the checkout reaper's home: this row passes only because the
-		// pre-flight refuses, and a mutation that removes the pre-flight lets the
-		// chain through to a `wtRoots()` that would walk the box's own `~/Developer/wt`.
-		const home = mkdtempSync(path.join(tmpdir(), "pi-base-refusal-home-"));
-		tempDirs.push(home);
-		_testSetReaperHome(home);
+		// pre-flight refuses, and a mutation that removes it lets the chain through
+		// to a `wtRoots()` that would walk the box's own `~/Developer/wt`.
+		const unpin = pinReaperHome();
 		try {
 			const handlers = register();
 			await expect(
 				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
 			).rejects.toThrow(`${PI_SUBAGENT_WT_ROOT_ENV} must be an absolute path, got "relative/wt"`);
 		} finally {
-			_testSetReaperHome(undefined);
+			unpin();
 			restoreDepth();
 			restore();
 		}
@@ -883,12 +895,16 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, "relative/cargo");
 		// Only a parent session runs the reaper block, and this process is a child.
 		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
+		// As in the base row: the red proof removes the pre-flight, and the chain
+		// behind it reads `~/Developer/wt` before the pass resolves the cargo home.
+		const unpin = pinReaperHome();
 		try {
 			const handlers = register();
 			await expect(
 				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
 			).rejects.toThrow(`${PI_SUBAGENT_CARGO_HOME_ENV} must be an absolute path`);
 		} finally {
+			unpin();
 			restoreDepth();
 			restore();
 		}

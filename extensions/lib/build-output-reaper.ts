@@ -27,19 +27,24 @@ import { cargoTargetDirFor, cargoTargetRoot, repoNameFromWorktreePath } from "./
 export const CARGO_TARGET_BOUND_BYTES = 20 * 1024 ** 3;
 
 /**
- * The two homes a build-output pass derives from. Two values, not one: a tree's
- * clone name comes from the *worktree base's* home, while its share of the
+ * The two roots a build-output pass derives from. Two values, not one: a tree's
+ * clone name comes from the *subagent worktree base*, while its share of the
  * clone's shared cargo dir comes from the *cargo* home. A single field for both
- * silently drops the prune whenever the two disagree — the suite now sets them
- * to different temp dirs — because attribution falls outside the base it was
+ * silently drops the prune whenever the two disagree — the suite sets them to
+ * different temp dirs — because attribution falls outside the base it was
  * handed (WO-2026-099 round 2).
+ *
+ * `base` is a base, not a home the base is derived from: `PI_SUBAGENT_WT_ROOT`
+ * names the base directly and need not be `<home>/Developer/wt/subagents`, so
+ * only the resolved base can be threaded down from the caller that resolved it
+ * (WO-2026-099 round 4).
  */
 export interface BuildOutputHomes {
 	/** The home whose `.cache/cargo-target` holds one dir per clone. */
 	cargoHome?: string;
-	/** The home whose `Developer/wt/subagents` holds the trees. Omitted, the
-	 *  ambient base answers (`PI_SUBAGENT_WT_ROOT`, else `homedir()`). */
-	baseHome?: string;
+	/** The subagent worktree base the trees sit under. Omitted, the ambient base
+	 *  answers (`PI_SUBAGENT_WT_ROOT`, else `~/Developer/wt/subagents`). */
+	base?: string;
 }
 
 export function formatBytes(bytes: number): string {
@@ -487,7 +492,7 @@ export async function disposeWorktreeBuildOutput(
 ): Promise<BuildOutputReport> {
 	const problems: string[] = [];
 	const targetRemoved = removeWorktreeTarget(worktreePath, (detail) => problems.push(detail));
-	const repoName = repoNameFromWorktreePath(worktreePath, opts.baseHome);
+	const repoName = repoNameFromWorktreePath(worktreePath, opts.base);
 	if (!repoName) return { targetRemoved, problems }; // not a subagent worktree: no shared dir
 	const cargo = await pruneCargoArtifactsFor(cargoTargetDirFor(repoName, opts.cargoHome), worktreePath, {
 		parentCwd,
@@ -643,7 +648,7 @@ export function planCargoBound(
 		if (dir.bytes <= boundBytes) continue;
 		const paths: string[] = [];
 		for (const candidate of dead) {
-			const repoName = repoNameFromWorktreePath(candidate.worktreePath, homes.baseHome);
+			const repoName = repoNameFromWorktreePath(candidate.worktreePath, homes.base);
 			if (!repoName) continue;
 			if (cargoTargetDirFor(repoName, homes.cargoHome) !== dir.cargoTargetDir) continue;
 			if (!paths.includes(candidate.worktreePath)) paths.push(candidate.worktreePath);
@@ -738,7 +743,7 @@ export async function enforceCargoTargetBound(opts: CargoBoundOptions): Promise<
 	}
 	const parentCwdFor = (cargoTargetDir: string): string | undefined =>
 		opts.deadWorktrees.find((d) => {
-			const repoName = repoNameFromWorktreePath(d.worktreePath, opts.baseHome);
+			const repoName = repoNameFromWorktreePath(d.worktreePath, opts.base);
 			return repoName !== null && cargoTargetDirFor(repoName, opts.cargoHome) === cargoTargetDir && d.parentCwd.length > 0;
 		})?.parentCwd;
 
@@ -875,7 +880,7 @@ export function createReapBuildOutput(opts: ReapBuildOutputOptions = {}): ReapBu
 			const lines: string[] = [];
 			const bound = await enforceCargoTargetBound({
 				cargoHome: opts.cargoHome,
-				baseHome: opts.baseHome,
+				base: opts.base,
 				deadWorktrees: [...dead.values()],
 				run: opts.run,
 				sizeOf: opts.sizeOf,

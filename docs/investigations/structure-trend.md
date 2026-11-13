@@ -1266,3 +1266,34 @@ handler's `wtRoots()` reads), and `metaPath`'s hardcoded `/tmp` writer (decision
 Alternatives, the writer-side order). Neither should be picked up by a feature landing in
 this family; each needs its own order. `index.ts` at 2254 stays inside its existing carrier
 (WO-2026-095 remainder, `Q-095-a`) — this landing added one line.
+
+### Round 4 (same landing, 2026-11-13) — the roots in one place, the base threaded
+
+**growth.** `git diff --numstat 960ccb2 -- extensions/`: `recovery.ts` +62/−13 (825, one
+5-line resolver and a pass that threads its values), `build-output-reaper.ts` +16/−11 (902,
+one field renamed and its four readers), `subagent-worktree.ts` +8/−10 (152),
+`index.ts` +8/−8 (2254, the two pre-flight calls became one), `checkout-reaper.ts` +2/−2,
+`worktree.ts` +8/−5. No function gained a branch; the pass lost one resolution per root per
+call and gained one at the top.
+
+**unification.** The pass's ambient roots are named once: `rg -n 'subagentMetaDir\(\)|subagentCargoHome\(\)|subagentWorktreeBase\(\)'
+extensions/subagent-async/ extensions/lib/checkout-reaper.ts` → **4** lines, three of them the
+bodies of `recoveryRoots()` and the fourth the scan's own metas read (a different frame: it
+sits inside the handler's catch, which rethrows the refusal, and it must not force the cargo
+home's — folding it in would make the scan refuse for a root it never reads, and would take the
+cargo row's red proof with it). `rg -n 'recoveryRoots\(' extensions/ tests/` → 2 call sites.
+`rg -n 'baseHome' extensions/ tests/` → **0**: the one field that meant "a home the base is
+derived from" became `base`, the value the resolver already had, so a fixture can no longer
+hand the pass a home it cannot express the override in.
+
+**census correction, re-run at the tip.** `rg -n 'absoluteEnvPath\(' extensions/` → **4**, as
+round 3 recorded; unchanged by this landing. Round 3's prose claim of "the chain's one ambient
+base read" is corrected in decision 052 and the design doc: there were two (the removal's
+clone-name derivation inside its catch, the bound's outside every `try`), and both now take the
+base the pass resolved.
+
+**flag, carried out of this order.** The two seams round 3 carried remain, unchanged and still
+not this order's: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:105`, now also the
+pin that keeps the three handler-refusal rows hermetic under their named mutations) and
+`metaPath`'s hardcoded `/tmp` writer (decision 052 § Alternatives). `recovery.ts` at 825 stays
+under the 1,000-line floor for counting.

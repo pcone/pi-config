@@ -6,9 +6,10 @@
  * nothing while still reporting a clean pass.
  *
  * `PI_SUBAGENT_WT_ROOT` redirects what derives from the ambient base: creation
- * and the guard's prefix. `planCargoBound` always passes a home and is not
- * redirected; `disposeWorktreeBuildOutput` passes the test seam's, so the
- * dispatch path follows the ambient base — docs/design/subagent-worktree-root.md.
+ * and the guard's prefix. The build-output passes take the base their caller
+ * resolved (`BuildOutputHomes.base`) and only fall back to the ambient one when
+ * it is omitted — the dispatch-path removal omits it, the `session_start` reap
+ * supplies it — docs/design/subagent-worktree-root.md.
  *
  * Decision: decisions/subagents/045-worktree-location.md.
  */
