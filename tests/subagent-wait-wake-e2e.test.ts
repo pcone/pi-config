@@ -1,6 +1,6 @@
 /**
  * A parked `wait` wakes when its child completes — in real processes, through
- * the real loader, from a symlinked spelling of the extension's own path.
+ * the real loader, from the spelling this box installs the extension under.
  *
  * The shape, all levels real (`pi --mode rpc`, a scripted model, no network):
  *
@@ -11,32 +11,38 @@
  * Both parks must wake: the mid on the leaf's completion, the subject on the
  * mid's.
  *
- * The two arms differ only in how `PI_CODING_AGENT_DIR` spells the directory
- * holding the extension tree:
+ * The two arms differ only in how the agent dir reaches the extension set:
  *
- *   real — `<root>/real/agent`   the tree's own path
- *   link — `<root>/link/agent`   `link` is a symlink to `real`
+ *   link — `<root>/link-agent/extensions` is a symlink to the staged set
+ *   plain — `<root>/plain-agent/extensions` is a real directory
  *
- * In the link arm pi's loader hands jiti the entry spelled `/…/link/…`
- * (`dist/core/extensions/loader.js:527`, no realpath) while jiti resolves the
- * entry's relative imports through realpath, so `index.ts`'s cycle re-entry
- * lands on a second module record. The evaluation pi registered is then not the
- * evaluation the close path imports, and the completion is dropped in a process
- * with a live session — the park never wakes. See
+ * `link` is the field's spelling, and the field spelling is what matters here.
+ * On this box the extension is installed as a symlinked `extensions` entry:
+ *
+ *   $ ls -ld ~/.pi/agent/extensions
+ *   lrwxr-xr-x  1 scott  staff  43 13 Apr 2026 /Users/scott/.pi/agent/extensions -> /Users/scott/Developer/pi-config/extensions
+ *
+ * pi's loader hands jiti the discovered path unresolved
+ * (`dist/core/extensions/loader.js:527`), while jiti resolves the entry's
+ * relative imports through the entry's realpath. `index.ts`'s cycle re-entry
+ * (`index.ts` → `worktree.ts` → `index.ts`) therefore lands on a second module
+ * record: the evaluation pi registered is not the one the close path imports.
+ * Its `session_start` never ran, so `deliverResult` reads a null live session in
+ * a process that has one, drops the completion, and the park never wakes. See
  * `docs/investigations/subagent-wait-wake-2026-11.md`.
  *
- * The real arm is the control: same processes, same extension tree, same
- * shape. It wakes in a couple of seconds, so a link-arm failure is the spelling
- * and not a broken chain. The root is realpath'd first, so the arms differ by
- * the symlink this file creates and not by `$TMPDIR`'s own `/var` →
- * `/private/var`.
+ * `plain` is the control: same processes, same extension files, same shape, no
+ * symlink in the path at all. It wakes in a couple of seconds, so a link-arm
+ * failure is the spelling and not a broken chain. Both roots are realpath'd
+ * first, so the arms differ by the symlink this file creates and not by
+ * `$TMPDIR`'s own `/var` → `/private/var`.
  *
  * Slow (three processes, ~4-8 s per arm) but off-network and scripted
  * throughout, so it is deterministic apart from machine load.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeSpawnArtifacts } from "./helpers/subagent-lifecycle.ts";
@@ -44,6 +50,10 @@ import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 
 const REPO = join(import.meta.dir, "..");
 const PI_BIN = process.env.PI_BIN ?? "pi";
+
+/** How the agent dir reaches the extension set: the field's symlinked
+ *  `extensions` entry, or a real directory. */
+type Spelling = "link" | "plain";
 
 /** What the harness injects into a subagent session; the chain stamps its own. */
 let restoreEnv: () => void;
@@ -106,30 +116,44 @@ const sidOf = (metaName: string) => metaName.slice("pi-subagent-".length, -".met
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Build one arm's temp tree: the checkout's subagent-async + lib extensions, the
- * scripted provider, two agent fixtures, and a `link` → `real` symlink.
- * Returns the root and the agent dir to point the chain at.
- */
-function buildTree(): { root: string; agentDir: string; cwd: string; fauxLog: string } {
-	// Realpath'd: the arms must differ by this file's symlink alone.
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-subagent-wake-e2e-")));
-	const real = join(root, "real");
-	symlinkSync(real, join(root, "link"));
-	const cwd = join(real, "cwd");
-	const agentDir = join(real, "agent");
-	const extensions = join(agentDir, "extensions");
-	mkdirSync(cwd, { recursive: true });
-	mkdirSync(join(agentDir, "agents"), { recursive: true });
-	mkdirSync(extensions, { recursive: true });
-
-	cpSync(join(REPO, "extensions/subagent-async"), join(extensions, "subagent-async"), { recursive: true });
-	cpSync(join(REPO, "extensions/lib"), join(extensions, "lib"), { recursive: true });
-	cpSync(join(import.meta.dir, "helpers/faux-provider.ts"), join(extensions, "faux-provider.ts"));
+/** The extension set, staged into a real directory: the checkout's
+ *  subagent-async + lib, the scripted provider, and the module tree they import
+ *  from. */
+function stageExtensions(dir: string): void {
+	mkdirSync(dir, { recursive: true });
+	cpSync(join(REPO, "extensions/subagent-async"), join(dir, "subagent-async"), { recursive: true });
+	cpSync(join(REPO, "extensions/lib"), join(dir, "lib"), { recursive: true });
+	cpSync(join(import.meta.dir, "helpers/faux-provider.ts"), join(dir, "faux-provider.ts"));
 	// `typebox` and the `@earendil-works/*` sources resolve from the checkout's
 	// modules; the extension files themselves are copies, because a linked
 	// extension resolves its own relative imports against the link's path.
-	symlinkSync(join(REPO, "node_modules"), join(extensions, "node_modules"));
+	symlinkSync(join(REPO, "node_modules"), join(dir, "node_modules"));
+}
+
+/**
+ * Build one arm's temp tree: a staged extension set, two agent fixtures, and an
+ * agent dir that reaches the set the arm's way. Returns the agent dir to point
+ * the chain at, and its `extensions` path so a row can check the arm really is
+ * the shape it claims.
+ */
+function buildTree(spelling: Spelling): { root: string; agentDir: string; extensionsPath: string; cwd: string; fauxLog: string } {
+	// Realpath'd: the arms must differ by this file's symlink alone.
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-subagent-wake-e2e-")));
+	const agentDir = join(root, spelling === "link" ? "link-agent" : "plain-agent");
+	const extensionsPath = join(agentDir, "extensions");
+	const cwd = join(root, "cwd");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(join(agentDir, "agents"), { recursive: true });
+
+	if (spelling === "link") {
+		// The field's install: one real extension tree, reached through a
+		// symlinked `extensions` entry.
+		const stage = join(root, "stage", "extensions");
+		stageExtensions(stage);
+		symlinkSync(stage, extensionsPath);
+	} else {
+		stageExtensions(extensionsPath);
+	}
 
 	for (const name of ["probe-mid", "probe-leaf"]) {
 		writeFileSync(
@@ -140,7 +164,7 @@ function buildTree(): { root: string; agentDir: string; cwd: string; fauxLog: st
 
 	const fauxLog = join(root, "faux.log");
 	writeFileSync(fauxLog, "");
-	return { root, agentDir, cwd, fauxLog };
+	return { root, agentDir, extensionsPath, cwd, fauxLog };
 }
 
 /**
@@ -149,7 +173,7 @@ function buildTree(): { root: string; agentDir: string; cwd: string; fauxLog: st
  * and not a flipped verdict.
  */
 interface ChainOptions {
-	spelling: "link" | "real";
+	spelling: Spelling;
 	/** The subject's `wait` argument; omitted means the no-timer form. */
 	waitSeconds?: number;
 	/** How long to keep watching after the subject woke, to catch a timer that
@@ -161,7 +185,7 @@ interface ChainOptions {
 async function runChain(opts: ChainOptions): Promise<ChainResult> {
 	const { spelling, waitSeconds, tailMs = 0 } = opts;
 	const deadlineMs = opts.deadlineMs ?? 30_000;
-	const { root, cwd, fauxLog } = buildTree();
+	const { root, agentDir, cwd, fauxLog } = buildTree(spelling);
 	const metaBefore = metaFiles();
 	const started = Date.now();
 
@@ -178,7 +202,7 @@ async function runChain(opts: ChainOptions): Promise<ChainResult> {
 			{ text: "MID-WOKE" },
 		]),
 		PI_FAUX_SCRIPT_DEPTH_2: JSON.stringify([{ text: "leaf done" }]),
-		PI_CODING_AGENT_DIR: join(root, spelling, "agent"),
+		PI_CODING_AGENT_DIR: agentDir,
 		PI_SUBAGENT_ALLOWLIST: "probe-mid,probe-leaf",
 		PI_OFFLINE: "1",
 	};
@@ -256,14 +280,14 @@ async function runChain(opts: ChainOptions): Promise<ChainResult> {
 }
 
 describe("a parked wait wakes when its child completes", () => {
-	it("1: nested parks wake at both levels, with the extension loaded from a symlinked spelling", async () => {
+	it("1: nested parks wake at both levels, with the extension loaded through a symlinked `extensions` entry", async () => {
 		const result = await runChain({ spelling: "link" });
 		const why = `after ${result.elapsedMs}ms\n${result.stderr}`;
 		expect(result.midWoke, `the mid's wait never woke — its child's completion was dropped. ${why}`).toBe(true);
 		expect(result.subjectWoke, `the subject's wait never woke. ${why}`).toBe(true);
 	}, 90_000);
 
-	it("2: control — the same shape from the extension tree's own spelling wakes at both levels", async () => {
+	it("2: control — the same shape with a plain `extensions` directory wakes at both levels", async () => {
 		const result = await runChain({ spelling: "real" });
 		const why = `after ${result.elapsedMs}ms\n${result.stderr}`;
 		expect(result.midWoke, `the mid's wait never woke. ${why}`).toBe(true);
@@ -290,4 +314,23 @@ describe("a parked wait wakes when its child completes", () => {
 		// script, which is what a second delivery would be.
 		expect(result.subjectCalls, `the subject ran ${result.subjectCalls} turns for one completion. ${why}`).toBe(3);
 	}, 120_000);
+
+	it("4: the arms differ by the `extensions` symlink alone", () => {
+		const link = buildTree("link");
+		const plain = buildTree("plain");
+		try {
+			// The link arm is the field install's shape: a real extension tree
+			// behind a symlinked `extensions` entry.
+			expect(lstatSync(link.extensionsPath).isSymbolicLink()).toBe(true);
+			expect(realpathSync(link.extensionsPath)).not.toBe(link.extensionsPath);
+			expect(existsSync(join(link.extensionsPath, "subagent-async/index.ts"))).toBe(true);
+			// The control has no symlink in the path at all.
+			expect(lstatSync(plain.extensionsPath).isSymbolicLink()).toBe(false);
+			expect(realpathSync(plain.extensionsPath)).toBe(plain.extensionsPath);
+			expect(existsSync(join(plain.extensionsPath, "subagent-async/index.ts"))).toBe(true);
+		} finally {
+			rmSync(link.root, { recursive: true, force: true });
+			rmSync(plain.root, { recursive: true, force: true });
+		}
+	});
 });
