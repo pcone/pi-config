@@ -82,7 +82,11 @@ the surviving hook) and `8e80ce8` (decision 053 round 2, the register snapshot, 
 Round 3 lands the base pre-flight, its row, and the corrected claim (decision 053 § Round 3).
 Snapshot: `docs/investigations/structure-trend.md`, 2026-11-13 entry.
 
-### Owner question Q-099-a (raised 2026-11-13, by both round-1 reviews) — RULING PENDING
+### Owner question Q-099-a (raised 2026-11-13, by both round-1 reviews) — ANSWERED 2026-11-14
+
+> **Ruling (owner, 2026-11-14, session 8f90746f):** "The split satisfies it
+> (Recommended)". The two tests satisfy acceptance row 5; a seam reporting the reap's
+> resolved roots was rejected.
 
 **Ask:** is acceptance row 5 satisfied by the split implementation, or does it need a seam
 that reports the reap's resolved roots?
@@ -106,3 +110,7 @@ beside it rather than change it.
 **Options.** (a) accept the split as the faithful reading of a self-contradictory row, and
 record it in the row's own text; (b) add a seam that reports the roots the reap resolved
 (no such seam exists today, and it would be new surface). Recorder's recommendation: (a).
+
+**Ruled: (a).** Acceptance row 5 is satisfied by the pair
+(`tests/subagent-recovery-ownership.test.ts:813-821` and `:897-918`); option (b) is
+rejected and adds no surface.

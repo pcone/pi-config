@@ -176,6 +176,10 @@ that the close handler calls it. The end-to-end half would need a second child
 that stays running past the deadline, which is a different behaviour, not the
 cancel.
 
+Ruled by the owner on 2026-11-14 (`Q-098-a` in
+`work-orders/WO-2026-098-subagent-wait-wakes-on-completion.md`): the lower-level
+pins are accepted, and row 4 keeps its wording.
+
 ## Why the suite's preload did not cover this
 
 `tests/preload-worktree-root.ts:28` realpaths the temp root it hands to

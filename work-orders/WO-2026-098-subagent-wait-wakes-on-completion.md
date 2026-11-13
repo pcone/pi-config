@@ -56,7 +56,12 @@ and 1.4.0's steer delivery (`dist` of the installed pi, `sendUserMessage` /
 5. **No live session → no crash.** The parked-session path whose `liveSessionCtx` is
    gone stays silent (the comment at `:963-966` names the crash this guards).
 
-### Q-098-a (owner question) — row 4's second clause cannot be pinned end to end
+### Q-098-a (owner question, ANSWERED 2026-11-14) — row 4's second clause cannot be pinned end to end
+
+> **Ruling (owner, 2026-11-14, session 8f90746f):** "Accept lower-level pin
+> (Recommended)". Option (a) — row 4's second clause is satisfied by the timer and
+> `clearActiveWait` pins plus the wiring assertion. The rewrite of row 4 was rejected.
+> Carried by this order, landed with WO-2026-098.
 
 Row 4 says "a completion still cancels the timer". Asked of the running code, that
 sentence has no behavioural witness: on a completion `spawn.ts` removes the child from
@@ -73,8 +78,9 @@ identical on both paths, and no row can tell them apart.
 - **(b) Rewrite row 4** to say what is observable: "a completion before the deadline
   delivers once, and no timer steer follows it".
 
-Landed under (a) in `docs/investigations/subagent-wake-2026-11.md` § "Order row 4's
-second clause, pinned a level lower", pending the owner's choice.
+Landing record: `docs/investigations/subagent-wake-2026-11.md` § "Order row 4's second
+clause, pinned a level lower". Row 4's second clause is read as satisfied at that level;
+its wording is unchanged.
 
 ### Sequencing
 
