@@ -4,10 +4,11 @@ WO-2026-097. Candidate 1.5.1 against the box's 1.4.0, in a scratch install. Meth
 as WO-2026-071: every claim carries the probe that produced it, and the installed
 tree decides, not the changelog.
 
-**Verdict: GREEN.** Nothing blocks the upgrade. Three follow-ups for later orders,
-none of them a reason to stay on 1.4.0: soft-typed arguments after the pi-schema
-move (§1), the warmed-cache cost needing a second settings key (§ Cache warming,
-owner question `Q-097-a`), and `fetch_url.headers` accepting a scalar (§1).
+**Verdict: GREEN.** Nothing blocks the upgrade. Four follow-ups, none of them a
+reason to stay on 1.4.0: soft-typed arguments after the pi-schema move (§1), the
+warmed-cache cost needing a second settings key (§ Cache warming, owner question
+`Q-097-a`), `fetch_url.headers` accepting a scalar (§1), and the subagent runner's
+SIGKILL fallback that cannot fire (§6, carried by **WO-2026-100**).
 
 ## 1. Tool-argument validation moved to `@earendil-works/pi-schema`
 
@@ -91,9 +92,10 @@ both, and a non-member of a `Type.Literal` union is rejected in both. `peer_list
 `additionalProperties` is permissive and neither validator closes the object).
 
 **Finding.** No constraint silently stops applying through a TypeBox feature
-outside JSON Schema, because we use none. Three constraints at the *type* boundary
-softened, and one of them (a `null` `session_id`) is a lost rejection rather than a
-wrong result. Follow-up, not a blocker; see § Verdict.
+outside JSON Schema, because we use none. Three classes of constraint at the *type*
+boundary softened: eighteen rejections in total (one, eight and nine), of which the
+`null` `session_id` is a lost rejection rather than a wrong result. Follow-up, not a
+blocker; see § Verdict.
 
 ## 2. `GrepOperations.readFile` is no longer called
 
@@ -128,7 +130,7 @@ now relative to `path`, `limit: 0` meaning 1, no match-limit notice at exactly
 **No provider completion body is built in this repo.** Every model call goes
 through pi's runtime; the only `api: "openai-completions"` mentions are model
 *descriptors* in two tests, never an outbound payload. Two HTTP bodies are built
-elsewhere — `kagi-search.ts:155` (`body: JSON.stringify(body)`) and the quota
+elsewhere — `kagi-search.ts:161` (`body: JSON.stringify(body)`) and the quota
 probes — and neither is a completion request:
 
 ```
@@ -288,14 +290,14 @@ buffering in the same files, and `turn-cap.ts:57` / `lib/git-run.ts:46` on
 unchanged, and `fetch_url` passes `signal` only.
 
 **The runner's own escalation has the same defect, and the upgrade does not fix it.**
-`sleep-guard.ts:238` guards its SIGKILL with `if (rs.proc && !rs.proc.killed && rs.proc.exitCode === null)`.
+`sleep-guard.ts:242` guards its SIGKILL with `if (rs.proc && !rs.proc.killed && rs.proc.exitCode === null)`.
 Node sets `killed = true` on a successful `kill()`, so after the SIGTERM the guard
 is false and the SIGKILL never fires — the same shape as 1.4.0's `exec.js` bug just
 described, measured on this box (`killed=true, exitCode=null, signalCode=null` after
 the SIGTERM). A subagent that ignores SIGTERM therefore never hard-kills; it hangs
 until the process group or the turn cap ends it. Pre-existing, not upgrade-caused,
-and out of this order's scope: it wants its own fix order, and nothing in 1.5.1
-changes it either way.
+and out of this order's scope: nothing in 1.5.1 changes it either way. Carried by
+**WO-2026-100**.
 
 ## 7. Full suite against 1.5.1
 
@@ -352,7 +354,8 @@ whether it is new.
 
 `tests/subagent-worktree-lock.test.ts:797` also appeared red in two of the four
 suite runs (the 1.4.0 full run, and the child run inside 1.5.1's hermeticity row)
-and green in the two outer runs. Not a version difference: it is red at 1.4.0 and
+and green in the other two: the 1.4.0 child and the 1.5.1 outer run. Not a version
+difference: it is red at 1.4.0 and
 green at 1.5.1's top level, and `bun test tests/subagent-worktree-lock.test.ts` is
 `29 pass / 0 fail` standalone at 1.4.0 (reproduced 2026-11-13); no 1.5.1 standalone
 run was captured, so that figure rests on the outer run.
@@ -459,7 +462,8 @@ Follow-ups, in order of what would bite first. None blocks the upgrade:
   (`enumerate-tools.ts`, `schema-diff.ts`, `tool-schemas.json`, `suite-1.5.1.log`,
   `suite-1.4.0.log`, `run-*-provenance.txt`, `symctl/` for the file-level symlink
   control). The loader and jiti probes were one-off scripts and were not preserved;
-  those claims are re-derivable from the commands quoted in §5, and the filesystem
-  probe in §5 is the `realpath` loop printed there.
+  those claims were re-derived here (`DefaultResourceLoader` + `reload()` +
+  `getExtensions()` for the 24/23 split) but are **not** re-derivable from this doc
+  alone, and the filesystem probe in §5 is the `realpath` loop printed there.
 - No `models.json`, `settings.json`, `APPEND_SYSTEM.md.sec` or global install change
   was made or is proposed here.
