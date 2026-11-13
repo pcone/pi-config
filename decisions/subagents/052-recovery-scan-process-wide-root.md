@@ -178,6 +178,10 @@ Round 4 is the correction plus the shape the order exists to enforce.
 Rows: `tests/subagent-worktree-lock.test.ts` («a bad WT root refuses the reap
 before it judges a tree» — red on round 3's code, which removed the clean tree and
 only then rejected in the bound). `tests/subagent-recovery-ownership.test.ts`: the
-three handler-refusal rows pin the checkout reaper's home, so each one's named
-mutation removes a pre-flight without walking the box's own `~/Developer/wt`
-(round 3 pinned only the base row).
+the three handler-refusal rows pin the checkout reaper's home, so no run walks the
+box's own `~/Developer/wt` (round 3 pinned only the base row). Their named
+mutations differ: the base and cargo rows red by deleting their own pre-flight
+read, and the metas row reds by deleting both of its ambient reads — the in-flight
+listing's default and the handler's `recoveryRoots()` call — because either one
+alone throws the same message first. Deleting the rethrow leaves it green
+(round 4's review).

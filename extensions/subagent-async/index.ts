@@ -1063,9 +1063,9 @@ export default function (pi: ExtensionAPI) {
 		// N passes and each would overwrite the report the parent announced.
 		// The parent's own session start is the pass.
 		if (!process.env.PI_SUBAGENT_DEPTH) {
-			// Every ambient root this block's chain reads is resolved here,
-			// synchronously, before the chain exists — one call, so a root added to the
-			// pass reaches this refusal by being a field of `RecoveryRoots`, not by
+			// Every ambient override this block's chain reads is resolved here,
+			// synchronously, before the chain exists — one call, so an override added to
+			// the pass reaches this refusal by being a field of `RecoveryRoots`, not by
 			// someone remembering a line. A throw from inside the chain is an unhandled
 			// rejection, not a refused start (decision 052); for the base it is worse,
 			// because `wtRoots` below takes an explicit home and never reads the

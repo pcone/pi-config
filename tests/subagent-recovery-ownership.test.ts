@@ -848,8 +848,12 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 
 	it("the real session_start handler lets the refusal through", async () => {
 		const restore = setEnvForRow(PI_SUBAGENT_META_DIR_ENV, "relative/meta");
-		// The red proof removes `rethrowIfUnusableEnvPath`; the chain then runs with
-		// the bad override, so its home is pinned like the other two rows'.
+		// Red proof: two independent reads refuse this override — the in-flight
+		// listing at `index.ts:1023` (`listInFlightSubagents` defaults to the same
+		// dir) and the pre-flight `recoveryRoots()`. This row reds only when both
+		// stop reading the ambient value, so no single deletion shows it red; the
+		// chain cannot run in either case. No home is pinned here, unlike its two
+		// neighbours, because neither read reaches the reaper.
 		const unpin = pinReaperHome();
 		try {
 			const handlers = register();

@@ -80,10 +80,12 @@ symlink-resolved prefixes and `tmpdir()` is a symlink on macOS
 (`/var/folders/…` → `/private/var/folders/…`).
 
 The guarantee is structural for the three roots above: a test file that never
-thinks about them cannot create a tree in the human namespace, cannot measure the
-box's shared cargo dirs, and a nested `bun test` gets roots of its own, which it
-removes when it exits — one row pins that by reading the child's roots back after
-it has gone.
+thinks about them cannot create a tree in the human namespace, its nested
+`bun test` gets roots of its own, which it removes when it exits, and one row pins
+that by reading the child's roots back after it has gone. It does not cover the
+reaper's own home: the general pass takes `home: opts.home ?? reaperHome()` and
+measures `cargoTargetRoot(home)`, which none of the three overrides reach, so a
+row that drives `session_start` pins that home explicitly (three rows do).
 
 It stops there. `/tmp` is still the default of the metas dir's *writer*
 (`metaPath`) and of the readers that take their own `dir` default —
