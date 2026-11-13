@@ -263,7 +263,7 @@ extensions/fetch-url.ts:455:  const pdfResult = await pi.exec("curl", pdfArgs, {
 ```
 
 The runner spawns its children itself with `node:child_process`: `spawn.ts:311`
-(`spawn(invocation.command, …)`), the kill path in `sleep-guard.ts:189–245`
+(`spawn(invocation.command, …)`), the kill path in `sleep-guard.ts:199–263`
 (`dispatchKillSignals`, which sends SIGTERM then arms a SIGKILL after
 `HARD_KILL_DELAY_MS`), output
 buffering in the same files, and `turn-cap.ts:57` / `lib/git-run.ts:46` on
@@ -289,13 +289,15 @@ buffering in the same files, and `turn-cap.ts:57` / `lib/git-run.ts:46` on
 `ExecOptions`/`ExecResult` gain `maxBuffer`/`truncated`; `signal` and `timeout` are
 unchanged, and `fetch_url` passes `signal` only.
 
-**The runner's own escalation has the same defect, and the upgrade does not fix it.**
-`sleep-guard.ts:242` guards its SIGKILL with `if (rs.proc && !rs.proc.killed && rs.proc.exitCode === null)`.
+**The runner's own escalation had the same defect, and the upgrade did not fix it.**
+Until WO-2026-100, `sleep-guard.ts` guarded its SIGKILL with
+`if (rs.proc && !rs.proc.killed && rs.proc.exitCode === null)` (`:241` is that guard's
+`alreadyDead` sibling, `:257` the SIGKILL).
 Node sets `killed = true` on a successful `kill()`, so after the SIGTERM the guard
-is false and the SIGKILL never fires — the same shape as 1.4.0's `exec.js` bug just
+was false and the SIGKILL never fired — the same shape as 1.4.0's `exec.js` bug just
 described, measured on this box (`killed=true, exitCode=null, signalCode=null` after
-the SIGTERM). A subagent that ignores SIGTERM therefore never hard-kills; it hangs
-until the process group or the turn cap ends it. Pre-existing, not upgrade-caused,
+the SIGTERM). A subagent that ignored SIGTERM therefore never hard-killed; it hung
+until the process group or the turn cap ended it. Pre-existing, not upgrade-caused,
 and out of this order's scope: nothing in 1.5.1 changes it either way. Carried by
 **WO-2026-100**.
 
@@ -315,10 +317,10 @@ and out of this order's scope: nothing in 1.5.1 changes it either way. Carried b
 > | --- | --- |
 > | `sleep-guard.ts:241` — `alreadyDead` for the dispatch | **Was the defect.** `rs.proc.killed \|\| rs.proc.exitCode !== null` read a SIGTERM'd live child (`killed=true, exitCode=null, signalCode=null`) as dead, so `subagent_kill` inside `subagent_stop`'s 5 s window reported “already dead” and armed no escalation of its own. Now `!stillRunning(rs.proc)`. |
 > | `sleep-guard.ts:257` — the delayed SIGKILL's guard | Fixed with the order: `stillRunning(proc)`, was `proc && !proc.killed && proc.exitCode === null`. |
-> | `index.ts:2144` — `subagent_stop`'s own force-kill fallback | Fixed with the order: `stillRunning(rs.proc)`, was `rs.proc && !rs.proc.killed`. |
+> | `index.ts:2196` — `subagent_stop`'s own force-kill fallback | Fixed with the order: `stillRunning(rs.proc)`, was `rs.proc && !rs.proc.killed`. |
 > | `test-progress-kill-timeout.cjs:175,179` — the mirror's copies of both | Same verdict as their originals: `alreadyDead` is now `!stillRunning`, and `stillRunning` keeps the real helper's `proc !== null` guard. |
 > | `test-progress-kill-timeout.cjs:222` — the mirror's proc stub | Writes `killed = true` on any signal, which is what Node does; it is the stub's fidelity, not a liveness read. |
-> | `spawn.ts:623`, `index.ts:2208`, `sleep-guard.ts:173,203,204,309,342,353,365,366,368,370` | Not a liveness read: `killedExplicitly`/`killedVia` are the runner's own intent flags, and `OUTCOME_WORD.killed` is footer vocabulary. No verdict needed. |
+> | `spawn.ts:623`, `index.ts:2238–2240`, `sleep-guard.ts:173,203,204,309,342,353,365,366,368,370` | Not a liveness read: `killedExplicitly`/`killedVia` are the runner's own intent flags, and `OUTCOME_WORD.killed` is footer vocabulary. No verdict needed. |
 > | `extensions/lib/git-run.ts:59` — `(err as {killed?}).killed` | Different mechanism: `execFile`'s own timeout flag on an `ExecException`, not a `ChildProcess` liveness read. Out of this order's scope. |
 > | `extensions/subagent/_index.ts.off:459` — `if (!proc.killed) proc.kill("SIGKILL")` | The same defect in a dead file: `.off`, never compiled or imported. Left untouched; deleting the file is separate work. |
 
@@ -385,7 +387,7 @@ run was captured, so that figure rests on the outer run.
 
 **Load-sensitive test, mechanism unproven.** The tree it waits for and the branch it
 then reads are removed by two separate steps: the reap runs fire-and-forget from
-`session_start` (`extensions/subagent-async/index.ts:1084`, `.catch().then()`), the
+`session_start` (`extensions/subagent-async/index.ts:1140`, its `.catch()` at `:1150`), the
 row waits for the tree (`tests/subagent-worktree-lock.test.ts:793`) and then samples
 the branch with no wait (`:797`), and the branch delete follows
 `disposeWorktreeBuildOutput`. A sampler that catches the gap between them fails
@@ -449,9 +451,9 @@ Follow-ups, in order of what would bite first. None blocks the upgrade:
 
 1. **Soft arguments in `subagent_*` (§1).** A `null` `session_id` now passes
    validation as `"null"`; `""` for `silenceTimeoutMs`/`turn_cap` becomes `0`, which
-   the schema documents as "disabled". Fix would touch `extensions/subagent-async/index.ts:1783–1785`
-   (`ResumeParams.session_id`, the headline case), `:1326` (`silenceTimeoutMs`) and
-   `:1332` (`turn_cap`), or a guard in `execute`, plus a row in
+   the schema documents as "disabled". Fix would touch `extensions/subagent-async/index.ts:1839–1845`
+   (`ResumeParams.session_id`, the headline case), `:1382` (`silenceTimeoutMs`) and
+   `:1388` (`turn_cap`), or a guard in `execute`, plus a row in
    `tests/subagent-id-resolution.test.ts`. Follow-up.
 2. **Warmed-cache cost invisible to the transcript (§ Cache warming).** Owner
    question `Q-097-a` in the work order: the order permits one settings key and the
