@@ -1262,7 +1262,7 @@ line is removed.
 **flag, carried out of this order.** Two same-class ambient seams remain and are *not* this
 order's scope, both named by round 1: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:104`,
 the checkout reaper's own per-process home, whose default is `homedir()` and which the
-handler's `wtRoots()` reads), and `metaPath`'s hardcoded `/tmp` writer (decision 052 §
+handler's `wtRoots()` reads), and `metaPath`'s hardcoded `/tmp` writer (decision 053 §
 Alternatives, the writer-side order). Neither should be picked up by a feature landing in
 this family; each needs its own order. `index.ts` at 2254 stays inside its existing carrier
 (WO-2026-095 remainder, `Q-095-a`) — this landing added one line.
@@ -1288,12 +1288,12 @@ hand the pass a home it cannot express the override in.
 
 **census correction, re-run at the tip.** `rg -n 'absoluteEnvPath\(' extensions/` → **4**, as
 round 3 recorded; unchanged by this landing. Round 3's prose claim of "the chain's one ambient
-base read" is corrected in decision 052 and the design doc: there were two (the removal's
+base read" is corrected in decision 053 and the design doc: there were two (the removal's
 clone-name derivation inside its catch, the bound's outside every `try`), and both now take the
 base the pass resolved.
 
 **flag, carried out of this order.** The two seams round 3 carried remain, unchanged and still
 not this order's: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:105`, now also the
 pin that keeps the three handler-refusal rows hermetic under their named mutations) and
-`metaPath`'s hardcoded `/tmp` writer (decision 052 § Alternatives). `recovery.ts` at 827 stays
+`metaPath`'s hardcoded `/tmp` writer (decision 053 § Alternatives). `recovery.ts` at 827 stays
 under the 1,000-line floor for counting.

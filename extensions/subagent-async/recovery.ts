@@ -342,7 +342,7 @@ export function resolveTrackerKey(requestedId: string): string {
  * handler's refusal by being a field, and reaches the pass's readers by the
  * caller that resolved it — neither needs a remembered line. A root that missed
  * the handler's frame would be read from inside a chain nobody awaits, which is
- * a rejection, not a refused start (decision 052).
+ * a rejection, not a refused start (decision 053).
  */
 export interface RecoveryRoots {
 	/** `$PI_SUBAGENT_META_DIR`, else `/tmp`. */

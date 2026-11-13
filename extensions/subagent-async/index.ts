@@ -1112,7 +1112,7 @@ export default function (pi: ExtensionAPI) {
 			// synchronously, before the chain exists — one call, so an override added to
 			// the pass reaches this refusal by being a field of `RecoveryRoots`, not by
 			// someone remembering a line. A throw from inside the chain is an unhandled
-			// rejection, not a refused start (decision 052); for the base it is worse,
+			// rejection, not a refused start (decision 053); for the base it is worse,
 			// because `wtRoots` below takes an explicit home and never reads the
 			// override (WO-2026-099 rounds 3-4).
 			recoveryRoots();

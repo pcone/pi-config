@@ -91,7 +91,7 @@ It stops there. `/tmp` is still the default of the metas dir's *writer*
 (`metaPath`) and of the readers that take their own `dir` default —
 `listSubagentMetas`, `resolveSubagentMeta` — so a row that writes a meta through
 `metaPath` and reads it back through one of those keeps both on the box's `/tmp`
-(decision 052, Tradeoffs). Closing that is the writer-side order, not this one.
+(decision 053, Tradeoffs). Closing that is the writer-side order, not this one.
 
 Asking each file to isolate itself is the shape this replaced — an enumeration
 presented as a guarantee, which misses every file added later. The per-file

@@ -872,7 +872,7 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 		// `disposeWorktreeBuildOutput` deriving the clone name — sits inside
 		// `removeWorktreeTree`'s best-effort catch, which turns a bad root into a
 		// reported prune problem. A bad override would prune nothing and say nothing
-		// about it, so the handler reads the base in its own frame (decision 052).
+		// about it, so the handler reads the base in its own frame (decision 053).
 		const restore = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, "relative/wt");
 		// Only a parent session runs the reaper block, and this process is a child.
 		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
@@ -895,7 +895,7 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 	it("the real session_start handler refuses a bad cargo home too", async () => {
 		// The reap chain below is not awaited, so a throw from inside it is an
 		// unhandled rejection rather than a failed start. The handler reads the
-		// cargo home in its own frame for that reason (decision 052).
+		// cargo home in its own frame for that reason (decision 053).
 		const restore = setEnvForRow(PI_SUBAGENT_CARGO_HOME_ENV, "relative/cargo");
 		// Only a parent session runs the reaper block, and this process is a child.
 		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);

@@ -77,9 +77,9 @@ rows, which are the characterisation of the machinery being rewired.
 ## Gate-back record — 2026-11-13
 
 Landed on `pi-subagent-ebf9a4ee2574` for rounds 1–2: `100ad98` (round 1, code+tests),
-`e9899c3` + `0c553fe` (docs/decision 052), `f4cb623` (round 2: the two reviews' HIGHs and
-the surviving hook) and `8e80ce8` (decision 052 round 2, the register snapshot, Q-099-a).
-Round 3 lands the base pre-flight, its row, and the corrected claim (decision 052 § Round 3).
+`e9899c3` + `0c553fe` (docs/decision 053), `f4cb623` (round 2: the two reviews' HIGHs and
+the surviving hook) and `8e80ce8` (decision 053 round 2, the register snapshot, Q-099-a).
+Round 3 lands the base pre-flight, its row, and the corrected claim (decision 053 § Round 3).
 Snapshot: `docs/investigations/structure-trend.md`, 2026-11-13 entry.
 
 ### Owner question Q-099-a (raised 2026-11-13, by both round-1 reviews) — RULING PENDING
