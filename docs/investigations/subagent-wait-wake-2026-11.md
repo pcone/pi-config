@@ -72,12 +72,17 @@ the file once per pid and the same shape wakes at both levels.
 both round-2 reviewers and by the probe above: with the installed set in place
 and only `TMPDIR` changed, the nested shape wakes at both levels. The installed
 set is what the field runs, and it is what the probe must copy to be
-field-shaped, but it is not the cause. The drop was real and reproduced; its
-cause was misattributed.
+field-shaped, but the set is not the cause. The drop was real and reproduced;
+its cause was misattributed.
+
+The distinction that matters is *set identity* versus *path spelling*. Copying
+the same files into a plain directory wakes at both levels; reaching them
+through the symlink the field installs under does not. Round 4's finding below
+is the second half of this, and it does not revive the retracted claim.
 
 **Round 1's "the trigger is a property of an RPC child session as the
-deliverer".** Also wrong, for the same reason: the depth-1 child is merely the
-first process in the chain whose `agentDir` sits under the symlinked temp root.
+deliverer".** Also wrong: the depth-1 child is merely the first process in the
+chain whose extension path ran through a symlink.
 
 ## The field's spelling
 
