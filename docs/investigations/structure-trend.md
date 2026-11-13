@@ -1297,3 +1297,32 @@ not this order's: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:105`,
 pin that keeps the three handler-refusal rows hermetic under their named mutations) and
 `metaPath`'s hardcoded `/tmp` writer (decision 053 § Alternatives). `recovery.ts` at 827 stays
 under the 1,000-line floor for counting.
+
+## Snapshot 2026-11-13 — WO-2026-098 (the completion reaches a parked session)
+
+**growth.** `git diff --numstat 5a411f4^1 5a411f4 -- extensions/`: `process-state.ts`
++74/−0 (74, one registry and one accessor; a new file), `index.ts` +97/−56 (2303, the
+fourteen module-level `let`s became fields of that registry, the tag and its clear),
+`ui.ts` +11/−9, `spawn.ts` +2/−2, `sleep-guard.ts` +1/−1. `index.ts` at 2303 is under
+the 1,000-line counting floor, so this landing adds no growth flag; the split it wants
+is WO-2026-095's, unchanged by this work.
+
+**unification.** The process-wide state has one owner:
+`rg -n '^(export )?(let|const) [a-zA-Z_]+ *(:| = *(new Map|\[\]|\{|null))'
+extensions/subagent-async/index.ts` → **1** (`ACTIVITY_EVENT_TYPES`, a read-only Set).
+`rg -n 'globalThis' extensions/subagent-async/` → 3, all in `process-state.ts`: the key,
+the read, the write. The duplicate evaluation is not deduped — the same file is still
+evaluated twice through the symlinked `extensions` entry — so the second copy shares
+one registry instead of holding a second one.
+
+**parallel-mechanism check, carried out of this order.** The wait timer and the close
+handler's cancel stay in `index.ts` rather than the registry: the timer is bound to one
+session, and `session_shutdown` clears it, so moving it would give a stale evaluation a
+second way to cancel a live one. `clearActiveWait` remains the single cancel path.
+
+**flag, carried out of this order.** The double evaluation itself is pi's loader
+resolving relative imports through realpath (`loader.js:528`), and `occurrences` of a
+duplicated `index.ts` is now the *observable* for it
+(`tests/subagent-duplicate-instance.test.ts`). Nothing here makes the loader stop; a
+pi release that canonicalises the entry would make these rows' second arm unreachable,
+which is a note for the next upgrade audit, not a debt with a carrier.
