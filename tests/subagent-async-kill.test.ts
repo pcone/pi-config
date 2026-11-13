@@ -17,7 +17,11 @@
  *     unavailable" marker logged, NO signal attempted.
  *  3. Progress-timeout `via` on a null proc: stage-2 auto-kill shares the
  *     dispatch and must get the same guard.
- *  4. Already-dead live proc via `killed === true` (existing contract).
+ *  4. A SIGTERM'd child that has not exited (`killed === true`, both exit
+ *     codes null) is NOT already dead: `alreadyDead: false`, SIGTERM
+ *     re-sent, escalation armed.
+ *  4b. A child that died of a signal we never sent (`killed === false`,
+ *     `signalCode` set) is already dead: `alreadyDead: true`, no signal.
  *  5. Already-dead live proc via `exitCode !== null`.
  *  6. Null proc schedules NO SIGKILL fallback timer (a delayed callback can
  *     never dereference `rs.proc` because none is scheduled).
@@ -57,6 +61,8 @@
  * R3. A kill requested for an already-dead child returns `alreadyDead` and
  *     arms nothing.
  * R4. `subagent_stop`'s own force-kill fallback escalates on the same rule.
+ * R5. The stop path's force-kill swallows a throwing `kill()` and still
+ *     resolves the waiter.
  *
  * Run: bun test tests/subagent-async-kill.test.ts
  */
@@ -67,6 +73,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import extension, {
 	HARD_KILL_DELAY_MS,
+	STOP_TIMEOUT_MS,
 	dispatchKillSignals,
 	deliverCloseResult,
 	_testSetLiveSessionCtx,
@@ -287,18 +294,36 @@ describe("dispatchKillSignals (WO-2026-043 null-proc guard)", () => {
 		expect(rs.logLines.join("\n")).toContain("Killed via progress-timeout — process handle unavailable");
 	});
 
-	it("4: already-dead live proc (killed=true) — alreadyDead:true, no signal attempted, flags set (existing contract)", () => {
+	it("4: a SIGTERM'd child that has not exited (killed=true, no exit codes) is not already dead — alreadyDead:false, SIGTERM re-sent, escalation armed", () => {
+		installSetTimeoutSpy();
+		const proc = stubLiveProc({ survivesSigterm: true });
+		// `killed` is true the moment a `kill()` succeeds, whether or not the
+		// child dies of it — the state a live child is in after our SIGTERM.
+		proc.killed = true;
+		const rs = stubRunningSubagent(proc);
+
+		const result = dispatchKillSignals(rs, "kill-tool");
+
+		expect(result.alreadyDead).toBe(false);
+		expect(result.noProcess).toBeUndefined();
+		expect(proc.signals).toEqual(["SIGTERM"]);
+		expect(rs.killedExplicitly).toBe(true);
+		expect(rs.killedVia).toBe("kill-tool");
+		// A child that has not exited gets an escalation, whatever `killed` says.
+		expect(setTimeoutSpy!.mock.calls.length).toBe(1);
+		clearTimeout((setTimeoutSpy!.mock.results[0] as any).value);
+	});
+
+	it("4b: a child that died of a signal we never sent (killed=false, signalCode set) is already dead — alreadyDead:true, no signal", () => {
 		const proc = stubLiveProc();
-		proc.killed = true; // raced to exit before dispatch
+		proc.signalCode = "SIGTERM"; // ended by a signal; we never called kill()
 		const rs = stubRunningSubagent(proc);
 
 		const result = dispatchKillSignals(rs, "kill-tool");
 
 		expect(result.alreadyDead).toBe(true);
-		expect(result.noProcess).toBeUndefined();
 		expect(proc.signals).toEqual([]);
 		expect(rs.killedExplicitly).toBe(true);
-		expect(rs.killedVia).toBe("kill-tool");
 	});
 
 	it("5: already-dead live proc via exitCode !== null — alreadyDead:true, no signal attempted", () => {
@@ -427,25 +452,41 @@ const spawned: ChildProcess[] = [];
 
 /** Spawn a node one-liner (the interpreter the runner spawns for real
  *  children), resolve `ready` once it is running, and resolve `closed` with
- *  whatever ended it. */
+ *  whatever ended it. `ready` resolves false when the child ends before it
+ *  announces itself, so the row can say that instead of failing on some
+ *  later assertion. */
 function spawnNode(script: string): {
 	proc: ChildProcess;
-	ready: Promise<void>;
+	ready: Promise<boolean>;
 	closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 } {
 	const proc = spawn("node", ["-e", script], { stdio: ["ignore", "pipe", "ignore"], env: childEnv() });
 	spawned.push(proc);
-	let readyResolve: () => void = () => {};
-	const ready = new Promise<void>((resolve) => { readyResolve = resolve; });
+	let readyResolve: (announced: boolean) => void = () => {};
+	const ready = new Promise<boolean>((resolve) => { readyResolve = resolve; });
 	const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
 		proc.on("close", (code, signal) => {
-			readyResolve(); // a child that exited before announcing is still settled
+			readyResolve(false); // a child that exited before announcing is still settled
 			resolve({ code, signal });
 		});
 	});
+	// Accumulate rather than test each chunk: "ready\n" can straddle two.
+	let out = "";
 	proc.stdout!.setEncoding("utf8");
-	proc.stdout!.on("data", (chunk: string) => { if (chunk.includes("ready\n")) readyResolve(); });
+	proc.stdout!.on("data", (chunk: string) => {
+		out += chunk;
+		if (out.includes("ready\n")) readyResolve(true);
+	});
 	return { proc, ready, closed };
+}
+
+/** Wait for the child's announcement, failing the row with the reason when it
+ *  never comes — otherwise a child that died at startup surfaces as a
+ *  confusing downstream assertion. */
+async function waitReady(ready: Promise<boolean>): Promise<void> {
+	if (!(await withDeadline(ready, 10_000, false))) {
+		throw new Error("child did not report ready within 10s (it may have died at startup)");
+	}
 }
 
 /** Record every signal this process sends the child, forwarding each one. */
@@ -495,7 +536,7 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 		const { proc, ready, closed } = spawnNode(IGNORES_SIGTERM);
 		const signals = recordSignals(proc);
 		const rs = stubRunningSubagent(proc);
-		await ready;
+		await waitReady(ready);
 
 		const started = Date.now();
 		expect(dispatchKillSignals(rs, "kill-tool").alreadyDead).toBe(false);
@@ -510,14 +551,10 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 		const ended = await withDeadline(closed, HARD_KILL_DELAY_MS + 5000, null);
 		const elapsedMs = Date.now() - started;
 
-		expect({ ended, signals, afterSigterm }).toEqual({
-			ended: { code: null, signal: "SIGKILL" },
-			signals: ["SIGTERM", "SIGKILL"],
-			afterSigterm,
-		});
-		// Not before the grace period, and not much after it.
+		expect({ ended, signals }).toEqual({ ended: { code: null, signal: "SIGKILL" }, signals: ["SIGTERM", "SIGKILL"] });
+		// The SIGKILL waited out the grace period; the deadline above bounds the
+		// other end.
 		expect(elapsedMs).toBeGreaterThanOrEqual(HARD_KILL_DELAY_MS - 100);
-		expect(elapsedMs).toBeLessThan(HARD_KILL_DELAY_MS + 5000);
 	}, 30_000);
 
 	it("R2: a child that exits on SIGTERM gets no second signal", async () => {
@@ -525,7 +562,7 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 		const { proc, ready, closed } = spawnNode(DIES_ON_SIGTERM);
 		const signals = recordSignals(proc);
 		const rs = stubRunningSubagent(proc);
-		await ready;
+		await waitReady(ready);
 
 		expect(dispatchKillSignals(rs, "kill-tool").alreadyDead).toBe(false);
 		expect(await withDeadline(closed, 10_000, null)).toEqual({ code: null, signal: "SIGTERM" });
@@ -566,13 +603,11 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 		const rs = stubRunningSubagent(proc);
 		_testRunning.set(rs.sessionId, rs);
 		try {
-			await ready;
+			await waitReady(ready);
 			const stopped = tools.get("subagent_stop").execute("call-1", { session_id: rs.sessionId }, undefined);
 
-			// The first timer the stop path armed is its force-kill fallback
-			// (STOP_TIMEOUT_MS); firing it sends the SIGTERM.
-			const stopCb = setTimeoutSpy!.mock.calls.at(-1)![0] as () => void;
-			stopCb();
+			// The stop path's force-kill fallback: firing it sends the SIGTERM.
+			firingOf(timerIndexFor(STOP_TIMEOUT_MS))();
 			expect(signals).toEqual(["SIGTERM"]);
 
 			// ...and its own HARD_KILL_DELAY_MS callback must finish the job.
@@ -585,6 +620,29 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 			_testRunning.delete(rs.sessionId);
 		}
 	}, 30_000);
+
+	it("R5: the stop path's force-kill swallows a throwing kill() and still resolves the waiter", async () => {
+		const { pi, tools } = createPiStub();
+		extension(pi);
+		installSetTimeoutSpy();
+		const proc = stubLiveProc({ survivesSigterm: true });
+		// A `kill()` on a child the OS reaped before Node recorded the exit
+		// throws; neither signal may escape the timer callback and skip `finish`.
+		proc.kill = () => { throw new Error("ESRCH"); };
+		const rs = stubRunningSubagent(proc);
+		_testRunning.set(rs.sessionId, rs);
+		try {
+			const stopped = tools.get("subagent_stop").execute("call-1", { session_id: rs.sessionId }, undefined);
+
+			expect(() => firingOf(timerIndexFor(STOP_TIMEOUT_MS))()).not.toThrow();
+			expect(() => firingOf(timerIndexFor(HARD_KILL_DELAY_MS))()).not.toThrow();
+
+			expect((await stopped).content[0].text).toContain("[Force-stopped after timeout]");
+		} finally {
+			clearSpyTimers();
+			_testRunning.delete(rs.sessionId);
+		}
+	}, 20_000);
 });
 
 // ── Close-handler delivery decision ────────────────────────────────────────

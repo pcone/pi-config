@@ -149,9 +149,10 @@ function fireSilenceKill(rs) {
 
 // ── stillRunning — KEEP IN SYNC with sleep-guard.ts ─────────────────────────────
 // `killed` is set by any successful kill(), so it cannot answer whether the
-// child is still alive; exitCode and signalCode stay null until it ends.
+// child is still alive; exitCode and signalCode stay null until it ends. The
+// null guard is the real helper's: a recovered/pre-reload entry has no proc.
 function stillRunning(proc) {
-	return proc.exitCode === null && proc.signalCode === null;
+	return proc !== null && proc.exitCode === null && proc.signalCode === null;
 }
 
 // ── dispatchKillSignals — KEEP IN SYNC with sleep-guard.ts ──────────────────────
@@ -169,7 +170,9 @@ function dispatchKillSignals(rs, via) {
 	if (rs.silenceTimer) { clearTimeout(rs.silenceTimer); rs.silenceTimer = null; }
 	const viaLabel = via === "progress-timeout" ? "progress-timeout" : "subagent_kill";
 	killLog.push(`── Killed via ${viaLabel} (SIGTERM sent, SIGKILL in ${HARD_KILL_DELAY_MS / 1000}s if needed) ──`);
-	const alreadyDead = rs.proc.killed || rs.proc.exitCode !== null;
+	// Liveness, not the `killed` flag — true already after a successful SIGTERM,
+	// which is exactly the state a frozen child is in here.
+	const alreadyDead = !stillRunning(rs.proc);
 	if (!alreadyDead) {
 		try { rs.proc.kill("SIGTERM"); } catch { /* */ }
 		setTimeout(() => {
@@ -214,7 +217,10 @@ function makeChild({ silenceTimeoutMs } = {}) {
 			signalCode: null,
 			kill: (sig) => {
 				procKills.push(sig);
-				if (sig === "SIGKILL") { rs.proc.killed = true; rs.proc.signalCode = sig; }
+				// Node sets `killed` on any successful kill() and `signalCode` only
+				// when the child actually dies of it. This child ignores SIGTERM.
+				rs.proc.killed = true;
+				if (sig === "SIGKILL") rs.proc.signalCode = sig;
 			},
 		},
 		isDone: false,
@@ -529,6 +535,35 @@ function eq(actual, expected, msg) {
 		await sleep(300);
 		eq(rs.killedExplicitly, true, "silent-after-retries child still auto-killed");
 		eq(rs.killedVia, "progress-timeout", "kill source recorded");
+	});
+
+	// ── (k) the delayed SIGKILL fires on a SIGTERM-surviving proc ──────
+	// This is the row that pins `stillRunning` in the mirror. With the old
+	// `!proc.killed` guard the SIGKILL never fires: `killed` is already true
+	// because the SIGTERM's kill() succeeded. The proc stub in makeChild is
+	// exactly such a child — it ignores SIGTERM and only SIGKILL ends it.
+	await test("(k) a proc that survives SIGTERM gets the delayed SIGKILL — escalation fires", async () => {
+		reset();
+		const realSetTimeout = globalThis.setTimeout;
+		let fallback = null;
+		// Capture the HARD_KILL_DELAY_MS timer rather than waiting 5s for it.
+		globalThis.setTimeout = (fn, ms) => {
+			if (ms === HARD_KILL_DELAY_MS) { fallback = fn; return 0; }
+			return realSetTimeout(fn, ms);
+		};
+		try {
+			const rs = makeChild({ silenceTimeoutMs: 60_000 });
+			eq(dispatchKillSignals(rs, "kill-tool").alreadyDead, false, "a live child is not already dead");
+			assert.deepStrictEqual(procKills, ["SIGTERM"], "SIGTERM dispatched first");
+			eq(rs.proc.killed, true, "killed is true after the SIGTERM's successful kill() — the old guard read that as dead");
+			eq(rs.proc.signalCode, null, "the child has not exited, so signalCode is still null");
+			assert.ok(fallback, "the SIGKILL fallback was armed");
+			fallback();
+			assert.deepStrictEqual(procKills, ["SIGTERM", "SIGKILL"], "SIGKILL escalated after the grace period");
+			eq(rs.proc.signalCode, "SIGKILL", "the child died of SIGKILL");
+		} finally {
+			globalThis.setTimeout = realSetTimeout;
+		}
 	});
 
 	await test("kill dispatch clears the armed silence timer AND stale watchdog", async () => {
