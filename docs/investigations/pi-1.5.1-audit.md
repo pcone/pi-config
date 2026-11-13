@@ -4,11 +4,12 @@ WO-2026-097. Candidate 1.5.1 against the box's 1.4.0, in a scratch install. Meth
 as WO-2026-071: every claim carries the probe that produced it, and the installed
 tree decides, not the changelog.
 
-**Verdict: GREEN.** Nothing blocks the upgrade. Four follow-ups, none of them a
+**Verdict: GREEN.** Nothing blocks the upgrade. Three follow-ups remain open, none a
 reason to stay on 1.4.0: soft-typed arguments after the pi-schema move (§1), the
 warmed-cache cost needing a second settings key (§ Cache warming, owner question
-`Q-097-a`), `fetch_url.headers` accepting a scalar (§1), and the subagent runner's
-SIGKILL fallback that cannot fire (§6, carried by **WO-2026-100**).
+`Q-097-a`), and `fetch_url.headers` accepting a scalar (§1). A fourth — the subagent
+runner's SIGKILL fallback that could not fire — was carried by **WO-2026-100** and has
+landed. All three open ones have carriers in `docs/TODO.md`.
 
 ## 1. Tool-argument validation moved to `@earendil-works/pi-schema`
 
@@ -95,7 +96,7 @@ both, and a non-member of a `Type.Literal` union is rejected in both. `peer_list
 outside JSON Schema, because we use none. Three classes of constraint at the *type*
 boundary softened: eighteen rejections in total (one, eight and nine), of which the
 `null` `session_id` is a lost rejection rather than a wrong result. Follow-up, not a
-blocker; see § Verdict.
+blocker; see § Verdict, and its carrier in `docs/TODO.md`.
 
 ## 2. `GrepOperations.readFile` is no longer called
 
@@ -123,7 +124,9 @@ readFile?: (absolutePath: string) => Promise<string> | string;
 fail to compile or throw: `grep` with `context` would silently return matches with
 no context lines. No such path exists here. The associated 1.5.1 fixes (grep `glob`
 now relative to `path`, `limit: 0` meaning 1, no match-limit notice at exactly
-`limit`) touch no caller here either: `rg -n 'glob:|context:' tests/` → 0.
+`limit`) touch no caller here either: `rg -n 'glob:|context:' tests/` → 2, both provider
+wrapper parameters in `tests/helpers/faux-provider.ts:68,72` (added by WO-2026-098),
+not tool arguments.
 
 ## 3. OpenAI-compatible models omit `tools: []`
 
@@ -136,7 +139,7 @@ probes — and neither is a completion request:
 ```
 $ rg -n 'openai-completions' tests/
 tests/model-error-mail.test.ts:468,783,795,845   (assistant message events)
-tests/summary-ownership.test.ts:258,1028,1049    (Model<Api> fixture + assertions on model.api)
+tests/summary-ownership.test.ts:260,1030,1051    (Model<Api> fixture + assertions on model.api)
 $ rg -n 'tools: \[\]' tests/ extensions/
 7 in tests/, 4 in extensions/subagent-async/test-resume.cjs
 ```
@@ -182,7 +185,7 @@ implementing, and keep them current." and the new base line both order the same
 thing. They do not conflict: the base scopes itself to *harness* changes and pi's
 own docs; ours scopes to the project's `docs/` and `decisions/` and adds "keep them
 current", which the base does not say. Nothing to rewrite: the addendum is stricter
-where it overlaps, and the overlap is one sentence out of 178 lines.
+where it overlaps, and the overlap is one sentence out of 180 lines.
 
 **Contradiction.** None. The base's "read only when the user asks about the harness
 itself" is a limit on proactively reading pi's packaged docs; `APPEND_SYSTEM.md` and
@@ -320,7 +323,7 @@ and out of this order's scope: nothing in 1.5.1 changes it either way. Carried b
 > | `index.ts:2196` — `subagent_stop`'s own force-kill fallback | Fixed with the order: `stillRunning(rs.proc)`, was `rs.proc && !rs.proc.killed`. |
 > | `test-progress-kill-timeout.cjs:175,179` — the mirror's copies of both | Same verdict as their originals: `alreadyDead` is now `!stillRunning`, and `stillRunning` keeps the real helper's `proc !== null` guard. |
 > | `test-progress-kill-timeout.cjs:222` — the mirror's proc stub | Writes `killed = true` on any signal, which is what Node does; it is the stub's fidelity, not a liveness read. |
-> | `spawn.ts:623`, `index.ts:2238–2240`, `sleep-guard.ts:173,203,204,309,342,353,365,366,368,370` | Not a liveness read: `killedExplicitly`/`killedVia` are the runner's own intent flags, and `OUTCOME_WORD.killed` is footer vocabulary. No verdict needed. |
+> | `spawn.ts:623`, `index.ts:2267`, `sleep-guard.ts:173,203,204,309,342,353,365,366,368,370` | Not a liveness read: `killedExplicitly`/`killedVia` are the runner's own intent flags, and `OUTCOME_WORD.killed` is footer vocabulary. No verdict needed. |
 > | `extensions/lib/git-run.ts:59` — `(err as {killed?}).killed` | Different mechanism: `execFile`'s own timeout flag on an `ExecException`, not a `ChildProcess` liveness read. Out of this order's scope. |
 > | `extensions/subagent/_index.ts.off:459` — `if (!proc.killed) proc.kill("SIGKILL")` | The same defect in a dead file: `.off`, never compiled or imported. Left untouched; deleting the file is separate work. |
 
@@ -365,7 +368,7 @@ Its seven failures are the two shared rows above, four `tests/e2e-checkpoint.tes
 rows -- "reads haystack files and finds needles in read regions" (60 s timeout),
 "triggers checkpoint and compaction succeeds with file injection" (`:328`), "agent
 answers from injected context without tools" (`:365`), "sibling tool in the same
-turn" (150 s timeout) -- and `tests/subagent-worktree-lock.test.ts:797` (next
+turn" (150 s timeout) -- and `tests/subagent-worktree-lock.test.ts:806` (next
 paragraph); plus one `Unhandled error between tests` at `:319`.
 
 None of the five reproduced at 1.5.1. **Cause not established.** The 185 s excess is
@@ -377,7 +380,7 @@ run waited not at all. So: not a 1.4.0 regression, and not shown to be load eith
 If the upgrade turns up an `e2e-checkpoint` timeout, this baseline cannot say
 whether it is new.
 
-`tests/subagent-worktree-lock.test.ts:797` also appeared red in two of the four
+`tests/subagent-worktree-lock.test.ts:806` also appeared red in two of the four
 suite runs (the 1.4.0 full run, and the child run inside 1.5.1's hermeticity row)
 and green in the other two: the 1.4.0 child and the 1.5.1 outer run. Not a version
 difference: it is red at 1.4.0 and
@@ -385,17 +388,17 @@ green at 1.5.1's top level, and `bun test tests/subagent-worktree-lock.test.ts` 
 `29 pass / 0 fail` standalone at 1.4.0 (reproduced 2026-11-13); no 1.5.1 standalone
 run was captured, so that figure rests on the outer run.
 
-**Load-sensitive test, mechanism unproven.** The tree it waits for and the branch it
-then reads are removed by two separate steps: the reap runs fire-and-forget from
-`session_start` (`extensions/subagent-async/index.ts:1140`, its `.catch()` at `:1150`), the
-row waits for the tree (`tests/subagent-worktree-lock.test.ts:793`) and then samples
-the branch with no wait (`:797`), and the branch delete follows
-`disposeWorktreeBuildOutput`. A sampler that catches the gap between them fails
-exactly as observed: tree gone, `worktreeEntry` null, branch still present. A
-cross-process collision is not possible — each run gets its own `mkdtempSync` repo
-and home (`:46`, `:80`), and the fixed branch name lives inside that private repo.
-Neither mechanism is pinned; the row wants a `waitFor` on the branch, which is a
-test fix and not this order's.
+**Load-sensitive test; fixed since the audit ran, by `06726a1` (2026-11-13).** The
+tree the row waits for and the branch it then reads are removed by two separate
+steps: the reap runs fire-and-forget from `session_start`
+(`extensions/subagent-async/index.ts:1140`, its `.catch()` at `:1150`), the row waited
+for the tree and then sampled the branch with no wait, and the branch delete follows
+`disposeWorktreeBuildOutput`. A sampler catching the gap fails exactly as observed:
+tree gone, `worktreeEntry` null, branch still present. A cross-process collision was
+never possible — each run gets its own `mkdtempSync` repo and home (`:46`, `:80`), and
+the fixed branch name lives inside that private repo. The row now polls the branch
+(`tests/subagent-worktree-lock.test.ts:806`) and stays red when the wiring is dropped,
+so both versions should read green on this row after the upgrade.
 
 78 files rather than 45: 45 is the gate-sensitive subset —
 `gateSensitiveTestFiles()` walks `tests/` only
@@ -454,7 +457,7 @@ Follow-ups, in order of what would bite first. None blocks the upgrade:
    the schema documents as "disabled". Fix would touch `extensions/subagent-async/index.ts:1839–1845`
    (`ResumeParams.session_id`, the headline case), `:1382` (`silenceTimeoutMs`) and
    `:1388` (`turn_cap`), or a guard in `execute`, plus a row in
-   `tests/subagent-id-resolution.test.ts`. Follow-up.
+   `tests/subagent-id-resolution.test.ts`. Follow-up; carried in `docs/TODO.md`.
 2. **Warmed-cache cost invisible to the transcript (§ Cache warming).** Owner
    question `Q-097-a` in the work order: the order permits one settings key and the
    line needs a second. Options there are (a) add `"showCacheMissNotices": true`
