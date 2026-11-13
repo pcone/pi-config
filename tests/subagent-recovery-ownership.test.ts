@@ -59,7 +59,7 @@ import extension, {
 } from "../extensions/subagent-async/index.ts";
 import { _testSetReaperHome } from "../extensions/lib/checkout-reaper.ts";
 import { PI_SUBAGENT_META_DIR_ENV, SUBAGENT_TMP_DIR, subagentMetaDir } from "../extensions/lib/subagent-state.ts";
-import { PI_SUBAGENT_CARGO_HOME_ENV } from "../extensions/lib/subagent-worktree.ts";
+import { PI_SUBAGENT_CARGO_HOME_ENV, PI_SUBAGENT_WT_ROOT_ENV } from "../extensions/lib/subagent-worktree.ts";
 import { UnusableEnvPathError } from "../extensions/lib/env-path.ts";
 import { setEnvForRow } from "./helpers/subagent-env.ts";
 
@@ -844,6 +844,27 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
 			).rejects.toThrow(`${PI_SUBAGENT_META_DIR_ENV} must be an absolute path`);
 		} finally {
+			restore();
+		}
+	});
+
+	it("the real session_start handler refuses a bad worktree base too", async () => {
+		// The base cannot ride on `wtRoots()`: it passes an explicit home, so it
+		// never reads the override, and the chain's one ambient read —
+		// `disposeWorktreeBuildOutput` deriving the clone name — sits inside
+		// `removeWorktreeTree`'s best-effort catch, which turns a bad root into a
+		// reported prune problem. A bad override would prune nothing and say nothing
+		// about it, so the handler reads the base in its own frame (decision 052).
+		const restore = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, "relative/wt");
+		// Only a parent session runs the reaper block, and this process is a child.
+		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
+		try {
+			const handlers = register();
+			await expect(
+				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
+			).rejects.toThrow(`${PI_SUBAGENT_WT_ROOT_ENV} must be an absolute path, got "relative/wt"`);
+		} finally {
+			restoreDepth();
 			restore();
 		}
 	});

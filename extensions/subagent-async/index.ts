@@ -21,7 +21,7 @@ import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
 import { registerWaitSource } from "../lib/waits.ts";
 import { rethrowIfUnusableEnvPath } from "../lib/env-path.ts";
 import { validateOwnerAsks } from "../lib/owner-row.ts";
-import { cargoTargetDirFor, subagentCargoHome, subagentWorktreePath } from "../lib/subagent-worktree.ts";
+import { cargoTargetDirFor, subagentCargoHome, subagentWorktreeBase, subagentWorktreePath } from "../lib/subagent-worktree.ts";
 import {
 	type CommandRunner,
 	type BuildOutputReport,
@@ -1062,14 +1062,15 @@ export default function (pi: ExtensionAPI) {
 		// N passes and each would overwrite the report the parent announced.
 		// The parent's own session start is the pass.
 		if (!process.env.PI_SUBAGENT_DEPTH) {
-			// The three roots this block's chain reads are resolved here, synchronously,
-			// before the chain exists: `recoverOrphanedSubagents` above read the metas
-			// dir, `wtRoots` reads the worktree base, and this reads the cargo home.
-			// The pass has to resolve them for itself so a row that calls it directly
-			// reaches the same refusal (decision 052); this handler has to read them
-			// too, because a throw three frames into a chain it does not await is an
-			// unhandled rejection, not a refused start (WO-2026-099 round 2).
+			// The roots this block's chain reads are resolved here, synchronously, before
+			// the chain exists: `recoverOrphanedSubagents` above read the metas dir, and
+			// these read the two homes. A throw from inside the chain is an unhandled
+			// rejection, not a refused start (decision 052); for the base it is worse,
+			// because `wtRoots` below takes an explicit home and never reads the
+			// override, and the chain's one ambient read sits inside
+			// `removeWorktreeTree`'s best-effort catch (WO-2026-099 round 3).
 			subagentCargoHome();
+			subagentWorktreeBase();
 			// The reaper (WO-2026-092): every checkout under `~/Developer/wt`. 027's
 			// subtree goes first — its gates are its own — and the general pass takes
 			// its verdicts and the worktree paths its metas named, so the same tree is

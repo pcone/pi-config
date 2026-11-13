@@ -76,9 +76,11 @@ rows, which are the characterisation of the machinery being rewired.
 
 ## Gate-back record — 2026-11-13
 
-Landed on `pi-subagent-ebf9a4ee2574`: `100ad98` (round 1, code+tests), `e9899c3` +
-`0c553fe` (docs/decision 052), and the round-2 rework commit (the two reviews' HIGHs and
-the surviving hook). Snapshot: `docs/investigations/structure-trend.md`, 2026-11-13 entry.
+Landed on `pi-subagent-ebf9a4ee2574` for rounds 1–2: `100ad98` (round 1, code+tests),
+`e9899c3` + `0c553fe` (docs/decision 052), `f4cb623` (round 2: the two reviews' HIGHs and
+the surviving hook) and `8e80ce8` (decision 052 round 2, the register snapshot, Q-099-a).
+Round 3 lands the base pre-flight, its row, and the corrected claim (decision 052 § Round 3).
+Snapshot: `docs/investigations/structure-trend.md`, 2026-11-13 entry.
 
 ### Owner question Q-099-a (raised 2026-11-13, by both round-1 reviews) — RULING PENDING
 
@@ -93,6 +95,13 @@ and the same row says not to read it. Round 1 landed the two halves instead —
 asserted as a path, never listed) and `:851-873` (a reap with no `dir` observes the
 *override* it resolved) — which together entail the row's intent, because
 `deps.dir ?? subagentMetaDir()` is one expression.
+
+**Rulings that bear on it.** `decisions/subagents/034-spec-authority.md` — a work order's
+acceptance rows change only by an owner ruling, and a *verdict* never rules: this stays a
+question rather than a recorder's call. `decisions/subagents/052-recovery-scan-process-wide-root.md`
+— the split's mechanism is the region's one rule (an override is resolved before the pass's
+swallow-all `try`s, and an explicit argument still wins); option (b) would add surface
+beside it rather than change it.
 
 **Options.** (a) accept the split as the faithful reading of a self-contradictory row, and
 record it in the row's own text; (b) add a seam that reports the roots the reap resolved

@@ -110,7 +110,10 @@ function reaperHome(): string {
 	return homeOverride ?? homedir();
 }
 
-/** `~/Developer/wt` and the subagent namespace inside it, for one home. */
+/** `~/Developer/wt` and the subagent namespace inside it, for one home. The home
+ *  is explicit, so this never reads `PI_SUBAGENT_WT_ROOT`: a caller that wants the
+ *  override refused must read the base itself (the `session_start` handler does,
+ *  before the reap chain exists). */
 export function wtRoots(home: string = reaperHome()): { root: string; subagentBase: string } {
 	const subagentBase = subagentWorktreeBase(home);
 	return { root: path.dirname(subagentBase), subagentBase };

@@ -110,3 +110,29 @@ real session_start handler refuses a bad cargo home too»),
 `tests/subagent-state-vocabulary.test.ts` («with no `dir`, reads the
 metas-dir override»), `tests/subagent-worktree-root-isolation.test.ts` (the
 nested row now asserts the child's roots are removed).
+
+## Round 3 (2026-11-13) — the base's read, and round 2's over-claim corrected
+
+Round 2 closed with a claim that does not hold: "both chain rethrows are removed
+— nothing below them can raise it." That is true of the cargo home and false of
+the worktree base, and the difference is which reader the chain reaches:
+
+- `wtRoots()` derives through `subagentWorktreeBase(home)` with an explicit home,
+  so nothing reads `PI_SUBAGENT_WT_ROOT` in the handler's frame at all.
+- The chain's one ambient base read is `disposeWorktreeBuildOutput`'s clone-name
+  derivation, called from `removeWorktreeTree` with `baseHome` omitted. That call
+  sits inside the removal's best-effort catch, which reports a prune problem and
+  returns: a bad override would leave a removed tree's share of the shared cargo
+  dir unpruned and say nothing.
+
+So the handler reads `subagentWorktreeBase()` beside `subagentCargoHome()`, one
+synchronous line before `wtRoots()`. Same shape as the cargo read, different
+reason: the cargo read refuses an override the pass would otherwise swallow three
+frames down, this one refuses an override nothing else would read before the
+chain. The pass itself is unchanged — it still derives the base ambiently at the
+point of use, and a row that drives it directly keeps its fixture homes through
+`deps.baseHome`.
+
+Row: `tests/subagent-recovery-ownership.test.ts` («the real session_start handler
+refuses a bad worktree base too»), red when the pre-flight line is removed — the
+handler resolves instead of rejecting, which is the silent prune.

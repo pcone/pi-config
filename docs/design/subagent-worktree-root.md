@@ -44,9 +44,19 @@ runs in a chain `session_start` does not await, so a throw from inside the chain
 is an unhandled rejection rather than a failed start. The handler therefore reads
 the cargo home in its own frame, at the top of the reaper block, before the chain
 exists; `reapFinishedWorktrees` reads it again for itself, so a row that calls
-the pass directly reaches the same refusal. That is three roots read before the
-first `await` — the scan's metas dir, `wtRoots`'s base, and this cargo read — and
-why neither chain catch rethrows: nothing below them can raise the refusal.
+the pass directly reaches the same refusal.
+
+The worktree base needs the same read for a different reason. `wtRoots()` takes an
+explicit home, so it never reads the override, and the one ambient base read
+below the handler is `disposeWorktreeBuildOutput`'s clone-name derivation —
+inside the chain, inside `removeWorktreeTree`'s best-effort catch, which reports
+a prune problem and returns. A bad `PI_SUBAGENT_WT_ROOT` would leave a removed
+tree's shared cargo share unpruned and say nothing, so the handler reads the base
+beside the cargo home.
+
+Three roots are therefore read before the first `await` — the scan's metas dir,
+the cargo home, and the ambient base — and neither chain catch rethrows: nothing
+below them can raise the refusal.
 
 ## The suite sets all three for the whole run
 
