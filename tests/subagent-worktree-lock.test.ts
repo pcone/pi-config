@@ -797,9 +797,13 @@ describe("reapFinishedWorktrees (real git, injected registry)", () => {
 			);
 			expect(await waitFor(() => !existsSync(tree), 20_000)).toBe(true);
 			// The removal the call site wires in, not an rmtree: the registration went
-			// with the tree, and the branch delete is inside that same sequence.
+			// with the tree, and the branch delete is inside that same sequence — so it
+			// is polled, not asserted on the instant the directory goes: the directory
+			// is gone while `git branch -D` is still pending (a 50 ms poll plus one git
+			// spawn, red 2 runs in 20 on this box). A plain rmtree never deletes the
+			// branch, so the poll still goes red when the wiring is dropped.
 			expect(worktreeEntry(repo, tree)).toBeNull();
-			expect(git(repo, ["branch", "--list", branch]).out.trim()).toBe("");
+			expect(await waitFor(() => git(repo, ["branch", "--list", branch]).out.trim() === "", 20_000)).toBe(true);
 			expect(await waitFor(() => existsSync(join(root, ".reaper-report.json")), 20_000)).toBe(true);
 			const row = readReaperReport(root)?.removed.find((r) => r.path === tree);
 			expect(row?.state).toBe("removed");
