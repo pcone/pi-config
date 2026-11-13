@@ -165,34 +165,28 @@ async function runChain(opts: ChainOptions): Promise<ChainResult> {
 	const metaBefore = metaFiles();
 	const started = Date.now();
 
-	const child = spawn(
-		PI_BIN,
-		["--mode", "rpc", "--model", "faux/faux-1", "--session-id", `e2e-${spelling}-${Date.now()}`, "--tools", "subagent,wait,subagent_status"],
-		// Own process group: the chain's grandchildren sit in no other group we
-		// can reach, and a leaked `pi` per arm would follow the suite around.
-		{
-			cwd,
-			env: childEnv({
-				PI_FAUX_LOG: fauxLog,
-				PI_FAUX_SCRIPT_DEPTH_0: JSON.stringify([
-					{ call: "subagent", args: { agent: "probe-mid", task: "delegate once", isolate: false, review_policy: "skip" } },
-					{ call: "wait", args: waitSeconds === undefined ? {} : { seconds: waitSeconds } },
-					{ text: "SUBJECT-WOKE" },
-				]),
-				PI_FAUX_SCRIPT_DEPTH_1: JSON.stringify([
-					{ call: "subagent", args: { agent: "probe-leaf", task: "answer", isolate: false, review_policy: "skip" } },
-					{ call: "wait", args: {} },
-					{ text: "MID-WOKE" },
-				]),
-				PI_FAUX_SCRIPT_DEPTH_2: JSON.stringify([{ text: "leaf done" }]),
-				PI_CODING_AGENT_DIR: join(root, spelling, "agent"),
-				PI_SUBAGENT_ALLOWLIST: "probe-mid,probe-leaf",
-				PI_OFFLINE: "1",
-			}),
-			stdio: ["pipe", "pipe", "pipe"],
-			detached: true,
-		},
-	);
+	const overrides: Record<string, string> = {
+		PI_FAUX_LOG: fauxLog,
+		PI_FAUX_SCRIPT_DEPTH_0: JSON.stringify([
+			{ call: "subagent", args: { agent: "probe-mid", task: "delegate once", isolate: false, review_policy: "skip" } },
+			{ call: "wait", args: waitSeconds === undefined ? {} : { seconds: waitSeconds } },
+			{ text: "SUBJECT-WOKE" },
+		]),
+		PI_FAUX_SCRIPT_DEPTH_1: JSON.stringify([
+			{ call: "subagent", args: { agent: "probe-leaf", task: "answer", isolate: false, review_policy: "skip" } },
+			{ call: "wait", args: {} },
+			{ text: "MID-WOKE" },
+		]),
+		PI_FAUX_SCRIPT_DEPTH_2: JSON.stringify([{ text: "leaf done" }]),
+		PI_CODING_AGENT_DIR: join(root, spelling, "agent"),
+		PI_SUBAGENT_ALLOWLIST: "probe-mid,probe-leaf",
+		PI_OFFLINE: "1",
+	};
+	const args = ["--mode", "rpc", "--model", "faux/faux-1", "--session-id", `e2e-${spelling}-${Date.now()}`, "--tools", "subagent,wait,subagent_status"];
+	// `detached`: own process group, so the chain's grandchildren — in no other
+	// group we can reach — die with it, and a leaked `pi` per arm does not
+	// follow the suite around.
+	const child = spawn(PI_BIN, args, { env: childEnv(overrides), cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
 
 	const stderr: string[] = [];
 	child.stderr!.on("data", (chunk: Buffer) => {
