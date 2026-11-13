@@ -1210,3 +1210,30 @@ removal-error reporter (it reports through the existing `kept` rows).
 is a first landing, so this is a note rather than a strike: its next chunk should extract the two
 clusters above before adding gates. `index.ts` at 2243 keeps its own carrier (WO-2026-095's
 remainder, `Q-095-a`).
+
+## Snapshot 2026-11-13 — WO-2026-099 (recovery-scan roots: env, not per-file hooks)
+
+**growth.** `git diff --numstat cfe0e12..HEAD -- extensions/`: `env-path.ts` **new, 68**
+(one absolute-or-throw rule, three resolvers); `subagent-state.ts` +32/−12 (843, the third
+hook deleted, `subagentMetaDir` added); `build-output-reaper.ts` +30/−19 (897, one `home`
+field became two); `recovery.ts` +32/−25 (776), `index.ts` +16/−6 (2253), `worktree.ts`
++12/−3 (612), `subagent-worktree.ts` +46/−22 (154), `checkpoint.ts` −6 (its re-export of the
+deleted hook). No function gained a branch: every site either resolves a root once at the
+top, or passes one of two named fields where it passed one conflated field.
+
+**unification.** Three per-process seams became one ambient rule: `rg -n
+'_testSetRecoveryScanDir|_testSetCargoHome|_testSetInflightScanDir' extensions/ tests/` →
+**0**. `rg -n 'absoluteEnvPath\(' extensions/` → **2** (the definition and
+`subagent-worktree`'s two callers through it); every resolver funnels through it.
+Test-side, five files' hand-rolled save/restore became `setEnvForRow`, which now also
+unsets: `rg -n 'process\.env\[PI_SUBAGENT' tests/` → 8, all reads or the preload's own writes.
+
+**strike, worked the same landing.** `RemovalDeps.home` was one field meaning two things —
+the home a tree's clone name derives from and the home its shared cargo dir lives under. The
+landing split it (`cargoHome` / `baseHome`) rather than patching the call site, because the
+two roots move independently and the failure was silent (attribution null → no prune).
+
+**flag.** `tests/build-output-reaper.test.ts` now passes both homes from one local `homesAt`
+helper — fine for a fixture whose roots genuinely agree, but it is the shape a second landing
+would copy into a case where they do not. The rows that keep them apart belong in
+`tests/subagent-worktree-lock.test.ts` and are three of them now.

@@ -72,3 +72,41 @@ avoid.
   `metaPath` lands (`metaPath` still hardcodes `/tmp`), so a row that writes one
   and reads it back through a defaulted reader keeps both on `/tmp`. Recovery
   rows that fabricate children keep using `deps.dir`.
+
+## Round 2 (2026-11-13) — what the rework changed, and why
+
+Both reviewers rejected round 1. Three corrections, each a consequence of the
+rule above rather than a new ruling:
+
+- **`_testSetInflightScanDir` is the same hook, and is gone too.** It was the
+  third per-process registry seam: `listInFlightSubagents` defaulted to
+  `SUBAGENT_TMP_DIR`, so the wait source and checkpoint read the box's `/tmp`
+  however the preload was set. Those readers now resolve
+  `opts.dir ?? subagentMetaDir()`. The rejected alternative above
+  (`listSubagentMetas` / `resolveSubagentMeta` / `discoverSessions`) still
+  stands: their writer is `metaPath`, and the in-flight reader was not one of
+  them.
+- **The cargo home's refusal is read in the handler's frame, not rethrown from
+  the chain.** The pass runs in a chain `session_start` does not await, so
+  `rethrowIfUnusableEnvPath` inside its `.catch` was an unhandled rejection, not
+  a refused start. The handler calls `subagentCargoHome()` before the chain
+  exists; `reapFinishedWorktrees` keeps resolving it for itself, so a row that
+  calls the pass directly reaches the same refusal. Both chain rethrows are
+  removed — nothing below them can raise it. The rejected alternative above
+  (resolve in the handler and pass `dir`/`home`) stays rejected: the pass still
+  answers for itself.
+- **The reap's cargo home is not its worktree base.** `removeWorktreeTree`'s
+  single `home` served both, so the new cargo override became the base
+  attribution used: with `PI_SUBAGENT_WT_ROOT` and `PI_SUBAGENT_CARGO_HOME`
+  pointing at different roots — true for every test after this landing —
+  attribution returned null and a clone's share was silently never pruned.
+  `BuildOutputHomes` carries `cargoHome` and `baseHome`; the reap passes only
+  the first, the checkout reaper passes one value as both, and two rows keep
+  the two roots apart.
+
+Rows: `tests/subagent-worktree-lock.test.ts` («the worktree base and the cargo
+home are separate roots»), `tests/subagent-recovery-ownership.test.ts` («the
+real session_start handler refuses a bad cargo home too»),
+`tests/subagent-state-vocabulary.test.ts` («with no `dir`, reads the
+metas-dir override»), `tests/subagent-worktree-root-isolation.test.ts` (the
+nested row now asserts the child's roots are removed).
