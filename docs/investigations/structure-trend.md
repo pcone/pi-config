@@ -1269,12 +1269,12 @@ this family; each needs its own order. `index.ts` at 2254 stays inside its exist
 
 ### Round 4 (same landing, 2026-11-13) — the roots in one place, the base threaded
 
-**growth.** `git diff --numstat 960ccb2 -- extensions/`: `recovery.ts` +62/−13 (825, one
-5-line resolver and a pass that threads its values), `build-output-reaper.ts` +16/−11 (902,
+**growth.** `git diff --numstat 960ccb2 -- extensions/`: `recovery.ts` +64/−13 (827, one
+9-line resolver and a pass that threads its values), `build-output-reaper.ts` +16/−11 (902,
 one field renamed and its four readers), `subagent-worktree.ts` +8/−10 (152),
 `index.ts` +8/−8 (2254, the two pre-flight calls became one), `checkout-reaper.ts` +2/−2,
-`worktree.ts` +8/−5. No function gained a branch; the pass lost one resolution per root per
-call and gained one at the top.
+`worktree.ts` +8/−5 (615). No function gained a branch; the pass lost one resolution per root
+per call and gained one at the top.
 
 **unification.** The pass's ambient roots are named once: `rg -n 'subagentMetaDir\(\)|subagentCargoHome\(\)|subagentWorktreeBase\(\)'
 extensions/subagent-async/ extensions/lib/checkout-reaper.ts` → **4** lines, three of them the
@@ -1295,5 +1295,5 @@ base the pass resolved.
 **flag, carried out of this order.** The two seams round 3 carried remain, unchanged and still
 not this order's: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:105`, now also the
 pin that keeps the three handler-refusal rows hermetic under their named mutations) and
-`metaPath`'s hardcoded `/tmp` writer (decision 052 § Alternatives). `recovery.ts` at 825 stays
+`metaPath`'s hardcoded `/tmp` writer (decision 052 § Alternatives). `recovery.ts` at 827 stays
 under the 1,000-line floor for counting.

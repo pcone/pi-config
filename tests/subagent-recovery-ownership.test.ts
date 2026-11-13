@@ -119,10 +119,10 @@ afterEach(() => {
 });
 
 /** Pin the checkout reaper's home for a row that drives the real handler. Each
- *  such row's red proof removes a pre-flight, and the chain that then runs reads
- *  the box's own `~/Developer/wt` unless this is set — with the reaper's home
- *  unpinned, a mutation proves the row red by walking a human's checkouts and
- *  `cargo clean -p`-ing their real shared dirs (WO-2026-099 rounds 3-4). */
+ *  such row's red proof removes one refusal in front of the reap chain, and that
+ *  chain reads the box's own `~/Developer/wt` unless this is set: unpinned, a
+ *  mutation proves the row red by walking a human's checkouts and `cargo clean
+ *  -p`-ing their real shared dirs (WO-2026-099 rounds 3-4). */
 function pinReaperHome(): () => void {
 	const home = mkdtempSync(path.join(tmpdir(), "pi-handler-home-"));
 	tempDirs.push(home);
