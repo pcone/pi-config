@@ -13,7 +13,7 @@ import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { appendRunningLogLine, buildPromptPayload, rpcSend } from "./rpc.ts";
 import { reconcileSleepGuards } from "./sleep-guard.ts";
 import {
-	_attachCtx,
+	attachCtx,
 	attachedSessionId,
 	debugLog,
 	detach,
@@ -97,7 +97,7 @@ export class AttachEditor extends CustomEditor {
 	handleInput(data: string): void {
 		// Escape → detach (restore default editor, clear widget, clear state)
 		if (matchesKey(data, Key.escape)) {
-			if (_attachCtx) detach();
+			if (attachCtx()) detach();
 			return;
 		}
 
@@ -108,7 +108,7 @@ export class AttachEditor extends CustomEditor {
 
 			this.setText(""); // clear the editor
 
-			const id = attachedSessionId;
+			const id = attachedSessionId();
 			if (!id) {
 				// No target — shouldn't happen if editor is installed, but be safe
 				debugLog("attach: submit with no attachedSessionId");
@@ -157,7 +157,7 @@ export class AttachLogViewer {
 	}
 
 	render(width: number): string[] {
-		const id = attachedSessionId;
+		const id = attachedSessionId();
 		if (!id) return [];
 		const rs = running.get(id);
 		if (!rs) return [truncateToWidth("(session ended)", width)];
@@ -190,16 +190,17 @@ export function updateFooter(): void {
 	// No live session → nothing to render on. Deliberately not a try/catch:
 	// an explicit liveness check, per
 	// decisions/subagents/026-subagent-events-after-session-disposal.md.
-	if (!liveSessionCtx) return;
+	const ctx = liveSessionCtx();
+	if (!ctx) return;
 	if (running.size === 0) {
-		liveSessionCtx.ui.setStatus("subagent-async", undefined);
+		ctx.ui.setStatus("subagent-async", undefined);
 		return;
 	}
 	const parts: string[] = [];
 	for (const rs of running.values()) {
 		parts.push(`${rs.agentName} (${rs.progress.turns}t)`);
 	}
-	liveSessionCtx.ui.setStatus("subagent-async", `subagents: ${parts.join(", ")}`);
+	ctx.ui.setStatus("subagent-async", `subagents: ${parts.join(", ")}`);
 }
 
 /** Notify the parent that an attached subagent ended. Post-turn async path —
@@ -208,6 +209,7 @@ export function updateFooter(): void {
  *  The captured spawn-time ctx is never used here. Exported as an @internal
  *  test hook. */
 export function notifyChildDetached(rs: RunningSubagent): void {
-	if (!liveSessionCtx) return;
-	liveSessionCtx.ui.notify(`Subagent ${rs.sessionId.slice(-8)} ended — detached.`, "info");
+	const ctx = liveSessionCtx();
+	if (!ctx) return;
+	ctx.ui.notify(`Subagent ${rs.sessionId.slice(-8)} ended — detached.`, "info");
 }

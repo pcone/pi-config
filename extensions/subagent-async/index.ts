@@ -348,23 +348,20 @@ export const PI_ASYNC_DEBUG = process.env.PI_ASYNC_DEBUG === "1";
 // in nested-orchestration scenarios; normal pi sessions always have a
 // session id.
 
-import { isReviewRequirementKind, type ReviewRequirementKind, type ReviewerKind } from "./agents.ts";
+import { isReviewRequirementKind, type ReviewRequirementKind } from "./agents.ts";
+import { runnerState, type SpawnEntry, type TrackerState } from "./process-state.ts";
 
-interface SpawnEntry {
-	reviewerKind: ReviewerKind;
-	childSessionId: string;
-	childAgentName: string;
-	spawnedAt: number;
-}
+/** This evaluation's id. Two evaluations of this module in one process are
+ *  distinguishable, so a late `session_shutdown` from a stale one cannot clear
+ *  the live session's ctx (see `clearLiveSession`). */
+const EVALUATION_ID = randomUUID();
 
-interface TrackerState {
-	spawns: SpawnEntry[];
-	reviewRounds: number;
-	reviewCapReached: boolean;
-}
+/** The process-wide runner state — shared with every other evaluation of this
+ *  module. See `process-state.ts`. */
+const runner = runnerState();
 
-const parentReviewerSpawns = new Map<string, TrackerState>();
-
+/** The parent's reviewer spawns, `Map<parentSessionId, TrackerState>`. */
+const parentReviewerSpawns = runner.parentReviewerSpawns;
 /** Stable key for tracker persistence and cross-process lookup. */
 export function getParentTrackerKey(ctx: any): string {
 	try {
@@ -664,7 +661,7 @@ export interface RunningSubagent {
 	killedVia: "kill-tool" | "progress-timeout" | "turn-limit" | "turn-cap" | null;
 }
 
-export const running = new Map<string, RunningSubagent>();
+export const running = runner.running;
 /** @internal test hook — allows tests to inject entries into the running map. */
 export const _testRunning = running;
 
@@ -680,34 +677,62 @@ export const _testRunning = running;
 // `session_start`; cleared in `session_shutdown`, which pi emits BEFORE
 // `ExtensionRunner.invalidate` — see
 // decisions/subagents/026-subagent-events-after-session-disposal.md.
-export let liveSessionCtx: any = null;
+//
+// Held in the shared registry, not on a module binding: this module can be
+// evaluated twice in one process, and only one evaluation's `session_start`
+// runs (the other's factory is never registered). A per-module binding leaves
+// the delivery path reading null in a process with a live session.
+export function liveSessionCtx(): any {
+	return runner.liveSession?.ctx ?? null;
+}
+
+/** Record the live session's ctx as owned by this evaluation. */
+export function setLiveSession(ctx: any): void {
+	runner.liveSession = { ctx, owner: EVALUATION_ID };
+}
+
+/** Drop the live-session ctx, unless another evaluation set it. A duplicate
+ *  evaluation's `session_shutdown` runs for a session it never saw start, and
+ *  pi's shutdown/start order on reload means clearing here would wipe the
+ *  session that replaced it. */
+export function clearLiveSession(): void {
+	if (runner.liveSession?.owner === EVALUATION_ID) runner.liveSession = null;
+}
 
 /** @internal test hook — the live-session ctx (null when no session is live). */
 export function _testLiveSessionCtx(): any {
-	return liveSessionCtx;
+	return liveSessionCtx();
 }
 
 /** @internal test hook — set/clear the live-session ctx without a real pi
  *  session. Mirrors the `session_start`/`session_shutdown` lifecycle for
  *  tests that exercise delivery against a live session. */
 export function _testSetLiveSessionCtx(ctx: any): void {
-	liveSessionCtx = ctx;
+	setLiveSession(ctx);
 }
 
 // Active wait timer — set when `wait` is called with the optional `seconds`
-// parameter. We hold a single module-level handle because at most one wait
-// can be active at a time (the tool terminates the turn, so the next call
-// only happens after a wake-up). The timer fires a wake-up steer message
-// after N seconds if no subagent has completed; we cancel it from the
-// subagent close handler so a completing subagent doesn't get followed
-// by a redundant "still running" wakeup.
-let activeWaitTimer: NodeJS.Timeout | null = null;
-
+// parameter. One handle per process (shared through the registry, for the same
+// duplicate-evaluation reason as `liveSessionCtx`): at most one wait can be
+// active at a time, because the tool terminates the turn, so the next call
+// only happens after a wake-up. The timer fires a wake-up steer message after N
+// seconds if no subagent has completed; we cancel it from the subagent close
+// handler so a completing subagent doesn't get followed by a redundant "still
+// running" wakeup.
 export function clearActiveWait(): void {
-	if (activeWaitTimer) {
-		clearTimeout(activeWaitTimer);
-		activeWaitTimer = null;
+	if (runner.activeWaitTimer) {
+		clearTimeout(runner.activeWaitTimer);
+		runner.activeWaitTimer = null;
 	}
+}
+
+/** Arm the wait timer. Latest call replaces any prior timer. */
+export function armActiveWait(seconds: number, onFire: () => void): void {
+	clearActiveWait();
+	runner.activeWaitTimer = setTimeout(() => {
+		runner.activeWaitTimer = null;
+		onFire();
+	}, seconds * 1000);
 }
 
 /**
@@ -729,18 +754,31 @@ export function resolveRunningSession(sessionId: string): RunningSubagent | null
 
 // ── Attach state ────────────────────────────────────────────────────────────
 
-export let attachedSessionId: string | null = null;
-export let _attachCtx: any = null; // captured from /attach command for editor-internal notify
+/** The attached session's id, or null when detached. Registry-held for the same
+ *  duplicate-evaluation reason as `running`. */
+export function attachedSessionId(): string | null {
+	return runner.attachedSessionId;
+}
+
+/** The ctx captured from `/attach`, for editor-internal notify. */
+export function attachCtx(): any {
+	return runner.attachCtx;
+}
+
+/** Set/clear the attach state. */
+export function setAttachState(sessionId: string | null, ctx: any = null): void {
+	runner.attachedSessionId = sessionId;
+	runner.attachCtx = ctx;
+}
 
 /** @internal test hook — set/clear the attach state without driving /attach. */
 export function _testSetAttachState(sessionId: string | null, ctx: any = null): void {
-	attachedSessionId = sessionId;
-	_attachCtx = ctx;
+	setAttachState(sessionId, ctx);
 }
 
 /** @internal test hook — the currently attached session id (null when detached). */
 export function _testAttachSessionId(): string | null {
-	return attachedSessionId;
+	return attachedSessionId();
 }
 
 export function newProgress(): SubagentProgress {
@@ -907,15 +945,14 @@ export function resolveChildModel(opts: {
  * exercised directly.
  */
 export function detach(): void {
-	if (attachedSessionId === null) return;
-	const ctx = liveSessionCtx;
+	if (attachedSessionId() === null) return;
+	const ctx = liveSessionCtx();
 	if (ctx) {
 		ctx.ui.setEditorComponent(undefined);
 		ctx.ui.setWidget("subagent-attach", undefined);
 		ctx.ui.setStatus("subagent-attach", undefined);
 	}
-	attachedSessionId = null;
-	_attachCtx = null;
+	setAttachState(null);
 	updateFooter();
 }
 
@@ -962,7 +999,7 @@ export function bumpStaleWatchdog(pi: ExtensionAPI, rs: RunningSubagent): void {
 		// child ran. pi invalidates its ExtensionAPI alongside the ctx, so
 		// `pi.sendUserMessage` below would throw uncaught from this timer.
 		// No live session → no receiver for a stall wake-up; skip.
-		if (!liveSessionCtx) {
+		if (!liveSessionCtx()) {
 			debugLog(`stale-watchdog: no live session — skipping wake-up for ${rs.sessionId}`);
 			return;
 		}
@@ -1039,7 +1076,7 @@ export default function (pi: ExtensionAPI) {
 		// Track the live-session ctx before anything else can touch the UI.
 		// Every post-turn async path (footer, delivery, child-end notify,
 		// attach cleanup) reads this instead of a captured spawn-time ctx.
-		liveSessionCtx = ctx;
+		setLiveSession(ctx);
 		try {
 			const agents = discoverAgents(ctx.cwd, "user").agents;
 			const agentNames = agents.map((agent) => agent.name).sort();
@@ -1127,7 +1164,7 @@ export default function (pi: ExtensionAPI) {
 		// Clear the live-session ctx. pi emits this BEFORE invalidating the
 		// extension runner, so async child callbacks that observe a null ctx
 		// skip UI/delivery instead of throwing on a stale ctx.
-		liveSessionCtx = null;
+		clearLiveSession();
 		// Don't kill subagents — they survive parent reloads/restarts.
 		// Their work commits to branches and is recoverable via git merge.
 		// Socket servers and log files persist at /tmp/pi-subagent-<sid>.*
@@ -1200,7 +1237,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Empty arg while attached → convenience detach
 			if (!sid) {
-				if (attachedSessionId !== null) {
+				if (attachedSessionId() !== null) {
 					detach();
 					ctx.ui.notify("Detached.", "info");
 					return;
@@ -1227,17 +1264,17 @@ export default function (pi: ExtensionAPI) {
 			const rs = result.rs;
 
 			// Capture ctx for editor-internal use (escape-detach, notify)
-			_attachCtx = ctx;
+			setAttachState(attachedSessionId(), ctx);
 
 			// Already attached to the same session — no-op
-			if (attachedSessionId === rs.sessionId) {
+			if (attachedSessionId() === rs.sessionId) {
 				ctx.ui.notify(`Already attached to ${rs.sessionId.slice(-8)}.`, "info");
 				return;
 			}
 
 			// Switching target (already attached to a different session)
-			const wasAttached = attachedSessionId !== null;
-			attachedSessionId = rs.sessionId;
+			const wasAttached = attachedSessionId() !== null;
+			setAttachState(rs.sessionId, ctx);
 
 			if (wasAttached) {
 				ctx.ui.notify(`Switched attach target → ${rs.sessionId.slice(-8)}`, "info");
@@ -1274,7 +1311,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("detach", {
 		description: "Detach from the foregrounded subagent and return to the parent session.",
 		handler: async (_args, ctx) => {
-			if (attachedSessionId === null) {
+			if (attachedSessionId() === null) {
 				ctx.ui.notify("Not currently attached.", "info");
 				return;
 			}
@@ -1991,14 +2028,11 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			// Timer requested. Replace any existing timer (defensive — the
-			// tool terminates the turn, so a second call only happens after a
-			// wake-up, but clean up just in case).
-			clearActiveWait();
-
+			// Timer requested. `armActiveWait` replaces any existing timer
+			// (defensive — the tool terminates the turn, so a second call only
+			// happens after a wake-up).
 			const seconds = params.seconds;
-			activeWaitTimer = setTimeout(() => {
-				activeWaitTimer = null;
+			armActiveWait(seconds, () => {
 				// Skip if a subagent completed in the race window between
 				// timer arm and timer fire — the close handler clears
 				// activeWaitTimer and delivers the result as a steer, so a
@@ -2011,7 +2045,7 @@ export default function (pi: ExtensionAPI) {
 				// the timer was pending. pi invalidates its ExtensionAPI alongside
 				// the ctx, so `pi.sendUserMessage` below would throw uncaught from
 				// this timer. No live session → no receiver for a wait wake-up.
-				if (!liveSessionCtx) {
+				if (!liveSessionCtx()) {
 					debugLog(`wait-timer: no live session — skipping wake-up`);
 					return;
 				}
@@ -2020,7 +2054,7 @@ export default function (pi: ExtensionAPI) {
 					`[wait timer] ${seconds}s elapsed — ${running.size} subagent${running.size === 1 ? "" : "s"} still running: ${liveNames.join(", ")}. If concerned about direction, use subagent_status to inspect or subagent_steer to redirect. If you trust the work, call wait() again with no argument to keep waiting.`,
 					{ deliverAs: "steer" },
 				);
-			}, seconds * 1000);
+			});
 
 			return {
 				content: [{ type: "text", text: `Waiting for ${running.size} running subagent${running.size === 1 ? "" : "s"}: ${names.join(", ")}. I will be woken either when one completes or after ${seconds}s if still running.` }],
