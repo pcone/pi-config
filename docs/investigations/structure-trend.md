@@ -1310,8 +1310,11 @@ is WO-2026-095's, unchanged by this work.
 **unification.** The process-wide state has one owner:
 `rg -n '^(export )?(let|const) [a-zA-Z_]+ *(:| = *(new Map|\[\]|\{|null))'
 extensions/subagent-async/index.ts` → **1** (`ACTIVITY_EVENT_TYPES`, a read-only Set).
-`rg -n 'globalThis' extensions/subagent-async/` → 3, all in `process-state.ts`: the key,
-the read, the write. The duplicate evaluation is not deduped — the same file is still
+`rg -n 'globalThis' extensions/subagent-async/` → **7** lines in three files:
+`process-state.ts` 3 (the key's definition, its doc, the one read of the store),
+`watch-session-v2.ts:167` 1 (that file's session-watch identity, a different store),
+and `test-progress-kill-timeout.cjs:547,550,569` 3 (the mirror's timer capture, not
+state). So the runner's state has exactly one holder. The duplicate evaluation is not deduped — the same file is still
 evaluated twice through the symlinked `extensions` entry — so the second copy shares
 one registry instead of holding a second one.
 
