@@ -18,10 +18,11 @@
  * `docs/investigations/subagent-wait-wake-2026-11.md` — so their timers and
  * `caffeinate` handle stay where they are.
  *
- * `liveSession` carries the id of the evaluation that set it. A duplicate's
- * `session_shutdown` must not clear a live ctx it never set: see
+ * `liveSession` carries the id of the evaluation that set it, so a clear is
+ * owned rather than anonymous: the registry is shared, so any evaluation that
+ * reaches it could otherwise drop a ctx another one set. See
  * `setLiveSession`/`clearLiveSession` in `index.ts` and
- * `decisions/subagents/026-subagent-events-after-session-disposal.md`.
+ * `decisions/subagents/052-duplicate-extension-evaluation.md`.
  */
 
 import type { ReviewerKind } from "./agents.ts";

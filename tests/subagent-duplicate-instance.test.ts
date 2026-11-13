@@ -118,9 +118,10 @@ describe("the extension evaluated twice shares one runner state", () => {
 	});
 
 	it("3: a stale evaluation's clear leaves the live session's ctx alone", () => {
-		// pi emits `session_shutdown` before invalidating the runner. A duplicate
-		// evaluation that never ran `session_start` must not clear the ctx the
-		// live one set (decisions/subagents/026).
+		// The registry is shared, so a clear is only valid for the evaluation that
+		// set the ctx. Called directly: on pi 1.4.0 the duplicate record's factory
+		// never runs, so it has no `session_shutdown` handler to arrive through
+		// (decisions/subagents/052).
 		const ctx = { ui: {} };
 		dup._testSetLiveSessionCtx(ctx);
 		plain.clearLiveSession();

@@ -691,10 +691,16 @@ export function setLiveSession(ctx: any): void {
 	runner.liveSession = { ctx, owner: EVALUATION_ID };
 }
 
-/** Drop the live-session ctx, unless another evaluation set it. A duplicate
- *  evaluation's `session_shutdown` runs for a session it never saw start, and
- *  pi's shutdown/start order on reload means clearing here would wipe the
- *  session that replaced it. */
+/** Drop the live-session ctx, unless another evaluation set it.
+ *
+ *  Every evaluation can reach the registry (that is what makes the duplicate
+ *  harmless), so a clear is only correct for the evaluation that set the ctx.
+ *  On pi 1.4.0 the check never fires: its only `session_shutdown` emitter is
+ *  reload (`agent-session.js:2998-3002`), which shuts the old set down before
+ *  the new one loads, and the duplicate record never runs a factory at all, so
+ *  it registers no handler. It is kept so the clear rests on ownership rather
+ *  than on that ordering surviving a pi release —
+ *  `decisions/subagents/052-duplicate-extension-evaluation.md`. */
 export function clearLiveSession(): void {
 	if (runner.liveSession?.owner === EVALUATION_ID) runner.liveSession = null;
 }

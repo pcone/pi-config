@@ -53,8 +53,9 @@ another. The plain-directory arm of the same probe is one record per pid.
 ### What the split costs
 
 The library evaluation's `session_start` never runs, so its `liveSession` stays
-null. The close path lives in `spawn.ts` — a sibling, reached through realpath —
-and imports `deliverResult` from the library evaluation. A child completes, the
+null. `deliverResult` lives in `sleep-guard.ts` — a sibling, reached through
+realpath — which imports `liveSessionCtx` from the index record, i.e. from the
+library evaluation; `spawn.ts`'s close handler calls it. A child completes, the
 delivery reads null, and the completion is dropped in a process that has a live
 session:
 
@@ -72,10 +73,10 @@ We cannot change either from an extension. Three routes were available and all
 are worse:
 
 - **Load-path gymnastics** (making the extension resolve to one spelling, e.g.
-  realpath-ing `~/.pi/agent/extensions`). It is the install's symlink, owned by
-  the harness on every machine, and a symlinked `extensions` entry is a legiti-
-  mate install. Fixing the spelling would leave the next spelling — a bind mount,
-  a different loader version — to reintroduce the drop.
+  realpath-ing `~/.pi/agent/extensions`). A symlinked `extensions` entry is a
+  legitimate install, and this box has one. Fixing the spelling would leave the
+  next spelling — a bind mount, a different loader version — to reintroduce the
+  drop.
 - **A singleton module.** Bun's importer collapses spellings, jiti's does not;
   nothing in the module can reach the second record to deduplicate it.
 - **A pi bug report and no fix.** The state the design must survive is "the
@@ -88,11 +89,29 @@ across evaluations is keyed there, and the reason is written at the site
 
 ### Why the clear is owner-tagged
 
-A duplicate evaluation still receives `session_shutdown`, and a shutdown from the
-copy that never ran `session_start` must not clear the live ctx — that is the
-mirror image of the drop. Tagging the setter's identity (026's guard, generalised
-to "which evaluation") keeps `session_shutdown` from the stale copy silent while
-the live copy's own shutdown still clears.
+The registry is shared, so every evaluation that reaches it can clear it, and
+only the one that set a ctx should. The tag records which evaluation set it and
+`clearLiveSession` ignores a clear from any other.
+
+Be precise about what this guards, because the obvious story is false. The
+duplicate record's factory is never handed to `initializeExtension`
+(`loader.js:513,535`), so it registers no handlers at all and never receives
+`session_shutdown`. On pi 1.4.0 the tag's check does not fire: the only
+`session_shutdown` emitter is reload (`agent-session.js:2998-3002`), and it shuts
+the old set down *before* the new set loads, so at that moment the owner is
+still the evaluation shutting down. A second *registered* evaluation would make
+it live — and settings.json cannot supply one, because its relative entries
+resolve against the agent dir (`package-manager.js:719,734`) and dedupe against
+the discovered path (`loader.js:671-677`, `path.resolve` at `:673`); the census arm with the field's
+settings file in place still shows two records for `index.ts`, not three
+(`~/Developer/notes/wo-098/r4/eval-census.log`).
+
+So the tag is a guard, not a live path: it makes the clear correct by ownership
+instead of by pi's shutdown/start ordering, and it says so at the site
+(`index.ts`'s `clearLiveSession`). It is kept rather than deleted because the
+behaviour is row-pinned (`tests/subagent-duplicate-instance.test.ts` row 3) and
+because the failure it prevents — a live ctx dropped in the process that has one
+— is this order's own bug in the opposite direction.
 
 The tag is a per-evaluation random id, not a spelling: a spelling would tie the
 guard to the very thing that varies.

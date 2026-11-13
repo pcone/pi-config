@@ -119,8 +119,14 @@ only in how the agent dir reaches that staged set:
 
 The `plain` arm is the control: same processes, same extension files, same
 chain. It wakes before the fix, so the link arm's park is the symlinked spelling
-and not a broken chain. Row 4 asserts each tree really has the shape its arm
-claims, so the A/B cannot silently degrade into two plain arms.
+and not a broken chain. `assertArmShape` runs on the tree each row is about to
+spawn from, so an arm cannot silently degrade into the other one.
+
+Two differences remain between the arms, not one. The spelling is the mechanism;
+the second is the staged tree's position — outside the agent dir in the link arm,
+at `<agentDir>/extensions` in the control. The field's install points outside the
+agent dir too, so the link arm is the shape that reproduces it, and nothing reads
+the position: the module census is identical per arm apart from the spelling.
 
 Why the staged tree and not the live checkout: the scripted provider has to sit
 in the same `extensions` directory, and `cpSync`ing the checkout's files is the
@@ -139,18 +145,29 @@ Module-record census of one field-shaped pid,
 === plain
   EVAL worktree.ts url=<root>/plain-agent/extensions/subagent-async/worktree.ts
   EVAL index.ts    url=<root>/plain-agent/extensions/subagent-async/index.ts
+=== link+settings     (the field's settings.json beside the symlinked install)
+  EVAL index.ts    url=<root>/stage/extensions/subagent-async/index.ts
+  EVAL worktree.ts url=<root>/stage/extensions/subagent-async/worktree.ts
+  EVAL index.ts    url=<root>/link+settings-agent/extensions/subagent-async/index.ts
 ```
 
 `index.ts` twice in the link arm, once in the plain arm; `worktree.ts` once in
 both. The staged copy carried an `EVAL` line appended from `index.ts` and
 `worktree.ts` at module load, which is how the records are counted.
 
+A third arm puts the field's `settings.json` shape beside the symlinked install —
+a settings file listing `extensions/subagent-async/index.ts` relatively — and
+still counts two records, not three: relative extension entries resolve against
+the agent dir and dedupe against the discovered path, so settings cannot supply a
+second *registered* evaluation. That is why the owner tag on `clearLiveSession`
+never fires on this pi; `decisions/subagents/052` says what it guards instead.
+
 ## Why the suite's preload did not cover this
 
 `tests/preload-worktree-root.ts:20` realpaths the temp root it hands to
-`PI_SUBAGENT_WORKTREE_ROOT`, so the worktree paths a test compares and stats are
-canonical. It never loads the extension *through* a symlinked ancestor — the
-suite imports `extensions/subagent-async/index.ts` from the checkout, one
+`PI_SUBAGENT_WT_ROOT`, so the worktree paths a test compares and stats are
+canonical. It never loads the extension *through* a symlinked component of its
+path — the suite imports `extensions/subagent-async/index.ts` from the checkout, one
 spelling, one module record. A test that only realpaths the root it creates
 therefore cannot see the duplicate, because the duplicate needs the extension
 path itself to be spelled two ways.
@@ -165,12 +182,12 @@ path itself to be spelled two ways.
   census below; its classification, not its conclusion, was wrong (reviewers
   found subagent transcripts filed under `wt-subagents`).
 - The six stuck subagent parks of 2026-11-10 share one shape (implementer
-  dispatched both reviewers, then parked) and the install spelling of this box
-  gives every session loading it the duplicate, so the fix covers them. Round 3
-  wrote that the field's real `agentDir` put those parks outside this mechanism;
-  that was wrong — it looked one level too high, at `agentDir` instead of at
-  `extensions`. Which of the six is explained by the drop is a census question
-  this record does not answer; the mechanism is present in the field install.
+  dispatched both reviewers, then parked). Round 3 wrote that the field's real
+  `agentDir` put those parks outside this mechanism; that was wrong — it looked
+  one level too high, at `agentDir` instead of at `extensions`. The install
+  spelling of this box gives every session that loads it through the install the
+  duplicate, so the mechanism is present in the field. Which of the six is
+  explained by the drop is a census question this record does not answer.
 
 ## Probes
 
