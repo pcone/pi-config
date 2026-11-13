@@ -858,12 +858,19 @@ describe("the metas dir is process-wide (WO-2026-099)", () => {
 		const restore = setEnvForRow(PI_SUBAGENT_WT_ROOT_ENV, "relative/wt");
 		// Only a parent session runs the reaper block, and this process is a child.
 		const restoreDepth = setEnvForRow("PI_SUBAGENT_DEPTH", undefined);
+		// And pin the checkout reaper's home: this row passes only because the
+		// pre-flight refuses, and a mutation that removes the pre-flight lets the
+		// chain through to a `wtRoots()` that would walk the box's own `~/Developer/wt`.
+		const home = mkdtempSync(path.join(tmpdir(), "pi-base-refusal-home-"));
+		tempDirs.push(home);
+		_testSetReaperHome(home);
 		try {
 			const handlers = register();
 			await expect(
 				handlers.get("session_start")!({ type: "session_start", reason: "reload" }, makeCtx()),
 			).rejects.toThrow(`${PI_SUBAGENT_WT_ROOT_ENV} must be an absolute path, got "relative/wt"`);
 		} finally {
+			_testSetReaperHome(undefined);
 			restoreDepth();
 			restore();
 		}
