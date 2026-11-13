@@ -79,6 +79,7 @@ import extension, {
 	_testSetLiveSessionCtx,
 	_testRunning,
 } from "../extensions/subagent-async/index.ts";
+import { stillRunning } from "../extensions/subagent-async/sleep-guard.ts";
 import { childEnv } from "./helpers/subagent-env.ts";
 
 // ── Environment helpers ────────────────────────────────────────────────────
@@ -324,6 +325,7 @@ describe("dispatchKillSignals (WO-2026-043 null-proc guard)", () => {
 		expect(result.alreadyDead).toBe(true);
 		expect(proc.signals).toEqual([]);
 		expect(rs.killedExplicitly).toBe(true);
+		expect(rs.killedVia).toBe("kill-tool");
 	});
 
 	it("5: already-dead live proc via exitCode !== null — alreadyDead:true, no signal attempted", () => {
@@ -547,6 +549,10 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 		await new Promise((r) => realSetTimeout(r, 500));
 		const afterSigterm = { killed: proc.killed, exitCode: proc.exitCode, signalCode: proc.signalCode };
 		expect(afterSigterm).toEqual({ killed: true, exitCode: null, signalCode: null });
+		// The triple above is the defect's premise, so feed it to the predicate:
+		// reinstating `proc.killed || exitCode !== null` reds here, not only in
+		// the stub row.
+		expect(stillRunning(proc)).toBe(true);
 
 		const ended = await withDeadline(closed, HARD_KILL_DELAY_MS + 5000, null);
 		const elapsedMs = Date.now() - started;
@@ -592,6 +598,18 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 		// `alreadyDead` came from the exit code; nothing ever signalled this
 		// child, so `killed` alone would have read it as alive.
 		expect({ killed: proc.killed, exitCode: proc.exitCode }).toEqual({ killed: false, exitCode: 0 });
+
+		// The same handle through the registered tool, not just the dispatch.
+		const { pi, tools } = createPiStub();
+		extension(pi);
+		_testRunning.set(rs.sessionId, rs);
+		// A fresh handle on the same exited proc, with no prior kill request, so the
+		// tool body reaches its liveness branch rather than the intent branch.
+		const fresh = stubRunningSubagent(proc);
+		_testRunning.set(fresh.sessionId, fresh);
+		const killTool = tools.get("subagent_kill");
+		const out = await killTool.execute("call-1", { session_id: fresh.sessionId }, undefined);
+		expect(JSON.stringify(out)).toContain("already dead — kill signals skipped");
 	}, 20_000);
 
 	it("R4: subagent_stop's own force-kill fallback escalates on the same rule", async () => {

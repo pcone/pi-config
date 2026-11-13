@@ -557,9 +557,13 @@ function eq(actual, expected, msg) {
 			assert.deepStrictEqual(procKills, ["SIGTERM"], "SIGTERM dispatched first");
 			eq(rs.proc.killed, true, "killed is true after the SIGTERM's successful kill() — the old guard read that as dead");
 			eq(rs.proc.signalCode, null, "the child has not exited, so signalCode is still null");
+			// The same handle again: `killed` is true and the child is alive, so a
+			// second request must not read it as dead.
+			eq(dispatchKillSignals(rs, "kill-tool").alreadyDead, false, "killed=true alone never means dead");
+			eq(procKills.filter((k) => k === "SIGTERM").length, 2, "the second request re-sent SIGTERM");
 			assert.ok(fallback, "the SIGKILL fallback was armed");
 			fallback();
-			assert.deepStrictEqual(procKills, ["SIGTERM", "SIGKILL"], "SIGKILL escalated after the grace period");
+			assert.deepStrictEqual(procKills, ["SIGTERM", "SIGTERM", "SIGKILL"], "SIGKILL escalated after the grace period");
 			eq(rs.proc.signalCode, "SIGKILL", "the child died of SIGKILL");
 		} finally {
 			globalThis.setTimeout = realSetTimeout;
