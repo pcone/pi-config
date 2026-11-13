@@ -67,9 +67,9 @@ none, as the post-delivery cleanup does: that path is a spawn-time removal, not
 the reap, and its cargo home is not redirected either — the leak
 `decisions/subagents/048-build-output-reaper.md` owns.
 
-Nothing below the pass raises the refusal, and nothing above it swallows one: the
-handler's catches do not rethrow, so the refusal must be resolved before the
-chain — which is what `recoveryRoots()` in the handler's own frame is for.
+Nothing below the pass raises the refusal any more. The chain's catches swallow,
+so the refusal has to be read before the chain exists, which is what
+`recoveryRoots()` in the handler's own frame is for.
 
 ## The suite sets all three for the whole run
 
@@ -79,11 +79,11 @@ exit. The worktree base is realpath'd, because the guard compares
 symlink-resolved prefixes and `tmpdir()` is a symlink on macOS
 (`/var/folders/…` → `/private/var/folders/…`).
 
-The guarantee is structural, for the three roots above: a test file that never
-thinks about them cannot create a tree in the human namespace, cannot list or
-measure a real root, and a nested `bun test` gets roots of its own — and removes
-them when it exits, which one row pins by reading the child's roots back after it
-has gone.
+The guarantee is structural for the three roots above: a test file that never
+thinks about them cannot create a tree in the human namespace, cannot measure the
+box's shared cargo dirs, and a nested `bun test` gets roots of its own, which it
+removes when it exits — one row pins that by reading the child's roots back after
+it has gone.
 
 It stops there. `/tmp` is still the default of the metas dir's *writer*
 (`metaPath`) and of the readers that take their own `dir` default —
