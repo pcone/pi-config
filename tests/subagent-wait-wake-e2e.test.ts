@@ -21,9 +21,9 @@
  * field's install points outside the agent dir too, so the link arm is the shape
  * that reproduces the field. Nothing reads the tree's position — the module
  * census is identical per arm save the spelling
- * (`~/Developer/notes/wo-098/r4/eval-census.log`). `assertArmShape` runs on the
- * tree each row is about to spawn from, so an arm cannot quietly become the
- * other one.
+ * (`~/Developer/notes/wo-098/r4/eval-census.log`). `buildTree` measures the tree
+ * it built against the shape its arm declares, so a row cannot drive the control
+ * while its arm claims the field's spelling.
  *
  * `link` is the field's spelling, and the field spelling is what matters here.
  * On this box the extension is installed as a symlinked `extensions` entry:
@@ -60,9 +60,33 @@ import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 const REPO = join(import.meta.dir, "..");
 const PI_BIN = process.env.PI_BIN ?? "pi";
 
-/** How the agent dir reaches the extension set: the field's symlinked
- *  `extensions` entry, or a real directory. */
+/** How the extension set is built: a real tree reached through a symlink, or a
+ *  real directory. */
 type Spelling = "link" | "plain";
+
+/**
+ * An arm, named for what it is, not for the shape it produces. The shapes are
+ * measured against `extensionsEntry` after the build, so the two statements
+ * have to agree: flip `spelling` and the measured shape stops matching, which
+ * is what stops a row from quietly driving the control while claiming the
+ * field's spelling.
+ */
+interface Arm {
+	/** How `buildTree` puts the tree together. */
+	spelling: Spelling;
+	/** What the agent dir's `extensions` entry must be once it has. */
+	extensionsEntry: "symlink" | "directory";
+}
+
+const ARMS = {
+	/** The field's install: one real extension tree, reached through a symlinked
+	 *  `extensions` entry whose target sits outside the agent dir. */
+	field: { spelling: "link", extensionsEntry: "symlink" },
+	/** The control: the same files at `<agentDir>/extensions`, no symlink. */
+	control: { spelling: "plain", extensionsEntry: "directory" },
+} as const satisfies Record<string, Arm>;
+
+type ArmName = keyof typeof ARMS;
 
 /** What the harness injects into a subagent session; the chain stamps its own. */
 let restoreEnv: () => void;
@@ -143,7 +167,8 @@ function stageExtensions(dir: string): void {
  * Build one arm's temp tree: a staged extension set, two agent fixtures, and an
  * agent dir that reaches the set the arm's way.
  */
-function buildTree(spelling: Spelling): { root: string; agentDir: string; cwd: string; fauxLog: string } {
+function buildTree(armName: ArmName): { root: string; agentDir: string; cwd: string; fauxLog: string } {
+	const spelling = ARMS[armName].spelling;
 	// Realpath'd: the arms must differ by this file's symlink alone.
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-subagent-wake-e2e-")));
 	const agentDir = join(root, `${spelling}-agent`);
@@ -152,32 +177,42 @@ function buildTree(spelling: Spelling): { root: string; agentDir: string; cwd: s
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(join(agentDir, "agents"), { recursive: true });
 
-	switch (spelling) {
-		case "link": {
-			// The field's install: one real extension tree, reached through a
-			// symlinked `extensions` entry whose target sits outside the agent dir.
-			const stage = join(root, "stage", "extensions");
-			stageExtensions(stage);
-			symlinkSync(stage, extensionsPath);
-			break;
+	// Everything below can throw on a bad arm, and the caller only ever sees the
+	// root on success — so a failure removes what it made instead of leaving the
+	// tree, and its `node_modules` symlink, behind in $TMPDIR.
+	try {
+		switch (spelling) {
+			case "link": {
+				// The field's install: one real extension tree, reached through a
+				// symlinked `extensions` entry whose target sits outside the agent dir.
+				const stage = join(root, "stage", "extensions");
+				stageExtensions(stage);
+				symlinkSync(stage, extensionsPath);
+				break;
+			}
+			case "plain":
+				stageExtensions(extensionsPath);
+				break;
+			default: {
+				// An arm that names no shape must not fall into either one. No
+				// typecheck runs over these files, so this arm is the only guard
+				// against a misspelled `spelling` quietly choosing the control.
+				const unknown: never = spelling;
+				throw new Error(`unknown spelling: ${String(unknown)}`);
+			}
 		}
-		case "plain":
-			stageExtensions(extensionsPath);
-			break;
-		default: {
-			// An arm that names no shape must not fall into either one. No
-			// typecheck runs over these files, so this arm is the only guard
-			// against a misspelled `spelling` quietly choosing the control.
-			const unknown: never = spelling;
-			throw new Error(`unknown spelling: ${String(unknown)}`);
-		}
-	}
 
-	for (const name of ["probe-mid", "probe-leaf"]) {
-		writeFileSync(
-			join(agentDir, "agents", `${name}.md`),
-			["---", `name: ${name}`, "description: e2e wait-wake fixture", "model: faux/faux-1", "---", "", "Follow the task exactly.", ""].join("\n"),
-		);
+		for (const name of ["probe-mid", "probe-leaf"]) {
+			writeFileSync(
+				join(agentDir, "agents", `${name}.md`),
+				["---", `name: ${name}`, "description: e2e wait-wake fixture", "model: faux/faux-1", "---", "", "Follow the task exactly.", ""].join("\n"),
+			);
+		}
+
+		assertArmShape(ARMS[armName], extensionsPath);
+	} catch (err) {
+		rmSync(root, { recursive: true, force: true });
+		throw err;
 	}
 
 	const fauxLog = join(root, "faux.log");
@@ -186,20 +221,24 @@ function buildTree(spelling: Spelling): { root: string; agentDir: string; cwd: s
 }
 
 /**
- * Fail the row if the tree `buildTree` just built is not the arm it was asked
- * for. Every row runs this against the tree it is about to spawn from, so an
- * arm cannot silently become the other one and turn the A/B into two controls.
+ * Measure the tree `buildTree` just built and compare it with the shape the arm
+ * declares. The two statements are independent — `spelling` builds, this checks
+ * — so a row cannot drive the control while its arm claims the field's
+ * spelling. Throws rather than asserting, so `buildTree` can clean up.
  */
-function assertArmShape(spelling: Spelling, agentDir: string): void {
-	const extensionsPath = join(agentDir, "extensions");
-	const why = `${spelling} arm, extensions entry ${extensionsPath}`;
-	expect(existsSync(join(extensionsPath, "subagent-async/index.ts")), `the extension set is missing: ${why}`).toBe(true);
-	if (spelling === "link") {
-		expect(lstatSync(extensionsPath).isSymbolicLink(), `not a symlink: ${why}`).toBe(true);
-		expect(realpathSync(extensionsPath), `the symlink resolves to itself: ${why}`).not.toBe(extensionsPath);
-	} else {
-		expect(lstatSync(extensionsPath).isSymbolicLink(), `a symlinked entry in the control arm: ${why}`).toBe(false);
-		expect(realpathSync(extensionsPath), `the control's path is not its own realpath: ${why}`).toBe(extensionsPath);
+function assertArmShape(arm: Arm, extensionsPath: string): void {
+	const why = `extensions entry ${extensionsPath}`;
+	const entry = join(extensionsPath, "subagent-async/index.ts");
+	if (!existsSync(entry)) throw new Error(`the extension set is missing: ${why}`);
+	const measured = lstatSync(extensionsPath).isSymbolicLink() ? "symlink" : "directory";
+	if (measured !== arm.extensionsEntry) {
+		throw new Error(`arm declares a ${arm.extensionsEntry} entry, the tree has a ${measured} one: ${why}`);
+	}
+	if (measured === "symlink" && realpathSync(extensionsPath) === extensionsPath) {
+		throw new Error(`the symlink resolves to itself: ${why}`);
+	}
+	if (measured === "directory" && realpathSync(extensionsPath) !== extensionsPath) {
+		throw new Error(`the control's path is not its own realpath: ${why}`);
 	}
 }
 
@@ -209,7 +248,7 @@ function assertArmShape(spelling: Spelling, agentDir: string): void {
  * and not a flipped verdict.
  */
 interface ChainOptions {
-	spelling: Spelling;
+	arm: ArmName;
 	/** The subject's `wait` argument; omitted means the no-timer form. */
 	waitSeconds?: number;
 	/** How long to keep watching after the subject woke, to catch a timer that
@@ -219,12 +258,9 @@ interface ChainOptions {
 }
 
 async function runChain(opts: ChainOptions): Promise<ChainResult> {
-	const { spelling, waitSeconds, tailMs = 0 } = opts;
+	const { arm, waitSeconds, tailMs = 0 } = opts;
 	const deadlineMs = opts.deadlineMs ?? 30_000;
-	const { root, agentDir, cwd, fauxLog } = buildTree(spelling);
-	// Every row checks the tree it is about to spawn from, so an arm cannot
-	// quietly become the other one and leave the A/B with two controls.
-	assertArmShape(spelling, agentDir);
+	const { root, agentDir, cwd, fauxLog } = buildTree(arm);
 	const metaBefore = metaFiles();
 	const started = Date.now();
 
@@ -245,7 +281,7 @@ async function runChain(opts: ChainOptions): Promise<ChainResult> {
 		PI_SUBAGENT_ALLOWLIST: "probe-mid,probe-leaf",
 		PI_OFFLINE: "1",
 	};
-	const args = ["--mode", "rpc", "--model", "faux/faux-1", "--session-id", `e2e-${spelling}-${Date.now()}`, "--tools", "subagent,wait,subagent_status"];
+	const args = ["--mode", "rpc", "--model", "faux/faux-1", "--session-id", `e2e-${opts.arm}-${Date.now()}`, "--tools", "subagent,wait,subagent_status"];
 	// `detached`: own process group, so the chain's grandchildren — in no other
 	// group we can reach — die with it, and a leaked `pi` per arm does not
 	// follow the suite around.
@@ -320,24 +356,27 @@ async function runChain(opts: ChainOptions): Promise<ChainResult> {
 
 describe("a parked wait wakes when its child completes", () => {
 	it("1: nested parks wake at both levels, with the extension loaded through a symlinked `extensions` entry", async () => {
-		const result = await runChain({ spelling: "link" });
+		const result = await runChain({ arm: "field" });
 		const why = `after ${result.elapsedMs}ms\n${result.stderr}`;
 		expect(result.midWoke, `the mid's wait never woke — its child's completion was dropped. ${why}`).toBe(true);
 		expect(result.subjectWoke, `the subject's wait never woke. ${why}`).toBe(true);
 	}, 90_000);
 
 	it("2: control — the same shape with a plain `extensions` directory wakes at both levels", async () => {
-		const result = await runChain({ spelling: "plain" });
+		const result = await runChain({ arm: "control" });
 		const why = `after ${result.elapsedMs}ms\n${result.stderr}`;
 		expect(result.midWoke, `the mid's wait never woke. ${why}`).toBe(true);
 		expect(result.subjectWoke, `the subject's wait never woke. ${why}`).toBe(true);
 	}, 90_000);
 
 	it("3: one completion is one delivery", async () => {
-		// `wait(5)`: the child completes long before the timer would fire, so the
-		// wake-up can only be the close handler's, and a duplicate delivery shows
-		// up as a second completion message and a fourth subject turn. Six more
-		// seconds of watching catch a *late* second delivery.
+		// `wait(30)`: the chain finishes in seconds, so the wake-up can only be the
+		// close handler's and a duplicate delivery shows up as a second completion
+		// message and a fourth subject turn. Six more seconds of watching catch a
+		// *late* second delivery. The timer is long enough that a loaded machine
+		// cannot fire it first — if it ever did, `subjectCalls` would read 4 with a
+		// `[wait timer]` message in `why`, which is a slow chain, not a cancel
+		// failure (the cancel is pinned in `session-lifetime` rows 8-10).
 		//
 		// What this row does NOT pin is the timer cancel: the close handler drops
 		// the finished child from `running` before delivering, so the timer
@@ -345,7 +384,7 @@ describe("a parked wait wakes when its child completes", () => {
 		// the cancel ran. The cancel is pinned in
 		// `tests/subagent-session-lifetime.test.ts` rows 8-10 instead — see
 		// WO-2026-098's plan mismatch on the order's row 4.
-		const result = await runChain({ spelling: "link", waitSeconds: 5, tailMs: 6_000 });
+		const result = await runChain({ arm: "field", waitSeconds: 30, tailMs: 6_000 });
 		const why = `delivered:\n${result.delivered.join("\n---\n")}\n${result.stderr}`;
 
 		const completions = result.delivered.filter((m) => m.includes("[Subagent probe-mid finished]"));

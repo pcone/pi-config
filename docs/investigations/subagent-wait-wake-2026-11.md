@@ -112,15 +112,15 @@ irrelevant: the symlink is one level down, on `extensions` itself.
 `lib` beside the scripted provider and runs the nested chain twice, differing
 only in how the agent dir reaches that staged set:
 
-| arm | spelling | `lstat` of `<agentDir>/extensions` | pre-fix | post-fix |
+| arm | tree | `lstat` of `<agentDir>/extensions` | pre-fix | post-fix |
 |---|---|---|---|---|
-| `link` | `<root>/link-agent/extensions` → `<root>/stage/extensions` | symlink | **red**, 30 s deadline, `deliverResult: no live session … dropping result` | green, 5.9 s |
-| `plain` | `<root>/plain-agent/extensions` | real directory | green, 5.2 s | green |
+| `field` | `<root>/link-agent/extensions` → `<root>/stage/extensions` | symlink | **red**, 30 s deadline, `deliverResult: no live session … dropping result` | green, 5.9 s |
+| `control` | `<root>/plain-agent/extensions` | real directory | green, 5.2 s | green |
 
-The `plain` arm is the control: same processes, same extension files, same
+The `control` arm: same processes, same extension files, same
 chain. It wakes before the fix, so the link arm's park is the symlinked spelling
-and not a broken chain. `assertArmShape` runs on the tree each row is about to
-spawn from, so an arm cannot silently degrade into the other one.
+and not a broken chain. `buildTree` measures each tree against the shape its arm
+declares, so an arm cannot silently degrade into the other one.
 
 Two differences remain between the arms, not one. The spelling is the mechanism;
 the second is the staged tree's position — outside the agent dir in the link arm,
@@ -164,7 +164,7 @@ never fires on this pi; `decisions/subagents/052` says what it guards instead.
 
 ## Why the suite's preload did not cover this
 
-`tests/preload-worktree-root.ts:20` realpaths the temp root it hands to
+`tests/preload-worktree-root.ts:28` realpaths the temp root it hands to
 `PI_SUBAGENT_WT_ROOT`, so the worktree paths a test compares and stats are
 canonical. It never loads the extension *through* a symlinked component of its
 path — the suite imports `extensions/subagent-async/index.ts` from the checkout, one
