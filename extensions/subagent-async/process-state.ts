@@ -3,8 +3,8 @@
  *
  * pi can evaluate this extension twice in one process. jiti resolves a relative
  * import through the importing file's realpath, while pi's loader hands jiti the
- * configured path unresolved (`dist/core/extensions/loader.js:527`). Loaded from
- * under a symlinked ancestor, `index.ts`'s cycle re-entry (`index.ts` →
+ * configured path unresolved (`dist/core/extensions/loader.js:528`). Loaded through
+ * a symlinked component of its own path, `index.ts`'s cycle re-entry (`index.ts` →
  * `worktree.ts` → `index.ts`) therefore lands on a second module record, and
  * every module-level binding exists twice.
  *

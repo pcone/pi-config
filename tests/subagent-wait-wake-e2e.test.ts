@@ -23,7 +23,7 @@
  *   lrwxr-xr-x  1 scott  staff  43 13 Apr 2026 /Users/scott/.pi/agent/extensions -> /Users/scott/Developer/pi-config/extensions
  *
  * pi's loader hands jiti the discovered path unresolved
- * (`dist/core/extensions/loader.js:527`), while jiti resolves the entry's
+ * (`dist/core/extensions/loader.js:528`), while jiti resolves the entry's
  * relative imports through the entry's realpath. `index.ts`'s cycle re-entry
  * (`index.ts` → `worktree.ts` → `index.ts`) therefore lands on a second module
  * record: the evaluation pi registered is not the one the close path imports.

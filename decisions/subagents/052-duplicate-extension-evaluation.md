@@ -23,8 +23,8 @@ Every other module's module-level state stays where it is. The registry covers
 ### One process, two evaluations
 
 `pi` evaluates `index.ts` twice under two spellings of one file. Its loader hands
-jiti the discovered path unresolved (`dist/core/extensions/loader.js:527`,
-`resolvePath` is `path.resolve`); jiti resolves an entry's relative imports
+jiti the discovered path unresolved (`dist/core/extensions/loader.js:528`,
+`resolvePath` is `path.resolve` — `dist/utils/paths.js:83-87`); jiti resolves an entry's relative imports
 through the entry's realpath. `index.ts` participates in an import cycle
 (`index.ts` → `worktree.ts` → `index.ts`), so the re-entry lands on a second
 module record. Census of a field-shaped pid,

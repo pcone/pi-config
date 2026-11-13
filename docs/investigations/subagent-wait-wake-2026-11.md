@@ -13,8 +13,9 @@ module-level binding.
 
 jiti resolves a relative import through the **realpath** of the importing file.
 pi's loader hands jiti the path as configured, **without** realpath
-(`loader.js:527-531`: `resolvePath(extensionPath, cwd)` then
-`jiti.import(resolvedPath)`). When the extension's path runs through a symlinked
+(`loader.js:527-529`: `resolvePath(extensionPath, cwd)`, then
+`jiti.import(resolvedPath)`; `utils/paths.js:83-87` shows `resolvePath` is
+`path.resolve`, no realpath). When the extension's path runs through a symlinked
 component, the root evaluation and its own cycle re-entry disagree about the
 module id:
 
