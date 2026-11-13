@@ -1237,3 +1237,32 @@ two roots move independently and the failure was silent (attribution null → no
 helper — fine for a fixture whose roots genuinely agree, but it is the shape a second landing
 would copy into a case where they do not. The rows that keep them apart belong in
 `tests/subagent-worktree-lock.test.ts` and are three of them now.
+
+### Round 3 (same landing, 2026-11-13) — the base's read, and a re-run of round 2's counts
+
+**growth.** `git diff --numstat 8e80ce8..HEAD`: `index.ts` +9/−8 (2254 — one call, one
+import, a corrected comment block), `checkout-reaper.ts` +4/−1 (1237, doc only), the rest
+docs. No new function, no new branch: the round-3 change is one synchronous line in the
+`session_start` handler.
+
+**unification.** Round 2's snapshot counted `rg -n 'absoluteEnvPath\(' extensions/` as 2;
+re-run at this tip it is **4** lines — the definition and three call sites
+(`subagent-worktree.ts:69,125`, `subagent-state.ts:205`). The miscount does not change the
+claim (every resolver funnels through the one rule); the number is corrected here so a
+later landing does not inherit the wrong baseline.
+
+**strike, already recorded, now worked.** The one-field-two-meanings strike on the removal
+deps was worked in round 2 (`cargoHome`/`baseHome`). Round 3 found the second half of the
+same defect class on the read side: `wtRoots()` takes an explicit home, so *no* read in the
+`session_start` frame reached `PI_SUBAGENT_WT_ROOT`, and the chain's only ambient base read
+sat inside the removal's best-effort catch. The fix is a read, not a new seam — the base now
+joins the cargo home in the handler's pre-flight, pinned by a row that goes red when the
+line is removed.
+
+**flag, carried out of this order.** Two same-class ambient seams remain and are *not* this
+order's scope, both named by round 1: `_testSetReaperHome` (`extensions/lib/checkout-reaper.ts:104`,
+the checkout reaper's own per-process home, whose default is `homedir()` and which the
+handler's `wtRoots()` reads), and `metaPath`'s hardcoded `/tmp` writer (decision 052 §
+Alternatives, the writer-side order). Neither should be picked up by a feature landing in
+this family; each needs its own order. `index.ts` at 2254 stays inside its existing carrier
+(WO-2026-095 remainder, `Q-095-a`) — this landing added one line.
