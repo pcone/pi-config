@@ -180,10 +180,14 @@ function stubChild(over: Record<string, any> = {}): any {
 	const proc: any = {
 		killed: false,
 		exitCode: null,
+		// A live ChildProcess has both codes null; `stillRunning` reads the pair,
+		// so a stub without `signalCode` would read as dead.
+		signalCode: null,
 		signals: [] as string[],
 		kill(sig: string) {
 			proc.signals.push(sig);
 			proc.killed = true;
+			proc.signalCode = sig; // this stub's child dies of whatever it is sent
 		},
 	};
 	return {
