@@ -813,16 +813,30 @@ export function git(args: string[], cwd: string): Promise<{ stdout: string; stde
 	});
 }
 
-export function getPiInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
+/**
+ * How to start a child pi: re-invoke it on a runtime that can host it.
+ *
+ * A standalone pi binary runs itself. `node` re-invokes this process's own entry,
+ * which is the production invocation and keeps the child on the same install. `bun`
+ * cannot host pi 1.5.1's bundle — its first import dies in undici's CacheStorage
+ * (`webidl.util.markAsUncloneable is not a function`) — so from bun the child is the
+ * same entry run under `node`. When no usable entry exists, `pi` from PATH is the
+ * only invocation left. WO-2026-101; the end-to-end proof is the spawn in
+ * `tests/subagent-model-inheritance.test.ts`.
+ */
+export function getPiInvocation(
+	args: string[],
+	// Injected by tests; production reads the live process.
+	host: { execPath?: string; argv1?: string | null } = {},
+): { command: string; args: string[] } {
+	const execPath = host.execPath ?? process.execPath;
+	const currentScript = host.argv1 === undefined ? process.argv[1] : host.argv1;
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
-	const execName = path.basename(process.execPath).toLowerCase();
-	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-	if (!isGenericRuntime) return { command: process.execPath, args };
-	return { command: "pi", args };
+	const entry = currentScript && !isBunVirtualScript && fs.existsSync(currentScript) ? currentScript : null;
+	const execName = path.basename(execPath).toLowerCase();
+	if (!/^(node|bun)(\.exe)?$/.test(execName)) return { command: execPath, args };
+	if (!entry) return { command: "pi", args };
+	return { command: execName.startsWith("bun") ? "node" : execPath, args: [entry, ...args] };
 }
 
 export function extractFilesFromArgs(toolName: string, args: Record<string, any>): { read?: string; write?: string } {

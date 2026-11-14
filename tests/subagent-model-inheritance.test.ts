@@ -38,6 +38,7 @@ import subagentFactory, {
 	metaPath,
 	readMetaJson,
 	resolveChildModel,
+	getPiInvocation,
 } from "../extensions/subagent-async/index.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 
@@ -243,6 +244,42 @@ describe("resolvePiEntry follows the PATH pi to a JS entry", () => {
 		// Silent here means argv[1] stays a `#!/bin/sh` script, and bun dies parsing
 		// it as JS with no message naming this helper.
 		expect(() => followToJsEntry(chain(4), 2)).toThrow(/still a shell script after 2 hops/);
+	});
+});
+
+describe("getPiInvocation — the child runs on a runtime that can host pi", () => {
+	// pi 1.5.1's bundle dies on its first import under bun (undici's
+	// `webidl.util.markAsUncloneable`), so a bun host must not re-invoke the entry
+	// with itself. WO-2026-101; gh #15.
+	const entry = resolvePiEntry();
+
+	it("from bun, the child is this entry under node — bun cannot host pi 1.5.1", () => {
+		expect(getPiInvocation(["--mode", "rpc"], { execPath: "/opt/homebrew/bin/bun", argv1: entry })).toEqual({
+			command: "node",
+			args: [entry, "--mode", "rpc"],
+		});
+	});
+
+	it("from node, the child re-invokes this process's entry — same install", () => {
+		expect(getPiInvocation(["--mode", "rpc"], { execPath: "/opt/homebrew/bin/node", argv1: entry })).toEqual({
+			command: "/opt/homebrew/bin/node",
+			args: [entry, "--mode", "rpc"],
+		});
+	});
+
+	it("a standalone pi binary runs itself, argv[1] ignored", () => {
+		expect(getPiInvocation(["--mode", "rpc"], { execPath: "/usr/local/bin/pi", argv1: entry })).toEqual({
+			command: "/usr/local/bin/pi",
+			args: ["--mode", "rpc"],
+		});
+	});
+
+	it("bun with no usable entry falls back to the PATH pi", () => {
+		expect(getPiInvocation([], { execPath: "/opt/homebrew/bin/bun", argv1: null })).toEqual({ command: "pi", args: [] });
+	});
+
+	it("node with no usable entry still falls back to the PATH pi", () => {
+		expect(getPiInvocation([], { execPath: "/opt/homebrew/bin/node", argv1: null })).toEqual({ command: "pi", args: [] });
 	});
 });
 
