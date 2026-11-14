@@ -450,6 +450,13 @@ Ready at the upgrade, not set here.
 constraint that matters going quiet. The suite is no redder than at 1.4.0 (it is
 less red: 2 failures against 7), and both failures reproduce at 1.4.0.
 
+> **Both of those failures are now fixed, and neither was a 1.5.1 defect**
+> (2026-11-14, after the upgrade). The model-inheritance row was gh #15: the
+> harness re-invoked pi with `bun`, which cannot start 1.5.1's bundle, so the child
+> died before answering the pre-prompt `get_state` — the mechanism this section
+> rightly refused to blame on the extension. Worktree-lock was fixed by `06726a1`.
+> Suite at `9160b16` on 1.5.1: **1550 pass, 0 fail** (WO-2026-101).
+
 Follow-ups, in order of what would bite first. None blocks the upgrade:
 
 1. **Soft arguments in `subagent_*` (§1).** A `null` `session_id` now passes

@@ -1329,3 +1329,23 @@ duplicated `index.ts` is now the *observable* for it
 (`tests/subagent-duplicate-instance.test.ts`). Nothing here makes the loader stop; a
 pi release that canonicalises the entry would make these rows' second arm unreachable,
 which is a note for the next upgrade audit, not a debt with a carrier.
+
+## Snapshot 2026-11-14 — WO-2026-101 (the child's invocation)
+
+**growth.** `git diff --numstat 9160b16^ 9160b16`: `index.ts` +18/−7 (2303; one
+function rewritten in place, the same line count as before plus its doc comment),
+`tests/subagent-model-inheritance.test.ts` +44 (four rows). No file crossed the
+1,000-line floor for counting, and no function gained a branch beyond the three-arm
+runtime choice the rule is made of.
+
+**unification.** One place decides how a child pi starts: `rg -n 'getPiInvocation'
+extensions/ tests/` → 1 definition, 1 call site (`spawn.ts:310`), 1 import in the row
+file. The rejected variant — `pi` from `PATH` — is the parallel mechanism this landing
+avoids: it would have added a second way to reach the same entry, behind a wrapper that
+changes `NODE_OPTIONS`.
+
+**flag, carried out of this order.** The `bun` arm cannot be exercised end to end on
+this box: bun genuinely cannot host pi 1.5.1, so the rows pin the *choice* and the
+unit-level command line, not a live child. If a future bun release can host pi, the row
+stays green and stops proving anything — the comment names the upstream symptom
+(`webidl.util.markAsUncloneable`) so that a reader can tell when it no longer holds.

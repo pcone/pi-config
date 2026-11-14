@@ -40,16 +40,24 @@ host it.**
 
 - `process.execPath` is not a generic runtime (a standalone pi binary) → run it.
 - execPath is `node` → re-invoke `argv[1]` with it (same install, supported runtime).
-- execPath is `bun` → spawn `pi` from `PATH`; pi's engines say `node>=22.19.0` and the
-  probe above shows bun cannot start the 1.5.1 bundle.
+- execPath is `bun` → the **same entry under `node`**, which is the production
+  invocation; pi's engines say `node>=22.19.0` and the probe above shows bun cannot
+  start the 1.5.1 bundle.
+- no usable entry → `pi` from `PATH` (unchanged fallback).
+
+  Rejected: `pi` from `PATH` for the bun arm. It starts, but the wrapper it resolves
+  (`~/bin/pi`) sets `NODE_OPTIONS=--max-semi-space-size=2` and the full suite measured
+  **26 fails**, all 20-30 s timeouts, against 0 with `node <entry>`. The mechanism is
+  not established and nothing depends on it: the production invocation is the one that
+  matches the box, so the bun arm reproduces it instead of adding a wrapper.
 
 Add injectable inputs (`{ execPath?, argv1? }`) so both arms can be driven in a test;
 existing callers are unchanged. No new user-facing surface.
 
 ### Acceptance rows
 
-1. **bun as the host picks `pi` from PATH**, even when `argv[1]` exists and is a real
-   file. Red today: the current code returns `{bun, [argv1, …]}`.
+1. **bun as the host runs the entry under `node`**, even though `argv[1]` exists and
+   is a real file. Red today: the current code returns `{bun, [argv1, …]}`.
 2. **node as the host keeps the same-install re-invocation** `{node, [argv1, …]}`, so
    the fix does not change production's default path.
 3. **A standalone pi binary is run directly** (`execPath` not generic), argv[1]
