@@ -23,5 +23,7 @@
   "defaultThinkingLevel": "max",
   "hideThinkingBlock": true,
   "httpIdleTimeoutMs": 0,
-  "shellCommandPrefix": "shopt -s expand_aliases"
+  "shellCommandPrefix": "shopt -s expand_aliases",
+  "cacheWarming": "idle",
+  "showCacheMissNotices": true
 }
