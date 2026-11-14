@@ -410,7 +410,32 @@ print nothing) and `extensions/worktree-guard.test.mjs`. Both runs show 78 files
 
 ## Cache warming
 
-Ready at the upgrade, not set here.
+**Set at the upgrade (owner ruling 2026-11-14, `Q-097-a`): `"cacheWarming": "idle"` and
+`"showCacheMissNotices": true`.**
+
+**It cannot fire on this box's seats, and that is not a fault.** A refresh needs the
+model to declare a prompt-cache lifetime: `getPromptCacheTtlMs` reads
+`model.promptCache[retention]` and returns undefined otherwise
+(`@earendil-works/pi-ai/dist/cache-warming.js:26-33`), and `CacheWarmer.start` then stops
+with `cache lifetime unavailable` (`cache-warmer.js:71`). `~/.pi/agent/models.json`
+declares `promptCache` on **zero** of its models, and the session transcripts agree: no
+`usage` entry with `kind: "cache_warm"` in any session since the upgrade
+(`~/Developer/notes/cache-warm-watch/measure.mjs`). So the idle-refresh setting is inert
+here until a seat runs an Anthropic-family model; `showCacheMissNotices` still works,
+because miss notices are computed from successive usage deltas, not from a lifetime.
+
+Measured prompt-cache waste, by day, from the same script (misses are tokens that were in
+the previous prompt but were re-billed at the paid rate):
+
+| day | sessions | turns | warm refreshes | missed tokens | missed cost |
+| --- | --- | --- | --- | --- | --- |
+| 2026-11-12 | 58 | 1294 | 0 | 241,159 | $0.0355 |
+| 2026-11-13 | 282 | 6155 | 0 | 2,255,782 | $0.3316 |
+| 2026-11-14 (partial) | 6 | 6 | 0 | 0 | $0.0000 |
+
+Keep the keys: they cost nothing, and the notice key is what makes a future
+Anthropic-family seat's cache behaviour legible. Nothing to measure further until then.
+
 
 - **1.5.1's default is `"idle"`**: `dist/core/settings-defaults.js:60`
   `cacheWarming: "idle"`; `docs/settings.md:21` — `"off" | "streaming" | "idle"`,
