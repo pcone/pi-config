@@ -26,6 +26,10 @@ on it:
    with both reservations already pushed. `git ls-tree --name-only
    origin/<other-line> work-orders/` is part of allocating, not an optional
    precaution.
+   **The gate enforces it.** The pre-push
+   `docs_validate.py` refuses a push that adds a work-order file whose id any
+   live ref already holds, and names the ref it read. A ref this clone has not
+   fetched still does not count, so the fetch is still part of allocating.
 3. **Collisions with landed history: the claim with landed references
    keeps the id.** Reserve-by-push can't see un-rebased parallel lineages
    — a fifth board's WOs are invisible until their lineage lands (observed:
