@@ -52,6 +52,14 @@ Anything a decision settles that shapes the design must **also** land in the for
 
 **Read current behaviour from the forward docs.** A brief or answer cites the design-doc section stating a behaviour, not a bare decision record. A decision says why it was chosen. Only its newest supersession note says what replaced it.
 
+**Trace the ruling chain before recommending.** Before recommending on a design point or framing an owner question, `rg` the concept across the registry, the decision records and every design doc, not only the area you are in. A governing fact often lives in another area. Read each hit to its newest note, and list the governing rulings with their dates in the answer. A plan's open questions, a QA or subagent report, a compaction summary and a recorder's reading are leads, not records: check each against the record it claims.
+
+**Argue from the target design.** Where the design is unbuilt, today's code shows migration cost, not intent. Never use it as the baseline a design choice is measured against.
+
+**Check a principle's neighbours.** The owner often rules an instance while stating a general principle. Record the principle where the area states its principles, and check the neighbouring cases against it before recommending on one.
+
+**Keep the current state readable.** A ruling whose row gains later notes carries one line stating what holds now, rewritten with each note. Define a term in the glossary when a ruling's scope turns on it. Keep the recorder's reading in its own labelled paragraph, apart from the owner's quoted words.
+
 ## Testing
 
 **Green before handoff.** The mainline is green, so a failing build or test is yours to investigate and fix. Run the project's build and test suite before handing work off. Never leave a red state.
