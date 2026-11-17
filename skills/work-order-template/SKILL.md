@@ -45,7 +45,9 @@ of:
   it. Use a separate order only when the refactor belongs to another chunk or is too large to
   review with the change. See APPEND_SYSTEM § Landing work.
 - **`none`**, with a one-line reason that holds against the code. For example: "the change
-  extends `X` at one site; no copy, no branch on duplicated structure".
+  extends `X` at one site; no copy, no branch on duplicated structure, `X` has one producer and
+  no reader defaults a missing entry". Count the producers of every structure the change joins,
+  not only the name it adds (APPEND_SYSTEM § Make a rule complete by structure).
 
 Before writing `none`, check the repo's refactor-needed register (`docs/investigations/structure-trend.md`);
 a closed area needs its refactor scheduled first, as this commit or as an earlier order. See APPEND_SYSTEM § Landing work.

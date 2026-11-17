@@ -190,10 +190,11 @@ your own code now:
    recovery, verify recovery paths do not execute work after a parent
    failure; trace failure → recovery explicitly.
 5. **Build passes**: (already confirmed in step 3).
-6. **Unexpected-state arms**: For every `_`, `else`, `None`,
-   `unwrap_or*` or early-return arm you added or kept on the touched
-   path, name the state it handles and apply APPEND_SYSTEM § Fail
-   early and hard; no safe defaults.
+6. **Fallbacks**: For every fallback (an arm or a lookup default)
+   you added, kept on the touched path, or newly rely on in a value
+   or table you read, name the state it handles and apply APPEND_SYSTEM
+   § Fail early and hard; no safe defaults. One with no design-doc
+   meaning is closed at its producer or stop-reported.
 
 ### 6. When reviewers return — reconcile and finalize
 

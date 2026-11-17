@@ -209,14 +209,15 @@ For each item in `Structural Risks`:
    decision to a stage (e.g. front end vs codegen), flag a later
    stage re-deriving or making a decision an earlier stage made or
    should carry. MEDIUM.
-9. **Unexpected-state arms** — for each `_`, `else`, `None`,
-   `unwrap_or*` or early-return arm the diff adds or keeps on the
-   touched path, find what the design says about that state
-   (APPEND_SYSTEM § Fail early and hard; no safe defaults). A default
-   on a state the design says cannot occur is HIGH; correct output is
-   not mitigation. A design silent on the state makes it an owner
-   question (Approval bar). A default for an expected state with no
-   comment citing the design is MEDIUM.
+9. **Fallbacks** — for each fallback (APPEND_SYSTEM § Fail early
+   and hard: an arm or a lookup default) the diff adds, keeps on the
+   touched path, or newly relies on in a value or table it reads,
+   find what the design docs say about that state. A fallback the
+   docs give no meaning is HIGH, whoever wrote it; correct output is
+   not mitigation, and neither is a later stage named to remove it.
+   A design silent on the state makes it an owner question (Approval
+   bar). A default for a state the docs expect, with no comment
+   citing them, is MEDIUM.
 
 ### Preparatory refactor commit
 

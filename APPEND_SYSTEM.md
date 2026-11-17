@@ -12,7 +12,7 @@ In a subagent, "ask the user" means stop and hand the question back to your disp
 
 A session not talking to the owner directly also records each owner question in the project's question registry and pushes it. A relayed message can be buried in its recipient's output. The record cannot.
 
-Before registering a question, search the registry and decision records for each construct it names (`rg -li '<term>' docs/ decisions/`) and cite every ruling that bears on it. An option a ruling already forbids is not an option. A question raised only by syntax or semantics a later ruling removed is stale: say so instead of recommending a stopgap.
+Before registering a question, search the registry and decision records for each construct it names (`rg -li '<term>' docs/ decisions/`) and cite every ruling that bears on it. An option a ruling or a rule here forbids (a fallback, a second path) is not an option. A question raised only by syntax or semantics a later ruling removed is stale: say so instead of recommending a stopgap.
 
 Argue each option on its merits, assuming planned features exist. A missing feature the project intends to add (a warning-suppression marker, say) is a dependency to name or register. It is never a reason against an option.
 
@@ -84,9 +84,13 @@ Anything a decision settles that shapes the design must **also** land in the for
 
 **Fail early and hard; no safe defaults.** Make invalid states unrepresentable in the type system. Never trade that for touching fewer sites. Where types can't, panic at the first point the state is visible, with a message naming it. Use `assert!` over `debug_assert!` unless the cost is genuinely expensive.
 
-A state the design says cannot happen gets that panic, never a default "just to be safe". A copy, skip, no-op, `None`, `0`/`1`, "materialize" or "decline the optimization" arm is a fallback **even when its output is correct**, because it hides the broken invariant and drops what the design promised. A default arm is legitimate only for a state the design expects and gives a meaning to, with a comment citing where. If the design doesn't say whether the state can happen, ask.
+**A fallback is code that answers for a state nobody gave it an answer for.** That includes a `_`, `else` or `None` arm; a copy, skip, no-op, `0`/`1`, "materialize" or "decline the optimization" arm; and a default on a lookup: `unwrap_or_default`, `is_some_and(… && …)`, a "finalized" or "known" flag, an empty set for a missing entry. It is a fallback **even when its output is correct**, because it hides the broken invariant and drops what the design promised.
 
-**No unproven fallbacks.** When replacing a buggy path, drop the old one. Don't keep it as the `else`/`None` arm for the cases the new path misses. Report those cases instead.
+**Close a missing answer at its producer.** One producer computes the answer for every input, and "nothing" ("keeps nothing", "no effect") is an answer it computes, not a default the reader supplies. A reader that finds no answer panics. A frequent case, or one the code already handles, is not thereby a state the design expects.
+
+A default arm is legitimate only for a state a design doc expects and gives a meaning to, with a comment citing that doc. The code's own behaviour is not a citation. If the design doesn't say whether the state can happen, ask.
+
+**Every fallback on your path is yours.** Work that reads a value, table or flag inherits the fallbacks behind it, whoever wrote them. Unlike a bug you merely hit (below), your change depends on the answer. Close them before the change, as its preparatory refactor, or stop and report. A later stage named as carrier does not make one landable. When you replace a buggy path, drop the old one: don't keep it as the `else`/`None` arm for the cases the new path misses, and report those cases instead.
 
 **Don't route around bugs you hit but weren't assigned.** Don't hoist a call, reorder code, or weaken a test to dodge a pre-existing miscompile, crash, or wrong result. Surface it so the fix can be scoped. A silent workaround makes the next person re-derive it.
 
@@ -98,7 +102,7 @@ Prefer what already exists: in-codebase, stdlib, native platform, installed dep,
 
 **Share code, don't parallel it.** When new work overlaps existing code, extract a shared helper and call it from both. Refactor the existing code if needed. "Mirror the pattern in X" usually means copy, so generalize X instead of writing X-prime. Build parallel only if the cases genuinely diverge in a way extraction can't bridge, and say why. The rule above forbids a second validator or check. This one forbids a second implementation of the same logic.
 
-**Make a rule complete by structure, not by enumeration.** A rule must hold on every path: every way a value is constructed, every place a value meets an expected type, every caller of a check. Count the producers first (`rg` the constructor or call).
+**Make a rule complete by structure, not by enumeration.** A rule must hold on every path: every way a value is constructed, every place a value meets an expected type, every caller of a check. Count the producers first: of the value, and of any structure the change joins (the table it adds a field to, the summary it extends). `rg` what writes it and what reads its absence, not only the name you are adding.
 
 If there is more than one, funnel them into one path the type system enforces: private fields plus one builder, one entry function. Put the rule in the funnel, behind characterization tests. A list of paths, each handled, is incomplete the day someone adds one. Listed paths belong in the tests as a lower bound, not in the mechanism.
 
@@ -125,7 +129,7 @@ A claim that a path is the only one ("one X", "zero residue", "no other site", "
 
 **Refactors land behind tests.** "Same behaviour, different shape" is only checkable against pinned behaviour. Before an extraction, unification, or move, name the tests that pin what it preserves, and add characterization tests first where coverage is thin. Existing tests pass unchanged. One that must change means behaviour changed, so prove that is intended or stop.
 
-**Make the change easy, then make the easy change** (decision subagents/040). Every work order carries a Preparatory refactor section: a behaviour-preserving refactor, behind characterization tests, that lets the area take the change without a second path, or `none` with a one-line reason.
+**Make the change easy, then make the easy change** (decision subagents/040). Every work order carries a Preparatory refactor section: a behaviour-preserving refactor, behind characterization tests, that lets the area take the change without a second path or a fallback, or `none` with a one-line reason that holds against the producers counted under *Make a rule complete by structure*.
 
 The same implementer does the refactor then the change, and asks for one standard review, preferably as two commits. Tests passing unchanged at the refactor commit prove it preserves behaviour. No landing adds a second implementation of an existing mechanism, a copied block, or one more branch on a structure already known to be duplicated.
 
@@ -133,7 +137,7 @@ The same implementer does the refactor then the change, and asks for one standar
 
 To answer a stop-report inside the stage, first compare the dates of the rulings the answer rests on with the stage's brief. An answer resting on a ruling dated after the brief is a replan, not an answer: the ruling changed the stage. Mid-stage rulings include those from the orchestrator's own reviews. A brief with more than two appended answers gets reviewed against its plan row before the next dispatch (owner 2026-11-13).
 
-**Deferred debt names its carrier.** Debt recorded "for a later order" is not mitigation unless that order lands first. Deferral wording ("a later order", "the next extraction") must name the work order or register row that carries it. Unnamed, the debt is dropped, not deferred.
+**Deferred debt names its carrier.** Debt is work the change leaves untouched: a refactor, a missing feature, a gap in an area it does not build on. Deferral wording ("a later order", "the next extraction") names the work order or register row that carries it. Unnamed, the debt is dropped, not deferred. Debt recorded for a later order is not mitigation unless that order lands first. A fallback on the change's own path is not debt (*Every fallback on your path is yours*).
 
 **Refuse with `REFACTOR FIRST`.** Refuse when work would build on an area that strongly needs a refactor: parallel mechanisms, copied blocks, or a file or function that each change makes harder to work in.
 
@@ -166,6 +170,8 @@ Growth findings are delta-based, never absolute thresholds. A repo may set a sma
 **Dispatch waits on the brief, not on the conversation.** A brief's item is not dispatchable until every point in it is marked resolved in the brief. An answer given in conversation is not a resolution until it is written there. A recommended default is not an answer for anything that changes what the language or API accepts or does. Defaults serve bookkeeping and scope only.
 
 **Record each resolution where the point lives.** When the user settles a point, update the brief with the ruling, its date, and the shape it settled, including any narrowing the discussion produced. A bare yes can leave the rule's mechanism undecided, and the mechanism is what the implementer needs. A resolution that exists only in a session transcript is lost work. The ruling names the orders that carry it, and each is updated in the same push: an order written before a ruling that bears on it is stale until then.
+
+**A brief points at the role's checklist, never paraphrases it.** A dispatch to a role with an agent spec (implement, review-code, review-plan) names the spec's file for its lens, and adds only what is specific to the order. A paraphrase narrows the lens.
 
 **Default to parallel dispatch.** When work splits into independent chunks, spawn them in one response. That covers research questions, separable features and reviewers. Several `subagent` calls in the same block run concurrently. Serialize only when a step depends on a prior result, such as an in-flight item's reviewed, merged output. `wait` wakes on the first completion: gate it, re-`wait` for the rest, tracking each session id.
 

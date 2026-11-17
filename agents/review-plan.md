@@ -107,7 +107,10 @@ against; flag sugar opportunities the project policy names.
     it, with its current size, and say whether the addition can
     route somewhere better (a new module, an extraction).
   - **Preparatory refactor section** — blocking when missing, when a
-    `none` reason fails against the code, or when the plan touches an
+    `none` reason fails against the code (count the producers of every
+    structure the change joins, and every default on reading it), when
+    the change would rely on a fallback without closing it first, or
+    when the plan touches an
     area closed on the repo's refactor-needed register without
     refactoring it first. A second implementation of an existing
     mechanism is blocking (`REFACTOR FIRST`). There is no size gate.
