@@ -1360,9 +1360,12 @@ its row), `tests/subagent-async-kill.test.ts` +288/−12 (the real-child rows),
 crossed the 1,000-line floor, so this landing adds no growth flag.
 
 **unification.** One predicate decides whether a child is still alive:
-`rg -n 'stillRunning' extensions/` → 1 definition (`sleep-guard.ts:54`), 1 export
-through the extension index, 3 production readers (`alreadyDead`, the delayed
-SIGKILL, `subagent_stop`'s fallback) and 1 mirror copy in the harness file that says
+`rg -n 'stillRunning' extensions/` → 10 lines: 1 definition (`sleep-guard.ts:54`),
+3 production readers (`alreadyDead` at `:241`, the delayed SIGKILL at `:257`,
+`subagent_stop`'s fallback at `index.ts:2210`), and the mirror's own definition plus
+two readers in `test-progress-kill-timeout.cjs` (`:154,175,179`), which the file marks
 `KEEP IN SYNC`. The pattern it replaces — `proc.killed` as a liveness read — is gone
-from every production site: `rg -n 'proc\.killed|\.killed ' extensions/` → the
-mirror's stub write and `git-run.ts`'s `ExecException` flag, neither a liveness read.
+from every live production site: `rg -n 'proc\.killed|\.killed ' extensions/` → 5
+lines, all accounted for: the mirror's stub write and its assertions (`:222,542,558`,
+stub fidelity), `git-run.ts:59` (`ExecException`'s own timeout flag), and
+`subagent/_index.ts.off:459`, a dead file that no build reads.
