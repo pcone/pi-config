@@ -1349,3 +1349,20 @@ this box: bun genuinely cannot host pi 1.5.1, so the rows pin the *choice* and t
 unit-level command line, not a live child. If a future bun release can host pi, the row
 stays green and stops proving anything — the comment names the upstream symptom
 (`webidl.util.markAsUncloneable`) so that a reader can tell when it no longer holds.
+
+## Snapshot 2026-11-13 — WO-2026-100 (the kill escalation)
+
+**growth.** `git diff --numstat 9e0f0c9^1 9e0f0c9`: `sleep-guard.ts` +20/−5 (454, one
+predicate extracted and four call sites reading it), `index.ts` +11/−3 (2303),
+`test-progress-kill-timeout.cjs` +50/−3 (the mirror's copy of the same predicate plus
+its row), `tests/subagent-async-kill.test.ts` +288/−12 (the real-child rows),
+`tests/turn-cap.test.ts` +4. No function crossed a size worth naming and no file
+crossed the 1,000-line floor, so this landing adds no growth flag.
+
+**unification.** One predicate decides whether a child is still alive:
+`rg -n 'stillRunning' extensions/` → 1 definition (`sleep-guard.ts:54`), 1 export
+through the extension index, 3 production readers (`alreadyDead`, the delayed
+SIGKILL, `subagent_stop`'s fallback) and 1 mirror copy in the harness file that says
+`KEEP IN SYNC`. The pattern it replaces — `proc.killed` as a liveness read — is gone
+from every production site: `rg -n 'proc\.killed|\.killed ' extensions/` → the
+mirror's stub write and `git-run.ts`'s `ExecException` flag, neither a liveness read.
