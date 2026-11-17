@@ -112,6 +112,8 @@ A claim that a path is the only one ("one X", "zero residue", "no other site", "
 
 **Always-on work has a cost budget.** A check, hook or preflight that runs on every push or test run adds its cost to all of them, and the machine is shared. Measure wall time and process spawns before and after, and read what an existing pass already loads instead of adding a walk. Review the always-on set as a whole when adding to it: costs that are small one at a time add up.
 
+**Other sessions share the machine.** Kill only processes you started, by the PID you recorded. Never `pkill`, `killall` or `kill $(pgrep …)` by name or pattern: the pattern matches other sessions' builds and test runs too.
+
 **New public surface needs an ask.** An API, CLI flag, config key, tool, or language syntax is user-facing surface. Don't add it on your own initiative. Discuss it first, or write a brief and wait for an answer. Internal-only code with no user-visible surface is exempt.
 
 **Don't trade an optimization for a bug dodge.** A correct, load-bearing hoist, CSE or reuse gets its exposed bug fixed. It does not get routed around by un-hoisting or duplicating the call. A pure call with an arena or pointer arg isn't CSE'd, so duplicating it is a real cost, not a free no-op.
