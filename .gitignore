@@ -2,6 +2,7 @@ auth.json
 bin/*
 !bin/heavy
 !bin/heavy_slot.py
+!bin/pre-push
 /sessions/
 checkpoints/
 .pi/mode.json

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# pre-push: two refusals, nothing else. Owner ruling 2026-11-18 on pi-config#20 (option A);
+# shared with tfd, whose own hook pipes the same stdin into this file for these two rules.
+#
+# (A) A push carrying the mainline ref must push HEAD itself. A landing is a mainline push by
+#     definition, so a detached HEAD — or a branch that is not the commit being landed — is a
+#     landing that reports success and strands. This fired for real: WO-2026-102's first push
+#     put two commits on no branch, `git push` exited 0, and only a peer comparing origin/main
+#     against the quoted sha noticed.
+# (B) A push may not add a work-orders/ id that a live ref already holds. This is the rule
+#     rules/work-order-numbering.md already states; until now nothing here enforced it.
+#
+# Scope, deliberately narrow: a push carrying no mainline ref passes both rules silently (a side
+# branch, a keep ref, a restore), and rule (B) reads only work-orders/ paths the push adds.
+# `git push --no-verify` bypasses the hook, as git intends.
+#
+# What it cannot see: a claim in another session's detached HEAD or in a ref no clone has
+# fetched. Rule (A) is what catches that case, and only on the push that strands.
+set -u
+
+mainline_branch=main
+mainline_ref="refs/heads/$mainline_branch"
+zero=0000000000000000000000000000000000000000
+
+pushed=$(cat)
+[ -z "$pushed" ] && exit 0
+
+target=
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${remote_ref:-}" ] && continue
+    if [ "$remote_ref" = "$mainline_ref" ]; then
+        target="$local_ref $local_sha $remote_sha"
+    fi
+done <<< "$pushed"
+
+# Rule (A) — mainline pushes only.
+if [ -n "$target" ]; then
+    read -r _local_ref local_sha _remote_sha <<< "$target"
+    head_sha=$(git rev-parse HEAD 2>/dev/null) || {
+        echo "pre-push: cannot read HEAD — push aborted." >&2
+        exit 1
+    }
+    if [ "$local_sha" != "$head_sha" ]; then
+        echo "NOT LANDED: this checkout is not on the commit being pushed." >&2
+        echo "  pushing   ${local_sha}" >&2
+        echo "  HEAD is   ${head_sha}" >&2
+        echo "  Cut a branch at the commit you mean to land and push from it." >&2
+        exit 1
+    fi
+fi
+
+# Rule (B) — only ids this push adds under work-orders/.
+# The refs this push introduces, by name and by commit: a push normally updates a branch that
+# already holds the id it is adding (local `main` == the commit being pushed), so those refs are
+# the pusher, not a rival claim.
+pushed_refs=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $1}')
+pushed_shas=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $2}')
+
+added_ids=$(
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ -z "${remote_ref:-}" ] && continue
+        [ "$local_sha" = "$zero" ] && continue   # a delete adds nothing
+        if [ "$remote_sha" = "$zero" ]; then
+            git ls-tree -r --name-only "$local_sha" -- work-orders/ 2>/dev/null
+        else
+            git diff --name-only --diff-filter=A "$remote_sha" "$local_sha" -- work-orders/ 2>/dev/null
+        fi
+    done <<< "$pushed"
+)
+
+case "$added_ids" in
+    *WO-*) : ;;
+    *) exit 0 ;;
+esac
+
+ids=$(printf '%s\n' "$added_ids" | grep -o 'WO-[0-9]\{4\}-[0-9]\{3\}' | sort -u)
+[ -z "$ids" ] && exit 0
+
+# Live refs, one line each: `<commit> <ref name>`, deduped by commit. Branch aliases and
+# remote-tracking copies usually share a sha, and the id scan is one `ls-tree` per entry, so
+# deduping here is what keeps a 36-ref repo at a handful of processes rather than 36.
+held_refs() {
+    git for-each-ref --format='%(objectname) %(refname:short)' refs/heads refs/remotes refs/tags \
+        | awk '!seen[$1]++'
+}
+
+refused=0
+while read -r id; do
+    [ -z "$id" ] && continue
+    while read -r tip ref; do
+        [ -z "$ref" ] && continue
+        case " $pushed_refs " in *" $ref "*) continue ;; esac
+        case " $pushed_shas " in *" $tip "*) continue ;; esac
+        if git ls-tree -r --name-only "$tip" -- work-orders/ 2>/dev/null | grep -q -- "$id[-.]"; then
+            echo "NOT LANDED: $id is already held by $ref." >&2
+            refused=1
+        fi
+    done <<< "$(held_refs)"
+done <<< "$ids"
+
+[ "$refused" = 0 ] && exit 0
+echo "  Renumber to an id no live ref holds (rules/work-order-numbering.md), then push." >&2
+exit 1

@@ -26,10 +26,20 @@ on it:
    with both reservations already pushed. `git ls-tree --name-only
    origin/<other-line> work-orders/` is part of allocating, not an optional
    precaution.
-   **The gate enforces it.** The pre-push
-   `docs_validate.py` refuses a push that adds a work-order file whose id any
-   live ref already holds, and names the ref it read. A ref this clone has not
-   fetched still does not count, so the fetch is still part of allocating.
+   **The gate enforces it.** `bin/pre-push` refuses a push that adds a
+   work-order file whose id any live ref already holds, and names the holding
+   ref. It is installed here as `.git/hooks/pre-push`, and tfd's own hook pipes
+   the same stdin into the same file for this rule and the landing rule below
+   (owner ruling, 2026-11-18, pi-config#20 option A), so a fix to the checks
+   lands once.
+
+   The same hook refuses a push that carries the mainline ref without pushing
+   `HEAD` — the landing that reports success and strands, which is how
+   WO-2026-102's first push put two commits on no branch.
+
+   **What it cannot see, so the fetch is still part of allocating:** a ref this
+   clone has not fetched, and a claim in another session's detached HEAD or
+   unpushed branch. Rule (B) is a backstop, not the allocation.
 3. **Collisions with landed history: the claim with landed references
    keeps the id.** Reserve-by-push can't see un-rebased parallel lineages
    — a fifth board's WOs are invisible until their lineage lands (observed:
