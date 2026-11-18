@@ -109,7 +109,7 @@ describe("the readers that take the same text stay honest", () => {
 		expect(readSessionExchange(file)).toEqual({ task: "Review the code.", output: "" });
 	});
 
-	it("a reportless child delivers \"(no output)\" rather than a stale mid-work line", () => {
+	it("a reportless child's delivery names the earlier line as progress, never as a report", () => {
 		const sent: string[] = [];
 		_testSetLiveSessionCtx({ ui: { notify: () => {} }, sendUserMessage: (m: string) => sent.push(m) });
 		const pi = { sendUserMessage: (m: string) => sent.push(m), appendEntry: () => {} } as any;
@@ -131,8 +131,34 @@ describe("the readers that take the same text stay honest", () => {
 			} as unknown as RunningSubagent;
 			deliverResult(pi, rs, 0);
 			expect(sent).toHaveLength(1);
-			expect(sent[0]).toContain("(no output)");
-			expect(sent[0]).not.toContain("Committing the green work first");
+			expect(sent[0]).toContain(
+				"no final message; last progress: Committing the green work first, then I'll write the record.",
+			);
+			expect(sent[0]).not.toContain("(no output)");
+		} finally {
+			_testSetLiveSessionCtx(null);
+		}
+	});
+
+	it("a child that produced no text at all delivers that, not a blank", () => {
+		const sent: string[] = [];
+		_testSetLiveSessionCtx({ ui: { notify: () => {} }, sendUserMessage: (m: string) => sent.push(m) });
+		const pi = { sendUserMessage: (m: string) => sent.push(m), appendEntry: () => {} } as any;
+		try {
+			const rs = {
+				sessionId: "subagent-silent",
+				agentName: "implement",
+				task: "Do the thing",
+				messages: [assistant([{ type: "toolCall", name: "bash" }])],
+				progress: { turns: 1, filesRead: new Set(), filesModified: new Set(), errors: [], toolCalls: 1 },
+				stderrLines: [],
+				isDone: false,
+				killedExplicitly: false,
+				killedVia: null,
+				logPath: "/tmp/none.log",
+			} as unknown as RunningSubagent;
+			deliverResult(pi, rs, 0);
+			expect(sent[0]).toContain("no final message; no progress text");
 		} finally {
 			_testSetLiveSessionCtx(null);
 		}

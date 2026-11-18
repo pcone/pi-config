@@ -80,8 +80,26 @@ parent than nothing.
   `no final message; last progress: <line>` when the final message carries no text — an
   explicit answer, not a substitution.
 
-Landed under (a). If the owner picks (b), only `sleep-guard.ts:418`'s message changes and
-row 5's assertion flips with it.
+**Ruling (owner, 2026-11-18, relayed by the claude seat): "Labelled last progress
+(Recommended)".** So (b), scoped as this order scoped it: `sleep-guard.ts:418`'s delivery
+reports `no final message; last progress: <line>`, and the row that asserted `(no output)`
+changed with it.
+
+Landed shape, one producer answering all three states:
+
+- final message has text → that text, unlabelled;
+- final message has no text → `no final message; last progress: <last assistant text>`;
+- no assistant text in the run → `no final message; no progress text`.
+
+`getLastProgressText` walks back and is used by delivery **only**; the record path reads
+`getFinalOutput`, so a reportless child is still reportless at the gate. Both readers
+share one extractor, `messageText`.
+
+Two `(no output)` defaults outside this order's scope, unchanged and named so they are not
+mistaken for covered: `index.ts:2223` (`resolveOnStop`'s answer to a waiter) and
+`recovery.ts:562` (an orphan's log with no readable output). Neither is on this order's
+path; a later order that touches the stop path should decide them against Q-102-a's
+reasoning.
 
 ### Sequencing
 

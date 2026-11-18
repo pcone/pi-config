@@ -600,22 +600,43 @@ export async function writeTempFile(name: string, content: string): Promise<{ di
 	return { dir: tmpDir, filePath };
 }
 
+/** One assistant message's text parts, joined, with a bare session_id trailer removed. */
+function messageText(msg: any): string {
+	const parts = Array.isArray(msg?.content) ? msg.content : [];
+	return parts
+		.filter((part: any) => part?.type === "text")
+		.map((part: any) => part.text)
+		.join("\n")
+		.replace(/^\s*\[session_id:[^\]]*\]\s*$/gim, "")
+		.trimEnd();
+}
+
 /**
- * The run's final text: the **last** assistant message's text parts, or "" when that
- * message carries none.
+ * The run's final text: the **last** assistant message's text, or "" when that message
+ * carries none.
  *
- * No walk back to an earlier message. A child that ends on a tool-only message wrote
- * no report, and an earlier mid-work line is not one: `closeWorkRecord` turns "" into
+ * No walk back to an earlier message. A child that ends on a tool-only message wrote no
+ * report, and an earlier mid-work line is not one: `closeWorkRecord` turns "" into
  * "implementer has no final report", which is the state to act on (WO-2026-102, after
  * tfd WO-2026-510/513 were recorded from a 60-character mid-work line).
  */
 export function getFinalOutput(messages: any[]): string {
 	const last = messages.findLast((m) => m?.role === "assistant");
-	if (!last) return "";
-	const parts = Array.isArray(last.content) ? last.content : [];
-	const text = parts
-		.filter((part: any) => part?.type === "text")
-		.map((part: any) => part.text)
-		.join("\n");
-	return text.replace(/^\s*\[session_id:[^\]]*\]\s*$/gim, "").trimEnd();
+	return last ? messageText(last) : "";
+}
+
+/**
+ * The last text the child produced before its final message — what a stopped child was
+ * doing. Never a report: the record path reads `getFinalOutput`, which answers "" for a
+ * message with no text. Only delivery uses this, and it labels it as progress
+ * (Q-102-a, owner 2026-11-18).
+ */
+export function getLastProgressText(messages: any[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg?.role !== "assistant") continue;
+		const text = messageText(msg);
+		if (text) return text;
+	}
+	return "";
 }

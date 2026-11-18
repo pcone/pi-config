@@ -26,7 +26,7 @@ import {
 	type SubagentOutcome,
 } from "../lib/subagent-state.ts";
 import { appendRunningLogLine } from "./rpc.ts";
-import { getFinalOutput } from "./worktree.ts";
+import { getFinalOutput, getLastProgressText } from "./worktree.ts";
 import { turnsUsed } from "./turn-cap.ts";
 import {
 	HARD_KILL_DELAY_MS,
@@ -404,6 +404,20 @@ export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: 
  *  the kill marker when `killedExplicitly` is set. Exported as an
  *  @internal test hook so the delivered-marker contract (WO-2026-043
  *  integration contract) can be exercised with a stub `ExtensionAPI`. */
+/**
+ * What the parent is told the child produced (Q-102-a, owner 2026-11-18).
+ *
+ * The final message when it has text; otherwise the last thing the child said, labelled
+ * as progress so nobody reads it as a report. A child that never produced text says so —
+ * the label stands, and the message's turns/errors/stderr lines carry the rest.
+ */
+function deliveryText(messages: any[]): string {
+	const final = getFinalOutput(messages);
+	if (final) return final;
+	const progress = getLastProgressText(messages);
+	return progress ? `no final message; last progress: ${progress}` : "no final message; no progress text";
+}
+
 export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number | null, isolationNote?: string): void {
 	// No live session → the parent cannot receive the result. pi invalidates
 	// its ExtensionAPI alongside the ctx, so `pi.sendUserMessage` would throw
@@ -415,7 +429,7 @@ export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: n
 		debugLog(`deliverResult: no live session — dropping result for ${rs.sessionId} (output retained in ${rs.logPath})`);
 		return;
 	}
-	const output = getFinalOutput(rs.messages) || "(no output)";
+	const output = deliveryText(rs.messages);
 
 	// A kill (subagent_kill tool or decision 015 stage-2 progress-timeout)
 	// supersedes the standard prefix — make the marker the first line of

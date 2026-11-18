@@ -677,8 +677,8 @@ describe("deliverCloseResult (single owner of delivery)", () => {
 
 		expect(path).toBe("stop");
 		// Waiter resolved exactly once, with the kill marker prepended
-		// (getFinalOutput([]) is "" on the stop path; the "(no output)"
-		// fallback lives in deliverResult).
+		// (getFinalOutput([]) is "" on the stop path; deliverResult composes its
+		// own delivery text from it — WO-2026-102, Q-102-a).
 		expect(resolveCalls).toBe(1);
 		expect(rs.stopText).toBe(`${KILL_MARKER}\n`);
 		expect(rs.resolveOnStop).toBeNull();

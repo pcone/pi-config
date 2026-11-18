@@ -179,6 +179,7 @@ export {
 	createWorktree,
 	removeWorktreeTree,
 	getFinalOutput,
+	getLastProgressText,
 	type RemovableWorktree,
 	type RemovalDeps,
 	type RemovalStage,
