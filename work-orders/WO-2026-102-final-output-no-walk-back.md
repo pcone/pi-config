@@ -96,3 +96,8 @@ it is the other half of the same report-path complaint and pi-config owns both.
   must stay so.
 - The template says the field is exactly `none`, or a list, and names the tfd reader
   that treats prose after `none` as departure D1.
+- **Landed means `origin/main` holds the sha.** The first push of this order no-opped:
+  the shared checkout was on a detached HEAD, so `git push origin main` pushed the
+  branch (already up to date) and reported success while the two commits sat on no
+  branch. `bug-triage` caught it by comparing `origin/main` against the sha I quoted.
+  Verify with `git rev-parse origin/main`, never with the local `HEAD`.
