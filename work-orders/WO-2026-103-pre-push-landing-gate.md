@@ -54,6 +54,35 @@ Each row red under the mutation that removes its check: no rule (A) → rows 1 a
 (B) refusal → row 5; no pushed-ref exclusion → row 6 (false refusal); unconditional id
 scan → row 7.
 
+### Q-103-a (owner question) — the incident is invisible to a pre-push hook
+
+Measured while landing this order, in a scratch clone (`/tmp/s4`): with the local mainline
+already up to date and the commits sitting on a detached `HEAD`, `git push origin main`
+runs the hook with **empty stdin** and prints `Everything up-to-date`:
+
+```
+HEAD=033d1a8 main=084bc65 origin/main=084bc65
+== hook stdin:
+== end
+Everything up-to-date
+```
+
+That is exactly WO-2026-102's shape, and rule (A) as scoped in the ruling cannot fire:
+there is no line to judge. What it does catch is the other stale-main landing —
+`git push origin main` from a checkout whose local `main` holds a commit `HEAD` does not
+(`git push origin <branch>:main`, or a main checked out elsewhere).
+
+- **(a) Add an empty-stdin rule: refuse when git hands the hook no refs, `HEAD` is
+  detached, and `HEAD` is not an ancestor of the local mainline.** This is the only point
+  in a push that knows nothing was pushed; the message can name `HEAD` and the mainline
+  tip. False positives are confined to detached checkouts pushing a branch that needed no
+  update, where the refusal costs nothing and the diagnosis is the point.
+- **(b) Land no such rule.** The gate keeps the stale-main and numbering cases; a
+  stranded landing is caught by a peer comparing `origin/main`, or not at all.
+
+**Recommended: (a).** Landed as (b) — the order as ruled — with this question open, and
+row 8 pinning the current pass-through so the limit cannot be mistaken for coverage.
+
 ### Cost, measured
 
 - Mainline push adding no work-order: hook 0.04-0.06 s vs `--no-verify` 0.05-0.07 s — no

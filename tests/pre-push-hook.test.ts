@@ -104,6 +104,20 @@ describe("rule (A): a mainline push must be HEAD", () => {
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("HEAD is");
 	});
+
+
+	it("sees nothing at all when the push has nothing to push — the documented gap", () => {
+		// The incident WO-2026-102 hit: local mainline already up to date, commits on a detached
+		// HEAD. Git runs the hook with empty stdin and reports "Everything up-to-date", so no
+		// rule here can fire. Pinned so the limit stays visible; Q-103-a proposes the fix.
+		const repo = makeRepo();
+		const head = git(repo, "rev-parse", "HEAD");
+		const detached = git(repo, "commit-tree", "HEAD^{tree}", "-p", head, "-m", "stranded");
+		git(repo, "checkout", "-q", "--detach", detached);
+		const r = runHook(repo, []);
+		expect(r.code).toBe(0);
+		expect(r.stderr).toBe("");
+	});
 });
 
 describe("rule (B): a work-orders id no live ref holds", () => {

@@ -34,8 +34,11 @@ on it:
    lands once.
 
    The same hook refuses a push that carries the mainline ref without pushing
-   `HEAD` — the landing that reports success and strands, which is how
-   WO-2026-102's first push put two commits on no branch.
+   `HEAD` — a landing whose line pushes some other commit. It does not see a
+   landing that pushes nothing: with the local mainline already up to date, git
+   runs the hook with empty stdin and reports `Everything up-to-date`, which is
+   how WO-2026-102's first push left two commits on a detached HEAD
+   (`WO-2026-103`, `Q-103-a`).
 
    **What it cannot see, so the fetch is still part of allocating:** a ref this
    clone has not fetched, and a claim in another session's detached HEAD or

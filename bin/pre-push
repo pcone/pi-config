@@ -2,11 +2,15 @@
 # pre-push: two refusals, nothing else. Owner ruling 2026-11-18 on pi-config#20 (option A);
 # shared with tfd, whose own hook pipes the same stdin into this file for these two rules.
 #
-# (A) A push carrying the mainline ref must push HEAD itself. A landing is a mainline push by
-#     definition, so a detached HEAD — or a branch that is not the commit being landed — is a
-#     landing that reports success and strands. This fired for real: WO-2026-102's first push
-#     put two commits on no branch, `git push` exited 0, and only a peer comparing origin/main
-#     against the quoted sha noticed.
+# (A) A push carrying the mainline ref must push HEAD itself: a landing is a mainline push by
+#     definition, so a mainline line whose sha is not HEAD is a landing that reports success
+#     while pushing something else.
+#
+#     Measured limit: when the local mainline is already up to date, git runs this hook with
+#     **empty stdin** and prints "Everything up-to-date" — so a detached HEAD holding the
+#     commits, pushing a stale main, is invisible here. That was WO-2026-102's incident. A
+#     push that pushes nothing gives a pre-push hook nothing to judge; catching that needs the
+#     empty-stdin rule proposed in WO-2026-103 (Q-103-a), not this one.
 # (B) A push may not add a work-orders/ id that a live ref already holds. This is the rule
 #     rules/work-order-numbering.md already states; until now nothing here enforced it.
 #
