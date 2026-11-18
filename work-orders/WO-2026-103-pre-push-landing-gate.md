@@ -128,7 +128,12 @@ does an empty push from an attached `HEAD`. The row that pinned the old pass-thr
 replaced by three: attached-HEAD empty push passes, detached-on-mainline passes,
 detached-off-mainline refuses. The refusal row is red with the rule removed.
 
-This is the one rule that changes what a no-op push does, so `bug-triage` re-verifies it.
+This is the one rule that changes what a no-op push does, so `bug-triage` re-verified it at
+`a0f804d`: all four shapes behave, and its stdin instrumentation confirms the reachable form
+is an explicit refspec whose target is already current (`git push origin main` while
+detached, 0 bytes of stdin). A bare `git push` from a detached HEAD never reaches the hook
+— git exits 128 with "You are not currently on a branch" — so a row claiming that form is
+caught would be wrong.
 
 ### Cost, measured
 

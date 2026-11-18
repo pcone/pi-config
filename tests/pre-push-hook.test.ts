@@ -122,8 +122,10 @@ describe("rule (A): a mainline push must be HEAD", () => {
 	});
 
 	it("refuses an empty push from a detached HEAD off the mainline, naming HEAD", () => {
-		// Rule (A2): the WO-2026-102 incident. Git sends the hook nothing, then reports
-		// "Everything up-to-date" while the commits sit on no ref.
+		// Rule (A2): the WO-2026-102 incident. The reachable shape is an explicit refspec whose
+		// target is already current (`git push origin main` while detached) — git proceeds, sends
+		// the hook nothing, and reports "Everything up-to-date". A bare `git push` from a detached
+		// HEAD never reaches the hook: git exits 128 before it runs.
 		const mainSha = git("rev-parse", "HEAD");
 		git("checkout", "-q", "--detach");
 		git("commit", "-q", "--allow-empty", "-m", "stranded");
