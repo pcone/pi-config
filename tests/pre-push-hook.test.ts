@@ -1,13 +1,14 @@
 /**
  * `bin/pre-push` — the two landing refusals (pi-config#20, owner ruling 2026-11-18, option A).
  *
- * The hook is bash, and these rows drive the real script against throwaway repos rather than a
- * TS re-implementation: what is pinned is what git runs on a push.
+ * The hook is bash, and these rows drive the real script rather than a TS re-implementation:
+ * what is pinned is what git runs on a push. Each row takes a branch of a shared fixture repo,
+ * because a repo per row costs the always-on gate far more than the assertions are worth.
  *
  * Run: bun test tests/pre-push-hook.test.ts
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -19,13 +20,10 @@ const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], {
 	env: { ...process.env },
 }).trim();
 const ZERO = "0".repeat(40);
-const repos: string[] = [];
 
-afterEach(() => {
-	for (const d of repos.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-});
+let repo = "";
 
-function git(repo: string, ...args: string[]): string {
+function git(...args: string[]): string {
 	return execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
 		cwd: repo,
 		encoding: "utf-8",
@@ -33,46 +31,49 @@ function git(repo: string, ...args: string[]): string {
 	}).trim();
 }
 
-/** A repo with one commit on `main`. */
-function makeRepo(): string {
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "pre-push-"));
-	repos.push(repo);
-	git(repo, "init", "-q", "-b", "main");
-	fs.writeFileSync(path.join(repo, "README.md"), "x\n");
-	git(repo, "add", "README.md");
-	git(repo, "commit", "-q", "-m", "init");
-	return repo;
-}
-
-/** `note` keeps two same-id commits from collapsing to one sha (same tree, parent and message). */
-function commitWo(repo: string, id: string, note = ""): string {
+function commitWo(id: string, note = ""): string {
 	fs.mkdirSync(path.join(repo, "work-orders"), { recursive: true });
 	fs.writeFileSync(path.join(repo, "work-orders", `${id}-demo.md`), `# demo ${note}\n`);
-	git(repo, "add", "work-orders");
-	git(repo, "commit", "-q", "-m", `add ${id} ${note}`);
-	return git(repo, "rev-parse", "HEAD");
+	git("add", "-A");
+	git("commit", "-q", "-m", `add ${id} ${note}`);
+	return git("rev-parse", "HEAD");
 }
 
-function runHook(repo: string, lines: string[]): { code: number; stderr: string; stdout: string } {
+function runHook(lines: string[]): { code: number; stderr: string; stdout: string } {
 	const r = spawnSync("bash", [HOOK], {
 		cwd: repo,
-		input: lines.join("\n") + "\n",
+		input: lines.join("\n") + (lines.length ? "\n" : ""),
 		encoding: "utf-8",
 		env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
 	});
-	return { code: r.status ?? -1, stderr: r.stderr, stdout: r.stdout };
+	return { code: r.status ?? -1, stderr: r.stderr ?? "", stdout: r.stdout ?? "" };
 }
 
 const line = (localRef: string, localSha: string, remoteRef: string, remoteSha: string) =>
 	`${localRef} ${localSha} ${remoteRef} ${remoteSha}`;
 
+/** A branch at `from` carrying nothing new, for rows that need a second ref holding the same id. */
+function branchAt(name: string, from: string) {
+	git("branch", "-f", name, from);
+}
+
+beforeAll(() => {
+	repo = fs.mkdtempSync(path.join(os.tmpdir(), "pre-push-"));
+	git("init", "-q", "-b", "main");
+	fs.writeFileSync(path.join(repo, "README.md"), "x\n");
+	git("add", "-A");
+	git("commit", "-q", "-m", "init");
+});
+
+afterAll(() => {
+	if (repo) fs.rmSync(repo, { recursive: true, force: true });
+});
+
 describe("rule (A): a mainline push must be HEAD", () => {
 	it("refuses a mainline push whose local sha is not HEAD, naming both", () => {
-		const repo = makeRepo();
-		const head = git(repo, "rev-parse", "HEAD");
-		const other = git(repo, "commit-tree", "HEAD^{tree}", "-p", head, "-m", "elsewhere");
-		git(repo, "checkout", "-q", "--detach", head);
-		const r = runHook(repo, [line("refs/heads/main", other, "refs/heads/main", head)]);
+		const head = git("rev-parse", "HEAD");
+		const other = git("commit-tree", "HEAD^{tree}", "-p", head, "-m", "elsewhere");
+		const r = runHook([line("refs/heads/main", other, "refs/heads/main", head)]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain(other);
 		expect(r.stderr).toContain(head);
@@ -80,82 +81,102 @@ describe("rule (A): a mainline push must be HEAD", () => {
 	});
 
 	it("passes a mainline push that is HEAD", () => {
-		const repo = makeRepo();
-		const head = git(repo, "rev-parse", "HEAD");
-		const r = runHook(repo, [line("refs/heads/main", head, "refs/heads/main", head)]);
+		const head = git("rev-parse", "HEAD");
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", head)]);
 		expect(r.code).toBe(0);
 		expect(r.stderr).toBe("");
 	});
 
 	it("passes a side-branch push from a checkout on another commit", () => {
-		const repo = makeRepo();
-		const head = git(repo, "rev-parse", "HEAD");
-		const side = git(repo, "commit-tree", "HEAD^{tree}", "-p", head, "-m", "side");
-		const r = runHook(repo, [line("refs/heads/side", side, "refs/heads/side", ZERO)]);
+		const head = git("rev-parse", "HEAD");
+		const side = git("commit-tree", "HEAD^{tree}", "-p", head, "-m", "side");
+		const r = runHook([line("refs/heads/side", side, "refs/heads/side", ZERO)]);
 		expect(r.code).toBe(0);
 	});
 
 	it("refuses a detached HEAD landing even when the sha is a real commit", () => {
-		const repo = makeRepo();
-		const head = git(repo, "rev-parse", "HEAD");
-		const next = commitWo(repo, "WO-2026-900");
-		git(repo, "checkout", "-q", "--detach", head);
-		const r = runHook(repo, [line("refs/heads/main", next, "refs/heads/main", head)]);
+		const head = git("rev-parse", "HEAD");
+		git("checkout", "-q", "--detach", head);
+		const ahead = git("commit-tree", "HEAD^{tree}", "-p", head, "-m", "ahead");
+		const r = runHook([line("refs/heads/main", ahead, "refs/heads/main", head)]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("HEAD is");
+		git("checkout", "-q", "main");
 	});
-
 
 	it("sees nothing at all when the push has nothing to push — the documented gap", () => {
 		// The incident WO-2026-102 hit: local mainline already up to date, commits on a detached
 		// HEAD. Git runs the hook with empty stdin and reports "Everything up-to-date", so no
 		// rule here can fire. Pinned so the limit stays visible; Q-103-a proposes the fix.
-		const repo = makeRepo();
-		const head = git(repo, "rev-parse", "HEAD");
-		const detached = git(repo, "commit-tree", "HEAD^{tree}", "-p", head, "-m", "stranded");
-		git(repo, "checkout", "-q", "--detach", detached);
-		const r = runHook(repo, []);
-		expect(r.code).toBe(0);
-		expect(r.stderr).toBe("");
+		expect(runHook([])).toMatchObject({ code: 0, stderr: "" });
 	});
 });
 
 describe("rule (B): a work-orders id no live ref holds", () => {
 	it("refuses an id a live ref already holds, naming the ref", () => {
-		const repo = makeRepo();
-		const base = git(repo, "rev-parse", "HEAD");
-		commitWo(repo, "WO-2026-800");
-		git(repo, "branch", "held", "HEAD");
-		git(repo, "reset", "-q", "--hard", base);
-		const head = commitWo(repo, "WO-2026-800", "rival");
-		const r = runHook(repo, [line("refs/heads/main", head, "refs/heads/main", base)]);
+		const base = git("rev-parse", "HEAD");
+		const heldTip = commitWo("WO-2026-800");
+		branchAt("rival", heldTip);
+		git("reset", "-q", "--hard", base);
+		const head = commitWo("WO-2026-800", "rival-copy");
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", base)]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("WO-2026-800 is already held by held");
+		expect(r.stderr).toContain("WO-2026-800 is already held by refs/heads/rival");
 	});
 
 	it("passes an id no ref holds", () => {
-		const repo = makeRepo();
-		const base = git(repo, "rev-parse", "HEAD");
-		const head = commitWo(repo, "WO-2026-801");
-		const r = runHook(repo, [line("refs/heads/main", head, "refs/heads/main", base)]);
+		const base = git("rev-parse", "HEAD");
+		const head = commitWo("WO-2026-801");
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", base)]);
 		expect(r.code).toBe(0);
 	});
 
-	it("does not scan refs when the push adds no work-orders file", () => {
-		const repo = makeRepo();
-		const base = git(repo, "rev-parse", "HEAD");
-		commitWo(repo, "WO-2026-802");
-		git(repo, "branch", "held", "HEAD");
-		git(repo, "reset", "-q", "--hard", base);
+	it("passes the first push of an alias branch, whose ids other refs all hold", () => {
+		// bug-triage's repro: a new ref whose tree's ids are held by refs on other commits.
+		// Nothing new is claimed, so nothing may be refused — this row is red under a
+		// whole-tree measure of what a new ref "adds".
+		const featTip = commitWo("WO-2026-810");
 		fs.writeFileSync(path.join(repo, "code.txt"), "y\n");
-		git(repo, "add", "code.txt");
-		git(repo, "commit", "-q", "-m", "code only");
-		const head = git(repo, "rev-parse", "HEAD");
-		// A `git` that logs its own invocations: the scan is `ls-tree`/`for-each-ref` work.
-		const shim = path.join(repo, "gitlog");
-		fs.mkdirSync(shim);
-		const log = path.join(repo, "git-calls.log");
-		// Absolute path: a shim that resolves `git` through PATH re-enters itself and hangs.
+		git("add", "-A");
+		git("commit", "-q", "-m", "main moves on");
+		branchAt("rival810", featTip);
+		const r = runHook([line("refs/heads/feat", featTip, "refs/heads/feat", ZERO)]);
+		expect(r.code).toBe(0);
+		expect(r.stderr).toBe("");
+	});
+
+	it("passes the first push of a branch that adds an id no ref holds", () => {
+		const base = git("rev-parse", "HEAD");
+		const head = commitWo("WO-2026-811");
+		const r = runHook([line("refs/heads/feat811", head, "refs/heads/feat811", ZERO)]);
+		expect(r.code).toBe(0);
+		expect(base).not.toBe(head);
+	});
+
+	it("refuses a new branch that reuses an id another ref holds", () => {
+		const base = git("rev-parse", "HEAD");
+		const heldTip = commitWo("WO-2026-812");
+		branchAt("rival812", heldTip);
+		git("reset", "-q", "--hard", base);
+		const head = commitWo("WO-2026-812", "dup");
+		const r = runHook([line("refs/heads/feat812", head, "refs/heads/feat812", ZERO)]);
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("WO-2026-812 is already held by refs/heads/rival812");
+	});
+
+	it("does not scan refs when the push adds no work-orders file", () => {
+		const base = git("rev-parse", "HEAD");
+		commitWo("WO-2026-820");
+		branchAt("rival820", "HEAD");
+		git("reset", "-q", "--hard", base);
+		fs.writeFileSync(path.join(repo, "code.txt"), "z\n");
+		git("add", "-A");
+		git("commit", "-q", "-m", "code only");
+		const head = git("rev-parse", "HEAD");
+		// A `git` that logs its own invocations: the id scan is `for-each-ref`/`ls-tree` work.
+		const shim = fs.mkdtempSync(path.join(os.tmpdir(), "pre-push-shim-"));
+		const log = path.join(shim, "git-calls.log");
+		// Absolute path: a shim resolving `git` through PATH re-enters itself and hangs.
 		fs.writeFileSync(path.join(shim, "git"), `#!/bin/bash\necho "$@" >> ${log}\nexec ${REAL_GIT} "$@"\n`);
 		fs.chmodSync(path.join(shim, "git"), 0o755);
 		const r = spawnSync("bash", [HOOK], {
@@ -164,6 +185,7 @@ describe("rule (B): a work-orders id no live ref holds", () => {
 			encoding: "utf-8",
 			env: { ...process.env, PATH: `${shim}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: "/dev/null" },
 		});
+		fs.rmSync(shim, { recursive: true, force: true });
 		expect(r.status).toBe(0);
 		const calls = fs.existsSync(log) ? fs.readFileSync(log, "utf-8") : "";
 		expect(calls).not.toContain("for-each-ref");

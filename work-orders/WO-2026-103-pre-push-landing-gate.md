@@ -54,6 +54,30 @@ Each row red under the mutation that removes its check: no rule (A) → rows 1 a
 (B) refusal → row 5; no pushed-ref exclusion → row 6 (false refusal); unconditional id
 scan → row 7.
 
+### Fixed after review: the first push of any branch was refused
+
+`bug-triage` measured the landed hook in a scratch clone and found rule (B) refusing
+`git push origin main:refs/heads/feat` — a new ref, nothing new claimed — for 82 ids held
+by unrelated refs. Cause: for `remote_sha == zero` the added set was the pushed ref's whole
+tree, so the exclusion list (which covers only the refs the push carries) never applied to
+the ids it found. The lazy path also called the ref listing before deciding whether any
+order was added.
+
+Fixed shape:
+
+- a ref being **updated** → added set = files that ref gains against its old tip (A-filter);
+- a ref being **created** → added set = files whose commits no *other* live ref holds
+  (`git log --not <other tips>`), which is empty for an alias and exact for a fork;
+- the ref exclusion compares full `%(refname)`, so the name arm matches stdin's
+  fully-qualified names instead of never matching;
+- the ref listing is computed on first use, so an ordinary mainline push pays nothing.
+
+Rows added: an alias branch whose ids other refs hold passes (red under the whole-tree
+version — this is the row that pins the fix); a new branch adding a fresh id passes; a new
+branch reusing an id another ref holds is refused naming it. Cost after the fix: ordinary
+mainline push 0.19-0.23 s; a first push of a new branch 0.24 s; worst case — a push that
+adds an order in this 36-ref repo — unchanged at ~0.9 s.
+
 ### Q-103-a (owner question) — the incident is invisible to a pre-push hook
 
 Measured while landing this order, in a scratch clone (`/tmp/s4`): with the local mainline

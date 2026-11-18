@@ -12,7 +12,10 @@
 #     push that pushes nothing gives a pre-push hook nothing to judge; catching that needs the
 #     empty-stdin rule proposed in WO-2026-103 (Q-103-a), not this one.
 # (B) A push may not add a work-orders/ id that a live ref already holds. This is the rule
-#     rules/work-order-numbering.md already states; until now nothing here enforced it.
+#     rules/work-order-numbering.md already states; until now nothing here enforced it. "Adds"
+#     is measured against the ref's old tip, or for a new ref against the commits no other ref
+#     holds — measuring a new ref's whole tree instead refuses the first push of every branch
+#     for ids every ref already has (bug-triage, 2026-11-18).
 #
 # Scope, deliberately narrow: a push carrying no mainline ref passes both rules silently (a side
 # branch, a keep ref, a restore), and rule (B) reads only work-orders/ paths the push adds.
@@ -54,18 +57,37 @@ if [ -n "$target" ]; then
 fi
 
 # Rule (B) — only ids this push adds under work-orders/.
-# The refs this push introduces, by name and by commit: a push normally updates a branch that
-# already holds the id it is adding (local `main` == the commit being pushed), so those refs are
-# the pusher, not a rival claim.
 pushed_refs=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $1}')
 pushed_shas=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $2}')
 
+# Live refs, one line each: `<commit> <ref name>`, deduped by commit (aliases and remote-tracking
+# copies share a sha, and the id scan is one `ls-tree` per entry). Full `%(refname)` because the
+# pushed names on stdin are fully qualified.
+held_refs() {
+    git for-each-ref --format='%(objectname) %(refname)' refs/heads refs/remotes refs/tags \
+        | awk '!seen[$1]++'
+}
+
+# Commits held by refs *other than* the ones this push carries — the base a new branch's added set
+# is measured against, and the exclusion arm of the id scan. Computed on first use: a push that
+# updates an existing ref has nothing to measure it against, and must not pay for the listing.
+other_shas() {
+    held_refs | awk '{print $1}' | grep -vxF -f <(printf '%s\n' $pushed_shas)
+}
+
+# What this push adds under work-orders/. Two shapes, because a new ref has nothing to diff
+# against on the remote:
+#   updating a ref  → the files that ref gains (A-filter against its old tip);
+#   creating a ref  → the files its commits add that no other live ref holds. Measuring against the
+#                     whole tree instead counts 82 ids as "added" on the first push of any branch and
+#                     refuses an alias (`main:refs/heads/feat`) for ids every ref already has.
 added_ids=$(
     while read -r local_ref local_sha remote_ref remote_sha; do
         [ -z "${remote_ref:-}" ] && continue
         [ "$local_sha" = "$zero" ] && continue   # a delete adds nothing
         if [ "$remote_sha" = "$zero" ]; then
-            git ls-tree -r --name-only "$local_sha" -- work-orders/ 2>/dev/null
+            git log --format= --name-only --diff-filter=A "$local_sha" \
+                --not $(other_shas) -- work-orders/ 2>/dev/null
         else
             git diff --name-only --diff-filter=A "$remote_sha" "$local_sha" -- work-orders/ 2>/dev/null
         fi
@@ -79,14 +101,6 @@ esac
 
 ids=$(printf '%s\n' "$added_ids" | grep -o 'WO-[0-9]\{4\}-[0-9]\{3\}' | sort -u)
 [ -z "$ids" ] && exit 0
-
-# Live refs, one line each: `<commit> <ref name>`, deduped by commit. Branch aliases and
-# remote-tracking copies usually share a sha, and the id scan is one `ls-tree` per entry, so
-# deduping here is what keeps a 36-ref repo at a handful of processes rather than 36.
-held_refs() {
-    git for-each-ref --format='%(objectname) %(refname:short)' refs/heads refs/remotes refs/tags \
-        | awk '!seen[$1]++'
-}
 
 refused=0
 while read -r id; do
