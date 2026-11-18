@@ -104,11 +104,36 @@ describe("rule (A): a mainline push must be HEAD", () => {
 		git("checkout", "-q", "main");
 	});
 
-	it("sees nothing at all when the push has nothing to push — the documented gap", () => {
-		// The incident WO-2026-102 hit: local mainline already up to date, commits on a detached
-		// HEAD. Git runs the hook with empty stdin and reports "Everything up-to-date", so no
-		// rule here can fire. Pinned so the limit stays visible; Q-103-a proposes the fix.
+	it("passes when a push has nothing to push from an attached HEAD", () => {
 		expect(runHook([])).toMatchObject({ code: 0, stderr: "" });
+	});
+
+	it("passes a detached HEAD that is still on the mainline's history", () => {
+		const older = git("rev-parse", "HEAD");
+		fs.writeFileSync(path.join(repo, "moved.txt"), "m\n");
+		git("add", "-A");
+		git("commit", "-q", "-m", "main moves");
+		const mainSha = git("rev-parse", "HEAD");
+		git("checkout", "-q", "--detach", older);
+		const r = runHook([]);
+		git("checkout", "-q", "main");
+		expect(mainSha).not.toBe(older);
+		expect(r).toMatchObject({ code: 0, stderr: "" });
+	});
+
+	it("refuses an empty push from a detached HEAD off the mainline, naming HEAD", () => {
+		// Rule (A2): the WO-2026-102 incident. Git sends the hook nothing, then reports
+		// "Everything up-to-date" while the commits sit on no ref.
+		const mainSha = git("rev-parse", "HEAD");
+		git("checkout", "-q", "--detach");
+		git("commit", "-q", "--allow-empty", "-m", "stranded");
+		const stranded = git("rev-parse", "HEAD");
+		const r = runHook([]);
+		git("checkout", "-q", "main");
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("NOT LANDED");
+		expect(r.stderr).toContain(stranded);
+		expect(r.stderr).toContain(mainSha);
 	});
 });
 

@@ -120,8 +120,15 @@ there is no line to judge. What it does catch is the other stale-main landing �
 - **(b) Land no such rule.** The gate keeps the stale-main and numbering cases; a
   stranded landing is caught by a peer comparing `origin/main`, or not at all.
 
-**Recommended: (a).** Landed as (b) — the order as ruled — with this question open, and
-row 8 pinning the current pass-through so the limit cannot be mistaken for coverage.
+**Ruling (owner, 2026-11-19, relayed by the claude seat): "Refuse that case (Recommended)".**
+So (a), landed: when git hands the hook no refs, `HEAD` is detached and `HEAD` is not an
+ancestor of the local mainline, the hook refuses naming both shas. A detached `HEAD` *on* the
+mainline's history — an older commit, a tag — is a normal read-only checkout and passes, as
+does an empty push from an attached `HEAD`. The row that pinned the old pass-through is
+replaced by three: attached-HEAD empty push passes, detached-on-mainline passes,
+detached-off-mainline refuses. The refusal row is red with the rule removed.
+
+This is the one rule that changes what a no-op push does, so `bug-triage` re-verifies it.
 
 ### Cost, measured
 

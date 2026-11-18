@@ -6,11 +6,10 @@
 #     definition, so a mainline line whose sha is not HEAD is a landing that reports success
 #     while pushing something else.
 #
-#     Measured limit: when the local mainline is already up to date, git runs this hook with
-#     **empty stdin** and prints "Everything up-to-date" — so a detached HEAD holding the
-#     commits, pushing a stale main, is invisible here. That was WO-2026-102's incident. A
-#     push that pushes nothing gives a pre-push hook nothing to judge; catching that needs the
-#     empty-stdin rule proposed in WO-2026-103 (Q-103-a), not this one.
+#     (A2) covers the case rule (A) cannot see: when git hands the hook no refs at all, it
+#     prints "Everything up-to-date" and reports success, so a landing made from a detached
+#     HEAD strands its commits with no line to judge. That was WO-2026-102's incident, and
+#     refuse-when-detached-off-the-mainline is the owner's ruling (2026-11-19, Q-103-a).
 # (B) A push may not add a work-orders/ id that a live ref already holds. This is the rule
 #     rules/work-order-numbering.md already states; until now nothing here enforced it. "Adds"
 #     is measured against the ref's old tip, or for a new ref against the commits no other ref
@@ -30,7 +29,27 @@ mainline_ref="refs/heads/$mainline_branch"
 zero=0000000000000000000000000000000000000000
 
 pushed=$(cat)
-[ -z "$pushed" ] && exit 0
+
+# (A2) Nothing pushed at all. Git runs a pre-push hook even when it has no ref to send, with
+# empty stdin, and then reports "Everything up-to-date" — so a landing made from a detached HEAD
+# while the local mainline is already current strands its commits with a success message and no
+# line for rule (A) to judge. Owner ruling 2026-11-19 (Q-103-a): refuse when HEAD is detached and
+# is not on the mainline. A detached HEAD *on* the mainline's history is a normal read-only
+# checkout and passes.
+if [ -z "$pushed" ]; then
+    if ! git symbolic-ref -q HEAD >/dev/null; then
+        head_sha=$(git rev-parse --verify --quiet HEAD)             || exit 0   # unborn HEAD: no commit to strand
+        mainline_sha=$(git rev-parse --verify --quiet "$mainline_ref") || exit 0
+        if ! git merge-base --is-ancestor "$head_sha" "$mainline_sha" 2>/dev/null; then
+            echo "NOT LANDED: nothing to push, and HEAD is not on $mainline_ref." >&2
+            echo "  HEAD is      $head_sha" >&2
+            echo "  $mainline_branch is      $mainline_sha" >&2
+            echo "  This push sends nothing. Cut a branch at HEAD and push that." >&2
+            exit 1
+        fi
+    fi
+    exit 0
+fi
 
 target=
 while read -r local_ref local_sha remote_ref remote_sha; do
