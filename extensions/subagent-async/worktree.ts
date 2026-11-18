@@ -600,16 +600,22 @@ export async function writeTempFile(name: string, content: string): Promise<{ di
 	return { dir: tmpDir, filePath };
 }
 
+/**
+ * The run's final text: the **last** assistant message's text parts, or "" when that
+ * message carries none.
+ *
+ * No walk back to an earlier message. A child that ends on a tool-only message wrote
+ * no report, and an earlier mid-work line is not one: `closeWorkRecord` turns "" into
+ * "implementer has no final report", which is the state to act on (WO-2026-102, after
+ * tfd WO-2026-510/513 were recorded from a 60-character mid-work line).
+ */
 export function getFinalOutput(messages: any[]): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant") {
-			for (const part of msg.content) {
-				if (part.type === "text") {
-					return part.text.replace(/^\s*\[session_id:[^\]]*\]\s*$/gim, "").trimEnd();
-				}
-			}
-		}
-	}
-	return "";
+	const last = messages.findLast((m) => m?.role === "assistant");
+	if (!last) return "";
+	const parts = Array.isArray(last.content) ? last.content : [];
+	const text = parts
+		.filter((part: any) => part?.type === "text")
+		.map((part: any) => part.text)
+		.join("\n");
+	return text.replace(/^\s*\[session_id:[^\]]*\]\s*$/gim, "").trimEnd();
 }

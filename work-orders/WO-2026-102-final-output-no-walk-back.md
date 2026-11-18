@@ -21,7 +21,7 @@ mid-work line.
 Two session files, both on this box:
 
 - `~/.pi/agent/sessions/--Users-scott-Developer-wt-subagents-tfd-7c26de525fba--/2026-11-17T06-35-36-550Z_subagent-29c58d83-551d-487b-922d-7c26de525fba.jsonl`
-  (WO-2026-510): ends `['thinking','toolCall']` then `[]`; the walked-back text is 62
+  (WO-2026-510): ends `['thinking','toolCall']` then `[]`; the walked-back text is 60
   chars, "Committing the green work first, then I'll write the record."
 - WO-2026-513's implementer has the same shape; the reviewer session beside it ends with
   `['thinking','text']` and its entry landed — the discriminator is the session file.
@@ -56,6 +56,32 @@ Call sites, each currently inheriting the walk-back:
    than a stale mid-work line.
 5. **Reviewer exchange.** A reviewer whose final message is text-less records an empty
    `output` rather than an earlier line.
+
+**Independent reproduction.** `bug-triage` measured the same session (365 messages, last
+`{"role":"assistant","content":[],"stopReason":"aborted"}`) and filed **pi-config#19** with
+a red pin at `bug-triage/final-output-walk-back-pin` (`e230137`). It also measured a
+second loss the walk-back hides: the old `return` sat inside the part loop, so a message
+of `[text, toolCall, text]` yielded only its first part — a report that arrives but
+loses its tail. Row 3 covers it.
+
+### Q-102-a (owner question) — does the delivery path want the earlier line?
+
+The record side is settled: a reportless child is reportless, and `""` is the answer.
+Delivery is a different question, raised by `bug-triage` and not decided here: the
+delivered text for a killed child currently reads `(no output)` (row 5), where the last
+thing the child said ("Committing the green work first…") is arguably more use to the
+parent than nothing.
+
+- **(a) Keep `(no output)`.** One function, one sense: the final text is the final
+  message. The parent gets the kill marker, the task and the stderr note, and reads the
+  child's log for progress. **Recommended:** the alternative silently substitutes a line
+  the child did not write as its report, which is the fallback this order removes.
+- **(b) Delivery keeps an earlier line, labelled.** `deliverResult` appends
+  `no final message; last progress: <line>` when the final message carries no text — an
+  explicit answer, not a substitution.
+
+Landed under (a). If the owner picks (b), only `sleep-guard.ts:418`'s message changes and
+row 5's assertion flips with it.
 
 ### Sequencing
 

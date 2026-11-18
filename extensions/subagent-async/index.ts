@@ -178,6 +178,7 @@ import {
 export {
 	createWorktree,
 	removeWorktreeTree,
+	getFinalOutput,
 	type RemovableWorktree,
 	type RemovalDeps,
 	type RemovalStage,

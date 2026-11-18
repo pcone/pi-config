@@ -213,6 +213,13 @@ Risk patterns every order shares. The implementer checks each one.
 
 The implementer must produce a completion report in their final assistant message. All implementers use: status / invariant_exhaustiveness / files_modified / tests (with each new row's red-turning revert) / structural_checks (each prohibition with its check's output, then the shared risks) / deviations_from_spec / notes_for_orchestrator.
 
+**`deviations_from_spec` has one shape: `none` alone, or a list of departures.** The
+field is the first line of its own paragraph and holds *only* that answer. Prose after
+`none` ("none. Two facts outside the landing: …") is read as a departure body — tfd's
+`wo_record.py` opened D1 from exactly that and refused the `landed` entry on WO-2026-510.
+Anything that is not a departure goes in `unexpected_changes`, `notes_for_orchestrator`,
+or the report body above the field.
+
 For code-changing work (`review_policy: required`), also include:
 - **assumptions_made** — invariants assumed, not explicit in work order
 - **unexpected_changes** — files touched outside scope, with justification
