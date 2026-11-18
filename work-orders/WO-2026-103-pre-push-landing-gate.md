@@ -78,6 +78,22 @@ branch reusing an id another ref holds is refused naming it. Cost after the fix:
 mainline push 0.19-0.23 s; a first push of a new branch 0.24 s; worst case — a push that
 adds an order in this 36-ref repo — unchanged at ~0.9 s.
 
+### Installing it: the symlink tracks the worktree
+
+`.git/hooks/pre-push` is a relative symlink to `../../bin/pre-push`, so it resolves into
+whatever commit the checkout is on. `bug-triage` hit this verifying across commits: it
+checked out an older revision, measured that revision's hook, and reproduced the fixed
+false positive while believing it was testing the fix. For a checkout that stays on the
+mainline this is the intended behaviour — the gate moves with the tree. For measuring
+across commits, copy the file out (`git show <rev>:bin/pre-push > /tmp/hook`) and point the
+symlink at the copy. It is also why tfd should symlink to this file rather than copy it:
+a copy is a second implementation that drifts, and the drift here would be a gate that
+silently stops checking.
+
+tfd's side of the wiring changes tfd's own `.githooks/pre-push`, so it is a tfd order, not
+this one. It should record that the pre-fix hook would have refused the first push of every
+triage pin branch (`git push origin bug-triage/<n>-<slug>`).
+
 ### Q-103-a (owner question) — the incident is invisible to a pre-push hook
 
 Measured while landing this order, in a scratch clone (`/tmp/s4`): with the local mainline
