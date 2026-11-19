@@ -136,9 +136,18 @@ esac
 ids=$(printf '%s\n' "$added_ids" | grep -o 'WO-[0-9]\{4\}-[0-9]\{3\}' | sort -u)
 [ -z "$ids" ] && exit 0
 
-# A ref this push descends from is not a rival: a merge landing its branch's ids, or a branch
-# that merged the mainline, holds ids from its own lineage. Exclude ancestors of every pushed
-# commit, not just the tips.
+# Every work-orders/ path a live ref ever added, with the commit and the ref that added it, in
+# one process: `--source` names the ref, `--all` covers heads, remotes and tags. This replaces a
+# per-ref `ls-tree` walk that cost 42 s in a 607-ref repo (tfd) and 12 s even after deduping by
+# tree — a gate nobody can afford to leave on.
+held_adds=$(git log --all --no-renames --diff-filter=A --name-only --format='%H %S' \
+    -- work-orders/) || die "cannot read the work-orders history of the live refs."
+held_pairs=$(printf '%s\n' "$held_adds" | awk '
+    NF == 2 { commit = $1; ref = ($2 == "" ? $1 : $2); next }
+    /^work-orders\// { print commit "\t" ref "\t" $0 }')
+
+# A commit this push descends from is lineage, not a rival: a merge landing its branch's ids, or
+# a branch that merged the mainline, holds ids from its own history.
 is_ancestor_of_pushed() {
     local tip=$1 sha
     for sha in $pushed_shas; do
@@ -150,19 +159,18 @@ is_ancestor_of_pushed() {
 refused=0
 while read -r id; do
     [ -z "$id" ] && continue
-    while read -r tip ref; do
-        [ -z "$ref" ] && continue
-        case " $pushed_refs " in *" $ref "*) continue ;; esac
-        case " $pushed_shas " in *" $tip "*) continue ;; esac
-        is_ancestor_of_pushed "$tip" && continue
-        files=$(git ls-tree -r --name-only "$tip" -- work-orders/) \
-            || die "cannot list work-orders/ in $ref."
-        case "$files" in
-            *"$id"[-.]*)
-                echo "NOT LANDED: $id is already held by $ref." >&2
-                refused=1 ;;
+    while IFS=$'\t' read -r commit ref path; do
+        [ -z "$path" ] && continue
+        case "$path" in
+            *"$id"[-.]*) ;;
+            *) continue ;;
         esac
-    done <<< "$(held_refs)"
+        case " $pushed_refs " in *" $ref "*) continue ;; esac
+        is_ancestor_of_pushed "$commit" && continue
+        echo "NOT LANDED: $id is already held by $ref." >&2
+        refused=1
+        break
+    done <<< "$held_pairs"
 done <<< "$ids"
 
 [ "$refused" = 0 ] && exit 0
