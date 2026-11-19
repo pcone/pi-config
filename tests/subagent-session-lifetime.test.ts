@@ -178,6 +178,16 @@ afterEach(() => {
 	}
 });
 
+/** Poll `condition` until it holds, throwing after `boundMs`. A row that waited on a timer
+ *  says what it waited for instead of sleeping past it. */
+async function until(condition: () => boolean, boundMs: number, what: string): Promise<void> {
+	const started = Date.now();
+	while (!condition()) {
+		if (Date.now() - started > boundMs) throw new Error(`timed out after ${boundMs}ms waiting for ${what}`);
+		await new Promise((resolve) => realSetTimeout(resolve, 2));
+	}
+}
+
 /** Callback of the most recently scheduled timeout. */
 function lastTimeoutCallback(): () => void {
 	const calls = setTimeoutSpy!.mock.calls;
@@ -387,16 +397,23 @@ describe("subagent live-session lifetime (decision 026)", () => {
 		stub.sentMessages.length = 0;
 		const waitTool = stub.tools.get("wait");
 
+		// Not vacuous, and the calibration for the negative below: the same arm without the
+		// cancel does fire, and its lateness is how long a cancelled timer would have needed.
+		const armedAt = Date.now();
 		await waitTool.execute("call-1", { seconds: 0.05 });
-		clearActiveWait();
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		expect(stub.sentMessages).toEqual([]);
-
-		// Not vacuous: the same arm without the cancel does fire.
-		await waitTool.execute("call-2", { seconds: 0.05 });
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await until(() => stub.sentMessages.length >= 1, 2_000, "the still-running steer");
 		expect(stub.sentMessages.length).toBe(1);
 		expect(stub.sentMessages[0]).toContain("[wait timer]");
+		const lateness = Date.now() - armedAt;
+
+		// Nothing is sent on the cancelled arm, so there is no condition to observe: wait until
+		// the timer it armed is past the deadline this box actually took, and no further.
+		stub.sentMessages.length = 0;
+		const cancelledAt = Date.now();
+		await waitTool.execute("call-2", { seconds: 0.05 });
+		clearActiveWait();
+		await until(() => Date.now() - cancelledAt > lateness + 20, 2_000, "the cancelled timer's deadline");
+		expect(stub.sentMessages).toEqual([]);
 	});
 
 	it("9: a second arm replaces the first, so one wait leaves one timer", async () => {
@@ -407,9 +424,14 @@ describe("subagent live-session lifetime (decision 026)", () => {
 		stub.sentMessages.length = 0;
 		const waitTool = stub.tools.get("wait");
 
+		const armedAt = Date.now();
 		await waitTool.execute("call-1", { seconds: 0.05 });
 		await waitTool.execute("call-2", { seconds: 0.05 });
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await until(() => stub.sentMessages.length >= 1, 2_000, "the rearmed wait timer's steer");
+		const lateness = Date.now() - armedAt;
+		// Wait past the deadline the steer above took: a replaced timer that still fired would
+		// have sent its own by now.
+		await until(() => Date.now() - armedAt > lateness + 20, 2_000, "the replaced wait timer's deadline");
 
 		expect(stub.sentMessages.length).toBe(1);
 	});

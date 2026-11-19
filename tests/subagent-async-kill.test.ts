@@ -446,7 +446,7 @@ describe("dispatchKillSignals (WO-2026-043 null-proc guard)", () => {
 /** A child that handles SIGTERM and keeps running — what the fallback exists
  *  for. It announces the handler is installed, so the row cannot signal it
  *  mid-startup, where the default disposition would kill it. */
-const IGNORES_SIGTERM = 'process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);';
+const IGNORES_SIGTERM = 'process.on("SIGTERM", () => { process.stdout.write("sigterm-arrived|"); }); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);';
 /** A child with the default SIGTERM disposition: it dies of the signal. */
 const DIES_ON_SIGTERM = 'process.stdout.write("ready\\n"); setInterval(() => {}, 1000);';
 
@@ -461,25 +461,46 @@ function spawnNode(script: string): {
 	proc: ChildProcess;
 	ready: Promise<boolean>;
 	closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+	/** Resolves true once stdout has carried `text`, false if `ms` passes first or the child ends. */
+	saw(text: string, ms: number): Promise<boolean>;
 } {
 	const proc = spawn("node", ["-e", script], { stdio: ["ignore", "pipe", "ignore"], env: childEnv() });
 	spawned.push(proc);
 	let readyResolve: (announced: boolean) => void = () => {};
 	const ready = new Promise<boolean>((resolve) => { readyResolve = resolve; });
+	// Accumulate rather than test each chunk: "ready\n" can straddle two.
+	let out = "";
+	const waiters: { text: string; settle: (seen: boolean) => void }[] = [];
 	const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
 		proc.on("close", (code, signal) => {
 			readyResolve(false); // a child that exited before announcing is still settled
+			for (const waiter of waiters.splice(0)) waiter.settle(false); // it will say no more
 			resolve({ code, signal });
 		});
 	});
-	// Accumulate rather than test each chunk: "ready\n" can straddle two.
-	let out = "";
+	const saw = (text: string, ms: number): Promise<boolean> =>
+		new Promise((resolve) => {
+			if (out.includes(text)) return resolve(true);
+			const waiter = { text, settle: resolve };
+			waiters.push(waiter);
+			realSetTimeout(() => {
+				const at = waiters.indexOf(waiter);
+				if (at < 0) return;
+				waiters.splice(at, 1);
+				resolve(false);
+			}, ms);
+		});
 	proc.stdout!.setEncoding("utf8");
 	proc.stdout!.on("data", (chunk: string) => {
 		out += chunk;
 		if (out.includes("ready\n")) readyResolve(true);
+		for (const waiter of [...waiters]) {
+			if (!out.includes(waiter.text)) continue;
+			waiters.splice(waiters.indexOf(waiter), 1);
+			waiter.settle(true);
+		}
 	});
-	return { proc, ready, closed };
+	return { proc, ready, closed, saw };
 }
 
 /** Wait for the child's announcement, failing the row with the reason when it
@@ -535,7 +556,7 @@ afterEach(() => {
 
 describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", () => {
 	it("R1: a child that ignores SIGTERM dies of SIGKILL after HARD_KILL_DELAY_MS and the wait ends", async () => {
-		const { proc, ready, closed } = spawnNode(IGNORES_SIGTERM);
+		const { proc, ready, closed, saw } = spawnNode(IGNORES_SIGTERM);
 		const signals = recordSignals(proc);
 		const rs = stubRunningSubagent(proc);
 		await waitReady(ready);
@@ -546,7 +567,9 @@ describe("dispatchKillSignals against a real child (WO-2026-100 escalation)", ()
 
 		// The SIGTERM landed and was ignored: still running, with `killed`
 		// already true — the triple the old `!proc.killed` guard read as dead.
-		await new Promise((r) => realSetTimeout(r, 500));
+		// The child announces the signal, so this waits for the handler to have run rather than
+		// sleeping long enough that it probably has.
+		expect(await saw("sigterm-arrived|", 10_000)).toBe(true);
 		const afterSigterm = { killed: proc.killed, exitCode: proc.exitCode, signalCode: proc.signalCode };
 		expect(afterSigterm).toEqual({ killed: true, exitCode: null, signalCode: null });
 		// The triple above is the defect's premise, so feed it to the predicate:
