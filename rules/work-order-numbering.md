@@ -41,9 +41,20 @@ on it:
    hard error, not a default. Set it once per clone:
    `git config --local pi.mainline main` (pi-config) or `hamster` (tfd).
 
-   **tfd is not wired yet.** Its `.githooks/pre-push` still runs only the docs
-   validator, so these two rules do not apply there until a tfd order pipes the
-   same stdin into this file. The carrier is that order, not this rule.
+   **tfd runs the same file.** Its `.githooks/pre-push` pipes the push into
+   this one before its own early exits, so a side-branch push carrying no
+   mainline ref is gated by the id rule while the docs validator keeps its R33
+   skip (tfd WO-2026-525). Any clone without `pi.mainline` refuses every push.
+
+   **Two refusal markers, and the difference is load-bearing.** `NOT LANDED:`
+   means the gate ran and refuses this push as a landing. `pre-push: …` followed
+   by `Push aborted; nothing was checked.` means the gate could not run at all —
+   `pi.mainline` unset, a git call failed, a ref unreadable. Matching on
+   `NOT LANDED` alone scores a broken gate as a clean pass.
+
+   The holding ref is named as `%S` shows it: `rival`, `origin/rival`, never
+   `refs/heads/rival`. A log scraper that needs the qualified name has to
+   qualify it.
 
    **What it cannot see, so the fetch is still part of allocating:** a ref this
    clone has not fetched, and a claim in another session's detached HEAD or
