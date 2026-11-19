@@ -56,8 +56,14 @@ import {
 } from "../extensions/peer-link/mailbox";
 import { deliveryDecision } from "../extensions/peer-link/index";
 import peerLink from "../extensions/peer-link/index";
+import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
 
 const PEER_LINK_INDEX = join(import.meta.dir, "..", "extensions", "peer-link", "index.ts");
+
+// Billed model calls, so `.env.test`'s injected gate env (pi-config#22) must not reach them:
+// without the scrub a row's verdict would be about the ambient env, not the peer link.
+const restoreSubagentEnv = scrubSubagentEnv();
+afterAll(restoreSubagentEnv);
 
 // ---------------------------------------------------------------------------
 // Unit tests: mailbox file layer

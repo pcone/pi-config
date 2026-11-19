@@ -46,7 +46,7 @@
  *
  * Run: bun test tests/e2e-idle-compaction.test.ts
  */
-import { describe, it, expect } from "bun:test";
+import { afterAll, describe, it, expect } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,6 +59,13 @@ import {
 	SettingsManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
+import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+
+// This file makes billed model calls, and `.env.test` injects the gate env into every run
+// (pi-config#22): without the scrub a row's verdict would be about the ambient env rather than the
+// compaction it tests. `tests/subagent-boundary-hermeticity.test.ts` pins that this stays here.
+const restoreSubagentEnv = scrubSubagentEnv();
+afterAll(restoreSubagentEnv);
 
 const EXTENSION = join(import.meta.dir, "..", "extensions", "auto-checkpoint.ts");
 const PROVIDER = "opencode-go";

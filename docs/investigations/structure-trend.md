@@ -505,6 +505,14 @@ production change.
 **Pin.** `tests/subagent-boundary-hermeticity.test.ts` no longer names files;
 its header is the decision record.
 
+> **Superseded 2026-11-20 (owner ruling, pi-config#22).** The behavioral row is gone: the
+> derived-set child run cost 292 s against a 300 s cap, marginal by construction and growing
+> with every new spawn site. Injection is now always on — `.env.test` carries the three vars,
+> so every run checks every file, and the file's remaining rows pin the injection, `childEnv()`
+> dropping `NODE_ENV`, billed-call files scrubbing, and the static spawn-env row. Details in
+> the file's header and WO-2026-104. The rejected options and mutation results below stand as
+> the record of the mechanism this replaced.
+
 - Behavioral row: derived set — `*.test.*` files that spawn a child or import a
   module reading `process.env.PI_SUBAGENT_*` / `PI_IS_SUBAGENT`, minus itself
   and minus live-model files (`createAgentSession`); re-run as a child

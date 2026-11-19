@@ -13,6 +13,10 @@
  * `delete process.env.X` never reaches a spawn that omits `env` — verified on
  * bun 1.3.11 (pi-config#7, commit afe16c9). Spawns therefore pass `childEnv()`,
  * which spreads the *live* env, not the startup snapshot.
+ *
+ * The vars are injected into every run by `.env.test` (pi-config#22), so the scrub
+ * is not a workaround for an inherited value: it is how a file says its rows are
+ * about the gate's behaviour rather than the ambient env.
  */
 
 /** The vars the harness injects into a subagent session. */
@@ -63,11 +67,16 @@ export function setEnvForRow(name: string, value: string | undefined): () => voi
 
 /**
  * The env to hand a child process explicitly: the live env plus `overrides`
- * (`undefined` removes a key). Never spawn without it — see the startup-snapshot
- * note above.
+ * (`undefined` removes a key), always without `NODE_ENV`. Never spawn without it
+ * — see the startup-snapshot note above.
  */
 export function childEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env };
+	// `bun test` sets NODE_ENV=test and loads `.env.test` at startup (pi-config#22): a bun child
+	// started in this repo with it set re-reads that file into its own snapshot, and the three
+	// vars come back after the parent scrubbed them (the owner-asks print-mode row went red that
+	// way). Nothing in the suite reads NODE_ENV.
+	delete env.NODE_ENV;
 	for (const [key, value] of Object.entries(overrides)) {
 		if (value === undefined) delete env[key];
 		else env[key] = value;

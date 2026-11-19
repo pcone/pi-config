@@ -1,97 +1,85 @@
 /**
- * The suite's verdict must not depend on the invocation-context PI_SUBAGENT_*
- * environment (pi-config#9).
+ * The suite's verdict must not depend on the invocation-context PI_SUBAGENT_* environment
+ * (pi-config#9, #22).
  *
- * What happened: `bun test` run from INSIDE a subagent failed 11 rows across
- * three files. The harness injects PI_SUBAGENT_ALLOWLIST / PI_SUBAGENT_DEPTH /
- * PI_IS_SUBAGENT into every subagent process; the boundary rows exercise real
- * spawns through the tool gate (extensions/subagent-async reads
- * process.env.PI_SUBAGENT_ALLOWLIST for the allowlist check and
- * subagentDepth() for the nesting cap), so an inherited allowlist refused the
- * `implement`/`orchestrator` spawns those rows are about. Two work-order
- * verifications red identically at base AND landed: the verdict was a property
- * of the invocation context, not of the code under test.
+ * What happened: `bun test` run from INSIDE a subagent failed 11 rows across three files. The
+ * harness injects PI_SUBAGENT_ALLOWLIST / PI_SUBAGENT_DEPTH / PI_IS_SUBAGENT into every subagent
+ * process; the boundary rows exercise real spawns through the tool gate (extensions/subagent-async
+ * reads process.env.PI_SUBAGENT_ALLOWLIST for the allowlist check and subagentDepth() for the
+ * nesting cap), so an inherited allowlist refused the `implement`/`orchestrator` spawns those rows
+ * are about. Two work-order verifications red identically at base AND landed: the verdict was a
+ * property of the invocation context, not of the code under test.
  *
- * The idiom (tests/helpers/subagent-env.ts, test side only): `scrubSubagentEnv()`
- * drops those three vars at file level, and every child spawn passes
- * `env: childEnv()` — bun hands a spawn that omits `env` its process-start
- * snapshot, so the in-process scrub alone never reaches such a child.
+ * The mechanism is injection, always on (owner ruling 2026-11-20, pi-config#22). `.env.test` in
+ * the repo root carries the three vars; `bun test` sets NODE_ENV=test and loads it into the env
+ * snapshot taken at process start, which is the snapshot a child spawned without `env`
+ * receives — so the values reach spawns, not only in-process readers, and a real environment
+ * variable still wins. A file whose rows are about something else scrubs them in `beforeAll`
+ * (`tests/helpers/subagent-env.ts`), and every spawn passes `env: childEnv()`, which spreads the
+ * live env and drops NODE_ENV: a bun child started in this repo with NODE_ENV=test set would
+ * re-read `.env.test` and undo the parent's scrub (the owner-asks print-mode row went red that
+ * way).
  *
- * Two rows pin that, and neither enumerates files:
+ * Why this replaces the row that ran a child suite: it cost 292 s against a 300 s cap — a single
+ * test, marginal by construction, and it grew with every file that gained a spawn site. Injection
+ * covers what it covered from the other direction: every file now runs under the injected env in
+ * every run, so a file that must be hermetic and is not shows up in the ordinary suite rather than
+ * in a nested run of a derived subset. What is lost is the *clean-env* verdict from a plain
+ * `bun test` (a dev's run is injected; `PI_SUBAGENT_ALLOWLIST= bun test` restores it) — accepted,
+ * because the scrubs are what the rows depend on and they are pinned here.
  *
- * 1. Behavioral (the verdict-level pin). Every test file that can observe the
- *    gate env is re-run as a child `bun test` under a replicated harness
- *    injection and must report 0 fail. The set is derived, never listed:
- *    `*.test.*` files that (a) contain a child spawn or (b) import a module
- *    that reads process.env.PI_SUBAGENT_* / PI_IS_SUBAGENT, minus this file
- *    (a nested run must not re-enter itself) and minus live-model files
- *    (anything constructing a real AgentSession) — network flake is not this
- *    pin's verdict. 24 files, ~30 s.
+ * Rows:
  *
- * 2. Static (the mechanism's other half). Every spawn call site anywhere under
- *    tests/ passes an explicit `env`. A spawn that omits it inherits the
- *    startup snapshot even when the parent scrubbed, and that is invisible
- *    until a child which reads the vars appears — so it is pinned, not waited
- *    for. The detector takes spawn names from the node:child_process import
- *    list plus Bun.spawn/Bun.spawnSync, which makes it a LOWER BOUND: a site
- *    reached through a renamed helper (`const run = promisify(execFile)`) is
- *    not seen. Row 1 is the guarantee; row 2 is the early warning.
- *
- * Options rejected (numbers measured on bun 1.3.11, 2026-10-21):
- *   - (A) nested `bun test` over the whole suite: it doubles the suite
- *     (+~150 s measured), and it runs the live rows so a transient model
- *     failure reds an env-hermeticity pin. Row 1 already keeps A's observable;
- *     it derives the set and drops the live files instead.
- *   - (B) extending an enumerated BOUNDARY_FILES list — the shape this file
- *     had, and the cheap way to reach the adopted sites: every new spawning
- *     file needs a human edit, and covering tests/e2e-checkpoint.test.ts
- *     couples the pin to 82 s of live-model rows.
- *   - (C) static only: fast and hermetic, but it pins spelling and cannot see
- *     a file whose rows observe the env in-process with no spawn site at all
- *     (tests/work-order-policy-wiring.test.ts drives the gate through
- *     production code). Kept as row 2, not as the sole pin.
- *   - (D) funnel all spawns through one helper in tests/helpers/ and forbid the
- *     raw spawn APIs: complete by construction, but it restructures the
- *     just-landed `env: childEnv(...)` call sites (10 files) to buy what row 2
- *     pins without touching them, and its import-restriction row needs the
- *     same scanner. Rejected as churn.
+ * 1. The run carries the injected env. Without this the other rows pass on a machine where the
+ *    injection silently stopped happening, which is the failure mode a vacuous check has.
+ * 2. `childEnv()` drops NODE_ENV, so a scrubbed parent's bun child cannot re-read `.env.test`.
+ * 3. Every file that makes billed model calls scrubs the gate env. Those rows are the ones whose
+ *    verdict a stray allowlist or depth changes for the largest cost, and the detector used to
+ *    match only `createAgentSession` — turn-cap's four E rows spawn a real pi and were missed
+ *    (2026-11-07), which is why the detector names the pi entry points too.
+ * 4. Static: every spawn call site anywhere under tests/ passes an explicit `env`. A spawn that
+ *    omits it inherits the startup snapshot even when the parent scrubbed, and that is invisible
+ *    until a child which reads the vars appears — so it is pinned, not waited for. The detector
+ *    takes spawn names from the node:child_process import list plus Bun.spawn/Bun.spawnSync,
+ *    which makes it a LOWER BOUND: a site reached through a renamed helper
+ *    (`const run = promisify(execFile)`) is not seen. Row 3 is a lower bound the same way.
+ * 5. The static detector fires on a bare spawn and clears an explicit env — the row's own
+ *    self-test, so a scanner that sees nothing cannot pass row 4.
  *
  * Not covered here: PI_SUBAGENT_WORKTREE / PI_SUBAGENT_PARENT_CWD
- * (extensions/worktree-guard.ts:298-299) are a different class. They are read
- * once at extension load inside a pi process; the harness always overwrites
- * both at subagent spawn, empty when unisolated
- * (extensions/subagent-async/rpc.ts, `buildSubagentEnv`), so they cannot survive from
- * a caller; no test reads them from process.env; and no in-suite child picks
- * them up from an ambient value (the gate-spawned pi children get both
- * overwritten, and the two in-process SDK sessions load exactly one explicit
- * extension against a temp agentDir). The scrub set therefore stays the three
- * gate vars — see docs/investigations/structure-trend.md. Revisit if a test
- * ever spawns a pi child that uses tools: the pair then reaches an in-process
- * reader (worktree-guard in the child) and joins the scrub set.
+ * (extensions/worktree-guard.ts:298-299) are a different class, read once at extension load inside
+ * a pi process, always overwritten at subagent spawn (extensions/subagent-async/rpc.ts,
+ * `buildSubagentEnv`), so they cannot survive from a caller; the scrub set stays the three gate
+ * vars — see docs/investigations/structure-trend.md.
  *
  * Run: bun test tests/subagent-boundary-hermeticity.test.ts
  */
 
 import { describe, expect, it } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { childEnv } from "./helpers/subagent-env.ts";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
+import { SUBAGENT_ENV_VARS, childEnv } from "./helpers/subagent-env.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SELF = join(import.meta.dir, "subagent-boundary-hermeticity.test.ts");
 
-/** What the harness injects into a spawned subagent (extensions/subagent-async). */
+/** What `.env.test` injects, and what the harness injects into a spawned subagent. */
 const INJECTED: Record<string, string> = {
 	PI_SUBAGENT_ALLOWLIST: "review-code,review-tests",
 	PI_SUBAGENT_DEPTH: "1",
 	PI_IS_SUBAGENT: "1",
 };
 
-/** A module reads the gate env if it names one of the vars under `process.env`. */
-const GATE_ENV_READ = /process\.env\.(?:PI_SUBAGENT_[A-Z_]+|PI_IS_SUBAGENT)/;
-/** Live-model rows: excluded from the child run, their flake is not this verdict. */
-const LIVE_SESSION = /\bcreateAgentSession\b/;
+/**
+ * A file makes billed model calls if it starts an in-process SDK session, or if it runs a real
+ * `pi` child. The pi shapes are the entry points the live rows use: `PI_BIN` (turn-cap's
+ * stand-in execs it) and the stand-in shims themselves. A LOWER BOUND, as row 4's detector is —
+ * a new shape has to be added here when it appears.
+ */
+const BILLED_CALL = /\bcreateAgentSession\b|\bPI_BIN\b|real-pi\.mjs|stand-in-pi\.mjs/;
+
+/** A file scrubs the gate env if it *calls* either helper — an import is not a scrub. */
+const SCRUBS_GATE_ENV = /\b(?:scrubSubagentEnv|unsetSubagentEnv)\s*\(/;
 
 const SOURCE_FILE = /\.(?:ts|mts|js|mjs)$/;
 const TEST_FILE = /\.test\.(?:ts|mts|js|mjs)$/;
@@ -294,7 +282,11 @@ function spawnSiteProblems(path: string, source = readFileSync(path, "utf8")): s
 function detectorBlindSpots(path: string): string[] {
 	const source = readFileSync(path, "utf8");
 	if (callSites(source).length > 0) return [];
-	for (const name of spawnApiNames(source)) {
+	// Names come from the masked source: a `node:child_process` import inside a fixture string is
+	// not this file's import, and a self-test that spells one must not flag itself. The call
+	// itself is searched in the raw source, because the case this row exists for is a call the
+	// mask swallowed — e2e-checkpoint's /`([^`]+.jsonl)`/ once blanked the spawnSync below it.
+	for (const name of spawnApiNames(codeOnly(source))) {
 		if (name.startsWith("Bun.")) continue;
 		if (new RegExp(`(?<![\\w.$])${name}\\s*\\(`).test(source)) {
 			return [`${relative(REPO_ROOT, path)} — raw source calls ${name}() but the scanner found no site`];
@@ -303,88 +295,39 @@ function detectorBlindSpots(path: string): string[] {
 	return [];
 }
 
-/** Resolve a relative module specifier to a file on disk, if it has one. */
-function resolveModule(fromFile: string, specifier: string): string | undefined {
-	if (!specifier.startsWith(".")) return undefined;
-	const base = resolve(dirname(fromFile), specifier);
-	for (const candidate of [base, `${base}.ts`, `${base}.mts`, join(base, "index.ts")]) {
-		if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-	}
-	return undefined;
-}
-
-/** Whether `path` imports a module whose own source reads the gate env. */
-function importsGateEnvReader(path: string): boolean {
-	const source = readFileSync(path, "utf8");
-	const specifiers = [...source.matchAll(/(?:from|import)\s+["'](\.[^"']+)["']/g)].map((m) => m[1]);
-	for (const specifier of specifiers) {
-		const target = resolveModule(path, specifier);
-		if (target && GATE_ENV_READ.test(readFileSync(target, "utf8"))) return true;
-	}
-	return false;
-}
-
-/**
- * The test files that can observe the gate env: they spawn a child (whose env
- * they therefore choose) or they import a module that reads the vars. Live-model
- * files and this file are excluded — see the header.
- */
-function gateSensitiveTestFiles(): string[] {
-	return walk(import.meta.dir)
-		.filter((path) => TEST_FILE.test(path) && path !== SELF)
-		.filter((path) => {
-			const source = readFileSync(path, "utf8");
-			if (LIVE_SESSION.test(source)) return false;
-			return callSites(source).length > 0 || importsGateEnvReader(path);
-		})
-		.sort();
-}
-
-/**
- * Runs `files` as a child `bun test` under the injected env and returns its
- * report. bun prints its summary to stderr, so the report is both streams. The
- * env is passed explicitly: bun hands a child the startup snapshot, so an
- * in-process deletion alone would not reach it.
- */
-function childRun(files: string[]): { status: number | null; error?: Error; report: string } {
-	for (let attempt = 1; ; attempt++) {
-		const run = spawnSync("bun", ["test", ...files.map((path) => relative(REPO_ROOT, path))], {
-			cwd: REPO_ROOT,
-			env: childEnv({ ...INJECTED }),
-			encoding: "utf8",
-			timeout: 300_000,
-		});
-		const report = `${run.stdout ?? ""}${run.stderr ?? ""}`;
-		// A spawn that never started (EAGAIN on a loaded machine) says nothing
-		// about the env, so it is retried once. A run that started and failed is
-		// the verdict, and is not.
-		if (!run.error || attempt === 2) return { status: run.status, error: run.error, report };
-	}
-}
-
 describe("subagent-boundary hermeticity", () => {
-	it("every test file that can observe the gate env is green under an injected PI_SUBAGENT_* env", () => {
-		const files = gateSensitiveTestFiles();
-		// Self-exclusion: the child run must not re-enter this file.
-		expect(files).not.toContain(SELF);
-		// Vacuity guard: a broken walk must not pass by testing nothing. 24 files
-		// when this row landed.
-		expect(files.length).toBeGreaterThanOrEqual(10);
-
-		const { status, error, report } = childRun(files);
-		if (error || status !== 0) {
-			throw new Error(
-				`child \`bun test\` over ${files.length} gate-sensitive files failed under an injected env ` +
-					`(status ${status}${error ? `, ${error.message}` : ""}):\n${report}`,
-			);
+	it("this run carries the injected gate env", () => {
+		// The other rows read the env, so a run that lost the injection would pass by testing
+		// nothing. `.env.test` supplies it; a real environment variable (a subagent's own run)
+		// wins over the file, so the value is checked for presence, not for the file's shape —
+		// except PI_IS_SUBAGENT, which the harness always sets to 1.
+		for (const key of SUBAGENT_ENV_VARS) {
+			expect({ key, set: process.env[key] !== undefined }).toEqual({ key, set: true });
 		}
-		expect(report).toContain("0 fail");
-		// The child ran exactly the derived set: a recursive pin would list this
-		// file (and never finish).
-		expect(report).toContain(`across ${files.length} files`);
-		// `toContain("0 fail")` also matches "10 fail" — no nonzero count may appear.
-		expect(report).not.toMatch(/[1-9]\d* fail/);
-	}, 300_000);
+		expect(process.env.PI_IS_SUBAGENT).toBe("1");
+	});
+
+	it("childEnv drops NODE_ENV, so a scrubbed parent's bun child cannot re-read .env.test", () => {
+		expect(process.env.NODE_ENV).toBe("test"); // bun test sets it, which is the hazard
+		expect(childEnv().NODE_ENV).toBeUndefined();
+		// An explicit override is a caller's choice, and one that is not NODE_ENV still lands.
+		expect(childEnv({ PI_IS_SUBAGENT: undefined })).toMatchObject({ PI_SUBAGENT_DEPTH: "1" });
+		expect(childEnv({ PI_IS_SUBAGENT: undefined }).PI_IS_SUBAGENT).toBeUndefined();
+	});
+
+	it("every file that makes billed model calls scrubs the gate env", () => {
+		// This file's own detector source names the markers, so it matches itself; it makes no
+		// billed calls.
+		const paths = walk(import.meta.dir).filter((path) => TEST_FILE.test(path) && path !== SELF);
+		const billed = paths.filter((path) => BILLED_CALL.test(readFileSync(path, "utf8")));
+		// Vacuity guard: 5 files when this row landed — turn-cap's four E rows, the two e2e
+		// files, peer-link and model-inheritance. turn-cap is named because it is the file the
+		// createAgentSession-only detector missed (2026-11-07).
+		expect(billed.length).toBeGreaterThanOrEqual(5);
+		expect(billed).toContain(join(import.meta.dir, "turn-cap.test.ts"));
+		const unscrubbed = billed.filter((path) => !SCRUBS_GATE_ENV.test(readFileSync(path, "utf8")));
+		expect(unscrubbed.map((path) => relative(REPO_ROOT, path))).toEqual([]);
+	});
 
 	it("every child spawn under tests/ passes an explicit env", () => {
 		const paths = walk(import.meta.dir);
