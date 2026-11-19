@@ -140,8 +140,11 @@ ids=$(printf '%s\n' "$added_ids" | grep -o 'WO-[0-9]\{4\}-[0-9]\{3\}' | sort -u)
 # one process: `--source` names the ref, `--all` covers heads, remotes and tags. This replaces a
 # per-ref `ls-tree` walk that cost 42 s in a 607-ref repo (tfd) and 12 s even after deduping by
 # tree — a gate nobody can afford to leave on.
-held_adds=$(git log --all --no-renames --diff-filter=A --name-only --format='%H %S' \
-    -- work-orders/) || die "cannot read the work-orders history of the live refs."
+# `--branches --remotes --tags`, not `--all`: `--all` includes `refs/worktrees/*`, the pseudo-refs
+# a tooling worktree leaves behind (tfd's validator materialises one per push), and a scratch
+# checkout is not a line anyone claims an id on.
+held_adds=$(git log --branches --remotes --tags --no-renames --diff-filter=A --name-only \
+    --format='%H %S' -- work-orders/) || die "cannot read the work-orders history of the live refs."
 held_pairs=$(printf '%s\n' "$held_adds" | awk '
     NF == 2 { commit = $1; ref = ($2 == "" ? $1 : $2); next }
     /^work-orders\// { print commit "\t" ref "\t" $0 }')

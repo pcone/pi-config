@@ -163,7 +163,7 @@ describe("rule (B): a work-orders id no live ref holds", () => {
 		const head = commitWo("WO-2026-800", "rival-copy");
 		const r = runHook([line("refs/heads/main", head, "refs/heads/main", base)]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("WO-2026-800 is already held by refs/heads/rival");
+		expect(r.stderr).toContain("WO-2026-800 is already held by rival");
 	});
 
 	it("passes an id no ref holds", () => {
@@ -203,7 +203,7 @@ describe("rule (B): a work-orders id no live ref holds", () => {
 		const head = commitWo("WO-2026-812", "dup");
 		const r = runHook([line("refs/heads/feat812", head, "refs/heads/feat812", ZERO)]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("WO-2026-812 is already held by refs/heads/rival812");
+		expect(r.stderr).toContain("WO-2026-812 is already held by rival812");
 	});
 
 	it("passes a merge that lands the branch which added the id", () => {
@@ -247,7 +247,7 @@ describe("rule (B): a work-orders id no live ref holds", () => {
 		const head = git("rev-parse", "HEAD");
 		const r = runHook([line("refs/heads/main", head, "refs/heads/main", pushed)]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("WO-2026-835 is already held by refs/heads/rival835");
+		expect(r.stderr).toContain("WO-2026-835 is already held by rival835");
 	});
 
 	it("fails hard when the pushed old tip is not in this clone", () => {
@@ -290,6 +290,21 @@ describe("rule (B): a work-orders id no live ref holds", () => {
 		const main = runHook([line("(delete)", ZERO, "refs/heads/main", head)]);
 		expect(main.code).toBe(1);
 		expect(main.stderr).toContain("deletes refs/heads/main");
+	});
+
+	it("ignores a tooling worktree's pseudo-ref holding the same id", () => {
+		// tfd's validator materialises a worktree per push at the commit being landed; its
+		// `refs/worktrees/*` pseudo-ref then holds the id the push is adding, and refused tfd's
+		// own retry (WO-2026-525). The worktree must be detached at a commit no branch reaches —
+		// that is the state where git lists it as a source.
+		const base = git("rev-parse", "HEAD");
+		const heldTip = commitWo("WO-2026-840", "held");
+		git("reset", "-q", "--hard", base);
+		git("worktree", "add", "--detach", path.join(repo, "wt-840"), heldTip);
+		const head = commitWo("WO-2026-840", "fresh");
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", base)]);
+		expect(r.code).toBe(0);
+		expect(r.stderr).toBe("");
 	});
 
 	it("does not scan refs when the push adds no work-orders file", () => {
