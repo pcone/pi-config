@@ -26,19 +26,24 @@ on it:
    with both reservations already pushed. `git ls-tree --name-only
    origin/<other-line> work-orders/` is part of allocating, not an optional
    precaution.
-   **The gate enforces it.** `bin/pre-push` refuses a push that adds a
-   work-order file whose id any live ref already holds, and names the holding
-   ref. It is installed here as `.git/hooks/pre-push`, and tfd's own hook pipes
-   the same stdin into the same file for this rule and the landing rule below
-   (owner ruling, 2026-11-18, pi-config#20 option A), so a fix to the checks
-   lands once.
+   **The gate enforces it — in pi-config.** `bin/pre-push` refuses a push that
+   adds a work-order file whose id a live ref of an unrelated line already
+   holds, and names the holding ref. It is installed here as
+   `.git/hooks/pre-push` (WO-2026-103, owner ruling 2026-11-18 on pi-config#20
+   option A).
 
    The same hook refuses a push that carries the mainline ref without pushing
-   `HEAD` — a landing whose line pushes some other commit. It does not see a
-   landing that pushes nothing: with the local mainline already up to date, git
-   runs the hook with empty stdin and reports `Everything up-to-date`, which is
-   how WO-2026-102's first push left two commits on a detached HEAD
-   (`WO-2026-103`, `Q-103-a`).
+   `HEAD`, a push that carries a non-`HEAD` mainline commit, and a landing that
+   pushes nothing at all from a detached `HEAD` — the last is how
+   WO-2026-102's first push left two commits stranded (`Q-103-a`).
+
+   **The mainline is per repo**, read from `git config pi.mainline`; unset is a
+   hard error, not a default. Set it once per clone:
+   `git config --local pi.mainline main` (pi-config) or `hamster` (tfd).
+
+   **tfd is not wired yet.** Its `.githooks/pre-push` still runs only the docs
+   validator, so these two rules do not apply there until a tfd order pipes the
+   same stdin into this file. The carrier is that order, not this rule.
 
    **What it cannot see, so the fetch is still part of allocating:** a ref this
    clone has not fetched, and a claim in another session's detached HEAD or

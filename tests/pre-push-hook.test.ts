@@ -60,6 +60,7 @@ function branchAt(name: string, from: string) {
 beforeAll(() => {
 	repo = fs.mkdtempSync(path.join(os.tmpdir(), "pre-push-"));
 	git("init", "-q", "-b", "main");
+	git("config", "pi.mainline", "main");
 	fs.writeFileSync(path.join(repo, "README.md"), "x\n");
 	git("add", "-A");
 	git("commit", "-q", "-m", "init");
@@ -102,6 +103,20 @@ describe("rule (A): a mainline push must be HEAD", () => {
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("HEAD is");
 		git("checkout", "-q", "main");
+	});
+
+	it("takes the mainline from the repo, not a literal (tfd's is hamster)", () => {
+		// H2: with the mainline configured as hamster, a `hamster` line that is not HEAD is
+		// refused and a `main` line is not the mainline at all.
+		const head = git("rev-parse", "HEAD");
+		const other = git("commit-tree", "HEAD^{tree}", "-p", head, "-m", "elsewhere");
+		git("config", "pi.mainline", "hamster");
+		const hamster = runHook([line("refs/heads/hamster", other, "refs/heads/hamster", head)]);
+		const onMain = runHook([line("refs/heads/main", other, "refs/heads/main", head)]);
+		git("config", "pi.mainline", "main");
+		expect(hamster.code).toBe(1);
+		expect(hamster.stderr).toContain("refs/heads/hamster");
+		expect(onMain.code).toBe(0);
 	});
 
 	it("passes when a push has nothing to push from an attached HEAD", () => {
@@ -189,6 +204,92 @@ describe("rule (B): a work-orders id no live ref holds", () => {
 		const r = runHook([line("refs/heads/feat812", head, "refs/heads/feat812", ZERO)]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("WO-2026-812 is already held by refs/heads/rival812");
+	});
+
+	it("passes a merge that lands the branch which added the id", () => {
+		// H3: reserve-then-dispatch pushes the branch, then `merge --no-ff` lands it. The id is
+		// "added" against main's old tip, but `feat` is the lineage being landed, not a rival.
+		const base = git("rev-parse", "HEAD");
+		git("checkout", "-q", "-b", "feat833");
+		const featTip = commitWo("WO-2026-833", "feat");
+		git("checkout", "-q", "main");
+		git("merge", "-q", "--no-ff", "-m", "merge feat833", "feat833");
+		const head = git("rev-parse", "HEAD");
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", base)]);
+		expect(r.code).toBe(0);
+		expect(featTip).not.toBe(head);
+	});
+
+	it("passes a branch that merged the mainline, whose ids main already holds", () => {
+		const mainWo = commitWo("WO-2026-834", "on main");
+		git("checkout", "-q", "-b", "side834", mainWo);
+		fs.writeFileSync(path.join(repo, "side.txt"), "s\n");
+		git("add", "-A");
+		git("commit", "-q", "-m", "side work");
+		git("merge", "-q", "--no-ff", "-m", "merge main", "main");
+		const sideTip = git("rev-parse", "HEAD");
+		const r = runHook([line("refs/heads/side834", sideTip, "refs/heads/side834", ZERO)]);
+		expect(r.code).toBe(0);
+	});
+
+	it("refuses a renumbered file that lands on a held id", () => {
+		// M1: the reserve step renumbers by renaming. The source has to exist at the remote tip
+		// for this to be a rename at all, so the row pushes twice: the branch first holds its own
+		// id, then renumbers onto one another line holds. With rename detection the new path is R,
+		// not A, and the id slips through; `--no-renames` makes it an add.
+		const base = git("rev-parse", "HEAD");
+		const heldTip = commitWo("WO-2026-835", "held");
+		git("branch", "-f", "rival835", heldTip);
+		git("reset", "-q", "--hard", base);
+		const pushed = commitWo("WO-2026-836", "slug");
+		git("mv", "work-orders/WO-2026-836-demo.md", "work-orders/WO-2026-835-demo.md");
+		git("commit", "-q", "-m", "renumber into a held id");
+		const head = git("rev-parse", "HEAD");
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", pushed)]);
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("WO-2026-835 is already held by refs/heads/rival835");
+	});
+
+	it("fails hard when the pushed old tip is not in this clone", () => {
+		// M2: an unfetched remote tip made `git diff` fail, and the failure read as "nothing
+		// added". A force push then lands an unchecked id. Abort instead.
+		const head = git("rev-parse", "HEAD");
+		const absent = "1234567890123456789012345678901234567890";
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", absent)]);
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("cannot diff");
+	});
+
+	it("fails hard when pi.mainline is not set", () => {
+		// H2/M3: no literal fallback, and no silent pass when the mainline ref is absent.
+		const head = git("rev-parse", "HEAD");
+		const mainline = git("config", "pi.mainline");
+		git("config", "--unset", "pi.mainline");
+		const r = runHook([line("refs/heads/main", head, "refs/heads/main", head)]);
+		git("config", "pi.mainline", mainline);
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("pi.mainline is not set");
+	});
+
+	it("fails hard when the local mainline ref is missing, rather than passing", () => {
+		const head = git("rev-parse", "HEAD");
+		git("checkout", "-q", "--detach", head);
+		const mainline = git("config", "pi.mainline");
+		git("config", "pi.mainline", "no-such-mainline");
+		const r = runHook([]);
+		git("config", "pi.mainline", mainline);
+		git("checkout", "-q", "main");
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("does not exist");
+	});
+
+	it("passes a ref delete, and refuses deleting the mainline with a message that says so", () => {
+		const head = git("rev-parse", "HEAD");
+		const del = runHook([line("(delete)", ZERO, "refs/heads/side-deleted", head)]);
+		expect(del.code).toBe(0);
+		const main = runHook([line("(delete)", ZERO, "refs/heads/main", head)]);
+		expect(main.code).toBe(1);
+		expect(main.stderr).toContain("deletes refs/heads/main");
 	});
 
 	it("does not scan refs when the push adds no work-orders file", () => {

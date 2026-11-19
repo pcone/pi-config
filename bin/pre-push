@@ -1,117 +1,132 @@
 #!/usr/bin/env bash
-# pre-push: two refusals, nothing else. Owner ruling 2026-11-18 on pi-config#20 (option A);
-# shared with tfd, whose own hook pipes the same stdin into this file for these two rules.
+# pre-push: two landing refusals, nothing else (owner ruling 2026-11-18, pi-config#20 option A).
 #
 # (A) A push carrying the mainline ref must push HEAD itself: a landing is a mainline push by
 #     definition, so a mainline line whose sha is not HEAD is a landing that reports success
 #     while pushing something else.
 #
-#     (A2) covers the case rule (A) cannot see: when git hands the hook no refs at all, it
-#     prints "Everything up-to-date" and reports success, so a landing made from a detached
-#     HEAD strands its commits with no line to judge. That was WO-2026-102's incident, and
-#     refuse-when-detached-off-the-mainline is the owner's ruling (2026-11-19, Q-103-a).
-# (B) A push may not add a work-orders/ id that a live ref already holds. This is the rule
-#     rules/work-order-numbering.md already states; until now nothing here enforced it. "Adds"
-#     is measured against the ref's old tip, or for a new ref against the commits no other ref
-#     holds — measuring a new ref's whole tree instead refuses the first push of every branch
-#     for ids every ref already has (bug-triage, 2026-11-18).
+#     (A2) covers what (A) cannot see: when git hands the hook no refs at all it prints
+#     "Everything up-to-date" and reports success, so a landing made from a detached HEAD
+#     strands its commits with no line to judge. That was WO-2026-102's first push; refusing
+#     when HEAD is detached off the mainline is the owner's ruling (2026-11-19, Q-103-a).
+# (B) A push may not add a work-orders/ id that a live ref of an unrelated line already holds
+#     (rules/work-order-numbering.md). "Adds" is measured against the ref's old tip, or for a
+#     new ref against the commits no other ref holds; a ref this push descends from is not a
+#     rival, so a merge landing its branch's ids is not refused.
 #
-# Scope, deliberately narrow: a push carrying no mainline ref passes both rules silently (a side
+# The mainline is the calling repo's, never a literal: `git config pi.mainline` (pi-config:
+# main, tfd: hamster). Unset is a hard error, not a default — a gate that quietly picks the
+# wrong branch is the failure this file exists to prevent.
+#
+# Installation is a relative symlink (`.git/hooks/pre-push -> ../../bin/pre-push`), so the gate
+# tracks the worktree; measure across commits by copying the file out first. tfd wiring this is
+# a tfd order and is not done yet, so nothing outside pi-config is gated by these rules.
+#
+# Narrow on purpose: a push carrying no mainline ref passes the landing rules silently (a side
 # branch, a keep ref, a restore), and rule (B) reads only work-orders/ paths the push adds.
-# `git push --no-verify` bypasses the hook, as git intends.
-#
-# What it cannot see: a claim in another session's detached HEAD or in a ref no clone has
-# fetched. Rule (A) is what catches that case, and only on the push that strands.
+# `git push --no-verify` bypasses the hook, as git intends. What no clone can see: a claim in
+# another session's detached HEAD or in a ref nobody has fetched.
 set -u
 
-mainline_branch=main
-mainline_ref="refs/heads/$mainline_branch"
 zero=0000000000000000000000000000000000000000
+
+# Every git call here fails hard. A gate that treats an unreadable ref as "nothing to refuse"
+# is the fallback class decisions/subagents forbids: the state has an answer (abort, named),
+# and guessing it leaves the push looking checked.
+die() { echo "pre-push: $1" >&2; echo "  Push aborted; nothing was checked." >&2; exit 1; }
+
+mainline_branch=$(git config --get pi.mainline) || die "pi.mainline is not set for this repo.
+  Set it once per clone: git config --local pi.mainline <branch>
+  (pi-config: main, tfd: hamster — scripts/change_scope.py owns tfd's value.)"
+[ -n "$mainline_branch" ] || die "pi.mainline is empty; set it to this repo's mainline branch."
+mainline_ref="refs/heads/$mainline_branch"
 
 pushed=$(cat)
 
-# (A2) Nothing pushed at all. Git runs a pre-push hook even when it has no ref to send, with
-# empty stdin, and then reports "Everything up-to-date" — so a landing made from a detached HEAD
-# while the local mainline is already current strands its commits with a success message and no
-# line for rule (A) to judge. Owner ruling 2026-11-19 (Q-103-a): refuse when HEAD is detached and
-# is not on the mainline. A detached HEAD *on* the mainline's history is a normal read-only
-# checkout and passes.
+# ── (A2) nothing pushed at all ────────────────────────────────────────────────
 if [ -z "$pushed" ]; then
-    if ! git symbolic-ref -q HEAD >/dev/null; then
-        head_sha=$(git rev-parse --verify --quiet HEAD)             || exit 0   # unborn HEAD: no commit to strand
-        mainline_sha=$(git rev-parse --verify --quiet "$mainline_ref") || exit 0
-        if ! git merge-base --is-ancestor "$head_sha" "$mainline_sha" 2>/dev/null; then
-            echo "NOT LANDED: nothing to push, and HEAD is not on $mainline_ref." >&2
-            echo "  HEAD is      $head_sha" >&2
-            echo "  $mainline_branch is      $mainline_sha" >&2
-            echo "  This push sends nothing. Cut a branch at HEAD and push that." >&2
-            exit 1
-        fi
+    if git symbolic-ref -q HEAD >/dev/null; then
+        exit 0   # on a branch: git had nothing to send, which is ordinary
     fi
-    exit 0
+    if ! head_sha=$(git rev-parse --verify --quiet HEAD); then
+        exit 0   # unborn HEAD: no commit exists to strand
+    fi
+    mainline_sha=$(git rev-parse --verify --quiet "$mainline_ref") \
+        || die "local $mainline_ref does not exist, so HEAD ($head_sha) cannot be placed."
+    git merge-base --is-ancestor "$head_sha" "$mainline_sha"
+    case $? in
+        0) exit 0 ;;   # detached on the mainline's history: a read-only checkout
+        1)
+            echo "NOT LANDED: nothing to push, and HEAD is not on $mainline_ref." >&2
+            echo "  HEAD is   $head_sha" >&2
+            echo "  $mainline_branch is   $mainline_sha" >&2
+            echo "  This push sends nothing. Cut a branch at HEAD and push that." >&2
+            exit 1 ;;
+        *) die "git merge-base failed placing HEAD ($head_sha) against $mainline_ref." ;;
+    esac
 fi
 
-target=
-while read -r local_ref local_sha remote_ref remote_sha; do
-    [ -z "${remote_ref:-}" ] && continue
-    if [ "$remote_ref" = "$mainline_ref" ]; then
-        target="$local_ref $local_sha $remote_sha"
-    fi
-done <<< "$pushed"
+# ── (A) a mainline line that is not HEAD ──────────────────────────────────────
+pushed_refs=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $1}')
+pushed_shas=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $2}')
 
-# Rule (A) — mainline pushes only.
+target=$(printf '%s\n' "$pushed" | awk -v ref="$mainline_ref" '$3 == ref {print $2; exit}')
 if [ -n "$target" ]; then
-    read -r _local_ref local_sha _remote_sha <<< "$target"
-    head_sha=$(git rev-parse HEAD 2>/dev/null) || {
-        echo "pre-push: cannot read HEAD — push aborted." >&2
+    if [ "$target" = "$zero" ]; then
+        echo "NOT LANDED: this push deletes $mainline_ref." >&2
+        echo "  Deleting the mainline is not a landing; do it deliberately with --no-verify." >&2
         exit 1
-    }
-    if [ "$local_sha" != "$head_sha" ]; then
-        echo "NOT LANDED: this checkout is not on the commit being pushed." >&2
-        echo "  pushing   ${local_sha}" >&2
+    fi
+    head_sha=$(git rev-parse HEAD) || die "cannot read HEAD."
+    if [ "$target" != "$head_sha" ]; then
+        echo "NOT LANDED: this checkout is not on the commit being pushed to $mainline_ref." >&2
+        echo "  pushing   ${target}" >&2
         echo "  HEAD is   ${head_sha}" >&2
         echo "  Cut a branch at the commit you mean to land and push from it." >&2
         exit 1
     fi
 fi
 
-# Rule (B) — only ids this push adds under work-orders/.
-pushed_refs=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $1}')
-pushed_shas=$(printf '%s\n' "$pushed" | awk 'NF==4 {print $2}')
-
-# Live refs, one line each: `<commit> <ref name>`, deduped by commit (aliases and remote-tracking
-# copies share a sha, and the id scan is one `ls-tree` per entry). Full `%(refname)` because the
-# pushed names on stdin are fully qualified.
+# ── (B) an added work-orders/ id held by an unrelated line ────────────────────
+# Live refs as `<commit> <ref name>`, deduped by commit: aliases and remote-tracking copies
+# share a sha, and the scan is one `ls-tree` per entry. Full `%(refname)`, because the names on
+# stdin are fully qualified.
 held_refs() {
     git for-each-ref --format='%(objectname) %(refname)' refs/heads refs/remotes refs/tags \
-        | awk '!seen[$1]++'
+        || die "cannot list refs."
 }
 
-# Commits held by refs *other than* the ones this push carries — the base a new branch's added set
-# is measured against, and the exclusion arm of the id scan. Computed on first use: a push that
-# updates an existing ref has nothing to measure it against, and must not pay for the listing.
+# Commits held only by refs this push does not carry — the base a new ref's added set is
+# measured against, and the exclusion arm of the scan. Computed on first use.
 other_shas() {
-    held_refs | awk '{print $1}' | grep -vxF -f <(printf '%s\n' $pushed_shas)
+    local out st
+    out=$(held_refs | awk '{print $1}' | grep -vxF -f <(printf '%s\n' $pushed_shas))
+    st=$?
+    # grep 1 is "nothing left", which is an answer (this push holds every ref); 2 is a failure.
+    [ "$st" -le 1 ] || return 1
+    [ -z "$out" ] || printf '%s\n' "$out"
 }
 
-# What this push adds under work-orders/. Two shapes, because a new ref has nothing to diff
-# against on the remote:
-#   updating a ref  → the files that ref gains (A-filter against its old tip);
-#   creating a ref  → the files its commits add that no other live ref holds. Measuring against the
-#                     whole tree instead counts 82 ids as "added" on the first push of any branch and
-#                     refuses an alias (`main:refs/heads/feat`) for ids every ref already has.
+# Computed once, with its status checked: a failure inside `$( )` prints but does not abort the
+# caller, and a gate that carries on after a failed read is the fallback this file must not have.
+others=$(other_shas) || die "cannot list the refs this push does not carry."
+
+# What this push adds under work-orders/. `--no-renames` because the reserve step renumbers by
+# renaming a file: with rename detection the new path is R, not A, and the id slips through.
 added_ids=$(
     while read -r local_ref local_sha remote_ref remote_sha; do
         [ -z "${remote_ref:-}" ] && continue
         [ "$local_sha" = "$zero" ] && continue   # a delete adds nothing
         if [ "$remote_sha" = "$zero" ]; then
-            git log --format= --name-only --diff-filter=A "$local_sha" \
-                --not $(other_shas) -- work-orders/ 2>/dev/null
+            git log --no-renames --format= --name-only --diff-filter=A "$local_sha" \
+                --not $others -- work-orders/ \
+                || die "cannot read the commits of $local_ref."
         else
-            git diff --name-only --diff-filter=A "$remote_sha" "$local_sha" -- work-orders/ 2>/dev/null
+            git diff --no-renames --name-only --diff-filter=A "$remote_sha" "$local_sha" -- work-orders/ \
+                || die "cannot diff $remote_ref ($remote_sha) against $local_sha."
         fi
     done <<< "$pushed"
-)
+) || exit 1
 
 case "$added_ids" in
     *WO-*) : ;;
@@ -121,6 +136,17 @@ esac
 ids=$(printf '%s\n' "$added_ids" | grep -o 'WO-[0-9]\{4\}-[0-9]\{3\}' | sort -u)
 [ -z "$ids" ] && exit 0
 
+# A ref this push descends from is not a rival: a merge landing its branch's ids, or a branch
+# that merged the mainline, holds ids from its own lineage. Exclude ancestors of every pushed
+# commit, not just the tips.
+is_ancestor_of_pushed() {
+    local tip=$1 sha
+    for sha in $pushed_shas; do
+        git merge-base --is-ancestor "$tip" "$sha" && return 0
+    done
+    return 1
+}
+
 refused=0
 while read -r id; do
     [ -z "$id" ] && continue
@@ -128,10 +154,14 @@ while read -r id; do
         [ -z "$ref" ] && continue
         case " $pushed_refs " in *" $ref "*) continue ;; esac
         case " $pushed_shas " in *" $tip "*) continue ;; esac
-        if git ls-tree -r --name-only "$tip" -- work-orders/ 2>/dev/null | grep -q -- "$id[-.]"; then
-            echo "NOT LANDED: $id is already held by $ref." >&2
-            refused=1
-        fi
+        is_ancestor_of_pushed "$tip" && continue
+        files=$(git ls-tree -r --name-only "$tip" -- work-orders/) \
+            || die "cannot list work-orders/ in $ref."
+        case "$files" in
+            *"$id"[-.]*)
+                echo "NOT LANDED: $id is already held by $ref." >&2
+                refused=1 ;;
+        esac
     done <<< "$(held_refs)"
 done <<< "$ids"
 

@@ -94,6 +94,36 @@ tfd's side of the wiring changes tfd's own `.githooks/pre-push`, so it is a tfd 
 this one. It should record that the pre-fix hook would have refused the first push of every
 triage pin branch (`git push origin bug-triage/<n>-<slug>`).
 
+### Rework after review (2026-11-19): REJECT_AND_REWORK
+
+An independent review (`~/Developer/notes/review-pi-config-103/review.md`) rejected the
+landed gate on five findings, each reproduced before it was fixed:
+
+- **The mainline was a literal.** `mainline_branch=main` is pi-config's answer, not tfd's
+  (`hamster`, `scripts/change_scope.py:21`), so the rules could never fire there. The hook
+  now reads `git config pi.mainline` and fails hard when it is unset — no default, because
+  a gate that silently picks a branch is the failure this file exists to prevent.
+- **Rule (B) refused legitimate landings.** A `merge --no-ff` of a branch that had added an
+  id counted that branch as a rival holder, and so did a side branch that merged the
+  mainline. A ref this push descends from is now excluded (`merge-base --is-ancestor`
+  against every pushed commit), with a row for each shape.
+- **Renames slipped through.** The reserve step renumbers by renaming; with rename
+  detection the new path is `R`, not `A`, so `--diff-filter=A` never saw it. Both the
+  `diff` and the `log` now pass `--no-renames`, with a two-push row that fails without it.
+- **The gate failed open.** `2>/dev/null` plus an unchecked substitution turned an
+  unreadable old tip into "nothing added", so a force push landed unchecked. Every git call
+  now aborts with a named message, including a failure inside `$( )`, which does not stop
+  its caller on its own.
+- **A2 passed when the local mainline was missing**, and deleting the mainline reported
+  "this checkout is not on the commit being pushed". Both now name what they found;
+  deleting a ref passes, deleting the mainline refuses saying so.
+
+**tfd is still not wired.** The review's H1 stands: `~/Developer/tfd/.githooks/pre-push`
+does not call this file, and the rule text and this order previously said it did — a false
+record, now corrected to "pi-config only, tfd's wiring is a tfd order". That edit is a
+change to tfd's push machinery and is being coordinated with the claude seat before it
+lands there.
+
 ### Q-103-a (owner question) — the incident is invisible to a pre-push hook
 
 Measured while landing this order, in a scratch clone (`/tmp/s4`): with the local mainline
