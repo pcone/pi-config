@@ -381,9 +381,9 @@ function killedMarker(rs: RunningSubagent): string | null {
  *  delivery. Returns which path ran so callers can log it. Exported as an
  *  @internal test hook so the mutual-exclusion contract can be exercised
  *  without spawning a real child process. */
-export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: number | null, commitNote?: string): "stop" | "deliver" {
+export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: number | null, commitNote: string): "stop" | "deliver" {
 	if (rs.resolveOnStop) {
-		let stoppedText = getFinalOutput(rs.messages) + commitNote;
+		let stoppedText = deliveryText(rs.messages) + commitNote;
 		// Kill marker keyed on the kill source (subagent_kill tool vs
 		// decision 015 stage-2 progress-timeout auto-kill).
 		const marker = killedMarker(rs);
@@ -398,18 +398,13 @@ export function deliverCloseResult(pi: ExtensionAPI, rs: RunningSubagent, code: 
 	return "deliver";
 }
 
-/** Deliver the final result message to the parent — used by the
- *  close-handler `deliver` path (via `deliverCloseResult`) and by the
- *  recovered-session socket-close handler, which always delivers. Prepends
- *  the kill marker when `killedExplicitly` is set. Exported as an
- *  @internal test hook so the delivered-marker contract (WO-2026-043
- *  integration contract) can be exercised with a stub `ExtensionAPI`. */
 /**
- * What the parent is told the child produced (Q-102-a, owner 2026-11-18).
+ * What the parent is told the child produced — the one producer behind both delivery paths
+ * (Q-102-a, owner 2026-11-18; Q-102-b, owner 2026-11-19).
  *
- * The final message when it has text; otherwise the last thing the child said, labelled
- * as progress so nobody reads it as a report. A child that never produced text says so —
- * the label stands, and the message's turns/errors/stderr lines carry the rest.
+ * The final message when it has text; otherwise the last thing the child said, labelled as
+ * progress so nobody reads it as a report. A child that never produced text says so — the
+ * label stands, and the message's turns/errors/stderr lines carry the rest.
  */
 function deliveryText(messages: any[]): string {
 	const final = getFinalOutput(messages);
@@ -418,6 +413,12 @@ function deliveryText(messages: any[]): string {
 	return progress ? `no final message; last progress: ${progress}` : "no final message; no progress text";
 }
 
+/** Deliver the final result message to the parent — used by the
+ *  close-handler `deliver` path (via `deliverCloseResult`) and by the
+ *  recovered-session socket-close handler, which always delivers. Prepends
+ *  the kill marker when `killedExplicitly` is set. Exported as an
+ *  @internal test hook so the delivered-marker contract (WO-2026-043
+ *  integration contract) can be exercised with a stub `ExtensionAPI`. */
 export function deliverResult(pi: ExtensionAPI, rs: RunningSubagent, exitCode: number | null, isolationNote?: string): void {
 	// No live session → the parent cannot receive the result. pi invalidates
 	// its ExtensionAPI alongside the ctx, so `pi.sendUserMessage` would throw

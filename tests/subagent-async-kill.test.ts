@@ -676,11 +676,10 @@ describe("deliverCloseResult (single owner of delivery)", () => {
 		const path = deliverCloseResult({ sendUserMessage: (m: string) => sent.push(m) } as any, rs, 0, "");
 
 		expect(path).toBe("stop");
-		// Waiter resolved exactly once, with the kill marker prepended
-		// (getFinalOutput([]) is "" on the stop path; deliverResult composes its
-		// own delivery text from it — WO-2026-102, Q-102-a).
+		// Waiter resolved exactly once, with the kill marker prepended above the same text
+		// deliverResult would send — one producer, both paths (WO-2026-102, Q-102-b).
 		expect(resolveCalls).toBe(1);
-		expect(rs.stopText).toBe(`${KILL_MARKER}\n`);
+		expect(rs.stopText).toBe(`${KILL_MARKER}\nno final message; no progress text`);
 		expect(rs.resolveOnStop).toBeNull();
 		// No double delivery: sendUserMessage was never called on the stop path.
 		expect(sent.length).toBe(0);

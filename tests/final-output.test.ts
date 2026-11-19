@@ -18,11 +18,16 @@ import * as path from "node:path";
 import {
 	completeWorkRecord,
 	getFinalOutput,
+	getLastProgressText,
 	openRecordContext,
 	readSessionExchange,
 	_testSetLiveSessionCtx,
 } from "../extensions/subagent-async/index.ts";
-import { deliverResult, type RunningSubagent } from "../extensions/subagent-async/sleep-guard.ts";
+import {
+	deliverCloseResult,
+	deliverResult,
+	type RunningSubagent,
+} from "../extensions/subagent-async/sleep-guard.ts";
 import { WO_RECORD_STUB } from "./helpers/wo-record-stub.ts";
 
 const tmpDirs: string[] = [];
@@ -53,6 +58,15 @@ describe("getFinalOutput — the final message, or nothing", () => {
 	it("joins the last message's text parts in order", () => {
 		const messages = [assistant([text("one"), { type: "thinking" }, text("two")])];
 		expect(getFinalOutput(messages)).toBe("one\ntwo");
+	});
+
+	it("a last message of text plus a tool call is progress, not a report", () => {
+		// A child killed during a tool call ends on exactly this shape (stopReason toolUse).
+		// Its text is mid-work: passing it as the report is the WO-2026-510 failure in a
+		// narrower form (owner ruling 2026-11-19).
+		const messages = [assistant([text("Now I'll run the suite."), { type: "toolCall", name: "bash" }])];
+		expect(getFinalOutput(messages)).toBe("");
+		expect(getLastProgressText(messages)).toBe("Now I'll run the suite.");
 	});
 
 	it("no assistant message at all yields \"\"", () => {
@@ -138,6 +152,31 @@ describe("the readers that take the same text stay honest", () => {
 		} finally {
 			_testSetLiveSessionCtx(null);
 		}
+	});
+
+	it("a stopped child's stop text labels the progress line the same way delivery does", () => {
+		const resolved: string[] = [];
+		const rs = {
+			sessionId: "subagent-stopped",
+			agentName: "implement",
+			task: "Do the thing",
+			messages: [
+				assistant([text("Committing the green work first, then I'll write the record.")]),
+				assistant([{ type: "toolCall", name: "bash" }]),
+			],
+			progress: { turns: 1, filesRead: new Set(), filesModified: new Set(), errors: [], toolCalls: 1 },
+			stderrLines: [],
+			isDone: false,
+			killedExplicitly: false,
+			killedVia: null,
+			logPath: "/tmp/none.log",
+			resolveOnStop: (t?: string) => resolved.push(t ?? ""),
+		} as unknown as RunningSubagent;
+		deliverCloseResult({ sendUserMessage: () => {} } as any, rs, 0, "");
+		expect(resolved).toHaveLength(1);
+		expect(resolved[0]).toBe(
+			"no final message; last progress: Committing the green work first, then I'll write the record.",
+		);
 	});
 
 	it("a child that produced no text at all delivers that, not a blank", () => {

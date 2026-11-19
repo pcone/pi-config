@@ -613,23 +613,30 @@ function messageText(msg: any): string {
 
 /**
  * The run's final text: the **last** assistant message's text, or "" when that message
- * carries none.
+ * carries none — or when it carries a tool call, which makes it a message from mid-work.
  *
  * No walk back to an earlier message. A child that ends on a tool-only message wrote no
  * report, and an earlier mid-work line is not one: `closeWorkRecord` turns "" into
- * "implementer has no final report", which is the state to act on (WO-2026-102, after
- * tfd WO-2026-510/513 were recorded from a 60-character mid-work line).
+ * "implementer has no final report", which is the state to act on (WO-2026-102, after tfd
+ * WO-2026-510/513 were recorded from a 60-character mid-work line).
+ *
+ * A message of text **plus** a tool call is mid-work too, and its text is progress: a child
+ * killed during a tool call ends on exactly that shape, and passing it as the report is the
+ * 510 failure in a narrower form (owner ruling 2026-11-19).
  */
 export function getFinalOutput(messages: any[]): string {
 	const last = messages.findLast((m) => m?.role === "assistant");
-	return last ? messageText(last) : "";
+	if (!last) return "";
+	const parts = Array.isArray(last.content) ? last.content : [];
+	if (parts.some((part: any) => part?.type === "toolCall")) return "";
+	return messageText(last);
 }
 
 /**
  * The last text the child produced before its final message — what a stopped child was
  * doing. Never a report: the record path reads `getFinalOutput`, which answers "" for a
- * message with no text. Only delivery uses this, and it labels it as progress
- * (Q-102-a, owner 2026-11-18).
+ * message with no text or an unfinished tool call. Delivery and the stop path use this, and
+ * label it as progress (Q-102-a, owner 2026-11-18; Q-102-b, owner 2026-11-19).
  */
 export function getLastProgressText(messages: any[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -640,3 +647,4 @@ export function getLastProgressText(messages: any[]): string {
 	}
 	return "";
 }
+

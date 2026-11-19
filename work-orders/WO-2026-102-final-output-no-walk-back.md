@@ -95,6 +95,23 @@ Landed shape, one producer answering all three states:
 `getFinalOutput`, so a reportless child is still reportless at the gate. Both readers
 share one extractor, `messageText`.
 
+### Q-102-b (owner ruling, 2026-11-19): the stop path takes the same label
+
+Owner ruling, relayed by the claude seat: **"Same label on stop (Recommended)"**. Three
+things changed under it:
+
+- `deliverCloseResult`'s stop path (`sleep-guard.ts:386`) now resolves the waiter with the
+  kill marker above the same text `deliverResult` sends — one producer, both paths, so a
+  stopped child's last words are labelled progress rather than dropped or passed as a report.
+- The last assistant message counts as a report only when it carries no tool call. A child
+  killed during a tool call ends on `[text, toolCall]` (`stopReason: toolUse`) and its text
+  is mid-work — treating it as the report is the 510 failure in a narrower shape. Rows for
+  both, each red with its check removed.
+- `deliverCloseResult`'s `commitNote` is required, so the old optional-append (which would
+  interpolate `undefined` for a caller that passed nothing) cannot be reached.
+
+### Debt named, not carried
+
 Two `(no output)` defaults outside this order's scope, unchanged and named so they are not
 mistaken for covered: `index.ts:2223` (`resolveOnStop`'s answer to a waiter) and
 `recovery.ts:562` (an orphan's log with no readable output). Neither is on this order's
