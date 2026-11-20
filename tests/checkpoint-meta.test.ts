@@ -22,7 +22,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureGitBinding } from "../extensions/lib/checkpoint-meta";
@@ -47,12 +47,6 @@ const git = (cwd: string, ...args: string[]): string =>
 	execFileSync("git", args, { cwd, env: GIT_ENV, encoding: "utf8" }).trim();
 
 const tmpRoots: string[] = [];
-/** Copy a template tree onto `dest` (which must not exist), so a row gets its own tree and the
- *  copy keeps the template's `.git` — no `git init`, no `remote set-url`. */
-function copyTree(from: string, dest: string): string {
-	cpSync(from, dest, { recursive: true });
-	return dest;
-}
 function tmp(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), `checkpoint-meta-${prefix}-`));
 	tmpRoots.push(dir);
@@ -95,9 +89,6 @@ const readCalls = (calls: string): string[] =>
 	existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").sort() : [];
 
 let repo: string;
-/** A bare remote and its clone, each with the base pushed and one commit ahead: the shape the
- *  upstream row needs, built once and copied per row so the row pays no git process. */
-let upstreamTemplate: { clone: string; remote: string };
 
 beforeAll(() => {
 	repo = tmp("repo");
@@ -105,26 +96,6 @@ beforeAll(() => {
 	writeFileSync(join(repo, "a.txt"), "a\n");
 	git(repo, "add", "-A");
 	git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init");
-
-	// The clone's `origin` is `../remote`, a relative path, so a copied pair still points at its
-	// own remote and the row needs no `remote set-url` (which would be the git process this
-	// template exists to remove). Built at 2026-11-21 in WO-2026-106: 6 git calls a row become 0.
-	const holder = tmp("upstream-template");
-	const remote = join(holder, "remote");
-	const clone = join(holder, "clone");
-	mkdirSync(remote);
-	mkdirSync(clone);
-	git(remote, "init", "-q", "--bare", "-b", "main");
-	git(clone, "init", "-q", "-b", "main");
-	writeFileSync(join(clone, "a.txt"), "a\n");
-	git(clone, "add", "-A");
-	git(clone, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base");
-	git(clone, "remote", "add", "origin", "../remote");
-	git(clone, "push", "-q", "-u", "origin", "main");
-	writeFileSync(join(clone, "b.txt"), "b\n");
-	git(clone, "add", "-A");
-	git(clone, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "ahead");
-	upstreamTemplate = { clone, remote };
 });
 
 afterAll(() => {
@@ -146,9 +117,18 @@ describe("captureGitBinding: real git", () => {
 		// `rev-list --left-right @{upstream}...HEAD` prints "<behind>\t<ahead>";
 		// one local commit against a pushed base pins that order (a swap reads
 		// behind: 1) without needing a second clone for the behind case.
-		const holder = tmp("upstream");
-		copyTree(upstreamTemplate.remote, join(holder, "remote"));
-		const withUpstream = copyTree(upstreamTemplate.clone, join(holder, "clone"));
+		const withUpstream = tmp("upstream");
+		const remote = tmp("remote");
+		git(remote, "init", "-q", "--bare", "-b", "main");
+		git(withUpstream, "init", "-q", "-b", "main");
+		writeFileSync(join(withUpstream, "a.txt"), "a\n");
+		git(withUpstream, "add", "-A");
+		git(withUpstream, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base");
+		git(withUpstream, "remote", "add", "origin", remote);
+		git(withUpstream, "push", "-q", "-u", "origin", "main");
+		writeFileSync(join(withUpstream, "b.txt"), "b\n");
+		git(withUpstream, "add", "-A");
+		git(withUpstream, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "ahead");
 
 		const binding = await captureGitBinding(withUpstream);
 		expect(binding!.aheadBehind).toEqual({ ahead: 1, behind: 0 });

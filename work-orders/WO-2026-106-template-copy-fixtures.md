@@ -38,13 +38,14 @@ own repo, so there is no reset protocol and no per-shape exception.
   the assertions are about the record path the tool reports.
 - Left alone: `wo-elsewhere-` and `wo-recover-` build directories, not repos.
 
-`tests/checkpoint-meta.test.ts`
+`tests/checkpoint-meta.test.ts` — **built, measured, reverted.**
 
-- `upstreamTemplate`, built in `beforeAll`: a bare remote plus a clone whose `origin` is
-  `../remote` — a relative path, so a copied pair still points at its own remote and the row
-  needs no `remote set-url` (which would be the process the template exists to remove). Base
-  pushed, one commit ahead.
-- The upstream row copies the pair and reads the binding. No git call of its own.
+- Built: an `upstreamTemplate` in `beforeAll` (bare remote plus a clone whose `origin` is
+  `../remote`, so a copied pair keeps pointing at its own remote without a `remote set-url`),
+  with the upstream row copying the pair.
+- Reverted on the owner's ruling, 2026-11-21: "Revert that half (Recommended)" — "A shared
+  fixture with zero saving is extra structure for nothing; per-row build is simpler there."
+  The file is back to its pre-order state (`git checkout eefaf9e -- tests/checkpoint-meta.test.ts`).
 
 ### Verification
 
@@ -53,20 +54,19 @@ own repo, so there is no reset protocol and no per-shape exception.
 | file | before | after |
 |---|---|---|
 | `work-record-capture` | 88 calls, **33** `git init` | 56 calls, **1** |
-| `checkpoint-meta` | 24 calls | 24 calls (neutral — see below) |
+| `checkpoint-meta` | 24 calls | 24 calls while the template half was in place (reverted) |
 
 **Wall time, interleaved A/B at matched load** (`git stash push <file>`, run, pop, run):
 
 | file | before (median) | after (median) | load (1-min) |
 |---|---|---|---|
 | `work-record-capture` | 10.06 s (6 rounds) | 9.64 s (6 rounds) | 62–115 |
-| `checkpoint-meta` | 2.57 s (4 rounds) | 2.78 s (4 rounds) | 77–83 |
+| `checkpoint-meta` | 2.57 s (4 rounds) | 2.78 s (4 rounds), reverted | 77–83 |
 
-`checkpoint-meta` is **cost-neutral, and reported as such**: that file has one upstream row, so
-building the pair once in `beforeAll` moves the same seven git calls rather than removing them,
-and the file's wall time is dominated by its hung-git row. It is included because the ruling named
-it; the gain there is structural (the row gets its own pair, no shared build to reason about), not
-timed.
+`checkpoint-meta` measured **cost-neutral**: that file has one upstream row, so building the pair
+once in `beforeAll` moved the same seven git calls rather than removing them, and the file's wall
+time is dominated by its hung-git row. A shared fixture with no saving is structure nobody reads;
+the half is reverted and the row builds its own pair as it always did.
 
 **Isolation mutation** — `copyTemplate` returning `templateRoot` instead of copying (rows then
 write into one tree): **red**, on twelve rows, including `writes nothing and says nothing in a
