@@ -115,3 +115,7 @@ root and no per-shape exception, and the fixture stops paying a git process at a
 **(a) changes the mechanism this order's items named, so it is an owner question, not an
 implementer's call.** Recommendation: (a), as a separate order touching only these two files
 (the shape map is in `~/Developer/notes/hermeticity/fixture-share-2026-11-21.md`).
+
+**Ruling (owner, 2026-11-20, via the claude seat): "Template copy (Recommended)" — "Separate
+small order: per-row fs.cpSync of a template repo in work-record-capture and checkpoint-meta;
+each row keeps its own tree."** So (a), landed as WO-2026-106.

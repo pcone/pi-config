@@ -36,6 +36,16 @@ import { WO_RECORD_STUB } from "./helpers/wo-record-stub.ts";
 const WO_FILE = "work-orders/WO-2026-001-demo.md";
 const WO_ID = "WO-2026-001";
 const tmpDirs: string[] = [];
+/** The repo every row copies: initialised once in `beforeAll`, never written to again. */
+let templateRoot = "";
+
+/** A per-row copy of the template, at `dest` — a repo with the WO file and the tool stub, and no
+ *  commit of its own. The `.git` comes with the copy, so a row pays no git process for it. */
+function copyTemplate(dest: string): string {
+	fs.mkdirSync(path.dirname(dest), { recursive: true });
+	fs.cpSync(templateRoot, dest, { recursive: true });
+	return dest;
+}
 const tmpFiles: string[] = [];
 
 // The spawn rows run `implement` through the tool gate, whose allowlist and
@@ -45,6 +55,21 @@ let restoreSubagentEnv: () => void = () => {};
 
 beforeAll(() => {
 	restoreSubagentEnv = scrubSubagentEnv();
+	// One initialised repo for the whole file, copied per row. The cost of the old per-row
+	// fixture was a git process, and `git init` is one call where sharing a root plus a
+	// `reset --hard` + `clean -xdf` reset is two (measured 30.3 against 50.3 ms a row,
+	// WO-2026-105). The copy is 1.6 ms and every row still gets its own tree.
+	templateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wo-record-capture-template-"));
+	execFileSync("git", ["init", "-q"], { cwd: templateRoot, env: childEnv() });
+	fs.mkdirSync(path.join(templateRoot, "work-orders"));
+	fs.writeFileSync(path.join(templateRoot, WO_FILE), "# WO-2026-001 — demo\n\nbody\n");
+	fs.mkdirSync(path.join(templateRoot, "scripts"));
+	fs.writeFileSync(path.join(templateRoot, "scripts/wo_record.py"), WO_RECORD_STUB);
+});
+
+afterAll(() => {
+	restoreSubagentEnv();
+	if (templateRoot) fs.rmSync(templateRoot, { recursive: true, force: true });
 });
 
 afterAll(() => {
@@ -57,16 +82,11 @@ afterEach(() => {
 });
 
 function makeRepo({ script = true, record = true, ignoreRecords = false } = {}): string {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wo-record-capture-"));
-	tmpDirs.push(root);
-	execFileSync("git", ["init", "-q"], { cwd: root, env: childEnv() });
-	fs.mkdirSync(path.join(root, "work-orders"));
-	fs.writeFileSync(path.join(root, WO_FILE), "# WO-2026-001 — demo\n\nbody\n");
+	const holder = fs.mkdtempSync(path.join(os.tmpdir(), "wo-record-capture-"));
+	tmpDirs.push(holder);
+	const root = copyTemplate(path.join(holder, "repo"));
 	if (ignoreRecords) fs.writeFileSync(path.join(root, ".gitignore"), "work-orders/records/\n");
-	if (script) {
-		fs.mkdirSync(path.join(root, "scripts"));
-		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
-	}
+	if (!script) fs.rmSync(path.join(root, "scripts"), { recursive: true, force: true });
 	// The real tool opens a record only through a dispatch and refuses every other kind without
 	// one, so a run that appends finds a record a dispatch already created. `record: false` is for
 	// the rows that read a repo no run has written to.
@@ -179,12 +199,7 @@ describe("openWorkRecord — dispatch at spawn", () => {
 		// directory's, so the record is tracked under a file the tool never wrote.
 		const parent = fs.mkdtempSync(path.join(os.tmpdir(), "wo.md dir "));
 		tmpDirs.push(parent);
-		const root = path.join(parent, "repo");
-		fs.mkdirSync(path.join(root, "work-orders"), { recursive: true });
-		fs.mkdirSync(path.join(root, "scripts"));
-		fs.writeFileSync(path.join(root, WO_FILE), "# WO-2026-001 — demo\n");
-		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
-		execFileSync("git", ["init", "-q"], { cwd: root, env: childEnv() });
+		const root = copyTemplate(path.join(parent, "repo"));
 		const { record, failures } = openWorkRecord(root, WO_FILE, "subagent-impl-1", "task");
 		expect(failures).toEqual([]);
 		expect(record?.paths).toEqual([recordFile(root)]);
@@ -195,12 +210,7 @@ describe("openWorkRecord — dispatch at spawn", () => {
 		// reads as a file outside the record's tree, and one holding a parenthesis parses as nothing.
 		const parent = fs.mkdtempSync(path.join(os.tmpdir(), "wo record (x) "));
 		tmpDirs.push(parent);
-		const root = path.join(parent, "repo");
-		fs.mkdirSync(path.join(root, "work-orders"), { recursive: true });
-		fs.mkdirSync(path.join(root, "scripts"));
-		fs.writeFileSync(path.join(root, WO_FILE), "# WO-2026-001 — demo\n");
-		fs.writeFileSync(path.join(root, "scripts/wo_record.py"), WO_RECORD_STUB);
-		execFileSync("git", ["init", "-q"], { cwd: root, env: childEnv() });
+		const root = copyTemplate(path.join(parent, "repo"));
 		const { record, failures } = openWorkRecord(root, WO_FILE, "subagent-impl-1", "task");
 		expect(failures).toEqual([]);
 		expect(record?.paths).toEqual([recordFile(root)]);
