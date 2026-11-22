@@ -25,6 +25,9 @@ export const FETCH_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "owner-asks");
 const SCRIPT = path.join("scripts", "reviews_status.py");
 const RECORD_SCRIPT = path.join("scripts", "wo_record.py");
+/** tfd's sweep marker: YAML frontmatter naming the last commit a Fable review swept. */
+const FABLE_FILE = path.join("docs", "fable-sweeps.md");
+const FABLE_KEY = /^reviewed_through:[ \t]*(\S+)[ \t]*$/m;
 
 export interface Ask {
 	/** `<file>#<id>`: the identity an ack stores. */
@@ -34,23 +37,59 @@ export interface Ask {
 	isNew: boolean;
 }
 
+/**
+ * Landings the sweep marker has not covered. `reviewed` is the zero case, which has no age to
+ * show; `invalid` is a marker that is present but unusable — drawn as a warning rather than
+ * hidden, because a sweep count that silently stops counting is worse than one that says its
+ * marker is broken.
+ */
+export type FableSweep =
+	| { kind: "reviewed" }
+	| { kind: "count"; unreviewed: number; oldestAgeMs: number }
+	| { kind: "invalid" };
+
+/** The age of the oldest unreviewed landing: minutes under an hour, hours under two days, days
+ *  after that. A commit dated in the future is `0m` rather than a negative number. */
+export function fableAge(ms: number): string {
+	const age = Math.max(0, ms);
+	if (age < 3_600_000) return `${Math.floor(age / 60_000)}m`;
+	if (age < 2 * 86_400_000) return `${Math.floor(age / 3_600_000)}h`;
+	return `${Math.floor(age / 86_400_000)}d`;
+}
+
 export interface OwnerAsks {
 	root: string;
 	asks: Ask[];
 	/** `wo_record.py unruled` lines: departures with no answered registry row. */
 	unruled: string[];
+	/** The sweep count, or null for a repo with no sweep marker. */
+	fable: FableSweep | null;
 }
 
-/** Status-bar text, e.g. `owner asks: 3 open · 1 new · 2 unruled departures`. */
-export function countText(asks: Ask[], unruled = 0): string {
+/**
+ * Status-bar text, e.g. `owner asks: 3 open · 1 new · 2 unruled departures · fable: 37 unreviewed`.
+ * A count is informational, so it is appended without comment; an unusable marker says so.
+ */
+export function countText(asks: Ask[], unruled = 0, fable: FableSweep | null = null): string {
 	const fresh = asks.filter((a) => a.isNew).length;
 	const departures = unruled ? ` · ${unruled} unruled departure${unruled === 1 ? "" : "s"}` : "";
-	return `owner asks: ${asks.length} open${fresh ? ` · ${fresh} new` : ""}${departures}`;
+	const sweep =
+		fable === null
+			? ""
+			: fable.kind === "invalid"
+				? " · fable: marker invalid"
+				: fable.kind === "reviewed"
+					? " · fable: reviewed"
+					: ` · fable: ${fable.unreviewed} unreviewed · ${fableAge(fable.oldestAgeMs)}`;
+	return `owner asks: ${asks.length} open${fresh ? ` · ${fresh} new` : ""}${departures}${sweep}`;
 }
 
-/** Whether the status should be drawn as a warning: something new, or a departure to rule. */
+/**
+ * Whether the status should be drawn as a warning: something new, a departure to rule, or a sweep
+ * marker that cannot be read. The sweep count itself is not a warning.
+ */
 export function attention(state: OwnerAsks): boolean {
-	return state.asks.some((a) => a.isNew) || state.unruled.length > 0;
+	return state.asks.some((a) => a.isNew) || state.unruled.length > 0 || state.fable?.kind === "invalid";
 }
 
 /**
@@ -116,25 +155,74 @@ interface ParsedCache {
 	unruled: string[];
 }
 
+interface ScriptOutput {
+	/** The upstream sha the output was read at, or null when the branch has no upstream. */
+	upstream: string | null;
+	lines: string[];
+	unruled: string[];
+}
+
 /**
  * Script output from the upstream sha, or from the working tree when the branch
  * has no upstream. The upstream read is cached by sha, so a repeat call costs one rev-parse.
  */
-async function scriptOutput(root: string, cacheDir: string): Promise<{ lines: string[]; unruled: string[] }> {
+async function scriptOutput(root: string, cacheDir: string): Promise<ScriptOutput> {
 	fetchIfStale(root, cacheDir);
 	const sha = await gitOut(root, ["rev-parse", "--verify", "--quiet", "@{u}"]);
-	if (sha === null) return runScripts(root, null);
+	if (sha === null) return { upstream: null, ...(await runScripts(root, null)) };
 
 	const cachePath = path.join(cacheDir, `${sanitize(root)}.parsed.json`);
 	if (fs.existsSync(cachePath)) {
 		const cached = JSON.parse(fs.readFileSync(cachePath, "utf8")) as ParsedCache;
 		// A cache written before `unruled` existed has no such array and is read again.
-		if (cached.sha === sha && cached.unruled) return cached;
+		if (cached.sha === sha && cached.unruled) return { upstream: sha, lines: cached.lines, unruled: cached.unruled };
 	}
 	const out = await runScripts(root, sha);
 	fs.mkdirSync(cacheDir, { recursive: true });
 	fs.writeFileSync(cachePath, JSON.stringify({ sha, ...out } satisfies ParsedCache));
-	return out;
+	return { upstream: sha, ...out };
+}
+
+/** The frontmatter block of a markdown file: between the first `---` line and the next one. */
+function frontmatter(text: string): string {
+	if (!text.startsWith("---\n")) return "";
+	const end = text.indexOf("\n---", 3);
+	return end === -1 ? "" : text.slice(4, end + 1);
+}
+
+/**
+ * Landings between the marker and the upstream tip, counted first-parent so one merge is one
+ * landing. Read at `@{u}` like the asks: the working tree's copy is another session's next push,
+ * not what this clone is behind by.
+ *
+ * Null means "this repo has no sweep to report": no upstream to compare against, no marker file
+ * at upstream, no `reviewed_through` key. `invalid` means the marker is there and git answered
+ * that it is unusable — a sha that is not 40 hex, or not an ancestor of the upstream tip.
+ */
+async function fableSweep(root: string, upstream: string | null): Promise<FableSweep | null> {
+	if (upstream === null) return null;
+	const text = await gitOut(root, ["show", `${upstream}:${FABLE_FILE}`]);
+	if (text === null) return null;
+	const key = FABLE_KEY.exec(frontmatter(text));
+	if (key === null) return null;
+	const marker = key[1].replace(/^["']|["']$/g, "");
+	if (!/^[0-9a-f]{40}$/.test(marker)) return { kind: "invalid" };
+	const ancestor = await runGit(root, ["merge-base", "--is-ancestor", marker, upstream]);
+	// A killed git is not "not an ancestor": it is no answer, so the segment says nothing.
+	if (ancestor.timedOut) return null;
+	if (!ancestor.ok) return { kind: "invalid" };
+	// One call for both the count and the age: the committer dates of the first-parent commits
+	// after the marker, newest first, so the last line is the oldest unreviewed landing.
+	const log = await gitOut(root, ["log", "--first-parent", "--format=%ct", `${marker}..${upstream}`]);
+	if (log === null) return null;
+	const stamps = log
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line !== "");
+	if (stamps.length === 0) return { kind: "reviewed" };
+	const oldest = Number(stamps[stamps.length - 1]);
+	if (!Number.isFinite(oldest)) return null;
+	return { kind: "count", unreviewed: stamps.length, oldestAgeMs: Date.now() - oldest * 1000 };
 }
 
 function keyOf(line: string): string {
@@ -161,7 +249,7 @@ function writeSeen(root: string, cacheDir: string, keys: string[]): void {
 export async function ownerAsks(cwd: string, cacheDir = DEFAULT_CACHE_DIR): Promise<OwnerAsks | null> {
 	const root = await registryRoot(cwd);
 	if (!root) return null;
-	const { lines, unruled } = await scriptOutput(root, cacheDir);
+	const { upstream, lines, unruled } = await scriptOutput(root, cacheDir);
 	const keys = lines.map(keyOf);
 	let seen = readSeen(root, cacheDir);
 	if (seen === null) {
@@ -173,6 +261,7 @@ export async function ownerAsks(cwd: string, cacheDir = DEFAULT_CACHE_DIR): Prom
 		root,
 		asks: lines.map((line, i) => ({ key: keys[i], line, isNew: !seenSet.has(keys[i]) })),
 		unruled,
+		fable: await fableSweep(root, upstream),
 	};
 }
 

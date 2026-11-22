@@ -40,7 +40,7 @@ async function statusline(): Promise<void> {
 	if (branch) parts.push(branch);
 	if (asks === "error") parts.push("owner asks: error");
 	else if (asks) {
-		const text = countText(asks.asks, asks.unruled.length);
+		const text = countText(asks.asks, asks.unruled.length, asks.fable);
 		parts.push(attention(asks) ? `${YELLOW}${text}${RESET}` : text);
 	}
 	process.stdout.write(`${parts.join(" · ")}\n`);

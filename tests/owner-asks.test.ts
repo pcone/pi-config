@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import loadExtension from "../extensions/owner-asks/index.ts";
-import { ack, attention, countText, list, ownerAsks } from "../extensions/owner-asks/lib.ts";
+import { ack, attention, countText, fableAge, list, ownerAsks } from "../extensions/owner-asks/lib.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
 
 const CLI = join(import.meta.dir, "..", "extensions", "owner-asks", "external.ts");
@@ -52,6 +52,10 @@ const GIT_ENV = {
 	GIT_COMMITTER_EMAIL: "t@t",
 };
 
+const DAY_MS = 86_400_000;
+/** `git` with an extra environment — the committer date is what the sweep age reads. */
+const gitAt = (cwd: string, env: NodeJS.ProcessEnv, ...args: string[]): string =>
+	execFileSync("git", args, { cwd, env: { ...GIT_ENV, ...env }, encoding: "utf8" }).trim();
 const git = (cwd: string, ...args: string[]): string =>
 	execFileSync("git", args, { cwd, env: GIT_ENV, encoding: "utf8" }).trim();
 
@@ -68,7 +72,11 @@ function tmp(prefix: string): string {
  */
 function makeRepo(
 	asks: string,
-	{ registry = true, upstream = false, unruled = null }: { registry?: boolean; upstream?: boolean; unruled?: string | null } = {},
+	{
+		registry = true,
+		upstream = false,
+		unruled = null,
+	}: { registry?: boolean; upstream?: boolean; unruled?: string | null } = {},
 ): { root: string; cache: string } {
 	const root = realpathSync(tmp("repo"));
 	git(root, "init", "-q", "-b", "main");
@@ -307,6 +315,122 @@ describe("owner asks: pi extension wiring", () => {
 		const run = spawnSync(process.execPath, ["-e", code], { encoding: "utf8", timeout: 10_000, env: childEnv() });
 		expect(run.error).toBeUndefined();
 		expect(run.status).toBe(0);
+	}, 30_000);
+});
+
+describe("owner asks: fable sweep count", () => {
+	const MARKER = "docs/fable-sweeps.md";
+
+	/** `n` first-parent landings on top of `from`: a merge each, the shape one work order lands in.
+	 *  `dates[i]` sets the i-th landing's committer date, so the age is a fixed number. */
+	function land(root: string, from: string, n: number, dates: number[] = []): string {
+		let tip = from;
+		for (let i = 1; i <= n; i++) {
+			const env = i <= dates.length ? { GIT_COMMITTER_DATE: new Date(dates[i - 1]).toISOString() } : {};
+			const topic = gitAt(root, env, "commit-tree", `${tip}^{tree}`, "-p", tip, "-m", `work ${i}`);
+			tip = gitAt(root, env, "commit-tree", `${tip}^{tree}`, "-p", tip, "-p", topic, "-m", `land ${i}`);
+			git(root, "update-ref", "HEAD", tip);
+		}
+		return tip;
+	}
+
+	function writeMarker(root: string, sha: string): void {
+		mkdirSync(join(root, "docs"), { recursive: true });
+		writeFileSync(join(root, MARKER), `---\nreviewed_through: ${sha}\nreviewed_by: fable\n---\n\nsweeps\n`);
+	}
+
+	it("counts the first-parent landings between the marker and the upstream tip", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		const base = git(root, "rev-parse", "HEAD");
+		writeMarker(root, base);
+		const nowMs = Date.now();
+		git(root, "add", "-A");
+		// The commit that carries the marker is the oldest unreviewed landing, six days old: the
+		// age has to come from the first first-parent commit after the marker, which is that one.
+		gitAt(root, { GIT_COMMITTER_DATE: new Date(nowMs - 6 * DAY_MS).toISOString() },
+			"-c", "commit.gpgsign=false", "commit", "-q", "-m", "marker");
+		git(root, "push", "-q", "origin", "main");
+		const marked = git(root, "rev-parse", "HEAD");
+		const tip = land(root, marked, 3, [nowMs - 3_600_000, nowMs - 3_600_000, nowMs - 3_600_000]);
+		git(root, "push", "-q", "origin", "main");
+
+		const state = await ownerAsks(root, cache);
+		// Four, not three: the commit that carries the marker is itself a landing after it.
+		expect(state!.fable).toMatchObject({ kind: "count", unreviewed: 4 });
+		// One merge is one landing: a count that also walked the merged-in commits would read 7.
+		expect(git(root, "rev-list", "--count", `${base}..${tip}`)).toBe("7");
+		expect(countText(state!.asks, state!.unruled.length, state!.fable)).toBe(
+			"owner asks: 2 open · fable: 4 unreviewed · 6d",
+		);
+	}, 30_000);
+
+	it("says the sweep is complete when nothing is unreviewed", () => {
+		// Zero is reachable after a force-push that lands the marker on a commit no longer in the
+		// first-parent range, so the state is real; pinning it here keeps the text off a repo
+		// shape that cannot be built (a marker cannot name its own commit).
+		expect(countText([], 0, { kind: "reviewed" })).toBe("owner asks: 0 open · fable: reviewed");
+	});
+
+	it("formats the age in minutes under an hour, hours under two days, days beyond", () => {
+		expect(fableAge(0)).toBe("0m");
+		expect(fableAge(59_000)).toBe("0m");
+		expect(fableAge(42 * 60_000)).toBe("42m");
+		expect(fableAge(3_600_000)).toBe("1h");
+		expect(fableAge(47 * 3_600_000)).toBe("47h");
+		expect(fableAge(2 * DAY_MS)).toBe("2d");
+		expect(fableAge(6 * DAY_MS + 5 * 3_600_000)).toBe("6d");
+		// A commit dated in the future is not a negative age.
+		expect(fableAge(-5_000)).toBe("0m");
+	});
+
+	it("shows nothing when the upstream carries no marker file", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		const state = await ownerAsks(root, cache);
+		expect(state!.fable).toBeNull();
+		expect(countText(state!.asks, 0, state!.fable)).toBe("owner asks: 2 open");
+	}, 30_000);
+
+	it("shows nothing when the file has no reviewed_through key", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		mkdirSync(join(root, "docs"), { recursive: true });
+		writeFileSync(join(root, MARKER), "---\nreviewed_by: fable\n---\n");
+		git(root, "add", "-A");
+		git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "marker");
+		git(root, "push", "-q", "origin", "main");
+		expect((await ownerAsks(root, cache))!.fable).toBeNull();
+	}, 30_000);
+
+	it("warns on a marker that is not a sha, and on one that is not an ancestor of the upstream", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		const base = git(root, "rev-parse", "HEAD");
+		// A sibling line: a commit the upstream does not contain.
+		const side = git(root, "commit-tree", `${base}^{tree}`, "-p", base, "-m", "side");
+		for (const marker of ["not-a-sha", side]) {
+			writeMarker(root, marker);
+			git(root, "add", "-A");
+			git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "marker");
+			git(root, "push", "-q", "origin", "main");
+			const state = await ownerAsks(root, cache);
+			expect(state!.fable).toEqual({ kind: "invalid" });
+			expect(countText(state!.asks, 0, state!.fable)).toBe("owner asks: 2 open · fable: marker invalid");
+			// The count alone is informational; an unusable marker is the warning.
+			expect(attention(state!)).toBe(true);
+		}
+	}, 30_000);
+
+	it("reads the marker at the upstream, not the working tree", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		const base = git(root, "rev-parse", "HEAD");
+		writeMarker(root, base);
+		git(root, "add", "-A");
+		git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "marker");
+		git(root, "push", "-q", "origin", "main");
+		land(root, git(root, "rev-parse", "HEAD"), 2);
+		git(root, "push", "-q", "origin", "main");
+
+		// An uncommitted local edit that would read as fully swept, and a local commit nothing pushed.
+		writeMarker(root, git(root, "rev-parse", "@{u}"));
+		expect((await ownerAsks(root, cache))!.fable).toMatchObject({ kind: "count", unreviewed: 3 });
 	}, 30_000);
 });
 

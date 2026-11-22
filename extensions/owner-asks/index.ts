@@ -26,7 +26,7 @@ export default function (pi: ExtensionAPI) {
 				current.ui.setStatus(STATUS_KEY, undefined);
 				return;
 			}
-			const text = countText(state.asks, state.unruled.length);
+			const text = countText(state.asks, state.unruled.length, state.fable);
 			current.ui.setStatus(STATUS_KEY, attention(state) ? current.ui.theme.fg("warning", text) : text);
 		} catch {
 			// The error text comes from /asks; the status bar only flags it.

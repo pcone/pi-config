@@ -22,3 +22,4 @@ isn't re-litigated every time the tool trends on HN.
 | [008](008-model-error-mail.md) | A model request's HTTP 4XX/5XX mails a peer, throttled; Kimi usage joins the footer | done |
 | [009](009-baba-for-claude-code.md) | Claude Code reaches baba through a daemon-client CLI, and through an MCP server that replaced the skill (superseded in part) | accepted |
 | [010](010-heavy-job-slots.md) | Heavy jobs take a machine-wide slot | accepted |
+| [011](011-fable-sweep-footer-count.md) | The owner-asks footer counts landings a Fable review has not swept, read from tfd's `reviewed_through` marker at the upstream | accepted |
