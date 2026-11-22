@@ -112,7 +112,9 @@ report before you proceed.
 
 ### 3. Build, test, and lint — capture output (before launching reviewers)
 
-Run the full build + test suite (+ lint if the project has one).
+Run the build, the lint if the project has one, and the tests your change touches; run
+the full suite once on the final tip. Between commits, the touched rows are enough. If you
+skip the final full run, say so in your report, because whoever pushes must run it then.
 Capture the complete, untruncated output along with:
 - The exact command(s) you ran.
 - The git commit hash and dirty-state (`git status --porcelain`,

@@ -62,7 +62,7 @@ Anything a decision settles that shapes the design must **also** land in the for
 
 ## Testing
 
-**Green before handoff.** The mainline is green, so a failing build or test is yours to investigate and fix. Run the project's build and test suite before handing work off. Never leave a red state.
+**Green before push.** The mainline is green, so a failing build or test is yours to investigate and fix. Run the full test suite on the exact tip before pushing it to the remote; that is the one hard requirement. Between commits, run the build and the rows your change touches. An implementer usually runs the full suite once before reporting done; one that skips it says so, and whoever pushes runs it. Never push red.
 
 **Tests are a lower bound on intended behavior, not a definition of it.** Missing coverage never makes a behavior undefined or optional. When the suite doesn't cover a behavior:
 
@@ -133,7 +133,7 @@ A claim that a path is the only one ("one X", "zero residue", "no other site", "
 
 **Make the change easy, then make the easy change** (decision subagents/040). Every work order carries a Preparatory refactor section: a behaviour-preserving refactor, behind characterization tests, that lets the area take the change without a second path or a fallback, or `none` with a one-line reason that holds against the producers counted under *Make a rule complete by structure*.
 
-The same implementer does the refactor then the change, and asks for one standard review, preferably as two commits. Tests passing unchanged at the refactor commit prove it preserves behaviour. No landing adds a second implementation of an existing mechanism, a copied block, or one more branch on a structure already known to be duplicated.
+The same implementer does the refactor then the change, and asks for one standard review, preferably as two commits. The pinning tests passing unchanged at the refactor commit prove it preserves behaviour; the full suite runs on the final tip. No landing adds a second implementation of an existing mechanism, a copied block, or one more branch on a structure already known to be duplicated.
 
 **A roadblock replans the plan, not the stage.** When a ruling changes built code, or the work exposes a gap the plan did not foresee, stop the stage in progress and rework the plan from that point. Keep the original stage list as an overview, mark where it stopped and why, and write the reworked stages below it. Never absorb the change as substages of a planned stage: a string of substages hides how far the design moved, and files work under a stage planned for something else (owner 2026-11-09, tfd R53).
 
