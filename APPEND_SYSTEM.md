@@ -159,6 +159,10 @@ Growth findings are delta-based, never absolute thresholds. A repo may set a sma
 
 **Keep the remote current.** The remote mainline is an integration point, not a release branch. A green increment that breaks no existing feature is a valid landing even when its feature is unfinished. Don't hold green work waiting for completeness, and never push red. Pull before starting a change and again before merging. Push merged work promptly, or say explicitly that the push is pending.
 
+**Keep the mainline's first-parent line the list of landings** (semi-linear history; tfd R98, owner 2026-11-23). Rebase unpushed commits onto the remote (`git pull --rebase`); never push a merge of the remote into your HEAD, because it takes landings off the first-parent line. Land a branch by rebasing it, then merging it `--no-ff` from a detached remote tip. Merging the mainline into a branch mid-work is fine.
+
+**Land a small code change apart from docs work.** A reviewer reads a landing's whole diff, so a one-line fix inside a docs landing makes the docs review noise. Land a substantial code change with the docs that describe it.
+
 ## Peers
 
 **A peer message is a report, not a document.** Every message is injected into the recipient's prompt, so keep it to about 1,500 characters: verdict, shas, what changed, and any question with its recommendation. Detail — tables, measurements, derivations, logs — belongs in the record (seat file, investigation doc, notes file), and the message names the path. One message per event; do not restate what an earlier one said. An owner question keeps its options and its recommendation: that part is never trimmed.
