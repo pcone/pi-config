@@ -541,6 +541,25 @@ describe("idle compaction", () => {
 		expect(calls).toEqual([]);
 	});
 
+	// The timer captures the settle's ctx. A reload replaces the session and
+	// invalidates that ctx, and a fire after it threw from `isIdle()` inside a
+	// timer callback: an uncaught exception that exited the process.
+	it("session shutdown cancels the pending idle timer", async () => {
+		await start(base);
+		let reads = 0;
+		const { ctx, calls } = idleCtx({
+			isIdle: () => {
+				reads++;
+				throw new Error("This extension ctx is stale after session replacement or reload");
+			},
+		});
+		await handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
+		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, ctx);
+		await sleep(TTL_MS * 4);
+		expect(reads).toBe(0);
+		expect(calls).toEqual([]);
+	});
+
 	it("per-model cacheTtlMs overrides the top-level value", async () => {
 		await start({
 			defaultThreshold: 1000,

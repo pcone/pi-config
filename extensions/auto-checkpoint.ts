@@ -522,6 +522,14 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// --- session_shutdown: the timer's captured ctx dies with the session ---
+	// pi emits this before invalidating the ctx on quit, reload or session
+	// replacement. A reload evaluates this module afresh, so the next
+	// session_start resets the new instance's state, not this one's timer.
+	pi.on("session_shutdown", async () => {
+		clearIdleTimer();
+	});
+
 	// --- model_select: recompute threshold, clear nudge state ---
 	pi.on("model_select", async (event, _ctx) => {
 		if (!state.config) return;
