@@ -218,6 +218,15 @@ For each item in `Structural Risks`:
    A design silent on the state makes it an owner question (Approval
    bar). A default for a state the docs expect, with no comment
    citing them, is MEDIUM.
+10. **Expected outputs come from the rules** — every expected output
+   a finding asserts (a probe's "should print", a "wrong value"
+   claim) cites the design doc or ruling that defines it. Trace the
+   concepts it rests on, such as type identity, aliasing, scoping or
+   dispatch order, with `rg` over the decision records and design
+   docs, not just the area under review. Agreement with an older
+   binary is not evidence: it can be wrong the same way. A finding
+   whose expected output has no cited rule is an assumption, and is
+   reported as one.
 
 ### Preparatory refactor commit
 
