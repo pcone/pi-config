@@ -10,7 +10,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import loadExtension from "../extensions/owner-asks/index.ts";
 import { ack, attention, countText, fableAge, list, ownerAsks } from "../extensions/owner-asks/lib.ts";
 import { childEnv, scrubSubagentEnv } from "./helpers/subagent-env.ts";
@@ -322,21 +322,35 @@ describe("owner asks: fable sweep count", () => {
 	const MARKER = "docs/fable-sweeps.md";
 
 	/** `n` first-parent landings on top of `from`: a merge each, the shape one work order lands in.
-	 *  `dates[i]` sets the i-th landing's committer date, so the age is a fixed number. */
-	function land(root: string, from: string, n: number, dates: number[] = []): string {
+	 *  `dates[i]` sets the i-th landing's committer date, and `paths[i]` the files it changes (one
+	 *  default code file), so both the age and the non-code filter have something to read. */
+	function land(root: string, from: string, n: number, dates: number[] = [], paths: string[][] = []): string {
 		let tip = from;
 		for (let i = 1; i <= n; i++) {
 			const env = i <= dates.length ? { GIT_COMMITTER_DATE: new Date(dates[i - 1]).toISOString() } : {};
-			const topic = gitAt(root, env, "commit-tree", `${tip}^{tree}`, "-p", tip, "-m", `work ${i}`);
-			tip = gitAt(root, env, "commit-tree", `${tip}^{tree}`, "-p", tip, "-p", topic, "-m", `land ${i}`);
+			for (const rel of paths[i - 1] ?? [`src/landing-${i}.ts`]) {
+				mkdirSync(join(root, dirname(rel)), { recursive: true });
+				writeFileSync(join(root, rel), `// ${rel} ${i}\n`);
+			}
+			git(root, "add", "-A");
+			const tree = git(root, "write-tree");
+			const topic = gitAt(root, env, "commit-tree", tree, "-p", tip, "-m", `work ${i}`);
+			tip = gitAt(root, env, "commit-tree", tree, "-p", tip, "-p", topic, "-m", `land ${i}`);
 			git(root, "update-ref", "HEAD", tip);
 		}
 		return tip;
 	}
 
-	function writeMarker(root: string, sha: string): void {
+	function writeMarker(root: string, sha: string, extra = ""): void {
 		mkdirSync(join(root, "docs"), { recursive: true });
-		writeFileSync(join(root, MARKER), `---\nreviewed_through: ${sha}\nreviewed_by: fable\n---\n\nsweeps\n`);
+		writeFileSync(join(root, MARKER), `---\nreviewed_through: ${sha}\nreviewed_by: fable\n${extra}---\n\nsweeps\n`);
+	}
+
+	/** Commit the marker file and push it. The commit itself changes only `.md`. */
+	function commitMarker(root: string, extra = ""): void {
+		git(root, "add", "-A");
+		git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "marker");
+		git(root, "push", "-q", "origin", "main");
 	}
 
 	it("counts the first-parent landings between the marker and the upstream tip", async () => {
@@ -382,6 +396,102 @@ describe("owner asks: fable sweep count", () => {
 		// A commit dated in the future is not a negative age.
 		expect(fableAge(-5_000)).toBe("0m");
 	});
+
+	it("does not count a landing that changes only non-code paths, and reads the list from the file", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		const NON_CODE = 'non_code: ["*.md", "*.cases", "scripts/*_baseline.json"]\n';
+		writeMarker(root, git(root, "rev-parse", "HEAD"), NON_CODE);
+		commitMarker(root);
+		const marked = git(root, "rev-parse", "HEAD");
+		const nowMs = Date.now();
+		const tip = land(
+			root,
+			marked,
+			4,
+			[nowMs - 5 * DAY_MS, nowMs - 2 * DAY_MS, nowMs - 3_600_000, nowMs - 3_600_000],
+			makePaths(),
+		);
+		git(root, "push", "-q", "origin", "main");
+		function makePaths(): string[][] {
+			return [
+				["docs/notes.md"], // .md: non-code, the only thing it touches
+				["src/parser.ts"], // code
+				["scripts/dup_baseline.json", "tests/fixtures/x.cases"], // both non-code, listed
+				["src/codegen.ts", "docs/notes.md"], // one code path is enough to count
+			];
+		}
+
+		const state = await ownerAsks(root, cache);
+		// Four landings, two counted: the docs-only one and the all-listed one are skipped, and the
+		// mixed landing counts because one path is code. The marker commit is `.md` only → skipped.
+		expect(state!.fable).toMatchObject({ kind: "count", unreviewed: 2 });
+		// The age is the oldest *counted* landing: the five-day one is the docs landing the filter
+		// skips, so the two-day code landing is the oldest that still counts.
+		expect(countText(state!.asks, 0, state!.fable)).toBe("owner asks: 2 open · fable: 2 unreviewed · 2d");
+		// A `.json` outside the listed shape counts: the list is read from the file, not inferred.
+		expect(git(root, "log", "--first-parent", "--format=%s", `${marked}..${tip}`)).toContain("land 1");
+	}, 30_000);
+
+	it("reads a merge's first-parent diff, not the diff against its other parent", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		writeMarker(root, git(root, "rev-parse", "HEAD"), 'non_code: ["*.md"]\n');
+		commitMarker(root);
+		const marked = git(root, "rev-parse", "HEAD");
+
+		// The mainline commits a code file; the topic documents something. The merge therefore
+		// changes only `docs/` against its first parent, and only `src/` against its second — the
+		// shape that tells the two diff readings apart.
+		mkdirSync(join(root, "src"), { recursive: true });
+		writeFileSync(join(root, "src/a.ts"), "export const a = 1;\n");
+		git(root, "add", "-A");
+		git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "code on the mainline");
+		const mainline = git(root, "rev-parse", "HEAD");
+
+		const topicTree = git(root, "write-tree");
+		mkdirSync(join(root, "docs"), { recursive: true });
+		writeFileSync(join(root, "docs/only.md"), "docs\n");
+		git(root, "add", "-A");
+		const docsTree = git(root, "write-tree");
+		const topic = git(root, "commit-tree", docsTree, "-p", marked, "-m", "docs work");
+		const merged = git(root, "commit-tree", docsTree, "-p", mainline, "-p", topic, "-m", "land docs");
+		git(root, "update-ref", "HEAD", merged);
+		git(root, "push", "-q", "origin", "main");
+
+		const state = await ownerAsks(root, cache);
+		// The docs merge is skipped; the mainline code commit counts; the marker commit is `.md`.
+		expect(state!.fable).toMatchObject({ kind: "count", unreviewed: 1 });
+	}, 30_000);
+
+	it("reaches reviewed when the marker's own docs landing is the only unswept one", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		writeMarker(root, git(root, "rev-parse", "HEAD"), 'non_code: ["*.md"]\n');
+		commitMarker(root);
+
+		// The sweep's marker commit touches only `docs/fable-sweeps.md`, so R98's filter skips it and
+		// nothing is left to review — the case a marker alone could not reach before.
+		const state = await ownerAsks(root, cache);
+		expect(state!.fable).toEqual({ kind: "reviewed" });
+		expect(countText(state!.asks, 0, state!.fable)).toBe("owner asks: 2 open · fable: reviewed");
+	}, 30_000);
+
+	it("warns on a non_code key that names no list", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		writeMarker(root, git(root, "rev-parse", "HEAD"), "non_code: {}\n");
+		commitMarker(root);
+		const state = await ownerAsks(root, cache);
+		expect(state!.fable).toEqual({ kind: "invalid" });
+		expect(attention(state!)).toBe(true);
+	}, 30_000);
+
+	it("counts every landing when the file has no non_code key", async () => {
+		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });
+		writeMarker(root, git(root, "rev-parse", "HEAD"));
+		commitMarker(root);
+		land(root, git(root, "rev-parse", "HEAD"), 2, [], [["docs/only.md"], ["docs/also.md"]]);
+		git(root, "push", "-q", "origin", "main");
+		// No list to read: the marker commit and both docs landings count, as they did before R98.
+		expect((await ownerAsks(root, cache))!.fable).toMatchObject({ kind: "count", unreviewed: 3 });
+	}, 30_000);
 
 	it("shows nothing when the upstream carries no marker file", async () => {
 		const { root, cache } = makeRepo(ASKS_AB, { upstream: true });

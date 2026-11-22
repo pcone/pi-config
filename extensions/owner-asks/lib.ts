@@ -28,6 +28,8 @@ const RECORD_SCRIPT = path.join("scripts", "wo_record.py");
 /** tfd's sweep marker: YAML frontmatter naming the last commit a Fable review swept. */
 const FABLE_FILE = path.join("docs", "fable-sweeps.md");
 const FABLE_KEY = /^reviewed_through:[ \t]*(\S+)[ \t]*$/m;
+/** The frontmatter key listing the paths a landing may change and still be non-code. */
+const NON_CODE_KEY = /^non_code:[ \t]*(.*)$/m;
 
 export interface Ask {
 	/** `<file>#<id>`: the identity an ack stores. */
@@ -183,6 +185,41 @@ async function scriptOutput(root: string, cacheDir: string): Promise<ScriptOutpu
 	return { upstream: sha, ...out };
 }
 
+/**
+ * A `non_code:` glob as a matcher. `*` spans any run of characters including `/`, so `*.md` covers
+ * that file type at any depth — the list is written in extension style (`*.md`, `*.cases`,
+ * `scripts/*_baseline.json`), and tfd's pre-push hook reads the same list.
+ */
+function globToRegExp(glob: string): RegExp {
+	const escaped = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+	return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * The `non_code:` list: an inline flow list (`["*.md", "*.cases"]`), a block list, or absent, which
+ * means every landing counts. An empty list means none do — that is a different answer, so it is
+ * read as empty rather than as absent.
+ */
+function nonCodeGlobs(body: string): string[] | null | "invalid" {
+	const key = NON_CODE_KEY.exec(body);
+	if (key === null) return null;
+	const inline = /^\s*\[(.*)\]\s*$/.exec(key[1]);
+	if (inline !== null) return listOf(inline[1]);
+	if (key[1].trim() !== "") return "invalid";
+	// A block list: the lines under the key that start with `-`. None of them means the key names
+	// no list at all, which is not the same as naming an empty one.
+	const rest = body.slice((key.index ?? 0) + key[0].length).split("\n");
+	const items = rest.filter((line) => /^\s*-\s/.test(line)).map((line) => line.replace(/^\s*-\s/, ""));
+	return items.length === 0 ? "invalid" : listOf(items.join(","));
+}
+
+function listOf(text: string): string[] {
+	return text
+		.split(",")
+		.map((part) => part.trim().replace(/^["']|["']$/g, "").trim())
+		.filter((part) => part !== "");
+}
+
 /** The frontmatter block of a markdown file: between the first `---` line and the next one. */
 function frontmatter(text: string): string {
 	if (!text.startsWith("---\n")) return "";
@@ -203,26 +240,47 @@ async function fableSweep(root: string, upstream: string | null): Promise<FableS
 	if (upstream === null) return null;
 	const text = await gitOut(root, ["show", `${upstream}:${FABLE_FILE}`]);
 	if (text === null) return null;
-	const key = FABLE_KEY.exec(frontmatter(text));
+	const body = frontmatter(text);
+	const key = FABLE_KEY.exec(body);
 	if (key === null) return null;
 	const marker = key[1].replace(/^["']|["']$/g, "");
 	if (!/^[0-9a-f]{40}$/.test(marker)) return { kind: "invalid" };
+	// A `non_code:` key that parses to nothing usable is as broken as an unreadable marker: the
+	// footer says so rather than quietly counting landings the sweep means to skip.
+	const globs = nonCodeGlobs(body);
+	if (globs === "invalid") return { kind: "invalid" };
+	const patterns = globs?.map(globToRegExp);
 	const ancestor = await runGit(root, ["merge-base", "--is-ancestor", marker, upstream]);
 	// A killed git is not "not an ancestor": it is no answer, so the segment says nothing.
 	if (ancestor.timedOut) return null;
 	if (!ancestor.ok) return { kind: "invalid" };
-	// One call for both the count and the age: the committer dates of the first-parent commits
-	// after the marker, newest first, so the last line is the oldest unreviewed landing.
-	const log = await gitOut(root, ["log", "--first-parent", "--format=%ct", `${marker}..${upstream}`]);
+
+	// One call for the count, the age and the paths: a merge's first-parent diff is what it landed,
+	// and `%x00` starts each block so a path list never runs into the next commit's date. Landings
+	// are newest first, so the last counted one is the oldest.
+	const log = await gitOut(root, [
+		"log",
+		"--first-parent",
+		"--diff-merges=first-parent",
+		"--name-only",
+		"--format=%x00%ct",
+		`${marker}..${upstream}`,
+	]);
 	if (log === null) return null;
-	const stamps = log
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line !== "");
-	if (stamps.length === 0) return { kind: "reviewed" };
-	const oldest = Number(stamps[stamps.length - 1]);
-	if (!Number.isFinite(oldest)) return null;
-	return { kind: "count", unreviewed: stamps.length, oldestAgeMs: Date.now() - oldest * 1000 };
+	const counted: number[] = [];
+	for (const block of log.split("\0")) {
+		const [stamp, ...paths] = block.split("\n").map((line) => line.trim());
+		if (stamp === undefined || stamp === "") continue;
+		const epoch = Number(stamp);
+		if (!Number.isFinite(epoch)) return null;
+		// A landing counts unless *every* path it changes is non-code. No paths at all is every path
+		// matching, vacuously: an empty landing has no code to read (R98's wording, read literally).
+		const changed = paths.filter((line) => line !== "");
+		if (patterns !== undefined && changed.every((path) => patterns.some((re) => re.test(path)))) continue;
+		counted.push(epoch);
+	}
+	if (counted.length === 0) return { kind: "reviewed" };
+	return { kind: "count", unreviewed: counted.length, oldestAgeMs: Date.now() - counted[counted.length - 1] * 1000 };
 }
 
 function keyOf(line: string): string {

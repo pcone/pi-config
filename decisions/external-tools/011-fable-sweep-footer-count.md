@@ -33,11 +33,26 @@ marker that is present but unusable (not 40 hex, or not an ancestor of the upstr
 stops counting is worse than one that says its marker is broken. A count alone draws nothing: it
 is information, not a call to act.
 
-**One git call.** `git log --first-parent --format=%ct <sha>..@{u}` gives the count and the age
-together: its lines are the committer dates, newest first, so the count is the line count and the
-oldest is the last one.
+**Only landings that change code (tfd R98, owner 2026-11-23).** A landing counts unless *every*
+path its first-parent diff touches matches a glob in the marker file's `non_code:` list — the
+footer reads that list from the file rather than hard-coding it, and tfd's pre-push hook reads the
+same one. `*` spans any run of characters including `/`, so `*.md` covers that type at any depth;
+the list is written in that extension style. No `non_code:` key means every landing counts, as
+before R98. A landing that changes no paths at all is excluded by the rule read literally ("every
+path matches" is vacuously true), which is also the honest answer: it has no code to read. A key
+that names no list (`non_code: {}`) is `invalid`, drawn as the warning, rather than silently
+counting everything.
 
-**Why first-parent.** The question the number answers is "how many landings has nobody swept",
+**One git call.** `git log --first-parent --diff-merges=first-parent --name-only
+--format=%x00%ct <sha>..@{u}` gives the count, the age and the paths: `%x00` starts each block so a
+path list never runs into the next commit's date, and the landings are newest first, so the last
+counted one is the oldest. The explicit `--diff-merges=first-parent` is redundant on current git —
+`--first-parent` already changes that default — and is kept because it names what the count reads.
+
+**`fable: reviewed` is reachable.** Before R98 no marker could be fully swept, because the commit
+carrying the marker was itself a landing after it. A marker commit touches only `*.md`, so the
+non-code filter skips it and the unstamped case is now an ordinary state — the repo-fixture row
+reaches it. The question the number answers is "how many landings has nobody swept",
 and a landing is a merge on the mainline. Counting every commit would make the number move when
 an unrelated branch is merged in, and would read 2n for n landings that each carried a topic
 commit.
@@ -55,8 +70,12 @@ swept, which is a claim about work nobody has done).
 **Not shown in:** pi print/JSON mode and subagents, with the rest of the footer.
 
 **Test coverage:** `tests/owner-asks.test.ts` — the count and age from a fixture with real
-first-parent landings and fixed committer dates, the formatter's unit boundaries, the zero case,
-the file absent, no key, a non-sha marker, a marker that is not an ancestor, and the count read at
-the upstream rather than the working tree. Each is red with its mechanism removed (dropping
-`--first-parent`; reading the newest rather than the oldest; either threshold; rendering zero as a
-count; reading the working tree; skipping the validation).
+first-parent landings and fixed committer dates, the non-code filter (a docs-only landing skipped,
+a mixed landing counted, a listed `scripts/*_baseline.json` skipped, an unlisted `.json` counted,
+the age taken from the oldest *counted* landing), a merge read by its first-parent diff, the
+formatter's unit boundaries, the zero case from a repo fixture, the file absent, no key, a
+non-sha marker, a non-ancestor marker, a malformed `non_code`, and the count read at the upstream
+rather than the working tree. Each is red with its mechanism removed (dropping `--first-parent`
+from the walk; `some` instead of `every`; a hard-coded list; absent treated as matching
+everything; reading the newest rather than the oldest; either threshold; rendering zero as a
+count; reading the working tree; skipping the validation; absence reported as a zero count).
