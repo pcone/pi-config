@@ -197,14 +197,27 @@ export function completeWorkRecord(
 			if (recorded.sessions.has(entry.childSessionId)) continue;
 			const where = `review ${entry.childSessionId}`;
 			try {
-				const sessionFile = readMetaJson(entry.childSessionId)?.sessionFile;
+				// One meta read for both what the entry needs: the session file it quotes and the
+				// model the reviewer ran. `wo_record.py` refuses a review without `--model` (tfd R98),
+				// and the model it names is the resolved spec the child was spawned with
+				// (decisions/subagents/022), never a re-derivation here.
+				const meta = readMetaJson(entry.childSessionId);
+				const sessionFile = meta?.sessionFile;
+				const model = typeof meta?.model === "string" ? meta.model : "";
 				const exchange = sessionFile ? readSessionExchange(sessionFile) : null;
 				if (!exchange) {
 					notes.push(`work-order record: ${where} not written: no session file with a task`);
 					continue;
 				}
+				// A missing model is a state this cannot answer for: naming one would be a false
+				// record, and omitting the flag would be a refused append. Say which it was.
+				if (!model) {
+					failures.push(`work-order record: ${where} not written: the child's meta records no model`);
+					continue;
+				}
 				const err = woRecordAppend(record, [
-					woId, "review", "--seat", entry.childAgentName, "--round", String(round + 1), "--session", entry.childSessionId,
+					woId, "review", "--seat", entry.childAgentName, "--model", model,
+					"--round", String(round + 1), "--session", entry.childSessionId,
 				], JSON.stringify({ brief: exchange.task, output: exchange.output }));
 				if (err) failures.push(`work-order record: ${where} not written: ${err}`);
 				else {

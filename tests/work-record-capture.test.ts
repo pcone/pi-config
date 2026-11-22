@@ -139,14 +139,23 @@ function message(id: string, message: object) {
 }
 
 /** Register a reviewer under `implementerKey`, as the reviewers registry and meta files do. */
-function registerReviewer(implementerKey: string, childId: string, agent: string, sessionFileName?: string) {
+function registerReviewer(
+	implementerKey: string,
+	childId: string,
+	agent: string,
+	sessionFileName?: string,
+	model: string | null = "opencode-go/deepseek-v4.1-flash",
+) {
 	const regFile = `/tmp/pi-subagent-${implementerKey}.reviewers.json`;
 	const prior = fs.existsSync(regFile) ? JSON.parse(fs.readFileSync(regFile, "utf-8")).spawns : [];
 	const spawns = [...prior, { reviewerKind: "implementation", childSessionId: childId, childAgentName: agent, spawnedAt: 1 }];
 	fs.writeFileSync(regFile, JSON.stringify({ spawns, reviewRounds: spawns.length, reviewCapReached: false }));
 	tmpFiles.push(regFile);
 	const metaFile = `/tmp/pi-subagent-${childId}.meta.json`;
-	fs.writeFileSync(metaFile, JSON.stringify(sessionFileName ? { sessionFile: sessionFileName } : {}));
+	fs.writeFileSync(
+		metaFile,
+		JSON.stringify({ ...(sessionFileName ? { sessionFile: sessionFileName } : {}), ...(model ? { model } : {}) }),
+	);
 	tmpFiles.push(metaFile);
 }
 
@@ -236,10 +245,12 @@ describe("completeWorkRecord — reviewer rounds, then completion", () => {	it("
 			() => "Done.\n**deviations_from_spec:** none");
 		expect({ notes, failures }).toEqual({ notes: [], failures: [] });
 		const [r1, r2, done] = calls(root);
-		expect(r1.argv).toEqual(["append", "WO-2026-001", "review", "--seat", "review-code", "--round", "1",
-			"--session", "subagent-code-1"]);
+		// `--model` rides with the seat: tfd's wo_record refuses a review entry without it (R98).
+		expect(r1.argv).toEqual(["append", "WO-2026-001", "review", "--seat", "review-code",
+			"--model", "opencode-go/deepseek-v4.1-flash", "--round", "1", "--session", "subagent-code-1"]);
 		expect(JSON.parse(r1.body)).toEqual({ brief: "Review the code.", output: "APPROVED" });
-		expect(r2.argv.slice(2, 8)).toEqual(["review", "--seat", "review-tests", "--round", "2", "--session"]);
+		expect(r2.argv.slice(2, 10)).toEqual(["review", "--seat", "review-tests", "--model",
+			"opencode-go/deepseek-v4.1-flash", "--round", "2", "--session"]);
 		expect(JSON.parse(r2.body)).toEqual({ brief: "Review tests.", output: "REJECT" });
 		expect(done).toEqual({ argv: ["append", "WO-2026-001", "completion", "--implementer", key],
 			body: "Done.\n**deviations_from_spec:** none" });
@@ -255,6 +266,31 @@ describe("completeWorkRecord — reviewer rounds, then completion", () => {	it("
 		const { failures } = completeWorkRecord(openRecordContext({ cwd: root, woId: WO_ID }), key, () => "Done.");
 		expect(failures).toEqual(["work-order record: review subagent-code-2 not written: stub refused review"]);
 		expect(calls(root).map((c) => c.argv[2])).toEqual(["review", "completion"]);
+	}, 30_000);
+
+	it("names the model the reviewer was spawned with, and refuses to invent one", () => {
+		const root = makeRepo();
+		const key = uniqueKey("impl");
+		const code = sessionFile(root, [message("u1", { role: "user", content: "Review." }),
+			message("a1", { role: "assistant", content: [{ type: "text", text: "OK" }] })]);
+		const other = path.join(root, "other-session.jsonl");
+		fs.writeFileSync(other, JSON.stringify(message("u2", { role: "user", content: [{ type: "text", text: "Review tests." }] })) + "\n");
+		// Two reviewers with different models: each entry names its own, not a fleet default.
+		registerReviewer(key, "subagent-model-1", "review-code", code, "anthropic/claude-sonnet-5");
+		// A child whose meta predates the model field cannot be named, and is reported rather than
+		// appended without `--model` (the tool would refuse it, and a guess would be a false record).
+		registerReviewer(key, "subagent-model-2", "review-tests", other, null);
+
+		const { notes, failures } = completeWorkRecord(openRecordContext({ cwd: root, woId: WO_ID }), key, () => "Done.");
+		expect(notes).toEqual([]);
+		expect(failures).toEqual([
+			"work-order record: review subagent-model-2 not written: the child's meta records no model",
+		]);
+		const written = calls(root);
+		expect(written[0].argv).toEqual(["append", "WO-2026-001", "review", "--seat", "review-code",
+			"--model", "anthropic/claude-sonnet-5", "--round", "1", "--session", "subagent-model-1"]);
+		// The completion still goes, so a missing model costs one entry, not the record.
+		expect(written[1].argv[2]).toBe("completion");
 	}, 30_000);
 
 	it("reports a reviewer with no session file and still writes the rest", () => {
@@ -485,8 +521,8 @@ describe("a second completion appends only the reviews the record does not hold"
 
 		const later = calls(root).slice(before);
 		expect(later.map((c) => c.argv[2])).toEqual(["review", "completion"]);
-		expect(later[0].argv).toEqual(["append", WO_ID, "review", "--seat", "review-tests", "--round", "2",
-			"--session", "subagent-rev-b"]);
+		expect(later[0].argv).toEqual(["append", WO_ID, "review", "--seat", "review-tests",
+			"--model", "opencode-go/deepseek-v4.1-flash", "--round", "2", "--session", "subagent-rev-b"]);
 		expect(later[1].body).toBe("Second report.");
 	}, 30_000);
 });
@@ -557,7 +593,8 @@ describe("recovery completes the record from the recovered session file", () => 
 		const { sid, after } = recoverRun(root, piId, before);
 
 		expect(after.map((c) => c.argv[2])).toEqual(["review", "completion"]);
-		expect(after[0].argv.slice(3, 9)).toEqual(["--seat", "review-tests", "--round", "2", "--session", "subagent-rec-b"]);
+		expect(after[0].argv.slice(3, 11)).toEqual(["--seat", "review-tests", "--model",
+			"opencode-go/deepseek-v4.1-flash", "--round", "2", "--session", "subagent-rec-b"]);
 		expect(after[1].body).toBe("Reworked.\n\n**deviations_from_spec:**\n- Changed the approach.");
 		expect(resolveRunningSession(sid)).toBeNull();
 	}, 30_000);
