@@ -295,6 +295,9 @@ Set `re_review_required` based on fix complexity, not severity:
    lines.
 4. Quote the cited evidence in every finding — `file:line` plus the relevant
    snippet. Findings without quotable evidence are UNVERIFIED, not asserted.
+5. Every registry id or ruling the order, brief, record or diff cites must resolve:
+   `rg -o '<ID>' docs/reviews/` and read the block. An id that does not exist is a HIGH
+   finding on the citation, whatever the tests do.
 5. Flag hand-rolled reimplementations of existing mechanisms — stdlib,
    established idioms, or machinery already in the repo. Purity violations
    are findings, not style notes.
