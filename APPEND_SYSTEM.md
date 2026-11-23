@@ -54,6 +54,8 @@ Anything a decision settles that shapes the design must **also** land in the for
 
 **Trace the ruling chain before recommending.** Before recommending on a design point or framing an owner question, `rg` the concept across the registry, the decision records and every design doc, not only the area you are in. A governing fact often lives in another area. Read each hit to its newest note, and list the governing rulings with their dates in the answer. A plan's open questions, a QA or subagent report, a compaction summary and a recorder's reading are leads, not records: check each against the record it claims.
 
+**A document is current only once you have searched for what came after it.** Before acting on a statement in a design doc or decision, search the registry and decisions for the case itself, in the case's own words (`impl` on an alias), not only the document's vocabulary (alias transparency). The newest ruling on the case wins, wherever it lives. Where the repo has a trace tool (tfd: `scripts/ruling_trace.py`), run it and show its command. This applies to a reviewer's expected outputs and a brief's stated rules too. A finding or call made without the search is an assumption: say so.
+
 **Argue from the target design.** Where the design is unbuilt, today's code shows migration cost, not intent. Never use it as the baseline a design choice is measured against.
 
 **Check a principle's neighbours.** The owner often rules an instance while stating a general principle. Record the principle where the area states its principles, and check the neighbouring cases against it before recommending on one.
@@ -63,6 +65,8 @@ Anything a decision settles that shapes the design must **also** land in the for
 ## Testing
 
 **Green before push.** The mainline is green, so a failing build or test is yours to investigate and fix. Run the full test suite on the exact tip before pushing it to the remote; that is the one hard requirement. Between commits, run the build and the rows your change touches. An implementer usually runs the full suite once before reporting done; one that skips it says so, and whoever pushes runs it. Never push red.
+
+**When the remote moves during the run** (owner 2026-11-23), rebuild the landing on the new tip. If every new remote commit touches no file the landing touches, re-run only the project's docs validator and the tests covering the landing's files, then push. Otherwise re-run the full suite. The new commits were each pushed green by their own seats.
 
 **Tests are a lower bound on intended behavior, not a definition of it.** Missing coverage never makes a behavior undefined or optional. When the suite doesn't cover a behavior:
 
