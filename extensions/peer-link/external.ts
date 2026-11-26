@@ -9,11 +9,12 @@
  *   external.ts hook stop            ack what the completed turn carried (bookkeeping only)
  *   external.ts hook session-end     unregister
  * And by the session itself:
- *   external.ts send --from <name> [--reply] [--require-online] <to> <text | ->
+ *   external.ts send --from <name> [--reply] [--require-online] [--wait <minutes>] <to> <text | ->
  *   external.ts list
  *
- * Mail is read only inside a hook the user's prompt fired, so nothing here
- * starts a Claude turn. Why that matters: docs/design/peer-link-external.md.
+ * Mail is read only inside a hook the user's prompt fired, or by a reply-wait
+ * (`send --wait`, run in background). A reply-wait's exit may start a turn;
+ * nothing else here does. Why: docs/design/peer-link-external.md, decision 012.
  * Delivery is at-least-once: envelopes are acked only by the Stop hook, after
  * a turn that carried them completed; an aborted prompt leaves them in the
  * inbox and the next prompt re-emits them (duplicates over loss).
@@ -105,10 +106,20 @@ function inflightPath(mailbox: string, name: string): string {
 	return path.join(mailbox, "inflight", `${name}.json`);
 }
 
+// Merges by envelope id: the prompt hook and a reply-wait can both add to the
+// set during one turn. A missing file holds nothing; a corrupt one throws.
 function markInflight(mailbox: string, name: string, envelopes: Envelope[]): void {
 	const p = inflightPath(mailbox, name);
+	let held: Envelope[] = [];
+	try {
+		held = JSON.parse(fs.readFileSync(p, "utf8")) as Envelope[];
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	const byId = new Map<string, Envelope>();
+	for (const env of [...held, ...envelopes]) byId.set(env.id, env);
 	fs.mkdirSync(path.dirname(p), { recursive: true });
-	fs.writeFileSync(p, JSON.stringify(envelopes));
+	fs.writeFileSync(p, JSON.stringify([...byId.values()]));
 }
 
 function ackInflight(mailbox: string, name: string): void {
@@ -138,7 +149,7 @@ function hook(event: string): void {
 				`peer-link: this session is external peer \`${self}\`. pi peers can message it; ` +
 					"their mail is added to the user's next prompt. " +
 					`Send: \`${sendUsage(self)}\` (text \`-\` reads stdin; \`--reply\` asks for an answer; ` +
-					"`--require-online` fails instead of queueing). " +
+					"`--require-online` fails instead of queueing; `--wait <minutes>` (run in background) waits for the peer's reply). " +
 					`List peers: \`bun ${SELF} list\`.`,
 			);
 			return;
@@ -165,21 +176,64 @@ function hook(event: string): void {
 	}
 }
 
+const WAIT_POLL_MS = 1000;
+
+function parseWaitMinutes(value: string | undefined): number {
+	const minutes = Number(value);
+	if (!Number.isFinite(minutes) || minutes <= 0) {
+		throw new Error("send: --wait needs a positive number of minutes");
+	}
+	return minutes;
+}
+
+/**
+ * Block until the target replies, goes offline, or the interval elapses.
+ * Returns the exit code: 0 reply, 3 peer gone, 4 check-in due (decision 012).
+ */
+function waitForReply(mailbox: string, self: string, to: string, sentAt: number, minutes: number): number {
+	const started = Date.now();
+	for (;;) {
+		const replies = readIncoming(mailbox, self).filter((e) => e.from === to && e.sentAt >= sentAt);
+		if (replies.length > 0) {
+			markInflight(mailbox, self, replies);
+			console.log(renderMail(self, replies));
+			return 0;
+		}
+		const peer = listPeers(mailbox).find((p) => p.name === to);
+		if (!peer || !peer.online) {
+			console.log(`peer ${to} is no longer online; no reply`);
+			return 3;
+		}
+		if (Date.now() - started >= minutes * 60_000) {
+			const log = peer.sessionFile ? ` Session log: ${peer.sessionFile}` : "";
+			console.log(
+				`no reply from ${to} after ${minutes} min; peer still online. Ask it for a progress update with another --wait.${log}`,
+			);
+			return 4;
+		}
+		Bun.sleepSync(WAIT_POLL_MS);
+	}
+}
+
 function send(args: string[]): void {
 	let from: string | undefined;
 	let expectReply = false;
 	let requireOnline = false;
+	let waitMinutes: number | undefined;
 	const rest: string[] = [];
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
 		if (a === "--from") from = args[++i];
 		else if (a === "--reply") expectReply = true;
 		else if (a === "--require-online") requireOnline = true;
+		else if (a === "--wait") waitMinutes = parseWaitMinutes(args[++i]);
 		else rest.push(a);
 	}
 	if (!from || rest.length < 2) {
-		throw new Error("usage: send --from <name> [--reply] [--require-online] <to> <text | ->");
+		throw new Error("usage: send --from <name> [--reply] [--require-online] [--wait <minutes>] <to> <text | ->");
 	}
+	// A wait on a peer that is not online is pointless: fail before sending.
+	if (waitMinutes !== undefined) requireOnline = true;
 	from = sanitizePeerName(from);
 	const text = rest[1] === "-" && rest.length === 2 ? readStdin().trim() : rest.slice(1).join(" ");
 	if (!text) throw new Error("send: empty message");
@@ -191,15 +245,20 @@ function send(args: string[]): void {
 	const to = resolvePeerAddressAmong(listed, sanitizePeerName(rest[0]));
 	const decision = deliveryDecision(to, listed, requireOnline);
 	if (!decision.ok) throw new Error(`send: ${decision.reason}`);
-	sendEnvelope(mailbox, newEnvelope(from, to, text, expectReply));
+	const envelope = newEnvelope(from, to, text, expectReply);
+	sendEnvelope(mailbox, envelope);
 	console.log(`sent to ${to} (${queuedStatus(decision)})`);
+	if (waitMinutes !== undefined) {
+		process.exitCode = waitForReply(mailbox, from, to, envelope.sentAt, waitMinutes);
+	}
 }
 
 function list(): void {
 	const peers = listPeers(mailboxRoot());
 	if (peers.length === 0) console.log("no peers listed");
 	for (const p of peers) {
-		console.log(`${p.name} (${peerStatus(p)})${p.cwd ? ` — ${p.cwd}` : ""}`);
+		const where = p.sessionFile ? ` — ${p.sessionFile}` : p.cwd ? ` — ${p.cwd}` : "";
+		console.log(`${p.name} (${peerStatus(p)})${where}`);
 	}
 }
 

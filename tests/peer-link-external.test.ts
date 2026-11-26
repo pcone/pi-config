@@ -7,7 +7,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,10 +50,11 @@ afterEach(async () => {
 	await rm(dir, { recursive: true, force: true });
 });
 
-function run(args: string[], stdin = ""): { code: number; out: string; err: string } {
+function run(args: string[], stdin = "", timeout?: number): { code: number; out: string; err: string } {
 	const p = Bun.spawnSync(["bun", CLI, ...args], {
 		stdin: new TextEncoder().encode(stdin),
 		env: childEnv({ PI_PEER_MAILBOX: dir }),
+		timeout,
 	});
 	return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
@@ -189,5 +190,144 @@ describe("external.ts CLI (as Claude Code hooks run it)", () => {
 		const offline = run(["send", "--from", SELF, "--require-online", "bug-triage", "hi"]);
 		expect(offline.code).toBe(1);
 		expect(readIncoming(dir, "bug-triage")).toEqual([]);
+	}, 120_000);
+});
+
+describe("send --wait (reply-wait, decision 012)", () => {
+	const PI = "bug-triage";
+
+	function spawnWaiter(args: string[]): Bun.Subprocess {
+		return Bun.spawn(["bun", CLI, ...args], {
+			stdout: "pipe",
+			stderr: "pipe",
+			env: childEnv({ PI_PEER_MAILBOX: dir }),
+		});
+	}
+
+	async function finish(proc: Bun.Subprocess): Promise<{ code: number; out: string; err: string }> {
+		const [code, out, err] = await Promise.all([
+			proc.exited,
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		return { code, out, err };
+	}
+
+	// Waits until the wait's own send has landed in the target's inbox, so the
+	// wait has started polling before the test sends its reply.
+	async function untilWaiterSent(): Promise<void> {
+		const until = Date.now() + 10_000;
+		while (readIncoming(dir, PI).length === 0) {
+			if (Date.now() > until) throw new Error("the wait's send never reached the target inbox");
+			await Bun.sleep(50);
+		}
+	}
+
+	function killIfRunning(proc: Bun.Subprocess): void {
+		if (proc.exitCode === null) proc.kill();
+	}
+
+	const inflightFile = () => join(dir, "inflight", `${SELF}.json`);
+
+	it("a reply from the target ends the wait: exit 0, printed, inflight, and Stop acks it", async () => {
+		run(["hook", "session-start"], hookJson("SessionStart"));
+		writeHeartbeat(dir, { name: PI, ts: Date.now() });
+		const waiter = spawnWaiter(["send", "--from", SELF, "--wait", "1", PI, "hi"]);
+		try {
+			await untilWaiterSent();
+			sendEnvelope(dir, newEnvelope(PI, SELF, "the answer"));
+			const r = await finish(waiter);
+			expect(r.code).toBe(0);
+			expect(r.out).toContain("the answer");
+			const held = JSON.parse(readFileSync(inflightFile(), "utf8")) as { text: string }[];
+			expect(held.map((e) => e.text)).toEqual(["the answer"]);
+			expect(run(["hook", "stop"], hookJson("Stop")).code).toBe(0);
+			expect(readIncoming(dir, SELF)).toEqual([]);
+		} finally {
+			killIfRunning(waiter);
+		}
+	}, 20_000);
+
+	it("mail from the target sent before the send does not end the wait", () => {
+		run(["hook", "session-start"], hookJson("SessionStart"));
+		writeHeartbeat(dir, { name: PI, ts: Date.now() });
+		sendEnvelope(dir, { ...newEnvelope(PI, SELF, "old news"), sentAt: Date.now() - 60_000 });
+		const r = run(["send", "--from", SELF, "--wait", "0.03", PI, "hi"]);
+		expect(r.code).toBe(4);
+		expect(r.out).toContain(`no reply from ${PI}`);
+		expect(r.out).not.toContain("old news");
+	}, 120_000);
+
+	it("the target going offline ends the wait with exit 3", async () => {
+		run(["hook", "session-start"], hookJson("SessionStart"));
+		writeHeartbeat(dir, { name: PI, ts: Date.now() });
+		const waiter = spawnWaiter(["send", "--from", SELF, "--wait", "1", PI, "hi"]);
+		try {
+			await untilWaiterSent();
+			writeHeartbeat(dir, { name: PI, ts: Date.now() - 5 * 60_000 });
+			const r = await finish(waiter);
+			expect(r.code).toBe(3);
+			expect(r.out).toContain(`peer ${PI} is no longer online`);
+		} finally {
+			killIfRunning(waiter);
+		}
+	}, 20_000);
+
+	it("--wait implies --require-online: an offline target fails before sending", () => {
+		run(["hook", "session-start"], hookJson("SessionStart"));
+		writeHeartbeat(dir, { name: PI, ts: Date.now() - 5 * 60_000 });
+		const r = run(["send", "--from", SELF, "--wait", "1", PI, "hi"]);
+		expect(r.code).toBe(1);
+		expect(r.err).toContain("requireOnline is set");
+		expect(readIncoming(dir, PI)).toEqual([]);
+	}, 120_000);
+
+	it("inflight merges: a reply-wait's envelope joins the set the prompt hook recorded", async () => {
+		run(["hook", "session-start"], hookJson("SessionStart"));
+		writeHeartbeat(dir, { name: PI, ts: Date.now() });
+		sendEnvelope(dir, { ...newEnvelope(PI, SELF, "pending before the turn"), sentAt: Date.now() - 60_000 });
+		const prompt = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
+		expect(prompt.out).toContain("pending before the turn");
+
+		const waiter = spawnWaiter(["send", "--from", SELF, "--wait", "1", PI, "hi"]);
+		try {
+			await untilWaiterSent();
+			sendEnvelope(dir, newEnvelope(PI, SELF, "reply during the turn"));
+			expect((await finish(waiter)).code).toBe(0);
+		} finally {
+			killIfRunning(waiter);
+		}
+		const held = (JSON.parse(readFileSync(inflightFile(), "utf8")) as { text: string }[]).map((e) => e.text);
+		expect(held.sort()).toEqual(["pending before the turn", "reply during the turn"]);
+
+		expect(run(["hook", "stop"], hookJson("Stop")).code).toBe(0);
+		expect(readIncoming(dir, SELF)).toEqual([]);
+	}, 20_000);
+
+	it("--wait rejects a non-positive or non-numeric value before sending", () => {
+		run(["hook", "session-start"], hookJson("SessionStart"));
+		writeHeartbeat(dir, { name: PI, ts: Date.now() });
+		for (const bad of ["0", "x", "-1"]) {
+			const r = run(["send", "--from", SELF, "--wait", bad, PI, "hi"], "", 10_000);
+			expect(r.code).toBe(1);
+			expect(r.err).toContain("--wait needs a positive number of minutes");
+		}
+		expect(readIncoming(dir, PI)).toEqual([]);
+	}, 120_000);
+
+	it("list shows a pi peer's session log path, else its cwd", () => {
+		writeHeartbeat(dir, { name: PI, ts: Date.now(), cwd: "/w", sessionFile: "/s/bug-triage.jsonl" });
+		writeHeartbeat(dir, { name: "no-log", ts: Date.now(), cwd: "/w/other" });
+		const out = run(["list"]).out;
+		expect(out).toContain(`${PI} (online) — /s/bug-triage.jsonl`);
+		expect(out).toContain("no-log (online) — /w/other");
+	}, 120_000);
+
+	it("a check-in names the target's session log", () => {
+		run(["hook", "session-start"], hookJson("SessionStart"));
+		writeHeartbeat(dir, { name: PI, ts: Date.now(), sessionFile: "/s/bug-triage.jsonl" });
+		const r = run(["send", "--from", SELF, "--wait", "0.03", PI, "hi"]);
+		expect(r.code).toBe(4);
+		expect(r.out).toContain("Session log: /s/bug-triage.jsonl");
 	}, 120_000);
 });

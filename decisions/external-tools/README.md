@@ -23,3 +23,5 @@ isn't re-litigated every time the tool trends on HN.
 | [009](009-baba-for-claude-code.md) | Claude Code reaches baba through a daemon-client CLI, and through an MCP server that replaced the skill (superseded in part) | accepted |
 | [010](010-heavy-job-slots.md) | Heavy jobs take a machine-wide slot | accepted |
 | [011](011-fable-sweep-footer-count.md) | The owner-asks footer counts landings a Fable review has not swept, read from tfd's `reviewed_through` marker at the upstream | accepted |
+| [012](012-peer-reply-wait.md) | A Claude Code session may wait in the background for a pi peer's reply; the waiter's exit may wake it, with 40-minute progress check-ins | accepted |
+| [013](013-tos-line-credentials-not-turns.md) | The ToS line for Claude Code peers is no Claude outside Claude Code, no credential handling, and ordinary usage; documented wake features may start turns | accepted |

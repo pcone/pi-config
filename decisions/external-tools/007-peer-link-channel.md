@@ -7,6 +7,10 @@ date: 2026-11-02
 
 # peer-link mail through a Claude Code channel
 
+> **Superseded in part (owner 2026-11-26, [013](013-tos-line-credentials-not-turns.md)).** Any documented wake feature may start a turn, so the channel is not needed as the permitted path. WO-2026-063 is retired.
+>
+> **Superseded in part (owner 2026-11-26, [012](012-peer-reply-wait.md)).** The channel is no longer the only path that may start a turn: a background reply-wait may too.
+
 **Ruling (owner, 2026-11-02).** Asked "should the no-automated-turns rule bend for an official channel?", with a peer-link channel server recommended, Scott answered: "yeah this sounds solid - I think we should pick this up". The recorder reads this as a yes: one path may start a Claude turn with no human prompt, the channel. Every other path in [003](003-claude-code-external-peer.md)'s rejected list stays rejected. Order: `work-orders/WO-peer-link-channel.md`.
 
 **What:** a peer-link MCP server declares the `claude/channel` capability and pushes the session's pending mail as `notifications/claude/channel` events. Claude Code spawns it over stdio. Reference: <https://code.claude.com/docs/en/channels-reference> (fetched 2026-11-02).

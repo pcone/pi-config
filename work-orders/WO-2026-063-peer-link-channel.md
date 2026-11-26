@@ -1,6 +1,8 @@
 # WO-2026-063 — deliver peer-link mail to a Claude Code session through a channel
 
-**Status: BLOCKED 2026-11-02 — P3 falsified on this account.** Rows 1–6, the preparatory refactor and the docs are done and reviewed on branch `wo-2026-063-peer-link-channel` (`4bf573d`), held unmerged on purpose. Row 7 and the Mechanism 5 ack wiring are unstarted. Condition: the account cannot load any channel, so P1 and P2 cannot be measured. Re-probed 2026-11-23 on 2.1.330: still "Channels are not currently available".
+**Status: RETIRED 2026-11-26 (owner, [decision external-tools/013](../decisions/external-tools/013-tos-line-credentials-not-turns.md)).** Documented wake features other than channels may start a turn, so this order's reason is gone. Branch `wo-2026-063-peer-link-channel` stays unmerged.
+
+**Former status: BLOCKED 2026-11-02 — P3 falsified on this account.** Rows 1–6, the preparatory refactor and the docs are done and reviewed on branch `wo-2026-063-peer-link-channel` (`4bf573d`), held unmerged on purpose. Row 7 and the Mechanism 5 ack wiring are unstarted. Condition: the account cannot load any channel, so P1 and P2 cannot be measured. Re-probed 2026-11-23 on 2.1.330: still "Channels are not currently available".
 
 ### Metadata
 

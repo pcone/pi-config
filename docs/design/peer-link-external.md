@@ -10,7 +10,7 @@ feature: peer-link
 
 A Claude Code session can join the peer-link mailbox as an **external peer**. Before this, Claude could send to pi peers by hand-writing envelope JSON but could never receive replies.
 
-Code: `extensions/peer-link/external.ts` (CLI, not a pi extension). Decision: `decisions/external-tools/003-claude-code-external-peer.md`.
+Code: `extensions/peer-link/external.ts` (CLI, not a pi extension). Decisions: `decisions/external-tools/003-claude-code-external-peer.md`, `012-peer-reply-wait.md`, `013-tos-line-credentials-not-turns.md`.
 
 ## Flow
 
@@ -20,11 +20,11 @@ Code: `extensions/peer-link/external.ts` (CLI, not a pi extension). Decision: `d
 - **SessionEnd** (`hook session-end`): removes the registration. Un-acked mail stays in the inbox.
 
 Delivery is at-least-once: an aborted prompt (Escape, crash) acks nothing, so the next prompt re-emits the un-acked envelopes from the inbox (duplicates over loss — the mailbox contract in `extensions/peer-link/mailbox.ts`). Before 2026-10-18 the prompt hook acked at emit and an aborted prompt lost its mail (reported by the external Claude peer after an Escape-re-send dropped five envelopes); the Stop hook is the consumption confirmation Claude Code "gives no later" — it just needed the prompt hook to stop acking early.
-- **SessionEnd** (`hook session-end`): removes the registration.
-- **Send** (Claude's Bash tool): `external.ts send --from claude-<sid> [--reply] [--require-online] <to> <text | ->`. Same delivery gate as pi: unlisted targets fail loud. `external.ts list` lists peers.
+- **Send** (Claude's Bash tool): `external.ts send --from claude-<sid> [--reply] [--require-online] [--wait <minutes>] <to> <text | ->`. Same delivery gate as pi: unlisted targets fail loud. `external.ts list` lists peers.
+- **Reply-wait** (`send --wait <minutes>`, run with Bash `run_in_background`): implies `--require-online`, so a wait on a peer that is not online fails before sending. After sending, it blocks until any envelope from the target sent after the send arrives (prints it, exit 0), the target is no longer online (exit 3), or the interval elapses with the target online (exit 4). Printed mail joins the inflight set, so the Stop hook acks it. On a check-in exit Claude asks the peer for a progress update with another `--wait`, sent without `--reply` so it lands as a steer at the peer's next tool-call boundary rather than after its turn. The interval is 40 minutes. A check-in waits 10 minutes; if it times out, Claude reads the tail of the peer's session log (`sessionFile` in its heartbeat, shown by `list` and the check-in exit). Recent entries, or one open tool call that plausibly runs long, mean busy, so Claude waits again without another check-in. A long silence with nothing that explains it means hung, so Claude tells the owner. One check-in stays outstanding per peer.
 - **pi side:** external peers are listed, never "online", and age out after 24 h without refresh (`EXTERNAL_TTL_MS`) instead of pi's 2 min sweep window. pi's sends and auto-replies to them queue as "queued — external peer, read when its user next prompts"; `requireOnline` fails. pi never reads or injects into an external inbox.
 
-Mail reaches Claude only inside a hook that the user's prompt fired. Nothing starts a Claude turn.
+Mail reaches Claude inside a hook that the user's prompt fired, or as the output of a reply-wait. A reply-wait's exit starts a Claude turn when none is running.
 
 ## Hook setup
 
@@ -48,29 +48,28 @@ Sources, fetched 2026-10-11:
 - Anthropic Consumer Terms, <https://www.anthropic.com/legal/consumer-terms>. §3 item 7: no accessing "the Services through automated or non-human means, whether through a bot, script, or otherwise," "Except when you are accessing our Services via an Anthropic API Key or where we otherwise explicitly permit it." §2: "You may not share your Account login information, Anthropic API key, or Account credentials with anyone else." §3 closing: no "bypassing any of our systems or protective measures."
 - Claude Code legal and compliance, <https://code.claude.com/docs/en/legal-and-compliance>. "OAuth authentication is intended exclusively for purchasers of Claude Free, Pro, Max, Team, and Enterprise subscription plans and is designed to support ordinary use of Claude Code and other native Anthropic applications." Developers "may not collect, store, or intermediate Claude.ai credentials or session tokens," and may not route "requests through Free, Pro, or Max plan credentials on behalf of their users." "Advertised usage limits for Pro and Max plans assume ordinary, individual usage of Claude Code and the Agent SDK."
 
-Neither document mentions loops. §3.7 is the operative clause.
+The line has three parts (decision 013, owner 2026-11-26). Waking the session is not one of them.
 
-**(a) Credentials.** The scripts read only `session_id` and `cwd` from hook stdin. They never read Claude Code's auth store, OAuth tokens, `transcript_path`, or `~/.claude`. They make no network calls and spawn no processes (`external.ts`, `mailbox.ts`). Claude Code is unmodified and is the only client that talks to Anthropic. pi never holds Claude credentials, and Claude never receives pi's. The only shared state is files in `~/.pi/peer-mail/`. Nothing collects, stores, or forwards Claude credentials or session tokens, and nothing routes requests through a subscription.
+**(a) Claude only through Claude Code.** No pi provider or other harness uses the Claude subscription. Nothing launches a Claude session automatically: no `claude -p` or SDK run from pi, cron or a daemon. Claude Code is unmodified and is the only client that talks to Anthropic.
 
-**(b) Automated access (§3.7).** Every Claude turn starts from a prompt the human types. Hooks are a Claude Code surface that Anthropic ships and documents. `UserPromptSubmit` runs inside the turn the human started and only appends text to that prompt. Claude's `send` is a Bash call inside that same turn. No code path runs without a human prompt.
+**(b) No credential handling.** The scripts read only `session_id` and `cwd` from hook stdin. They never read Claude Code's auth store, OAuth tokens, `transcript_path`, or `~/.claude`, and make no network calls (`external.ts`, `mailbox.ts`). pi never holds Claude credentials, and Claude never receives pi's. The only shared state is files in `~/.pi/peer-mail/`.
 
-Residual reading: §3.7 says "non-human means," and a hook is a local non-human process that adds input to a session. We read the access as the human's own interactive session, configured with a hook, and the hook makes no request to Anthropic. The same reading covers `CLAUDE.md`, `@`-imports, and MCP servers, which Anthropic ships and users rely on.
+**(c) Ordinary individual usage.** Wakes are bounded by the owner's tasks and pi traffic: one turn per delivered reply, peer exit or 40-minute check-in. Round-the-clock loops are out.
+
+**Why waking is allowed.** §3.7 exempts access "where we otherwise explicitly permit it". Background tasks, Monitor, `/loop`, scheduled wakeups and channels are Claude Code features that start a turn without a typed prompt, documented for that use. A session woken by one is the permitted case. A watcher that wakes the session on unsolicited pi mail is permitted on the same grounds; none is built.
 
 Rejected designs, and why:
 
-- **Watcher or Monitor that wakes Claude on new mail.** Starts turns with no human. Direct §3.7 violation.
-- **pi spawning `claude -p` (or any headless Claude invocation) to answer mail.** Non-human access to the Services, and subscription OAuth outside interactive Claude Code use.
-- **Stop hook that forces continuation when mail is pending.** Starts a turn with no human prompt. Same as the watcher.
-- **Any agent-to-agent loop with no human in it** (pi replies to Claude, Claude replies to pi, ...). Automated access. pi's sends and auto-replies to an external peer only land in its inbox, which nothing reads until the human prompts, so pi cannot drive Claude turns.
+- **pi spawning `claude -p` (or any headless Claude invocation) to answer mail.** Launches a Claude session automatically, outside interactive Claude Code use.
 - **pi holding or forwarding Claude OAuth to reach Claude.** Credential intermediation, which the Claude Code legal page prohibits.
-
-**(c) Usage limits.** Volume is bounded by the human's prompt cadence. Each prompt adds one local file read, a few lines of context, and no extra model turns. This is ordinary individual use under the stated Pro/Max assumptions.
+- **Stop hook that forces continuation when mail is pending.** It overrides the session's end of turn instead of using a wake feature. Wake the session with a background task or Monitor instead.
 
 **Invariants for future changes:**
 
-- Never add a path that starts a Claude turn: no watcher, no `claude -p`, no SDK call, no Stop hook that continues the turn. (A Stop hook that only acks delivered mail is bookkeeping, not continuation — it is the one Stop hook allowed here.)
+- Never launch Claude outside Claude Code, and never route a harness through the Claude subscription.
 - Never read, copy, or forward Claude Code credentials, OAuth tokens, transcripts, or `~/.claude` state.
-- Keep `external.ts` free of network calls and child processes.
-- Nothing reads an external inbox except the `UserPromptSubmit` hook; pi never reads or injects into it.
+- Wake the session only through a documented Claude Code feature. A Stop hook only acks delivered mail.
+- Keep `external.ts` free of network calls and child processes. A reply-wait polls in-process.
+- Nothing reads an external inbox except the `UserPromptSubmit` hook and a reply-wait; pi never reads or injects into it.
 
-Not legal advice. Checked against the sources above on 2026-10-11. Re-check if Anthropic's terms change.
+Not legal advice. Sources checked 2026-10-11; reading revised 2026-11-26 (decision 013). Re-check if Anthropic's terms change.
