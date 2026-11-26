@@ -197,7 +197,7 @@ Sessions are unlimited. Never stop mid-task to suggest continuing in a new sessi
 
 ## Scratch locations
 
-**`/tmp` holds only what you can lose today.** macOS's `tmp_cleaner` runs daily at 00:00 and deletes every file under `/tmp` not read, written or changed in three days. It works file by file, so a worktree there silently loses its older tracked files while newer ones survive. `$TMPDIR` (`/var/folders/…/T`) is system-cleaned too.
+**`/tmp` holds only what you can lose today.** Where `/tmp` is tmpfs, as on the Debian box, it is RAM-backed and empty after a reboot. On macOS, `tmp_cleaner` runs daily at 00:00 and deletes every file under `/tmp` not read, written or changed in three days; it works file by file, so a worktree there silently loses its older tracked files while newer ones survive. `$TMPDIR` (`/var/folders/…/T`) is system-cleaned too, and a box that leaves it unset has `/tmp` as its scratch path.
 
 Worktrees, clones, scripts, notes and anything else that must outlive the current task go under `~/Developer/`, with worktrees at `~/Developer/wt/<repo>-<name>`. The harness puts subagent worktrees at `~/Developer/wt/subagents/<repo>-<name>`; move one with `git worktree move` rather than recreating it. Remove a worktree with `git worktree remove` when its work lands.
 

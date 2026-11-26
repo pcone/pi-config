@@ -180,7 +180,7 @@ this audit did not start a full-config TUI session.
 ## 10. Reproduce
 
 ```
-bash tests/setup.sh                     # links the global pi packages into node_modules
+bash bin/setup                          # links the global pi packages into node_modules
 cd ~/Developer/scratch/wo071
 REPO=<worktree> WITH_FLEET=1 PROBE_LOG=$PWD/sess-1.log NONCE=PNONCE-F1 bun run.ts   # fleet wins
 REPO=<worktree> WITH_FLEET=0 PROBE_LOG=$PWD/sess-0.log NONCE=PNONCE-F0 bun run.ts   # verbatim wins

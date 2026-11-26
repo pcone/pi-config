@@ -9,7 +9,7 @@
  * with the fleet `compact()` mocked at its module seam so no row touches the
  * network.
  *
- * Run: bash tests/setup.sh && bun test tests/summary-ownership.test.ts
+ * Run: bash bin/setup && bun test tests/summary-ownership.test.ts
  */
 
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";

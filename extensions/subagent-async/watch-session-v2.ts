@@ -138,10 +138,9 @@ function bootstrapPiTheme(): Theme | null {
 		join(homedir(), ".pi", "agent", "settings.json"),
 		join(homedir(), ".pi", "agent", "settings.local.json"),
 	];
-	const themeSearchDirs = [
-		join(homedir(), ".pi", "agent", "themes"),
-		"/Users/scott/Developer/pi-config/themes",
-	];
+	// `~/.pi/agent/themes` is a symlink into this repo (bin/setup), so it already reaches the
+	// repo's themes dir; a second entry naming the repo path would only work on one machine.
+	const themeSearchDirs = [join(homedir(), ".pi", "agent", "themes")];
 
 	let themeName = "dark";
 	for (const sp of settingsPaths) {

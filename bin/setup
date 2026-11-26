@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Install this repo on a machine: the `~/.pi/agent` symlinks pi reads, the
+# `node_modules` links that let an extension or a test resolve the globally
+# installed pi, the `extensions/` dependencies, and one line saying whether
+# baba is available here.
+#
+# Run after cloning: `bash bin/setup`, from the repo root or a worktree root.
+# Run it from the checkout you keep: the links point into whichever checkout ran
+# it last, so a run from a worktree repoints the machine's live config there.
+#
+# Idempotent, and safe to re-run. It never leaves a link pointing at nothing:
+# bun's module resolver spins at 100% CPU when two test files import the same
+# dangling specifier, and a theme or extension behind a dead link is a resource
+# pi silently does not load. Every link is verified before the script says it
+# worked, and a target that cannot be found stops the run with both paths named.
+#
+# An existing real file where a link belongs is not replaced: `~/.pi/agent/settings.json`
+# holding your own settings is exactly the state a clobbering install destroys.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+
+fail() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+# ── The global pi install ───────────────────────────────────────────────────
+# pi is installed globally; bun test, and an extension run directly (`bun
+# extensions/peer-link/external.ts`), do not respect NODE_PATH. So the repo's
+# node_modules links point into the global install, resolved rather than
+# hard-coded: `npm root -g` is what npm and Homebrew both answer with.
+#
+# GLOBAL_MODULES overrides the resolved root, for a test harness and for an
+# install that is not on npm's lookup path.
+if [ -n "${GLOBAL_MODULES:-}" ]; then
+  PI_GLOBAL="$GLOBAL_MODULES"
+else
+  command -v npm >/dev/null 2>&1 || fail "npm is not on PATH; it is how the global pi install is located"
+  NPM_ROOT="$(npm root -g)"
+  [ -n "$NPM_ROOT" ] || fail "npm root -g printed nothing"
+  PI_GLOBAL="$NPM_ROOT/@earendil-works"
+fi
+
+# pi-agent-core / pi-ai / pi-tui are dependencies of pi-coding-agent, so a
+# global install usually nests them inside `pi-coding-agent/node_modules`
+# rather than under the global scope. Check the flat location first, then the
+# nested tree.
+resolve_global_pkg() {
+  local pkg="$1"
+  if [ -e "$PI_GLOBAL/$pkg" ]; then
+    printf "%s" "$PI_GLOBAL/$pkg"
+  elif [ -e "$PI_GLOBAL/pi-coding-agent/node_modules/@earendil-works/$pkg" ]; then
+    printf "%s" "$PI_GLOBAL/pi-coding-agent/node_modules/@earendil-works/$pkg"
+  fi
+}
+
+# ── Link one path, repairing a dangling link and never clobbering a real file ─
+# link_at <link-path> <target> <label>
+link_at() {
+  local link="$1" target="$2" label="$3"
+  # Target first: a failed run must not have already removed the link it was
+  # going to replace, or the machine is left half-installed.
+  [ -e "$target" ] || fail "$label: $target does not exist"
+  if [ -L "$link" ]; then
+    rm -f "$link"
+  elif [ -e "$link" ]; then
+    fail "$link exists and is not a symlink; move it aside and re-run (this script will not replace a real file or directory)"
+  fi
+  mkdir -p "$(dirname "$link")"
+  ln -s "$target" "$link"
+  [ -e "$link" ] || fail "$label: $link does not resolve to $target"
+}
+
+# ── node_modules: the pi packages the extensions import ─────────────────────
+echo "Global pi: $PI_GLOBAL"
+for pkg in pi-coding-agent pi-agent-core pi-ai pi-tui; do
+  target="$(resolve_global_pkg "$pkg")"
+  [ -n "$target" ] || fail "cannot find a global install of $pkg (looked at $PI_GLOBAL/$pkg and $PI_GLOBAL/pi-coding-agent/node_modules/@earendil-works/$pkg)"
+  link_at "$REPO/node_modules/@earendil-works/$pkg" "$target" "$pkg"
+done
+echo "Linked @earendil-works/{pi-coding-agent,pi-agent-core,pi-ai,pi-tui}"
+
+# typebox is a transitive dep of pi-coding-agent that extensions value-import
+# bare (`import { Type } from "typebox"`). It lives at pi's own top level, so it
+# needs a second link target dir.
+link_at "$REPO/node_modules/typebox" "$PI_GLOBAL/pi-coding-agent/node_modules/typebox" "typebox"
+echo "Linked typebox"
+
+# ── extensions/ dependencies ────────────────────────────────────────────────
+# extensions/ has its own package.json + committed bun.lock (picomatch,
+# turndown, linkedom, @mozilla/readability, puppeteer-core, ...). A fresh
+# worktree starts without node_modules, so extensions/rules.ts and friends fail
+# with "Cannot find package 'picomatch'" until they are installed.
+#
+# Existence-only check: this runs once per checkout and must stay fast, so
+# staleness (a bun.lock newer than the installed tree) is deliberately not
+# detected. To force a fresh install, remove extensions/node_modules.
+EXTENSIONS_DIR="$REPO/extensions"
+if [ -d "$EXTENSIONS_DIR/node_modules" ]; then
+  echo "Already installed: extensions/node_modules"
+else
+  echo "Installing extensions/ dependencies (bun install --frozen-lockfile)..."
+  if ! ( cd "$EXTENSIONS_DIR" && bun install --frozen-lockfile ); then
+    # Never leave a half-set-up tree: a partially populated node_modules would
+    # make the existence check above skip the install next run, and the suite
+    # would then fail with a confusing missing-package error.
+    rm -rf "$EXTENSIONS_DIR/node_modules"
+    fail "bun install --frozen-lockfile failed in $EXTENSIONS_DIR"
+  fi
+  echo "Installed extensions/ dependencies"
+fi
+
+# ── ~/.pi/agent: what pi reads ──────────────────────────────────────────────
+# One link per entry, whole files and whole directories (`extensions`, `skills`,
+# `rules`, `agents`, `prompts` are read as sets). Two are renamed on the way in:
+# the checkpoint extension's config lives at `.pi/auto-checkpoint.json` in the
+# repo, and pi's project-trust file is `trust.json` in both places.
+AGENT_LINKS=(
+  "agents:agents"
+  "APPEND_SYSTEM.md:APPEND_SYSTEM.md"
+  "auto-checkpoint.json:.pi/auto-checkpoint.json"
+  "extensions:extensions"
+  "keybindings.json:keybindings.json"
+  "models.json:models.json"
+  "prompts:prompts"
+  "rules:rules"
+  "settings.json:settings.json"
+  "skills:skills"
+  "themes:themes"
+  "trust.json:trust.json"
+)
+for pair in "${AGENT_LINKS[@]}"; do
+  name="${pair%%:*}"
+  source="${pair#*:}"
+  link_at "$AGENT_DIR/$name" "$REPO/$source" "$name"
+done
+echo "Linked $AGENT_DIR -> $REPO (${#AGENT_LINKS[@]} entries)"
+
+# ── baba ────────────────────────────────────────────────────────────────────
+# `extensions/baba` is a tracked symlink to the baba-pi repo, which needs the
+# Apple ANE. Where that repo is absent the extension cannot load, and pi starts
+# without saying why, so the install states it: on Linux the absence is the
+# expected state and one line says what is missing; on macOS it is a broken
+# setup and stops the run.
+BABA="$REPO/extensions/baba"
+BABA_TARGET="$(readlink "$BABA" 2>/dev/null || true)"
+if [ -L "$BABA" ] && [ -e "$BABA" ]; then
+  echo "baba: $BABA_TARGET"
+elif [ -e "$BABA" ]; then
+  echo "baba: in place at $BABA"
+elif [ "$(uname -s)" = "Linux" ]; then
+  echo "baba: unavailable here — extensions/baba points at ${BABA_TARGET:-nothing}, and baba needs the Apple ANE; the semantic_search tool is not loaded"
+else
+  fail "extensions/baba does not resolve (points at ${BABA_TARGET:-nothing}); clone pcone/baba-pi there — baba needs the Apple ANE, so Linux is the one platform where its absence is expected"
+fi

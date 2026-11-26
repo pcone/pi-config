@@ -17,7 +17,7 @@
  * execution.
  *
  * Run:
- *   bash tests/setup.sh        # one-time: link global pi packages
+ *   bash bin/setup        # one-time: link global pi packages
  *   bun test tests/peer-link.test.ts
  */
 

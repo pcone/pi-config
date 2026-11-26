@@ -11,3 +11,4 @@ date: 2026-07-15
 | 002 | Rule placement by scope — repo-independent process rules live in APPEND_SYSTEM.md | done |
 | 003 | Claude Code subagents default to Haiku; Opus is escalation | done |
 | 004 | Writing guidance draws on Gopen & Swan, Diátaxis and tested examples | done |
+| 005 | One install script for a checkout, on macOS and Debian | done |

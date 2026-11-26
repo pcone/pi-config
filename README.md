@@ -3,17 +3,17 @@
 
 Global configuration for [pi](https://github.com/badlogic/pi-mono) coding agent at `@earendil-works/pi-coding-agent@0.80.3`.
 
-Symlinks in `~/.pi/agent/` point into this repo:
+Install a clone with one script, run from the repo root (or a worktree root):
 
 ```bash
-ln -sf ~/Developer/pi-config/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
-ln -sf ~/Developer/pi-config/extensions ~/.pi/agent/extensions
-ln -sf ~/Developer/pi-config/settings.json ~/.pi/agent/settings.json
-ln -sf ~/Developer/pi-config/skills ~/.pi/agent/skills
-ln -sf ~/Developer/pi-config/themes ~/.pi/agent/themes
-ln -sf ~/Developer/pi-config/models.json ~/.pi/agent/models.json
-ln -sf ~/Developer/pi-config/rules ~/.pi/agent/rules   # whole dir (first time: rm -rf the existing ~/.pi/agent/rules dir first)
+bash bin/setup
 ```
+
+It links this repo's config into `~/.pi/agent`: the twelve entries in `bin/setup`'s `AGENT_LINKS` array, the five directories as whole directories, with `auto-checkpoint.json` sourced from `.pi/auto-checkpoint.json`. It then links `node_modules` into the globally installed pi — `@earendil-works/{pi-coding-agent,pi-agent-core,pi-ai,pi-tui}` and `typebox`, resolved from `npm root -g` — so an extension or a test run straight from the checkout (`bun extensions/peer-link/external.ts`) can import pi. It installs `extensions/` dependencies with `bun install --frozen-lockfile` when they are missing, and it never replaces a real file with a link: a `~/.pi/agent/settings.json` you wrote yourself is reported and the run stops. Idempotent, safe to re-run.
+
+Run it from the checkout you keep. The links point into whichever checkout ran the script last, so a run from a worktree repoints the machine's live config at that worktree, and removing the worktree leaves all twelve dangling.
+
+The install runs on Linux (tfd-box, Debian 13) as well as macOS: nothing in it names a macOS path, and pi is located through `npm root -g` rather than Homebrew's prefix. `extensions/baba` is the one thing that cannot work there — it needs the Apple ANE — so a Linux install prints `baba: unavailable here` and finishes without `semantic_search`.
 
 ## Structure
 

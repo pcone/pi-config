@@ -16,7 +16,7 @@
  * return. The inverse registry (a live caller sees the real `/tmp` registry) is
  * empty per row, so only the child a row fabricates is ever in flight.
  *
- * Run: bash tests/setup.sh && bun test tests/checkpoint-preamble.test.ts
+ * Run: bash bin/setup && bun test tests/checkpoint-preamble.test.ts
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";

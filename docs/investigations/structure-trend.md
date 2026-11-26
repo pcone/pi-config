@@ -834,7 +834,7 @@ state query (`decisions/todo/001`).
 Net −1039 lines; no file grew beyond the instruction edits. `createPiStub`
 copies 7 → 6 (`tests/todo-injection.test.ts:47` gone); bare `typebox`
 importers 5 → 4 among top-level `extensions/*.ts` (7 → 6 across all extension
-dirs, so `tests/setup.sh`'s typebox link stays). The top-1 file `extensions/subagent-async/index.ts` (4258
+dirs, so `bin/setup`'s typebox link stays). The top-1 file `extensions/subagent-async/index.ts` (4258
 lines, 1082-line factory) is untouched this chunk.
 
 ### Unification

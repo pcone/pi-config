@@ -16,7 +16,7 @@
  *     compliance has no say.
  *
  * Run:
- *   bash tests/setup.sh        # one-time: link global pi packages
+ *   bash bin/setup        # one-time: link global pi packages
  *   bun test tests/e2e-checkpoint.test.ts
  */
 
