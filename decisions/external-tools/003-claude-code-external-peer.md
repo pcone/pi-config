@@ -11,6 +11,8 @@ date: 2026-10-11
 >
 > **Superseded in part (owner 2026-11-02, [007](007-peer-link-channel.md)).** A Claude Code channel may deliver mail and start a turn. Every other turn-starting path below stays rejected.
 >
+> **Superseded in part (owner 2026-11-26, [012](012-peer-reply-wait.md) § Single read).** Delivery is at-most-once: the one path that reads an envelope deletes it, and mail on an Escape-interrupted prompt is lost.
+>
 > **Superseded in part (owner 2026-11-26, [012](012-peer-reply-wait.md)).** A background waiter for a reply to Claude's own send may wake the session. The watcher on unsolicited mail, `claude -p` and the continuing Stop hook stay rejected.
 
 **What:** A Claude Code session joins the peer-link mailbox through its own hooks. `external.ts` registers `_peers/claude-<session_id>.json` on SessionStart, delivers pending mail as context on UserPromptSubmit, and unregisters on SessionEnd. Each Claude session has its own external mailbox. Design: `docs/design/peer-link-external.md`.

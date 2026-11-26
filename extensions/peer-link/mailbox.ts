@@ -156,15 +156,8 @@ function isEnvelope(value: unknown): value is Envelope {
 	);
 }
 
-/**
- * Read all valid envelopes in a peer's inbox without consuming them.
- *
- * Non-destructive by design: the caller must call ackEnvelope() only after
- * the envelope has been delivered. This trades at-most-once for at-least-once
- * — an envelope read but not acked is retried (and may duplicate) rather than
- * silently dropped. Unreadable files are left in place for manual inspection.
- */
-export function readIncoming(mailbox: string, name: string): Envelope[] {
+/** Valid envelopes in a peer's inbox, with their files. Unreadable files are skipped and left in place. */
+function scanInbox(mailbox: string, name: string): { file: string; envelope: Envelope }[] {
 	const dir = inboxDir(mailbox, name);
 	let entries: string[];
 	try {
@@ -172,7 +165,7 @@ export function readIncoming(mailbox: string, name: string): Envelope[] {
 	} catch {
 		return [];
 	}
-	const envelopes: Envelope[] = [];
+	const found: { file: string; envelope: Envelope }[] = [];
 	for (const entry of entries) {
 		if (!entry.endsWith(".json")) continue;
 		const file = path.join(dir, entry);
@@ -183,9 +176,47 @@ export function readIncoming(mailbox: string, name: string): Envelope[] {
 			continue; // leave unreadable files for manual inspection
 		}
 		if (!isEnvelope(envelope)) continue;
-		envelopes.push(envelope);
+		found.push({ file, envelope });
 	}
-	return envelopes;
+	return found;
+}
+
+/**
+ * Read all valid envelopes in a peer's inbox without consuming them.
+ *
+ * Non-destructive by design: the caller must call ackEnvelope() only after
+ * the envelope has been delivered. This trades at-most-once for at-least-once
+ * — an envelope read but not acked is retried (and may duplicate) rather than
+ * silently dropped. Unreadable files are left in place for manual inspection.
+ */
+export function readIncoming(mailbox: string, name: string): Envelope[] {
+	return scanInbox(mailbox, name).map((s) => s.envelope);
+}
+
+/**
+ * Read and delete the envelopes in a peer's inbox that `accept` takes. Each
+ * envelope goes to exactly one caller: unlink is atomic, and a caller that
+ * finds the file already gone skips it. At-most-once by design: a caller that
+ * dies after claiming loses the mail (decision external-tools/012, owner
+ * 2026-11-26).
+ */
+export function claimIncoming(
+	mailbox: string,
+	name: string,
+	accept: (e: Envelope) => boolean = () => true,
+): Envelope[] {
+	const claimed: Envelope[] = [];
+	for (const { file, envelope } of scanInbox(mailbox, name)) {
+		if (!accept(envelope)) continue;
+		try {
+			fs.unlinkSync(file);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // another reader claimed it
+			throw err;
+		}
+		claimed.push(envelope);
+	}
+	return claimed;
 }
 
 /**

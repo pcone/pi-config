@@ -832,6 +832,91 @@ describe("peer-link integration", () => {
 			await rm(mailbox, { recursive: true, force: true });
 		}
 	}, 240_000);
+
+	it("an explicit peer_send to the asker is its reply: no auto-reply follows", async () => {
+		const mailbox = await mkdtemp(join(tmpdir(), "peer-link-mail-"));
+		const env = await setupSession({ peerName: "bob", mailbox, tools: ["peer_list", "peer_send"] });
+
+		try {
+			writeHeartbeat(mailbox, { name: "alice", ts: Date.now() });
+			sendEnvelope(mailbox, {
+				id: "bob-explicit-1",
+				from: "alice",
+				to: "bob",
+				text:
+					"Call the peer_send tool with the message 'pong from bob' to the peer named 'alice'. " +
+					"After the tool call, reply with the text 'answer for alice' and nothing else.",
+				expectReply: true,
+				sentAt: Date.now(),
+			});
+
+			await waitFor(
+				() => {
+					writeHeartbeat(mailbox, { name: "alice", ts: Date.now() });
+					return readEnvelopeFiles(mailbox, "alice")[0];
+				},
+				60_000,
+				"explicit peer_send envelope in alice's inbox",
+			);
+			await waitForSettled(env.session);
+			// agent_settled may fire after isStreaming clears; give an auto-reply time to land.
+			await new Promise((r) => setTimeout(r, 2_000));
+
+			const sent = readEnvelopeFiles(mailbox, "alice");
+			expect(sent).toHaveLength(1);
+			expect(sent[0].from).toBe("bob");
+			expect(sent[0].inReplyTo).toBe("bob-explicit-1");
+		} finally {
+			await env.cleanup();
+			await rm(mailbox, { recursive: true, force: true });
+		}
+	}, 240_000);
+
+	it("a send to another peer does not answer the asker's expectReply", async () => {
+		const mailbox = await mkdtemp(join(tmpdir(), "peer-link-mail-"));
+		const env = await setupSession({ peerName: "bob", mailbox, tools: ["peer_list", "peer_send"] });
+
+		try {
+			writeHeartbeat(mailbox, { name: "alice", ts: Date.now() });
+			writeHeartbeat(mailbox, { name: "carol", ts: Date.now() });
+			sendEnvelope(mailbox, {
+				id: "bob-other-1",
+				from: "alice",
+				to: "bob",
+				text:
+					"Call the peer_send tool with the message 'hello from bob' to the peer named 'carol'. " +
+					"After the tool call, reply with the text 'answer for alice' and nothing else.",
+				expectReply: true,
+				sentAt: Date.now(),
+			});
+
+			await waitFor(
+				() => {
+					writeHeartbeat(mailbox, { name: "alice", ts: Date.now() });
+					writeHeartbeat(mailbox, { name: "carol", ts: Date.now() });
+					return readEnvelopeFiles(mailbox, "carol")[0];
+				},
+				60_000,
+				"peer_send envelope in carol's inbox",
+			);
+			await waitFor(
+				() => {
+					writeHeartbeat(mailbox, { name: "alice", ts: Date.now() });
+					return readEnvelopeFiles(mailbox, "alice")[0];
+				},
+				60_000,
+				"auto-reply envelope in alice's inbox",
+			);
+
+			const toAlice = readEnvelopeFiles(mailbox, "alice");
+			expect(toAlice).toHaveLength(1);
+			expect(toAlice[0].inReplyTo).toBe("bob-other-1");
+			expect(readEnvelopeFiles(mailbox, "carol")).toHaveLength(1);
+		} finally {
+			await env.cleanup();
+			await rm(mailbox, { recursive: true, force: true });
+		}
+	}, 240_000);
 });
 
 function readdirSyncSafe(dir: string): string[] {

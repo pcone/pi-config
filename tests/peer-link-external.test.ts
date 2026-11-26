@@ -7,12 +7,13 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	EXTERNAL_TTL_MS,
+	claimIncoming,
 	deliveryDecision,
 	listPeers,
 	newEnvelope,
@@ -89,10 +90,21 @@ describe("external peers in the mailbox layer", () => {
 		expect(text.indexOf("first")).toBeLessThan(text.indexOf("second"));
 		expect(text).toContain(`send --from ${SELF} bob`);
 	});
+
+	it("claimIncoming hands each envelope to one reader; a rejected envelope stays", () => {
+		sendEnvelope(dir, newEnvelope("bob", SELF, "a"));
+		sendEnvelope(dir, newEnvelope("bob", SELF, "b"));
+		sendEnvelope(dir, newEnvelope("bob", SELF, "c"));
+		expect(claimIncoming(dir, SELF, (e) => e.text !== "c").map((e) => e.text).sort()).toEqual(["a", "b"]);
+		expect(readIncoming(dir, SELF).map((e) => e.text)).toEqual(["c"]);
+		expect(claimIncoming(dir, SELF, () => false)).toEqual([]);
+		expect(claimIncoming(dir, SELF).map((e) => e.text)).toEqual(["c"]);
+		expect(claimIncoming(dir, SELF)).toEqual([]);
+	});
 });
 
 describe("external.ts CLI (as Claude Code hooks run it)", () => {
-	it("registers, receives a pi send, delivers on prompt, acks at Stop, and unregisters", () => {
+	it("registers, receives a pi send, delivers on prompt once, and unregisters", () => {
 		const start = run(["hook", "session-start"], hookJson("SessionStart"));
 		expect(start.code).toBe(0);
 		expect(JSON.parse(start.out).hookSpecificOutput.additionalContext).toContain(SELF);
@@ -109,10 +121,7 @@ describe("external.ts CLI (as Claude Code hooks run it)", () => {
 		const ctx = JSON.parse(prompt.out).hookSpecificOutput;
 		expect(ctx.hookEventName).toBe("UserPromptSubmit");
 		expect(ctx.additionalContext).toContain("[peer:bug-triage] issue #42 filed");
-		expect(readIncoming(dir, SELF)).toHaveLength(1); // inflight, NOT acked yet
-
-		expect(run(["hook", "stop"], hookJson("Stop")).code).toBe(0);
-		expect(readIncoming(dir, SELF)).toEqual([]); // turn completed → acked
+		expect(readIncoming(dir, SELF)).toEqual([]); // claimed by the prompt
 
 		const again = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
 		expect(again.code).toBe(0);
@@ -122,45 +131,35 @@ describe("external.ts CLI (as Claude Code hooks run it)", () => {
 		expect(listPeers(dir).some((p) => p.name === SELF)).toBe(false);
 	}, 120_000);
 
-	it("an aborted prompt loses nothing: un-acked mail is re-emitted on the next prompt", () => {
+	it("a prompt claims its mail: an Escape-aborted prompt does not re-emit it", () => {
 		run(["hook", "session-start"], hookJson("SessionStart"));
-		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "mail that must survive Escape"));
+		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "mail lost to Escape"));
 
 		const first = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
-		expect(first.out).toContain("mail that must survive Escape");
-		// Escape: the turn is aborted, no Stop hook fires.
+		expect(first.out).toContain("mail lost to Escape");
+		// Escape: the turn is aborted. The mail is gone, and the next prompt shows nothing.
 		const second = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
-		expect(second.out).toContain("mail that must survive Escape"); // re-emitted
-		expect(readIncoming(dir, SELF)).toHaveLength(1); // still exactly one envelope (dedup)
-
-		run(["hook", "stop"], hookJson("Stop"));
+		expect(second.out).toBe("");
 		expect(readIncoming(dir, SELF)).toEqual([]);
-		expect(run(["hook", "prompt"], hookJson("UserPromptSubmit")).out).toBe("");
 	}, 120_000);
 
-	it("Stop acks only what the completed turn carried; mid-turn arrivals wait", () => {
+	it("a prompt claims only what it shows; mid-turn arrivals wait for the next prompt", () => {
 		run(["hook", "session-start"], hookJson("SessionStart"));
 		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "seen by the turn"));
 		const prompt = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
 		expect(prompt.out).toContain("seen by the turn");
 		sendEnvelope(dir, newEnvelope("bug-triage", SELF, "arrived mid-turn"));
 
-		run(["hook", "stop"], hookJson("Stop"));
-		const left = readIncoming(dir, SELF);
-		expect(left).toHaveLength(1);
-		expect(left[0].text).toBe("arrived mid-turn");
-
 		const next = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
 		expect(next.out).toContain("arrived mid-turn");
 		expect(next.out).not.toContain("seen by the turn");
 	}, 120_000);
 
-	it("Stop with nothing inflight is a clean no-op", () => {
+	it("the Stop hook is gone: hook stop fails as an unknown event", () => {
 		run(["hook", "session-start"], hookJson("SessionStart"));
 		const r = run(["hook", "stop"], hookJson("Stop"));
-		expect(r.code).toBe(0);
-		expect(r.out).toBe("");
-		expect(readIncoming(dir, SELF)).toEqual([]);
+		expect(r.code).toBe(1);
+		expect(r.err).toContain('unknown hook event "stop"');
 	}, 120_000);
 
 	it("sends to a listed pi peer, from stdin, with --reply", () => {
@@ -227,9 +226,7 @@ describe("send --wait (reply-wait, decision 012)", () => {
 		if (proc.exitCode === null) proc.kill();
 	}
 
-	const inflightFile = () => join(dir, "inflight", `${SELF}.json`);
-
-	it("a reply from the target ends the wait: exit 0, printed, inflight, and Stop acks it", async () => {
+	it("a reply from the target ends the wait: exit 0, printed, and claimed from the inbox", async () => {
 		run(["hook", "session-start"], hookJson("SessionStart"));
 		writeHeartbeat(dir, { name: PI, ts: Date.now() });
 		const waiter = spawnWaiter(["send", "--from", SELF, "--wait", "1", PI, "hi"]);
@@ -239,9 +236,6 @@ describe("send --wait (reply-wait, decision 012)", () => {
 			const r = await finish(waiter);
 			expect(r.code).toBe(0);
 			expect(r.out).toContain("the answer");
-			const held = JSON.parse(readFileSync(inflightFile(), "utf8")) as { text: string }[];
-			expect(held.map((e) => e.text)).toEqual(["the answer"]);
-			expect(run(["hook", "stop"], hookJson("Stop")).code).toBe(0);
 			expect(readIncoming(dir, SELF)).toEqual([]);
 		} finally {
 			killIfRunning(waiter);
@@ -282,25 +276,23 @@ describe("send --wait (reply-wait, decision 012)", () => {
 		expect(readIncoming(dir, PI)).toEqual([]);
 	}, 120_000);
 
-	it("inflight merges: a reply-wait's envelope joins the set the prompt hook recorded", async () => {
+	it("a reply-wait claims what it prints: the next prompt hook does not show it again", async () => {
 		run(["hook", "session-start"], hookJson("SessionStart"));
 		writeHeartbeat(dir, { name: PI, ts: Date.now() });
-		sendEnvelope(dir, { ...newEnvelope(PI, SELF, "pending before the turn"), sentAt: Date.now() - 60_000 });
-		const prompt = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
-		expect(prompt.out).toContain("pending before the turn");
-
 		const waiter = spawnWaiter(["send", "--from", SELF, "--wait", "1", PI, "hi"]);
 		try {
 			await untilWaiterSent();
 			sendEnvelope(dir, newEnvelope(PI, SELF, "reply during the turn"));
-			expect((await finish(waiter)).code).toBe(0);
+			const r = await finish(waiter);
+			expect(r.code).toBe(0);
+			expect(r.out).toContain("reply during the turn");
 		} finally {
 			killIfRunning(waiter);
 		}
-		const held = (JSON.parse(readFileSync(inflightFile(), "utf8")) as { text: string }[]).map((e) => e.text);
-		expect(held.sort()).toEqual(["pending before the turn", "reply during the turn"]);
 
-		expect(run(["hook", "stop"], hookJson("Stop")).code).toBe(0);
+		const next = run(["hook", "prompt"], hookJson("UserPromptSubmit"));
+		expect(next.code).toBe(0);
+		expect(next.out).not.toContain("reply during the turn");
 		expect(readIncoming(dir, SELF)).toEqual([]);
 	}, 20_000);
 

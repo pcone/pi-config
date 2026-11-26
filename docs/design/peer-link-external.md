@@ -15,13 +15,12 @@ Code: `extensions/peer-link/external.ts` (CLI, not a pi extension). Decisions: `
 ## Flow
 
 - **SessionStart** (`hook session-start`): registers `_peers/claude-<session_id>.json` with `external: true`; prints the session's identity and send usage as context.
-- **UserPromptSubmit** (`hook prompt`): refreshes the registration, prints pending envelopes as context on the user's prompt, records them as inflight (no ack).
-- **Stop** (`hook stop`): acks exactly the envelopes the completed turn carried (inflight set). Bookkeeping only — deletes files, starts no turn.
+- **UserPromptSubmit** (`hook prompt`): refreshes the registration, claims pending envelopes and prints them as context on the user's prompt.
 - **SessionEnd** (`hook session-end`): removes the registration. Un-acked mail stays in the inbox.
 
-Delivery is at-least-once: an aborted prompt (Escape, crash) acks nothing, so the next prompt re-emits the un-acked envelopes from the inbox (duplicates over loss — the mailbox contract in `extensions/peer-link/mailbox.ts`). Before 2026-10-18 the prompt hook acked at emit and an aborted prompt lost its mail (reported by the external Claude peer after an Escape-re-send dropped five envelopes); the Stop hook is the consumption confirmation Claude Code "gives no later" — it just needed the prompt hook to stop acking early.
+Delivery is at-most-once (decision 012 § Single read). A reader claims an envelope by deleting its inbox file before showing it; `unlink` is atomic, so exactly one path reads each envelope (`claimIncoming`, `extensions/peer-link/mailbox.ts`). Claude Code runs no Stop hook on an interrupted prompt, so mail claimed by a prompt you Escape is lost.
 - **Send** (Claude's Bash tool): `external.ts send --from claude-<sid> [--reply] [--require-online] [--wait <minutes>] <to> <text | ->`. Same delivery gate as pi: unlisted targets fail loud. `external.ts list` lists peers.
-- **Reply-wait** (`send --wait <minutes>`, run with Bash `run_in_background`): implies `--require-online`, so a wait on a peer that is not online fails before sending. After sending, it blocks until any envelope from the target sent after the send arrives (prints it, exit 0), the target is no longer online (exit 3), or the interval elapses with the target online (exit 4). Printed mail joins the inflight set, so the Stop hook acks it. On a check-in exit Claude asks the peer for a progress update with another `--wait`, sent without `--reply` so it lands as a steer at the peer's next tool-call boundary rather than after its turn. The interval is 40 minutes. A check-in waits 10 minutes; if it times out, Claude reads the tail of the peer's session log (`sessionFile` in its heartbeat, shown by `list` and the check-in exit). Recent entries, or one open tool call that plausibly runs long, mean busy, so Claude waits again without another check-in. A long silence with nothing that explains it means hung, so Claude tells the owner. One check-in stays outstanding per peer.
+- **Reply-wait** (`send --wait <minutes>`, run with Bash `run_in_background`): implies `--require-online`, so a wait on a peer that is not online fails before sending. After sending, it blocks until any envelope from the target sent after the send arrives (prints it, exit 0), the target is no longer online (exit 3), or the interval elapses with the target online (exit 4). It claims the mail it prints, so no other path shows it again. On a check-in exit Claude asks the peer for a progress update with another `--wait`, sent without `--reply` so it lands as a steer at the peer's next tool-call boundary rather than after its turn. The interval is 40 minutes. A check-in waits 10 minutes; if it times out, Claude reads the tail of the peer's session log (`sessionFile` in its heartbeat, shown by `list` and the check-in exit). Recent entries, or one open tool call that plausibly runs long, mean busy, so Claude waits again without another check-in. A long silence with nothing that explains it means hung, so Claude tells the owner. One check-in stays outstanding per peer.
 - **pi side:** external peers are listed, never "online", and age out after 24 h without refresh (`EXTERNAL_TTL_MS`) instead of pi's 2 min sweep window. pi's sends and auto-replies to them queue as "queued — external peer, read when its user next prompts"; `requireOnline` fails. pi never reads or injects into an external inbox.
 
 Mail reaches Claude inside a hook that the user's prompt fired, or as the output of a reply-wait. A reply-wait's exit starts a Claude turn when none is running.
@@ -34,12 +33,9 @@ Merge into the `hooks` block of `~/.claude/settings.json`:
 "hooks": {
   "SessionStart": [{ "hooks": [{ "type": "command", "command": "bun ~/Developer/pi-config/extensions/peer-link/external.ts hook session-start" }] }],
   "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "bun ~/Developer/pi-config/extensions/peer-link/external.ts hook prompt" }] }],
-  "Stop": [{ "hooks": [{ "type": "command", "command": "bun ~/Developer/pi-config/extensions/peer-link/external.ts hook stop" }] }],
   "SessionEnd": [{ "hooks": [{ "type": "command", "command": "bun ~/Developer/pi-config/extensions/peer-link/external.ts hook session-end" }] }]
 }
 ```
-
-Without the Stop hook nothing acks: mail is re-emitted on every prompt (duplicates, no loss). Add it.
 
 ## Terms of Service compliance
 
@@ -68,8 +64,8 @@ Rejected designs, and why:
 
 - Never launch Claude outside Claude Code, and never route a harness through the Claude subscription.
 - Never read, copy, or forward Claude Code credentials, OAuth tokens, transcripts, or `~/.claude` state.
-- Wake the session only through a documented Claude Code feature. A Stop hook only acks delivered mail.
+- Wake the session only through a documented Claude Code feature.
 - Keep `external.ts` free of network calls and child processes. A reply-wait polls in-process.
-- Nothing reads an external inbox except the `UserPromptSubmit` hook and a reply-wait; pi never reads or injects into it.
+- Nothing reads an external inbox except the `UserPromptSubmit` hook and a reply-wait, and each claims what it reads; pi never reads or injects into it.
 
 Not legal advice. Sources checked 2026-10-11; reading revised 2026-11-26 (decision 013). Re-check if Anthropic's terms change.

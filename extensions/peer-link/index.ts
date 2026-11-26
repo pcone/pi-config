@@ -265,9 +265,30 @@ export default function (pi: ExtensionAPI) {
 	 * docs/design/checkpoint-waits.md § Limits.
 	 */
 	function sendTracked(envelope: Envelope): void {
+		answerPendingFor(envelope);
 		sendEnvelope(state.mailbox, envelope);
 		if (!envelope.expectReply) return;
 		awaitingReply.set(envelope.id, { to: envelope.to, text: envelope.text, sentAt: envelope.sentAt });
+	}
+
+	/**
+	 * Any envelope a session sends to the peer that asked is that peer's reply
+	 * (decision checkpoint/003, ruling 3), so the auto-reply does not send a
+	 * second one. The envelope names the oldest such request in `inReplyTo`.
+	 * An auto-reply (it already carries `inReplyTo`) answers only its own
+	 * request: each pending request from one peer gets its own slice.
+	 */
+	function answerPendingFor(envelope: Envelope): void {
+		if (pendingReplies.size === 0 || envelope.inReplyTo !== undefined) return;
+		const listed = listPeers(state.mailbox);
+		let oldest: string | undefined;
+		for (const [id, p] of pendingReplies) {
+			if (resolvePeerAddressAmong(listed, p.env.from) !== envelope.to) continue;
+			pendingReplies.delete(id);
+			replied.add(id);
+			oldest ??= id;
+		}
+		if (oldest !== undefined && envelope.inReplyTo === undefined) envelope.inReplyTo = oldest;
 	}
 
 	/**

@@ -37,4 +37,9 @@ The session runs it with Bash `run_in_background` and keeps working. Its exit no
 **Tradeoffs accepted:**
 
 - **Wake turns.** Each reply, peer exit or check-in costs one turn of subscription usage.
-- **Duplicates.** The prompt hook can show a reply the waiter already printed, because both read the inbox until the Stop hook acks it. That is at-least-once delivery, as before.
+- **Delivery.** One read per envelope; see § Single read.
+
+**Single read (owner, 2026-11-26).** The first landing (f19d0f4) left mail readable until a Stop hook acked it, so one reply reached a tester three ways: the waiter, the next prompt hook, and a mid-turn prompt hook. Scott: "I think keeping the receive on user prompt would be wise - we just need to make reading messages atomic once it's read into the session through one means, it shouldn't be read via any other paths". Asked what an Escape-interrupted prompt should do with mail it claimed (Claude Code runs no Stop hook on interrupt), he chose "Accept the loss".
+
+So each reader, the prompt hook or a waiter, claims an envelope by deleting its inbox file before showing it. `unlink` is atomic: one reader wins, the other drops the envelope. Delivery to a Claude session is at-most-once. The inflight set and the Stop-hook ack are gone. This reverses 003's at-least-once delivery and the 2026-10-18 fix for mail lost on Escape: re-showing unacked mail is what produced the duplicates.
+
