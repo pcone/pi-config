@@ -4,6 +4,7 @@ description: "Single implementation tier for all feature work — mechanical boi
 model: opencode-go/deepseek-v4.1-flash:high
 requires_parent_reviewers: implementation,tests
 allowedSubagents: scout-code, review-plan, review-code, review-tests
+allowedModels: runpod/bonsai25-27b-v1
 excludeTools: checkpoint_fork
 ---
 

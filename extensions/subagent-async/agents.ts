@@ -5,6 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { splitModelSpec } from "./model-spec.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -62,6 +63,8 @@ export interface AgentConfig {
 	source: "user" | "project";
 	filePath: string;
 	allowedSubagents?: string[];
+	/** Bare `provider/id` entries a spawn's `model` may name (decision 054). */
+	allowedModels?: string[];
 	excludeTools?: string[];
 	/** Single-token reviewer classification; undefined for non-reviewer agents. */
 	reviewerKind?: ReviewerKind;
@@ -178,6 +181,22 @@ function loadAgentsFromDirUncached(dir: string, source: "user" | "project"): Age
 			.map((t: string) => t.trim())
 			.filter(Boolean);
 
+		// `allowedModels: provider/id, provider/id` (decision 054). An entry with a
+		// `:level` suffix is dropped with a warning: the level comes from the seat.
+		const rawAllowedModels = frontmatter.allowedModels
+			?.split(",")
+			.map((m: string) => m.trim())
+			.filter(Boolean);
+		const withLevel = rawAllowedModels?.filter((m) => splitModelSpec(m).level !== undefined) ?? [];
+		if (withLevel.length > 0) {
+			console.warn(
+				`[subagent-async] Agent "${frontmatter.name}" lists ${withLevel.join(", ")} in allowedModels ` +
+					`with a :level suffix. allowedModels takes bare provider/id entries; the level comes from ` +
+					`the seat. They will be ignored.`,
+			);
+		}
+		const allowedModels = rawAllowedModels?.filter((m) => splitModelSpec(m).level === undefined);
+
 		// Parse `reviewer_kind: implementation | tests | plan` (snake_case YAML key;
 		// also accept camelCase `reviewerKind` for forward compatibility).
 		// Single token, not a list. Empty / missing → undefined (no reviewerKind).
@@ -252,6 +271,7 @@ function loadAgentsFromDirUncached(dir: string, source: "user" | "project"): Age
 			source,
 			filePath,
 			allowedSubagents: allowedSubagents && allowedSubagents.length > 0 ? allowedSubagents : undefined,
+			allowedModels: allowedModels && allowedModels.length > 0 ? allowedModels : undefined,
 			excludeTools: excludeTools && excludeTools.length > 0 ? excludeTools : undefined,
 			reviewerKind,
 			reviewParentRequirements,

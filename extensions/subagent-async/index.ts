@@ -17,6 +17,7 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { CustomEditor, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { splitModelSpec } from "./model-spec.ts";
 import { FLEET_MODEL_SPEC } from "../lib/fleet-model.ts";
 import { registerWaitSource } from "../lib/waits.ts";
 import { rethrowIfUnusableEnvPath } from "../lib/env-path.ts";
@@ -893,20 +894,6 @@ function formatProgress(rs: RunningSubagent): string {
 /** The one seat that always tracks its caller's model. */
 const INHERITING_AGENT = "orchestrator";
 
-/** pi's thinking levels (`docs/extensions.md` → pi.getThinkingLevel). A model
- *  spec's `:suffix` is a level only when it names one — otherwise it belongs to
- *  the model id (`:free` is a real OpenRouter tag). */
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-
-/** Split `provider/id[:level]` into the bare spec and its level. */
-function splitModelSpec(spec: string): { id: string; level?: string } {
-	const i = spec.lastIndexOf(":");
-	if (i > 0 && THINKING_LEVELS.has(spec.slice(i + 1))) {
-		return { id: spec.slice(0, i), level: spec.slice(i + 1) };
-	}
-	return { id: spec };
-}
-
 /**
  * The model a child process is spawned with. Single source of truth: the spawn
  * args and the `meta.json` record both consume this result, so they cannot
@@ -924,6 +911,11 @@ function splitModelSpec(spec: string): { id: string; level?: string } {
  *   caller's model passes through unsubstituted (decisions 020/022).
  * - Resume keeps the recorded model verbatim (decision 022 site 2) —
  *   re-deriving it would silently switch a resumed child's model.
+ * - A per-spawn `requestedModel` (the `model` param) runs on that model when the
+ *   agent's `allowedModels` lists its id (decision 054). It throws when unlisted,
+ *   when combined with `inheritParentModel`, and on every seat without an
+ *   allowlist, the orchestrator included. Checked before the orchestrator branch.
+ *   An accepted request keeps its own `:level`, else takes the seat's level.
  * - Otherwise the agent frontmatter model wins, the fleet spec when the seat
  *   pins none (decision 022). The spec is provider-qualified
  *   (`opencode-go/deepseek-v4.1-flash`), never the bare id: a bare id resolves
@@ -939,8 +931,29 @@ export function resolveChildModel(opts: {
 	parentModel?: string;
 	inheritParentModel?: boolean;
 	isResume?: boolean;
+	requestedModel?: string;
+	allowedModels?: string[];
 }): string | undefined {
 	if (opts.isResume) return opts.agentModel ?? FLEET_MODEL_SPEC;
+	if (opts.requestedModel !== undefined) {
+		const requested = opts.requestedModel;
+		const allowed = opts.allowedModels ?? [];
+		const { id, level } = splitModelSpec(requested);
+		if (!allowed.includes(id)) {
+			throw new Error(
+				`Agent "${opts.agentName}" may not run on model "${requested}" ` +
+					`(allowedModels: ${allowed.length > 0 ? allowed.join(", ") : "none"}).`,
+			);
+		}
+		if (opts.inheritParentModel) {
+			throw new Error(
+				`Agent "${opts.agentName}": model "${requested}" cannot be combined with inheritParentModel.`,
+			);
+		}
+		if (level) return requested;
+		const seatLevel = opts.agentModel ? splitModelSpec(opts.agentModel).level : undefined;
+		return seatLevel ? `${id}:${seatLevel}` : id;
+	}
 	if (opts.agentName === INHERITING_AGENT) {
 		if (!opts.parentModel) return opts.agentModel ?? FLEET_MODEL_SPEC;
 		const level = opts.agentModel ? splitModelSpec(opts.agentModel).level : undefined;
@@ -1368,6 +1381,12 @@ export default function (pi: ExtensionAPI) {
 				default: false,
 			}),
 		),
+		model: Type.Optional(
+			Type.String({
+				description:
+					"Provider-qualified model spec (`provider/id`, optional `:level`) to run this spawn on instead of the agent default. Accepted only when the agent's `allowedModels` lists the id; cannot be combined with inheritParentModel.",
+			}),
+		),
 		isolate: Type.Optional(
 			Type.Boolean({
 				description: "Run in an isolated git worktree to avoid file conflicts with concurrent subagents. Default: true. When true, a git worktree is created on a branch off the parent HEAD. On completion, uncommitted changes are auto-committed to that branch, the worktree is removed, and the branch remains for the calling session to inspect and merge.",
@@ -1559,12 +1578,22 @@ export default function (pi: ExtensionAPI) {
 			// every other seat keeps its frontmatter model unless the spawn opts in
 			// via inheritParentModel (decision 020). Resolved once — the spawn call
 			// below and the meta.json record consume this same value.
-			const childModel = resolveChildModel({
-				agentName: agent.name,
-				agentModel: agent.model,
-				parentModel,
-				inheritParentModel: params.inheritParentModel ?? false,
-			});
+			let childModel: string | undefined;
+			try {
+				childModel = resolveChildModel({
+					agentName: agent.name,
+					agentModel: agent.model,
+					parentModel,
+					inheritParentModel: params.inheritParentModel ?? false,
+					requestedModel: params.model,
+					allowedModels: agent.allowedModels,
+				});
+			} catch (e) {
+				return {
+					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+					isError: true,
+				};
+			}
 
 			// Worktree isolation (default: true)
 			let effectiveCwd = cwd;

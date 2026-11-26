@@ -59,3 +59,4 @@ date: 2026-07-14
 | 051 | One reaper for every checkout under `~/Developer/wt` — gates, the kept-report, orphaned trees | done |
 | 052 | A duplicate evaluation of the extension is harmless — one `globalThis` registry, an owner-tagged live session, no path canonicalisation | active |
 | 053 | The recovery scan's metas dir and cargo home are process-wide env overrides, not per-file test hooks | done |
+| 054 | Per-spawn `model` override, gated by a per-agent `allowedModels` allowlist (owner 2026-11-25) | active |
