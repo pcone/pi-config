@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ADAPTERS } from "./adapters/index.ts";
+import { ADAPTERS, asToday } from "./adapters/index.ts";
 import { type Bus, type ClaudePeer, type PiPeer, fresh, injectedWith } from "./bus.ts";
 
 const restoreSubagentEnv = scrubSubagentEnv();
@@ -58,7 +58,7 @@ for (const adapter of ADAPTERS) {
 		}, 60_000);
 
 		// peer-link-external.test.ts:72, :84 (design-changed: WO-2026-107 table row 3)
-		it("a registered Claude peer is never online: it takes mail at its prompt, and refuses requireOnline", async () => {
+		asToday(adapter)("a registered Claude peer is never online: it takes mail at its prompt, and refuses requireOnline", async () => {
 			const { me, bob } = await pair();
 			expect(await bus.presence(me.name)).toBe("offline");
 			await bus.send(bob, me.name, "queued for the prompt");

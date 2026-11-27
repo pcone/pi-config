@@ -16,8 +16,8 @@ export class ChatClient {
 
 	private constructor(private readonly socket: Socket) {
 		socket.setEncoding("utf8");
-		socket.on("data", (d: string) => this.onData(d));
-		socket.on("close", () => this.onClose());
+		socket.on("data", (d: string) => this.handleData(d));
+		socket.on("close", () => this.handleClose());
 		socket.on("error", () => {
 			/* reported by close */
 		});
@@ -57,7 +57,7 @@ export class ChatClient {
 		this.socket.destroy();
 	}
 
-	private onData(d: string): void {
+	private handleData(d: string): void {
 		this.buf += d;
 		let i: number;
 		while ((i = this.buf.indexOf("\n")) >= 0) {
@@ -77,7 +77,7 @@ export class ChatClient {
 		}
 	}
 
-	private onClose(): void {
+	private handleClose(): void {
 		if (this.closed) return;
 		this.closed = true;
 		for (const p of this.pending.values()) p.reject(new ChatError("chatd closed the connection", "refused"));

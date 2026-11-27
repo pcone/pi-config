@@ -107,9 +107,6 @@ describe("row 13: what wakes a watch", () => {
 	it("a room post at all messages leaves it blocked; an @mention or a DM wakes it", async () => {
 		const c = await claude();
 		const p = await connectPeer(t, uniq("p"));
-		// The DM exists first: its invite is pushed too, and would be the wake.
-		await p.req("send", { to: c.name, text: "opening the dm" });
-		expect((await c.hook("prompt")).out).toContain("opening the dm");
 		for (const wake of [`@${c.name} look here`, "a direct word"]) {
 			const watcher = c.proc.spawn(["watch", "--from", c.name]);
 			await quiet(800);

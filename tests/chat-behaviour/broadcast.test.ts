@@ -6,7 +6,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ADAPTERS } from "./adapters/index.ts";
+import { ADAPTERS, asToday } from "./adapters/index.ts";
 import { type Bus, fresh, injectedWith } from "./bus.ts";
 
 const restoreSubagentEnv = scrubSubagentEnv();
@@ -25,7 +25,7 @@ for (const adapter of ADAPTERS) {
 			await bus.reset();
 		});
 
-		it("reaches every online peer, never the sender, and skips an offline one", async () => {
+		asToday(adapter)("reaches every online peer, never the sender, and skips an offline one", async () => {
 			const bob = await bus.connect(fresh("bob"), "pi");
 			const carol = await bus.connect(fresh("carol"), "pi");
 			const dave = await bus.connect(fresh("dave"), "pi");
@@ -38,7 +38,7 @@ for (const adapter of ADAPTERS) {
 			expect(alice.injected).toEqual([]);
 		}, 30_000);
 
-		it("a requireOnline broadcast with no other online peer fails", async () => {
+		asToday(adapter)("a requireOnline broadcast with no other online peer fails", async () => {
 			const alice = await bus.connect(fresh("alice"), "pi");
 			await expect(bus.send(alice, "*", "anyone?", { requireOnline: true })).rejects.toThrow(/no online peers/);
 		}, 30_000);

@@ -72,7 +72,10 @@ interface Registration {
 	claimed: Set<string>;
 	mdirect: Record<string, string[]>;
 	directRooms: Set<string>;
+	/** Rooms joined. */
 	rooms: Set<string>;
+	/** Rooms holding an invite to the puppet. */
+	invited: Set<string>;
 	levels: Map<string, Level>;
 	syncing: boolean;
 	buffer: MatrixEvent[];
@@ -260,20 +263,8 @@ export class Chatd {
 		return Response.json({ errcode: "M_NOT_FOUND" }, { status: 404 });
 	}
 
-	private joins = new Set<string>();
-
-	/** Resolves once a transaction carried `user`'s join of `room`. */
-	private async joinSeen(room: string, user: string): Promise<void> {
-		const deadline = Date.now() + 15_000;
-		while (!this.joins.has(`${room}|${user}`)) {
-			if (Date.now() > deadline) throw new ChatError(`the homeserver did not deliver ${user}'s join of ${room} within 15 s`, "homeserver");
-			await Bun.sleep(10);
-		}
-	}
-
 	/** Every event of a transaction, push or not. A throw answers 500 (redelivery). */
 	private async onEvent(e: MatrixEvent): Promise<void> {
-		if (e.type === "m.room.member" && e.content.membership === "join") this.joins.add(`${e.room_id}|${e.state_key}`);
 		if (e.type === "m.room.member") await this.onMember(e);
 		if (e.type === "m.room.encrypted") await this.onEncrypted(e);
 		if (e.type === "m.room.message") await this.mirror(e);
@@ -297,20 +288,21 @@ export class Chatd {
 		if (membership === "invite") {
 			const direct = e.content.is_direct === true;
 			const kind = reg?.kind ?? (await this.kindOf(target));
-			if (reg) reg.rooms.add(e.room_id);
 			if (direct || kind === "subagent") {
 				await this.hs.register(local);
 				await this.hs.join(target, e.room_id);
+				reg?.rooms.add(e.room_id);
 				if (direct) await this.recordDirect(target, e.sender, e.room_id);
-				if (reg && !reg.syncing) {
-					await this.offer(reg, e);
-					await this.catchUp(reg, e.room_id, undefined, "invite");
-				}
+				if (reg && !reg.syncing) await this.catchUp(reg, e.room_id, undefined, "invite");
+			} else if (reg && !reg.rooms.has(e.room_id)) {
+				reg.invited.add(e.room_id);
 			}
 		} else if (membership === "join") {
 			reg?.rooms.add(e.room_id);
+			reg?.invited.delete(e.room_id);
 		} else if (reg) {
 			reg.rooms.delete(e.room_id);
+			reg.invited.delete(e.room_id);
 		}
 	}
 
@@ -331,6 +323,7 @@ export class Chatd {
 			userId: reg.userId,
 			peer: reg.peer,
 			kind: reg.kind,
+			membership: (room) => (reg.rooms.has(room) ? "join" : reg.invited.has(room) ? "invite" : undefined),
 			isDirect: (room) => reg.directRooms.has(room),
 			level: (room) => reg.levels.get(room) ?? "all",
 		};
@@ -442,8 +435,10 @@ export class Chatd {
 	 * else since the puppet's own join event, each offered to `classify`.
 	 */
 	private async backlog(reg: Registration): Promise<void> {
-		for (const room of await this.hs.joinedRooms(reg.userId)) {
-			reg.rooms.add(room);
+		const joined = await this.hs.joinedRooms(reg.userId);
+		for (const room of joined) reg.rooms.add(room);
+		for (const room of Object.keys((await this.hs.sync(reg.userId)).rooms?.invite ?? {})) reg.invited.add(room);
+		for (const room of joined) {
 			const marker = (await this.hs.accountData<{ event_id?: string }>(reg.userId, "dev.pi.pushed", room))?.event_id;
 			await this.catchUp(reg, room, marker, "join");
 		}
@@ -535,6 +530,7 @@ export class Chatd {
 			mdirect: {},
 			directRooms: new Set(),
 			rooms: new Set(),
+			invited: new Set(),
 			levels: new Map(),
 			syncing: true,
 			buffer: [],
@@ -549,12 +545,8 @@ export class Chatd {
 		if (h.model) await this.hs.setProfileField(user, "dev.pi.model", h.model);
 		const members = await this.hs.joinedMembers(this.systemUser, this.peersRoom);
 		if (!members[user]) {
-			// Joined before the registration exists, and the transaction carrying the
-			// invite and the join is processed first: chatd's own bookkeeping is no
-			// news to the session (its backlog starts after the join).
 			await this.hs.invite(this.systemUser, this.peersRoom, user);
 			await this.hs.join(user, this.peersRoom);
-			await this.joinSeen(this.peersRoom, user);
 		}
 		reg.mdirect = (await this.hs.accountData<Record<string, string[]>>(user, "m.direct")) ?? {};
 		for (const rooms of Object.values(reg.mdirect)) for (const r of rooms) reg.directRooms.add(r);
@@ -1011,6 +1003,7 @@ export class Chatd {
 		if (action === "join") {
 			await this.hs.join(reg.userId, room);
 			reg.rooms.add(room);
+			reg.invited.delete(room);
 			return { room_id: room };
 		}
 		if (action === "leave") {

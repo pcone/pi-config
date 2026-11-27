@@ -15,6 +15,8 @@ export interface Recipient {
 	/** The peer name, for the body-mention fallback. */
 	peer: string;
 	kind: PeerKind;
+	/** The recipient's membership of the room now. */
+	membership(room: string): "join" | "invite" | undefined;
 	/** Whether the room is in the recipient's `m.direct`. */
 	isDirect(room: string): boolean;
 	/** The recipient's notification level for the room. */
@@ -46,8 +48,11 @@ function mentioned(event: MatrixEvent, r: Recipient): boolean {
 export function classify(event: MatrixEvent, room: string, r: Recipient): Verdict {
 	if (event.sender === r.userId) return "none";
 	if (event.type === "m.room.encrypted") return "none";
+	// An invite pushes while the recipient still holds it: one chatd joined on its
+	// behalf (a DM, a subagent's) is no news, and the room's messages push instead.
 	if (event.type === "m.room.member") {
-		return event.state_key === r.userId && event.content.membership === "invite" ? "push" : "none";
+		const invite = event.state_key === r.userId && event.content.membership === "invite";
+		return invite && r.membership(room) === "invite" ? "push" : "none";
 	}
 	// Room state and other non-message events carry no text for a session.
 	if (event.type !== "m.room.message") return "none";

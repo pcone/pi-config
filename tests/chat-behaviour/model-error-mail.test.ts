@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ADAPTERS } from "./adapters/index.ts";
+import { ADAPTERS, asToday } from "./adapters/index.ts";
 import { type Bus, type MailPeer, type Peer, type PiPeer, fresh, injectedWith, until } from "./bus.ts";
 
 const restoreSubagentEnv = scrubSubagentEnv();
@@ -201,7 +201,7 @@ for (const adapter of ADAPTERS) {
 		});
 
 		// :702, :723 (design-changed: WO-2026-107 table row 4)
-		it("with no correspondent, a Claude peer is not in the sweep: alone it mails nothing; beside a pi peer, the pi peer only", async () => {
+		asToday(adapter)("with no correspondent, a Claude peer is not in the sweep: alone it mails nothing; beside a pi peer, the pi peer only", async () => {
 			const alone = await harness({ peers: [online("claude-8f90", "claude")] });
 			await alone.onAssistantMessage(err(E_429));
 			expect(alone.inbox("claude-8f90")).toEqual([]);

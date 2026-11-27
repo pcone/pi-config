@@ -82,7 +82,7 @@ describe("rows 1–5: who a message reaches", () => {
 		expect(c.pushes.some((x) => x.body.includes("a question"))).toBe(false);
 		const ev = (await roomMessages(r.room, c.userId)).find((e) => e.event_id === r.event_id)!;
 		ev.room_id = r.room;
-		const verdict = classify(ev, r.room, { userId: c.userId, peer: c.name, kind: "pi", isDirect: () => false, level: () => "all" });
+		const verdict = classify(ev, r.room, { userId: c.userId, peer: c.name, kind: "pi", membership: () => "join", isDirect: () => false, level: () => "all" });
 		expect(verdict).toBe("digest");
 		for (const p of [a, b, c]) p.close();
 	}, 30_000);
@@ -356,7 +356,12 @@ describe("rows 15–20", () => {
 		const b = await connectPeer(t, uniq("b"));
 		const created = await ownerCall(t, ownerToken, "POST", "/_matrix/client/v3/createRoom", { preset: "trusted_private_chat", is_direct: true, invite: [b.userId] });
 		const room = created.json.room_id;
-		await b.pushed("direct chat");
+		// chatd joins the DM for b; events before the join never reach the appservice.
+		const deadline = Date.now() + 10_000;
+		while (!(await asCall(t, "GET", "/_matrix/client/v3/joined_rooms", b.userId)).json.joined_rooms.includes(room)) {
+			if (Date.now() > deadline) throw new Error("chatd did not join the DM");
+			await Bun.sleep(50);
+		}
 		for (const id of ["e1", "e2"]) {
 			await ownerCall(t, ownerToken, "PUT", `/_matrix/client/v3/rooms/${q(room)}/send/m.room.encrypted/${id}`, {
 				algorithm: "m.megolm.v1.aes-sha2",
@@ -368,7 +373,7 @@ describe("rows 15–20", () => {
 		}
 		await ownerCall(t, ownerToken, "PUT", `/_matrix/client/v3/rooms/${q(room)}/send/m.room.message/after`, { msgtype: "m.text", body: "plain after" });
 		await b.pushed("plain after");
-		expect(b.pushes.map((p) => p.what)).toEqual(["invite", "message"]);
+		expect(b.pushes.map((p) => p.body)).toEqual(["plain after"]);
 		expect(t.log()).toContain(`encrypted event in ${room} not delivered`);
 		expect((await systemToOwner()).filter((m) => m.includes(room))).toHaveLength(1);
 		b.close();

@@ -177,6 +177,10 @@ export class ClaudeProcess {
 		await this.proc.exited;
 	}
 
+	get alive(): boolean {
+		return this.proc.exitCode === null && this.proc.signalCode === null;
+	}
+
 	dispose(): void {
 		if (this.proc.exitCode === null) this.proc.kill("SIGKILL");
 		rmSync(this.dir, { recursive: true, force: true });
