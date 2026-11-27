@@ -38,12 +38,15 @@ would block the clone.
 - The link is relative to the common git dir. Setup run from a linked worktree installs a hook
   that runs the main checkout's `bin/pre-push`, not the worktree's.
 - tfd pipes its pushes into the same file, so rule (C) judges them too, before tfd's own
-  `.githooks/pre-push` reaches its `change_scope.py` walk. Two mechanisms for R98 was the state
-  this landing left: the shared gate refuses first, so tfd's foxtrot arm became unreachable and
-  its two rows asserting that arm's wording reddened. The resolution is the shared gate owning
-  the rule for every repo that imports it, and tfd deleting its walk (tfd's lane; recorded here
-  when it lands). The refusal says "a foxtrot merge" so a repo can assert the shape from the
-  shared wording rather than its own.
+  `.githooks/pre-push` reached its `change_scope.py` walk — two mechanisms for R98, see below.
+
+**Resolved (tfd `40ab5d053`, merge of `884fafe88`).** The tradeoff above is closed the other
+way: the shared gate owns the first-parent rule for every repo that imports it, and tfd deleted
+its own foxtrot walk, so one mechanism serves both and its refusal text — "a foxtrot merge …" —
+is what each repo asserts rather than its own. tfd's hook comment now names three refusals and points
+here; `change_scope.landing_walk` dropped the stop value whose only reader was that arm. Not an
+owner ruling — the rule was already ruled (APPEND_SYSTEM § Landing work, owner 2026-11-23; (C)
+added on owner 2026-11-27), and one mechanism per rule settles the duplication.
 
 **Test coverage:** `tests/pre-push-hook.test.ts` § rule (C), six rows;
 `tests/setup-install.test.ts`, five rows for the link and `pi.mainline`.
