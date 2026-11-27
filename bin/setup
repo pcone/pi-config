@@ -185,6 +185,25 @@ else
   echo "tuwunel: fetched $TUWUNEL_VERSION to $TUWUNEL_DIR"
 fi
 
+# ── chatd, a systemd user service (015/31) ──────────────────────────────────
+# The unit runs chatd from this checkout. SYSTEMD_USER_DIR redirects the
+# install (a test, a worktree run); a redirected install is never enabled, so
+# only a run into the real user unit directory touches systemd.
+UNIT_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+BUN_BIN="$(command -v bun || true)"
+[ -n "$BUN_BIN" ] || fail "bun is not on PATH; chatd.service runs chatd with it"
+mkdir -p "$UNIT_DIR"
+sed -e "s|@BUN@|$BUN_BIN|g" -e "s|@REPO@|$REPO|g" "$REPO/apps/chatd/chatd.service" > "$UNIT_DIR/chatd.service"
+if [ -n "${SYSTEMD_USER_DIR:-}" ]; then
+  echo "chatd.service: written to $UNIT_DIR (SYSTEMD_USER_DIR set: not enabled)"
+elif command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload || fail "systemctl --user daemon-reload failed"
+  systemctl --user enable chatd.service || fail "systemctl --user enable chatd.service failed"
+  echo "chatd.service: installed and enabled in $UNIT_DIR; start it once ~/.config/chatd/tokens exists: systemctl --user start chatd"
+else
+  echo "chatd.service: written to $UNIT_DIR; no systemctl here, so it is not enabled"
+fi
+
 # ── baba ────────────────────────────────────────────────────────────────────
 # `extensions/baba` is a tracked symlink to the baba-pi repo, which needs the
 # Apple ANE. Where that repo is absent the extension cannot load, and pi starts

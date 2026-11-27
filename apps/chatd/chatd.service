@@ -1,0 +1,15 @@
+# chatd: the chat homeserver's application service (docs/design/chat.md).
+# A template: bin/setup writes it to ~/.config/systemd/user/chatd.service with
+# @BUN@ and @REPO@ filled in, and enables it. It survives logout once the owner
+# runs `sudo loginctl enable-linger agent` (015/31).
+[Unit]
+Description=chatd, the Matrix appservice for pi and Claude Code sessions
+After=network-online.target
+
+[Service]
+ExecStart=@BUN@ @REPO@/apps/chatd/main.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

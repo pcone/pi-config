@@ -147,6 +147,8 @@ async function skeleton(opts: {
 				(opts.ghAsset ? `cp "${opts.ghAsset}" "$dir/${TUWUNEL_ASSET}"\n` : "exit 1\n"),
 		],
 		["npm", `#!/bin/sh\necho "${join(root, "npm-global")}"\n`],
+		// systemctl records its calls: no row reaches the real user session's systemd.
+		["systemctl", `#!/bin/sh\necho "$@" >> "${join(root, "systemctl-calls")}"\n`],
 	] as const) {
 		const path = join(bin, name);
 		writeFileSync(path, body);
@@ -154,6 +156,9 @@ async function skeleton(opts: {
 	}
 	if (opts.noNpm) await rm(join(bin, "npm"));
 	writeFileSync(join(root, "gh-calls"), "");
+	writeFileSync(join(root, "systemctl-calls"), "");
+	await mkdir(join(repo, "apps", "chatd"), { recursive: true });
+	writeFileSync(join(repo, "apps", "chatd", "chatd.service"), readFileSync(join(import.meta.dir, "..", "apps", "chatd", "chatd.service")));
 	if (opts.tuwunelCached) {
 		const cache = tuwunelCacheDir(home);
 		await mkdir(cache, { recursive: true });
@@ -428,4 +433,30 @@ describe("bin/setup — the Tuwunel test binary", () => {
 		expect(result.out).toContain("tuwunel: fetched v2.1.0");
 		expect(lstatSync(join(tuwunelCacheDir(env.home), "tuwunel")).mode & 0o111).not.toBe(0);
 	}, 60_000);
+});
+
+describe("bin/setup — chatd.service", () => {
+	const calls = (env: Skeleton) => readFileSync(join(env.root, "systemctl-calls"), "utf8");
+
+	it("writes the unit into the user unit directory, pointing at this checkout, and enables it", async () => {
+		const env = await skeleton({ baba: "repo" });
+		const result = await run(env);
+		expect(result.code).toBe(0);
+		const unit = readFileSync(join(env.home, ".config", "systemd", "user", "chatd.service"), "utf8");
+		expect(unit).toContain(`ExecStart=${join(env.bin, "bun")} ${env.repo}/apps/chatd/main.ts`);
+		expect(unit).toContain("Restart=on-failure");
+		expect(unit).not.toContain("@");
+		expect(calls(env)).toBe("--user daemon-reload\n--user enable chatd.service\n");
+	}, 20_000);
+
+	it("with SYSTEMD_USER_DIR, writes the unit there and touches no systemd", async () => {
+		const env = await skeleton({ baba: "repo" });
+		const dir = join(env.root, "units");
+		const result = await run(env, { SYSTEMD_USER_DIR: dir });
+		expect(result.code).toBe(0);
+		expect(existsSync(join(dir, "chatd.service"))).toBe(true);
+		expect(existsSync(join(env.home, ".config", "systemd", "user", "chatd.service"))).toBe(false);
+		expect(calls(env)).toBe("");
+		expect(result.out).toContain("not enabled");
+	}, 20_000);
 });
