@@ -78,6 +78,26 @@ describe("injection", () => {
 	}, 30_000);
 });
 
+describe("a reply-wait asked in a room", () => {
+	it("a reply sent there while chatd was down ends it after the reconnect: the relations listing finds it", async () => {
+		_testClearWaitSources();
+		const relay = await connectPeer(t, uniq("relay"));
+		const alice = await pi(uniq("alice"));
+		const sent = await alice.tool("send", { to: "#peers", message: "anyone know the release branch?", expectReply: true });
+		const ask = sent.details as { event_id: string; room: string };
+		expect(alice.waits()).toHaveLength(1);
+		await relay.pushed("anyone know").catch(() => {});
+		await t.kill();
+		await asCall(t, "PUT", `/_matrix/client/v3/rooms/${q(ask.room)}/send/m.room.message/rel${Date.now()}`, relay.userId, {
+			msgtype: "m.text",
+			body: "release-2",
+			"m.relates_to": { "m.in_reply_to": { event_id: ask.event_id } },
+		});
+		await t.start();
+		await until(() => (alice.waits().length === 0 ? true : undefined), 30_000, "the room wait to end after the reconnect");
+	}, 60_000);
+});
+
 describe("a subagent session", () => {
 	it("connects as kind subagent under its name; @room does not reach it, a DM does", async () => {
 		const s = await pi(uniq("sub"), { PI_SUBAGENT_DEPTH: "1" });

@@ -70,6 +70,22 @@ for (const adapter of ADAPTERS) {
 			expect(await bus.presence(other.name)).toBe("offline");
 		}, 60_000);
 
+		// 015/38: the prompt hook and the watch print the whole body.
+		it("a multi-paragraph message arrives intact at the prompt and at the watch", async () => {
+			const { me, bob } = await pair();
+			const body = ["first paragraph", "y".repeat(3_000), "last paragraph"].join("\n\n");
+			await bus.send(bob, me.name, body);
+			expect(JSON.parse((await bus.pushed(me)).out).hookSpecificOutput.additionalContext).toContain(`[peer:${bob.name}] ${body}`);
+			const watcher = bus.watch(me);
+			try {
+				await bus.untilWatching(me);
+				await bus.send(bob, me.name, `again\n\n${body}`);
+				expect((await watcher.exited).out).toContain(`[peer:${bob.name}] again\n\n${body}`);
+			} finally {
+				watcher.kill();
+			}
+		}, 60_000);
+
 		it("a prompt claims its mail: an Escape-aborted prompt does not re-emit it", async () => {
 			const { me, bob } = await pair();
 			await bus.send(bob, me.name, "mail lost to Escape");

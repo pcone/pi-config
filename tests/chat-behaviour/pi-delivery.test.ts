@@ -36,6 +36,15 @@ for (const adapter of ADAPTERS) {
 			expect(alice.injected).toEqual([]);
 		}, 30_000);
 
+		// 015/38 (WO-2026-107 § 3): the injected text carries the whole body, never truncated.
+		it("a multi-paragraph message arrives intact", async () => {
+			const bob = await bus.connect(fresh("bob"), "pi");
+			const alice = await bus.connect(fresh("alice"), "pi");
+			const body = ["first paragraph", "x".repeat(3_000), "- a list\n- of lines", "last paragraph"].join("\n\n");
+			await bus.send(alice, bob.name, body);
+			expect((await injectedWith(bob, "last paragraph")).text).toBe(`[peer:${alice.name}] ${body}`);
+		}, 30_000);
+
 		it("a send to a name outside the peer-name rule fails naming the rule", async () => {
 			const alice = await bus.connect(fresh("alice"), "pi");
 			for (const bad of ["../etc", "a/b", "x".repeat(65), "has space", ".hidden"]) {

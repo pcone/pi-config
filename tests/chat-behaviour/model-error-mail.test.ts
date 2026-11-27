@@ -185,7 +185,8 @@ for (const adapter of ADAPTERS) {
 		});
 
 		it("never addresses a session that mailed itself", async () => {
-			const h = await harness({ correspondent: SELF, peers: [online("peer-a")] });
+			// `who` lists the session itself, online.
+			const h = await harness({ correspondent: SELF, peers: [online(SELF), online("peer-a")] });
 			await h.onAssistantMessage(err(E_429));
 			expect(h.inbox(SELF)).toEqual([]);
 			expect(h.inbox("peer-a")).toHaveLength(1);

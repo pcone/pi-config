@@ -74,6 +74,8 @@ chatd keeps, per connected peer, a queue of pushed events in arrival order. A pi
 - **pi acks after injection: at-least-once.** A failed injection is retried every 2 s and holds back the acks behind it in its room. A Claude hook, watch or reply-wait acks before it prints: at-most-once (decision 012).
 - On ack, chatd writes `dev.pi.last_correspondent` (`{peer}`) when the sender changed: the model-error mail's recipient (decision 008).
 
+**The whole body.** The injected text, the prompt hook's and the watch's output carry the whole message body, never truncated (015/38).
+
 **Delivery timing.** Event content carries `dev.pi.delivery` (`steer` or `followUp`) and `dev.pi.expect_reply`, which forces `followUp`. A message without them, such as the owner's from Element, steers.
 
 ## Presence

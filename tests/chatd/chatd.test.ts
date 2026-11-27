@@ -112,6 +112,10 @@ describe("rows 1–5: who a message reaches", () => {
 		await s.pushed("directly");
 		await quiet();
 		expect(s.pushes.some((x) => x.body.includes("plain room chatter") || x.body.includes("everyone"))).toBe(false);
+		// Not even a digest: a subagent gets no room traffic (015/30).
+		const chatter = { event_id: "$c", room_id: "!r", sender: a.userId, type: "m.room.message", origin_server_ts: 1, content: { msgtype: "m.text", body: "plain room chatter" } };
+		const subagent = { userId: s.userId, peer: s.name, kind: "subagent" as const, membership: () => "join" as const, isDirect: () => false, level: () => "all" as const };
+		expect(classify(chatter, "!r", subagent)).toBe("none");
 		const room = await a.req<{ room_id: string }>("rooms", { action: "create", name: uniq("sub-room"), invite: [s.name] });
 		const deadline = Date.now() + 10_000;
 		let joined: string[] = [];
