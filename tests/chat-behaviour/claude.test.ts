@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ADAPTERS, asToday } from "./adapters/index.ts";
+import { ADAPTERS, asRuled, asToday } from "./adapters/index.ts";
 import { type Bus, type ClaudePeer, type PiPeer, fresh, injectedWith } from "./bus.ts";
 
 const restoreSubagentEnv = scrubSubagentEnv();
@@ -66,6 +66,22 @@ for (const adapter of ADAPTERS) {
 			const out = (await bus.pushed(me)).out;
 			expect(out).toContain("queued for the prompt");
 			expect(out).not.toContain("must be live");
+		}, 60_000);
+
+		// WO-2026-107 table row 3, replacing :72 and :84.
+		asRuled(adapter)("a Claude session is online from session-start until session-end, or until its process exits", async () => {
+			const { me, bob } = await pair();
+			expect(await bus.presence(me.name)).toBe("online");
+			await bus.send(bob, me.name, "live delivery", { requireOnline: true });
+			expect((await bus.pushed(me)).out).toContain("live delivery");
+			await me.hook("session-end");
+			await bus.untilOffline(me.name);
+			await expect(bus.send(bob, me.name, "after the end", { requireOnline: true })).rejects.toThrow(/offline/);
+
+			const other = await bus.connect(crypto.randomUUID(), "claude");
+			expect(await bus.presence(other.name)).toBe("online");
+			await bus.disconnect(other);
+			expect(await bus.presence(other.name)).toBe("offline");
 		}, 60_000);
 
 		// peer-link-external.test.ts:142
