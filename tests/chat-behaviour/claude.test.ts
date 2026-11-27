@@ -120,6 +120,14 @@ for (const adapter of ADAPTERS) {
 			expect((await me.hook("stop")).code).toBe(1);
 		}, 60_000);
 
+		// WO-2026-107 table row 5, replacing :167's message.
+		asRuled(adapter)("chat hook stop exits 1 as an unknown subcommand", async () => {
+			const { me } = await pair();
+			const r = await me.hook("stop");
+			expect(r.code).toBe(1);
+			expect(r.err).toContain('unknown hook subcommand "stop"');
+		}, 60_000);
+
 		// peer-link-external.test.ts:174
 		it("sends to a pi peer from stdin with --reply: the text arrives as a reply request", async () => {
 			const { me, bob } = await pair();
