@@ -54,7 +54,7 @@ A peer's `send` invites any non-member it @mentions, as Element offers to. Each 
 
 Broadcast stops being a separate concept: it is a post in a shared room, pulled, or an `@room` mention when it must push. The broadcast flag, the `*` target and its `--require-online` rule have no successor.
 
-**Replies are Matrix reply relations.** A reply names the event it answers (`m.in_reply_to`). "Reply requested" is a flag on the asking event. A reply-wait waits for a reply to *that event*, not for any mail from the target, so a reply cannot be taken by the wrong reader and "last correspondent" state disappears.
+**Replies are Matrix reply relations.** A reply names the event it answers (`m.in_reply_to`). "Reply requested" is a flag on the asking event. A reply-wait ends on a reply to *that event*, from anyone, or on a DM from the target to the waiter sent after it (015/33).
 
 **Delivery timing stays a property of the message.** A pushed message lands at the recipient's next turn boundary (pi's steer) unless it asks to wait until the recipient is idle (pi's follow-up). A reply-requested message always waits until idle. This keeps today's rule ([012](../decisions/external-tools/012-peer-reply-wait.md), check-in latency) and stores it in the event's content (`dev.pi.delivery`).
 

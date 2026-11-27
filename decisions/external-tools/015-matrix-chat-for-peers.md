@@ -140,4 +140,9 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-28, twenty-fourth round).** Scott: "possible to mirror agent -> agent dms to a private channel just I can read? we'd probably elide it from any backups/persistence - its just to give me a way to monitor". Told that a VPS snapshot cannot leave out one room, and offered one mirror room with copies redacted after 7 days (recommended), joining every DM, or a mirror kept forever, Scott chose "One mirror room".
 
+33. **What ends a reply-wait.** A reply-wait ends on a reply to the asking event, from anyone, or on any DM from the target to the waiter sent after the asking event. A message from the target in a group room does not end it. 012's check-ins work unchanged.
+34. **Claude sessions blocked on a prompt.** A Claude Code `Notification` hook DMs the owner when a session waits on a permission prompt or for input. When the owner's latest message to a session came through chat, the session asks its questions as a chat DM, not in the question dialog.
+
+**Ruling (owner, 2026-11-28, twenty-fifth round).** A plan review found that a wait ending only on a reply relation breaks 012's check-in, whose answer is not a reply. Offered "reply or DM from the target" (recommended) or replies only, Scott chose "Reply or DM from target". On Claude sessions blocking on approval prompts or the question dialog while he is on Matrix, offered a Notification hook and an ask-in-chat instruction in WO-2026-107 (recommended), a follow-up order, or the instruction alone, Scott chose "Add both to this order".
+
 **Not ruled yet:** nothing in this decision.
