@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-push: two landing refusals, nothing else (owner ruling 2026-11-18, pi-config#20 option A).
+# pre-push: three landing refusals, nothing else (owner ruling 2026-11-18, pi-config#20 option A).
 #
 # (A) A push carrying the mainline ref must push HEAD itself: a landing is a mainline push by
 #     definition, so a mainline line whose sha is not HEAD is a landing that reports success
@@ -15,7 +15,9 @@
 #     rival, so a merge landing its branch's ids is not refused.
 # (C) A push that moves the mainline must keep its previous tip on the pushed tip's first-parent
 #     line: a direct commit on it, or a merge made from it. Git takes a merge of the old tip into
-#     local work as a fast-forward, so only this rule refuses it (APPEND_SYSTEM § Landing work).
+#     local work as a fast-forward, so only this rule refuses it. The same rule covers the other
+#     direction: a pushed tip that is an ancestor of the previous one drops landings from the line,
+#     and git takes that with --force, so only this rule refuses it (APPEND_SYSTEM § Landing work).
 #
 # The mainline is the calling repo's, never a literal: `git config pi.mainline` (pi-config:
 # main, tfd: hamster). Unset is a hard error, not a default — a gate that quietly picks the
@@ -97,7 +99,19 @@ old=$(printf '%s\n' "$pushed" | awk -v ref="$mainline_ref" '$3 == ref {print $4;
 if [ -n "$target" ] && [ "$old" != "$zero" ]; then
     span=$(git rev-list --first-parent "$old..$target") \
         || die "cannot diff $mainline_ref ($old) against $target."
-    if [ -n "$span" ]; then
+    if [ -z "$span" ]; then
+        # Empty span: every commit the pushed tip reaches is one the previous tip also reaches, so
+        # the push moves the mainline backwards. Equal shas are a re-push of what is already there
+        # and nothing to judge; an ancestor is a rewind that takes landed commits off the line.
+        if [ "$target" != "$old" ]; then
+            echo "NOT LANDED: this push rewinds $mainline_ref to an ancestor of its previous tip, which drops landings from the line (R98)." >&2
+            echo "  previous tip is ${old}" >&2
+            echo "  pushing        ${target}" >&2
+            echo "  Land the change forward: commit what undoes it on top of ${old} and push that," >&2
+            echo "  instead of moving $mainline_branch back." >&2
+            exit 1
+        fi
+    else
         oldest=$(printf '%s\n' "$span" | tail -n 1)
         oldest_parents=$(git log -1 --format=%P "$oldest") \
             || die "cannot read the parents of $oldest."

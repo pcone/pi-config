@@ -9,7 +9,9 @@ date: 2026-11-27
 
 **What:**
 - `bin/pre-push` gains rule (C). A push that moves the mainline keeps the previous remote tip on
-  the pushed tip's first-parent line. A merge of the remote tip into local work is refused.
+  the pushed tip's first-parent line. A merge of the remote tip into local work is refused, and so
+  is the other direction: a pushed tip that is an ancestor of the previous one is a rewind, which
+  git takes with `--force` and nothing else refuses.
 - `bin/setup` links `<git common dir>/hooks/pre-push` to `../../bin/pre-push`, and sets
   `pi.mainline` to `main` when the clone has none.
 
@@ -27,6 +29,8 @@ would block the clone.
 - `APPEND_SYSTEM.md` § Landing work states the first-parent rule for every mainline, and only
   tfd's hook enforced it (tfd R98).
 - Git accepts a foxtrot push as a fast-forward, so nothing else refuses it.
+- Git accepts a rewind with `--force`, so nothing else refuses that either. tfd's own hook refused
+  it until its foxtrot walk was deleted; the shared gate is where the rule lives for both repos.
 - On tfd-box the hook was not installed after the move from the Mac, which left rule (B), the
   work-order id collision gate, off for pushes from the box.
 
@@ -41,5 +45,5 @@ would block the clone.
   when it lands). The refusal says "a foxtrot merge" so a repo can assert the shape from the
   shared wording rather than its own.
 
-**Test coverage:** `tests/pre-push-hook.test.ts` § rule (C), five rows;
+**Test coverage:** `tests/pre-push-hook.test.ts` § rule (C), six rows;
 `tests/setup-install.test.ts`, five rows for the link and `pi.mainline`.

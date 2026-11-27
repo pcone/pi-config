@@ -1,5 +1,5 @@
 /**
- * `bin/pre-push` — the two landing refusals (pi-config#20, owner ruling 2026-11-18, option A).
+ * `bin/pre-push` — the three landing refusals (pi-config#20, owner ruling 2026-11-18, option A).
  *
  * The hook is bash, and these rows drive the real script rather than a TS re-implementation:
  * what is pinned is what git runs on a push. Each row takes a branch of a shared fixture repo,
@@ -183,6 +183,22 @@ describe("rule (C): the previous tip stays on the first-parent line", () => {
 		// so the wording carries the vocabulary its own check used to (decisions/sessions/004).
 		expect(r.stderr).toContain("foxtrot merge");
 		expect(r.stderr).toContain("first-parent line");
+	});
+
+	it("refuses a force-push that rewinds the mainline to an ancestor", () => {
+		// The push a `--force` rewind makes: the local mainline moved back to an ancestor, so the
+		// mainline line is HEAD and rule (A) passes. The old tip still reaches every commit the
+		// pushed tip does, so the first-parent span is empty — the case that used to fall through.
+		git("checkout", "-q", "main");
+		const first = commitFile("c3-a.txt");
+		const old = commitFile("c3-b.txt");
+		git("checkout", "-q", "-B", "main", first);
+		const r = runHook([line("refs/heads/main", first, "refs/heads/main", old)]);
+		git("checkout", "-q", "-B", "main", old);
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("rewinds");
+		expect(r.stderr).toContain(old);
+		expect(r.stderr).toContain(first);
 	});
 
 	it("passes direct commits rebased on top of the previous tip", () => {
