@@ -465,49 +465,13 @@ function formatBytes(bytes: number): string {
 }
 
 // ── Probes ─────────────────────────────────────────────────────────────────
+// The cwd sweep lives in `cwd-probe.ts` (one concern, one file); re-exported
+// because that is the surface the reaper's tests and callers already use.
 
-export interface ProcessCwd {
-	pid: number;
-	cwd: string;
-}
+import { lsofProcessCwds, processInside, type ProcessCwd } from "./cwd-probe.ts";
 
-/** One `lsof -d cwd` pass for the whole box: a per-candidate probe would pay
- *  this cost once each. An empty list with a problem means the evidence is
- *  missing, and the caller keeps rather than guessing. */
-export async function lsofProcessCwds(run: CommandRunner): Promise<{ cwds: ProcessCwd[]; problem: string | null }> {
-	const out = await run("lsof", ["-d", "cwd", "-Fpn"], { cwd: reaperHome() });
-	if (out.exitCode !== 0) {
-		return { cwds: [], problem: `lsof -d cwd failed: ${out.stderr.trim() || `exit ${out.exitCode}`}` };
-	}
-	const cwds: ProcessCwd[] = [];
-	let pid = 0;
-	for (const line of out.stdout.split("\n")) {
-		if (line.startsWith("p")) {
-			pid = Number.parseInt(line.slice(1), 10);
-			continue;
-		}
-		if (line.startsWith("n") && pid > 0) cwds.push({ pid, cwd: line.slice(1) });
-	}
-	return { cwds, problem: null };
-}
-
-/** The first process whose cwd is `target` or inside it. Both spellings are
- *  compared: lsof prints resolved paths, and macOS resolves `/var` to
- *  `/private/var`, so a caller's own prefix may not appear verbatim. */
-export function processInside(cwds: readonly ProcessCwd[], target: string): ProcessCwd | null {
-	const forms = new Set<string>([target]);
-	try {
-		forms.add(fs.realpathSync(target));
-	} catch {
-		/* gone: the raw path is all there is */
-	}
-	for (const proc of cwds) {
-		for (const form of forms) {
-			if (proc.cwd === form || proc.cwd.startsWith(`${form}/`)) return proc;
-		}
-	}
-	return null;
-}
+export { lsofProcessCwds, processInside };
+export type { ProcessCwd };
 
 // ── The pass ───────────────────────────────────────────────────────────────
 
@@ -597,7 +561,7 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 		run,
 		cwds: async () => {
 			if (!probe) {
-				probe = opts.listCwds ? await opts.listCwds() : await lsofProcessCwds(run);
+				probe = opts.listCwds ? await opts.listCwds() : await lsofProcessCwds(run, reaperHome());
 				if (probe.problem) report.problems.push(probe.problem);
 			}
 			return probe;
