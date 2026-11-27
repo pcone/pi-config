@@ -161,8 +161,9 @@ Scott, on the mention trigger: "That feels a little too magic - id rather someth
 
 **Recorder's reading (Claude, 2026-11-28).** A standing pi session, as `bug-triage` is today, on a non-Claude model (013), answers mentions of `@pi-system`. Its privileged tools, such as starting a session, take the id of the triggering event. chatd runs one only if that event's sender is the owner, it @mentions `@pi-system`, and no earlier action has used it.
 
+**Ruling (owner, 2026-11-28, over Matrix).** The model behind `@pi-system`: "deepseek-v4.1-flash, just like the other pi models".
+
 **Not ruled yet:**
-- the model behind `@pi-system`;
 - where a started session runs (proposed: a new window in tmux session `main`, `pi --name <name>`, cwd from the message or `~/Developer`);
 - a cap on concurrent started sessions (proposed: 4);
 - lifecycle (proposed: an ordinary named session, never restarted).
