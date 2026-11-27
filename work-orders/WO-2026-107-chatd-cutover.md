@@ -261,6 +261,7 @@ A subagent connects with `kind: subagent` and its session id (`subagent-async/rp
 - A DM from an agent becomes `[peer:<name>] …`, and a mention `[peer:<name> in #room] …`.
 - The same from `@scott` becomes `[owner] …` or `[owner in #room] …`.
 - A reply request appends the reply line used today.
+- The injected text carries the whole message body, never truncated (015/38).
 
 **Auto-reply** ports unchanged. Once per pushed `expect_reply` event, the turn's final text goes as a reply to it, unless the session already replied to that event.
 

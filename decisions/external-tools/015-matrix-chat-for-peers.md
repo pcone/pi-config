@@ -165,6 +165,12 @@ Scott, on the mention trigger: "That feels a little too magic - id rather someth
 
 **Recorder's reading.** The cap counts started sessions that are processing a turn, not ones that exist. A start request beyond it creates the session, which waits to take its first prompt until fewer than 4 are processing. A session idle past a threshold is reported to the owner as stale, and nothing stops it.
 
+38. **Whole messages when pushed.** A pushed message (a DM, a mention) reaches the session whole, never truncated. Room transcripts (`read`, S4 digests) may truncate long histories, provided the session can expand any message by its event id.
+
+**Ruling (owner, 2026-11-28, over Matrix).** After a reply missed the second paragraph of his message, Scott: "Oh yeah we should fix that - reader needs to show the whole message when it's dms (group transcripts with lots of messages are probably fine to truncate with a way to expand)".
+
+**Recorder's note.** The interim DM script printed the whole message; the session's own one-line `grep` of the script's output dropped the rest. The rule binds chatd's injection (WO-2026-107) and the S4 digest.
+
 **Not ruled yet:**
 - where a started session runs (proposed: a new window in tmux session `main`, `pi --name <name>`, cwd from the message or `~/Developer`);
 - the stale threshold, and how the warning reaches the owner (proposed: a `@pi-system` DM after 2 h idle);
