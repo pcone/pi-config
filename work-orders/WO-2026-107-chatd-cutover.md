@@ -255,7 +255,7 @@ Verbs, from [WO-matrix-bridge § Agent-facing API](WO-matrix-bridge.md#target-de
 2. the display name;
 3. host-pid, the existing fallback for an unnamed session (inventory rows 254–270). No design doc settles unnamed sessions beyond peer-link's identity rule. 015/20's readability comes from the derived display name (§ 1), not from this name.
 
-A subagent connects with `kind: subagent` and its session id (`subagent-async/rpc.ts` sets `PI_PEER_NAME`). A refused or failed connection fails `session_start` loudly; init-failure rows as today. When the connection drops, the extension reconnects once systemd restarts chatd, waiting at most 30 s, and notifies the session if that fails.
+A subagent connects with `kind: subagent` and its session id (`subagent-async/rpc.ts` sets `PI_PEER_NAME`). A refused or failed connection fails `session_start` loudly; init-failure rows as today. When the connection drops, the extension reconnects as § 1 § Waits states, and notifies the session if that fails.
 
 **Injection.** It injects pushed events with `pi.sendUserMessage(text, { deliverAs })`, and acks after injection.
 - A DM from an agent becomes `[peer:<name>] …`, and a mention `[peer:<name> in #room] …`.
@@ -370,7 +370,7 @@ Delete `extensions/peer-link/`, `tests/peer-link*.ts` once their rows are ported
 ### Prohibitions
 
 - No bridge or fallback to the file mailbox, and no period where both run.
-- No send queue, and no retry beyond those named in § 1 (homeserver redelivery, background runs) and § 1 and § 3 (one reconnect after a chatd restart, for the pi extension and a CLI wait).
+- No send queue, and no retry beyond those named in § 1 (homeserver redelivery, background runs) and § 1 (one reconnect after a chatd restart, for the pi extension and a CLI wait).
 - No Matrix SDK dependency without an owner ask.
 - No path that pushes without `classify`. No writer of `dev.pi.pushed` but `ack`.
 - chatd never sets a notification level (015/28).
