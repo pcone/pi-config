@@ -9,6 +9,8 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-27).** Scott asked for the watcher 013 permits: "yeah we want to build this, but do a review of broadcast type messages - perhaps anything that broadcasts rather than sends to a specific session should probably not trigger this?" Asked how a broadcast is marked, he picked "Sender flag (Recommended)": envelopes carry a `broadcast` field, pi's `to: "*"` sets it, and `external.ts send` gains a multi-recipient form that sets it. Asked whether pi's `*` should reach Claude sessions, he picked "Include Claude (Recommended)": each listed external peer gets a copy, flagged, read at its next prompt.
 
+**Ruling (owner, 2026-11-27, second round).** Asked how the watch should treat the 24 h expiry of an external registration, Scott picked "Watch refreshes (Recommended)": while it runs, the watch refreshes the session's registration once a minute and exits quietly when its parent process is gone. Asked what `*` with `--require-online` reaches from a Claude session, he picked "Match pi's rule (Recommended)": only online pi peers, zero targets an error, one shared function.
+
 **What:**
 
 1. **Watch.** `external.ts watch --from <self>`, run with Bash `run_in_background`, blocks until the inbox holds an envelope that wakes. It then claims every pending envelope except replies a reply-wait owns, prints them, and exits 0. The session handles the mail and starts the watch again. It exits 3 when the session's registration is gone (SessionEnd).
@@ -16,6 +18,8 @@ date: 2026-11-27
 3. **Broadcast flag.** Every envelope carries `broadcast: boolean`, set by its sender. pi's `to: "*"` and a multi-recipient `external.ts send` set it on every copy; every other send clears it.
 4. **One reader per envelope.** A reply-wait records its wait (target, send time) while it runs. The prompt hook and the watch skip envelopes a live wait owns, so a reply reaches its waiter.
 5. **Watch liveness.** The watch records its pid. The prompt hook tells the session to start one when none is live, and a second watch refuses to start.
+6. **Registration refresh.** While it runs, the watch refreshes the session's registration at most once a minute, so the 24 h external expiry never ends an idle session's watch. It exits quietly when its parent process is gone, so an orphaned watch cannot keep a dead session listed.
+7. **`*` with `--require-online`.** From pi or Claude, it reaches only online pi peers; zero targets is an error. One function in `mailbox.ts` states the rule for both.
 
 **Why a sender flag.** The receiver cannot tell a fan-out from a direct send: `*` writes one ordinary envelope per recipient, and Claude's fan-outs so far were one `send` per recipient. Matching identical text after the fact guesses at what the sender knew.
 
