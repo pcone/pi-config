@@ -149,4 +149,11 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-28, twenty-sixth round, over Matrix).** Scott: "possible to start signalling that you're typing when you initially receive the chat message?" Offered the same in chatd as a follow-up order, not a change to the in-flight WO-2026-107, Scott: "cool yeah sounds good".
 
-**Not ruled yet:** nothing in this decision.
+36. **The owner starts pi sessions from a group room.** When the owner @mentions a peer name in a group room and no session has that name, chatd starts a pi session with it in that room. The owner's message is its first prompt, so the room's other members see the ask and the new session's work from the start. Only the owner's account can trigger it. Claude sessions are never started (013). Starting one by DMing a new name is deferred. Built after WO-2026-107, as WO-2026-109.
+
+**Ruling (owner, 2026-11-28, twenty-seventh round, over Matrix).** Scott: "For the pi sessions, where we don't have to worry about tos violations I think we should have a hook for launching a brand new session + user". Offered a DM to a new name (recommended) or a command to `@pi-system`, owner-only, Scott: "Can we make the trigger an ask in any group instead? Only from me still of course - that way other sessions that might be relevant are made aware of it and what it's doing straight away. Dming a new name could be useful too but we don't need to build that in the first pass."
+
+**Not ruled yet:**
+- where a started session runs (proposed: a new window in tmux session `main`, `pi --name <name>`, cwd from the message or `~/Developer`);
+- a cap on concurrent started sessions (proposed: 4);
+- lifecycle (proposed: an ordinary named session, never restarted).
