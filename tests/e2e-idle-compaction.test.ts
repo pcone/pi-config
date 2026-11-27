@@ -60,6 +60,7 @@ import {
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { disposeSessionLikeTheRuntime } from "./helpers/session-teardown.ts";
 
 // This file makes billed model calls, and `.env.test` injects the gate env into every run
 // (pi-config#22): without the scrub a row's verdict would be about the ambient env rather than the
@@ -174,7 +175,7 @@ async function startSession(): Promise<Harness> {
 		sessionManager,
 		notes,
 		async dispose() {
-			try { created.session.dispose(); } catch {}
+			try { await disposeSessionLikeTheRuntime(created.session); } catch {}
 			await rm(cwd, { recursive: true, force: true }).catch(() => {});
 			await rm(agentDir, { recursive: true, force: true }).catch(() => {});
 		},

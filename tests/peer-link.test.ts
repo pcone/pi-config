@@ -57,6 +57,7 @@ import {
 import { deliveryDecision } from "../extensions/peer-link/index";
 import peerLink from "../extensions/peer-link/index";
 import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
+import { disposeSessionLikeTheRuntime } from "./helpers/session-teardown.ts";
 
 const PEER_LINK_INDEX = join(import.meta.dir, "..", "extensions", "peer-link", "index.ts");
 
@@ -714,8 +715,10 @@ async function setupSession(opts: { peerName: string; mailbox: string; tools: st
 		tmpAgentDir,
 		mailbox: opts.mailbox,
 		async cleanup() {
+			// The runtime's teardown, not bare dispose(): peer-link's heartbeat timer keeps
+			// publishing otherwise, into the mailbox this cleanup is about to delete (#25).
 			try {
-				session.dispose();
+				await disposeSessionLikeTheRuntime(session);
 			} catch {}
 			if (prevName === undefined) delete process.env.PI_PEER_NAME;
 			else process.env.PI_PEER_NAME = prevName;
@@ -794,6 +797,19 @@ describe("peer-link integration", () => {
 			await rm(mailbox, { recursive: true, force: true });
 		}
 	}, 240_000);
+
+	it("teardown stops the heartbeat, so its own row is not the one an ENOENT lands on (#25)", async () => {
+		const mailbox = await mkdtemp(join(tmpdir(), "peer-link-mail-"));
+		const env = await setupSession({ peerName: "carol", mailbox, tools: ["peer_list"] });
+		// The bug's exact shape: the row is over, the mailbox is gone, and a timer that
+		// outlived the session keeps writing a heartbeat into it. Without the
+		// runtime's session_shutdown the throw surfaces as an unhandled loop error,
+		// which bun attributes to whichever row is running — rarely this one.
+		await env.cleanup();
+		await rm(mailbox, { recursive: true, force: true });
+		await new Promise((resolve) => setTimeout(resolve, 6000));
+		expect(existsSync(mailbox)).toBe(false);
+	}, 30_000);
 
 	it("agent sends a message to a peer via the peer_send tool", async () => {
 		const mailbox = await mkdtemp(join(tmpdir(), "peer-link-mail-"));

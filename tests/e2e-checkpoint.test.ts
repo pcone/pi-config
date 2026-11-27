@@ -40,6 +40,7 @@ import checkpointExtension from "../extensions/checkpoint";
 import { takePendingGo } from "../extensions/go.ts";
 import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
 import { childEnv, scrubSubagentEnv, setEnvForRow } from "./helpers/subagent-env.ts";
+import { disposeSessionLikeTheRuntime } from "./helpers/session-teardown.ts";
 
 /**
  * The in-flight registry a row reads, through the same ambient override the
@@ -302,7 +303,7 @@ async function setupSession(opts?: { keepRecentTokens?: number }) {
 		tmpCwd,
 		tmpAgentDir,
 		async cleanup() {
-			try { session.dispose(); } catch {}
+			try { await disposeSessionLikeTheRuntime(session); } catch {}
 			try { await rm(tmpCwd, { recursive: true, force: true }); } catch {}
 			try { await rm(tmpAgentDir, { recursive: true, force: true }); } catch {}
 		},
