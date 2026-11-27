@@ -134,6 +134,7 @@ export class Chatd {
 	private presence = new Map<string, { want: "online" | "offline"; status: string; written?: string }>();
 	private dailyDms = new Map<string, number>();
 	private connSeq = 0;
+	private conns = new Set<Conn>();
 	peersRoom = "";
 	mirrorRoom = "";
 	private http?: ReturnType<typeof Bun.serve>;
@@ -177,8 +178,8 @@ export class Chatd {
 	async stop(): Promise<void> {
 		for (const t of this.timers) clearInterval(t);
 		this.http?.stop(true);
+		for (const c of this.conns) c.socket.destroy();
 		await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
-		for (const reg of this.regs.values()) reg.conn?.socket.destroy();
 	}
 
 	/** Find a room chatd owns by its alias, or create it as `@pi-system`. Never encrypted (015/29). */
@@ -800,6 +801,7 @@ export class Chatd {
 				if (!conn.closed) socket.write(`${JSON.stringify(msg)}\n`);
 			},
 		};
+		this.conns.add(conn);
 		let buf = "";
 		socket.setEncoding("utf8");
 		socket.on("data", (d: string) => {
@@ -814,6 +816,7 @@ export class Chatd {
 		socket.on("error", () => {});
 		socket.on("close", () => {
 			conn.closed = true;
+			this.conns.delete(conn);
 			for (const w of [...this.waits]) if (w.conn === conn) this.dropWait(w);
 			const reg = conn.reg;
 			if (reg?.watch?.conn === conn) reg.watch = undefined;
@@ -1083,9 +1086,6 @@ export class Chatd {
 		const target = Object.entries(reg.mdirect).find(([, rooms]) => rooms.includes(room))?.[0];
 		const w: WaitRec = { conn, id: p.id as number, waiter: reg, ask, room, askTs: askEvent.origin_server_ts, target, minutes };
 		const targetName = target ? this.senderLabel(target) : room;
-		if (minutes !== undefined && target && !this.online(this.regByUser(target))) {
-			return { outcome: "offline", target: targetName } satisfies WaitResult;
-		}
 		this.waits.add(w);
 		// A reply sent before the wait registered, or while chatd was down, still ends it.
 		const replies = (await this.hs.relations(reg.userId, room, ask)).filter((e) => this.ends(w, { ...e, room_id: e.room_id ?? room }));
@@ -1099,6 +1099,10 @@ export class Chatd {
 		}
 		if (found) {
 			await this.endWithReply(w, found);
+			return DEFERRED;
+		}
+		if (minutes !== undefined && target && !this.online(this.regByUser(target))) {
+			this.endWait(w, { outcome: "offline", target: targetName });
 			return DEFERRED;
 		}
 		if (minutes !== undefined) {
