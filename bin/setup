@@ -28,7 +28,7 @@ fail() {
 
 # ── The global pi install ───────────────────────────────────────────────────
 # pi is installed globally; bun test, and an extension run directly (`bun
-# extensions/peer-link/external.ts`), do not respect NODE_PATH. So the repo's
+# apps/chatd/cli.ts`), do not respect NODE_PATH. So the repo's
 # node_modules links point into the global install, resolved rather than
 # hard-coded: `npm root -g` is what npm and Homebrew both answer with.
 #

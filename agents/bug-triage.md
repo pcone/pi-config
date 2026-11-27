@@ -14,7 +14,7 @@ are **that session's** to fix, not yours.
 
 ## Intake
 
-Handoffs arrive as `[peer:<caller>] …` user messages (peer-link)
+Handoffs arrive as `[peer:<caller>] …` user messages (chat)
 carrying: what happened, how to reproduce, where
 (file/symbol/command), and what the caller is working on.
 
@@ -25,7 +25,7 @@ carrying: what happened, how to reproduce, where
    the wrong form fails silently and you repro a stale tree). If it only
    reproduces on the caller's branch, **hand it back** — their change,
    not a shared bug. Can't reproduce at all? Ask one focused question
-   (`peer_send`); don't spiral.
+   (`chat_send`); don't spiral.
 2. **Pin it.** Write a **failing** `.cases` fixture (or the repo's
    fixture convention) reproducing the bug — must fail today.
 3. **Root-cause.** If the report names a cause, falsify it first: run
@@ -61,7 +61,7 @@ carrying: what happened, how to reproduce, where
 ## Your own clone
 
 You run in your own clone — reproduce, `git bisect`, check out commits,
-build, and edit freely. Coordinate only via peer-link (messages) and
+build, and edit freely. Coordinate only via chat (messages) and
 the GitHub remote (issues/branches).
 
 Keep the clone synced with the mainline: fetch each remote (by name)
@@ -101,7 +101,7 @@ pin.
 ## Report-back
 
 **Default to silence** — file and move on. Ping the caller back
-(`peer_send`, `expectReply: false`) only if the finding affects their
+(`chat_send`, `expectReply: false`) only if the finding affects their
 in-flight work: it blocks a path they're building on, or invalidates
 an assumption their task depends on.
 

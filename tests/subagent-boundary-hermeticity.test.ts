@@ -73,10 +73,10 @@ const INJECTED: Record<string, string> = {
 /**
  * A file makes billed model calls if it starts an in-process SDK session, or if it runs a real
  * `pi` child. The pi shapes are the entry points the live rows use: `PI_BIN` (turn-cap's
- * stand-in execs it) and the stand-in shims themselves. A LOWER BOUND, as row 4's detector is —
+ * stand-in execs it), the stand-in shims themselves, and the chat rows' `connectLive`. A LOWER BOUND, as row 4's detector is —
  * a new shape has to be added here when it appears.
  */
-const BILLED_CALL = /\bcreateAgentSession\b|\bPI_BIN\b|real-pi\.mjs|stand-in-pi\.mjs/;
+const BILLED_CALL = /\bcreateAgentSession\b|\bconnectLive\b|\bPI_BIN\b|real-pi\.mjs|stand-in-pi\.mjs/;
 
 /** A file scrubs the gate env if it *calls* either helper — an import is not a scrub. */
 const SCRUBS_GATE_ENV = /\b(?:scrubSubagentEnv|unsetSubagentEnv)\s*\(/;
@@ -321,7 +321,7 @@ describe("subagent-boundary hermeticity", () => {
 		const paths = walk(import.meta.dir).filter((path) => TEST_FILE.test(path) && path !== SELF);
 		const billed = paths.filter((path) => BILLED_CALL.test(readFileSync(path, "utf8")));
 		// Vacuity guard: 5 files when this row landed — turn-cap's four E rows, the two e2e
-		// files, peer-link and model-inheritance. turn-cap is named because it is the file the
+		// files, the chat live rows and model-inheritance. turn-cap is named because it is the file the
 		// createAgentSession-only detector missed (2026-11-07).
 		expect(billed.length).toBeGreaterThanOrEqual(5);
 		expect(billed).toContain(join(import.meta.dir, "turn-cap.test.ts"));

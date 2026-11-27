@@ -98,7 +98,7 @@ A default arm is legitimate only for a state a design doc expects and gives a me
 
 **Don't route around bugs you hit but weren't assigned.** Don't hoist a call, reorder code, or weaken a test to dodge a pre-existing miscompile, crash, or wrong result. Surface it so the fix can be scoped. A silent workaround makes the next person re-derive it.
 
-If the bug is **pre-existing in `main`** and not your own, hand it off with `peer_send` to `bug-triage` (`requireOnline: true`, so a down peer fails loud instead of silently queuing). Include symptom, repro, where, and your current task. Your own bugs you fix. Keep working: the peer reproduces against `main`, pins a failing regression test, files the issue, and pings you back only if it affects your in-flight work. If the send fails because the peer is offline, note or file it yourself. Don't block.
+If the bug is **pre-existing in `main`** and not your own, hand it off with `chat_send` to `bug-triage` (`requireOnline: true`, so a down peer fails loud instead of waiting unread). Include symptom, repro, where, and your current task. Your own bugs you fix. Keep working: the peer reproduces against `main`, pins a failing regression test, files the issue, and pings you back only if it affects your in-flight work. If the send fails because the peer is offline, note or file it yourself. Don't block.
 
 **Investigate existing mechanisms before adding a parallel one.** The codebase usually already handles the concern, often to an older spec or wired to the wrong scope. Grep for the existing enforcement and fix its wiring rather than duplicating it. Before removing a check on the claim that "X already catches it", verify X actually fires for those cases. A partial backstop is a hole.
 

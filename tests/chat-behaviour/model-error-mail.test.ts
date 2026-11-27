@@ -1,6 +1,6 @@
 /**
  * A model HTTP error mails a peer, throttled (decision external-tools/008;
- * docs/design/model-error-mail.md). Ported from tests/model-error-mail.test.ts.
+ * docs/design/model-error-mail.md).
  *
  * Module rows drive the transport's mail module over a recipient list the row
  * controls, with a fake clock. Wired rows drive the transport's pi extension
@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ADAPTERS, asRuled, asToday } from "./adapters/index.ts";
+import { ADAPTERS } from "./adapters/index.ts";
 import { type Bus, type MailPeer, type Peer, type PiPeer, fresh, injectedWith, until } from "./bus.ts";
 
 const restoreSubagentEnv = scrubSubagentEnv();
@@ -60,7 +60,7 @@ for (const adapter of ADAPTERS) {
 	const harness = (o: { correspondent?: string; peers?: MailPeer[] } = {}) =>
 		m.harness({ self: SELF, sessionId: SID, cwd: "/work/tfd", correspondent: o.correspondent, peers: o.peers ?? [] });
 
-	describe(`${adapter.name}: model-error mail, module (model-error-mail.test.ts:149–394, 870–908)`, () => {
+	describe(`${adapter.name}: model-error mail, module`, () => {
 		it("reads the leading status of an HTTP error message", () => {
 			expect(m.modelHttpStatus(E_429)).toBe(429);
 			expect(m.modelHttpStatus(E_503)).toBe(503);
@@ -200,20 +200,8 @@ for (const adapter of ADAPTERS) {
 			expect(h.inbox(SELF)).toEqual([]);
 		});
 
-		// :702, :723 (design-changed: WO-2026-107 table row 4)
-		asToday(adapter)("with no correspondent, a Claude peer is not in the sweep: alone it mails nothing; beside a pi peer, the pi peer only", async () => {
-			const alone = await harness({ peers: [online("claude-8f90", "claude")] });
-			await alone.onAssistantMessage(err(E_429));
-			expect(alone.inbox("claude-8f90")).toEqual([]);
-			expect(alone.warns).toHaveLength(1);
-			const both = await harness({ peers: [online("pi-peer"), online("claude-8f90", "claude")] });
-			await both.onAssistantMessage(err(E_429));
-			expect(both.inbox("pi-peer")).toHaveLength(1);
-			expect(both.inbox("claude-8f90")).toEqual([]);
-		});
-
 		// WO-2026-107 table row 4, replacing :371, :598, :702, :723.
-		asRuled(adapter)("with no correspondent, every online non-subagent peer is mailed, a Claude one included", async () => {
+		it("with no correspondent, every online non-subagent peer is mailed, a Claude one included", async () => {
 			const h = await harness({ peers: [online("pi-peer"), online("claude-8f90", "claude"), online("sub-1", "subagent")] });
 			await h.onAssistantMessage(err(E_429));
 			expect(h.inbox("pi-peer")).toHaveLength(1);
@@ -237,7 +225,7 @@ for (const adapter of ADAPTERS) {
 		});
 	});
 
-	describe(`${adapter.name}: model-error mail, wired (model-error-mail.test.ts:506–864)`, () => {
+	describe(`${adapter.name}: model-error mail, wired`, () => {
 		let bus: Bus;
 		beforeAll(async () => {
 			bus = await adapter.setup();
@@ -262,7 +250,6 @@ for (const adapter of ADAPTERS) {
 			await injectedWith(peer, MARK);
 		}
 
-		// :512, :828
 		it("the correspondent recorded on delivery is the only recipient", async () => {
 			const corr = await bus.connect(fresh("corr"), "pi");
 			const bystander = await bus.connect(fresh("bystander"), "pi");
@@ -275,7 +262,6 @@ for (const adapter of ADAPTERS) {
 			expect(await gotMail(me)).toBe(false);
 		}, 40_000);
 
-		// :543
 		it("the correspondent outlives a restart of the session", async () => {
 			const corr = await bus.connect(fresh("corr"), "pi");
 			const bystander = await bus.connect(fresh("bystander"), "pi");
@@ -290,7 +276,6 @@ for (const adapter of ADAPTERS) {
 			expect(await gotMail(bystander)).toBe(false);
 		}, 40_000);
 
-		// :558
 		it("an offline correspondent falls to the peers online now", async () => {
 			const corrName = fresh("corr");
 			const corr = await bus.connect(corrName, "pi");
@@ -304,7 +289,6 @@ for (const adapter of ADAPTERS) {
 			await gotMailSoon(live);
 		}, 40_000);
 
-		// :576
 		it("no live peer: warns once, mails nothing, and the next failure mails a peer that appeared", async () => {
 			const me = await bus.connect(fresh("me"), "pi");
 			await me.emit("message_end", errorEnd());
@@ -317,7 +301,6 @@ for (const adapter of ADAPTERS) {
 			await gotMailSoon(late);
 		}, 40_000);
 
-		// :654, :687
 		it("a Claude correspondent receives it, and an online pi peer does not", async () => {
 			const claude = await bus.connect(crypto.randomUUID(), "claude");
 			const pi = await bus.connect(fresh("pi"), "pi");
@@ -330,7 +313,7 @@ for (const adapter of ADAPTERS) {
 		}, 40_000);
 
 		// WO-2026-107 table row 4: no correspondent, so @pi-system DMs each online non-subagent peer.
-		asRuled(adapter)("with no correspondent, @pi-system DMs each online non-subagent peer", async () => {
+		it("with no correspondent, @pi-system DMs each online non-subagent peer", async () => {
 			const pi = await bus.connect(fresh("pi"), "pi");
 			const claude = await bus.connect(crypto.randomUUID(), "claude");
 			const sub = await bus.connect(fresh("sub"), "subagent");
@@ -342,7 +325,6 @@ for (const adapter of ADAPTERS) {
 			expect(await gotMail(sub)).toBe(false);
 		}, 40_000);
 
-		// :773
 		it("the mail adds nothing to the failing session", async () => {
 			const corr = await bus.connect(fresh("corr"), "pi");
 			const me = await bus.connect(fresh("me"), "pi");

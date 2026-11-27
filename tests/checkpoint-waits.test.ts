@@ -2,7 +2,7 @@
  * A pending wait is session state (WO-2026-064, decision checkpoint/003).
  *
  * Every row here drives the real extensions against stub `pi`/ctx objects: no
- * model, no network. The session branch is a real `SessionManager` (in memory
+ * model, no network beyond a loopback homeserver for the chat row. The session branch is a real `SessionManager` (in memory
  * unless a row needs a file), so `pi.appendEntry` behaves exactly as it does in
  * a live session — durable, on the branch, invisible to the model.
  *
@@ -10,7 +10,7 @@
  * its mechanism reverted; the revert that turns it red is named in the row.
  */
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,9 +19,8 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import checkpointFactory from "../extensions/checkpoint.ts";
 import { takePendingGo } from "../extensions/go.ts";
-import peerLink from "../extensions/peer-link/index.ts";
+import chat from "../extensions/chat/index.ts";
 import subagentAsyncFactory from "../extensions/subagent-async/index.ts";
-import { readIncoming, sendEnvelope, writeHeartbeat } from "../extensions/peer-link/mailbox.ts";
 import {
 	WAIT_ENTRY_TYPE,
 	WAIT_KINDS,
@@ -31,6 +30,7 @@ import {
 	type Wait,
 } from "../extensions/lib/waits.ts";
 import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
+import { type TestChatd, startChatdWithHomeserver } from "./helpers/chatd.ts";
 import { setEnvForRow } from "./helpers/subagent-env.ts";
 
 // ---------------------------------------------------------------------------
@@ -494,238 +494,78 @@ describe("derived: subagent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Rows 6 and 9 — peer-link: an outbound expectReply is a wait; mail is not held
+// Row 9 — chat: mail during a manual wait starts a turn and clears nothing.
+// Rows 6 and 11 (an unanswered expectReply is a wait; its reply ends it) are
+// transport rows: tests/chat-behaviour/waits.test.ts. This row needs a chatd
+// and a Tuwunel on loopback (tests/helpers/chatd.ts).
 // ---------------------------------------------------------------------------
 
-describe("derived: peer reply", () => {
-	let mailbox: string;
-	let peerPiHandlers: Map<string, Array<(event: any, ctx: any) => unknown>>;
-	let peerTools: Map<string, any>;
+describe("derived: chat mail", () => {
+	let chatd: TestChatd;
+	let handlers: Map<string, Array<(event: any, ctx: any) => unknown>>;
 	let injected: string[];
-	let peerCtx: any;
-	let env: { name?: string; mailbox?: string };
+	let chatCtx: any;
 
-	function startPeerLink(): void {
-		peerPiHandlers = new Map();
-		peerTools = new Map();
+	beforeAll(async () => {
+		chatd = await startChatdWithHomeserver();
+	}, 60_000);
+	afterAll(async () => {
+		await chatd.dispose();
+	});
+
+	async function emitChat(event: string): Promise<void> {
+		for (const handler of handlers.get(event) ?? []) await handler({ type: event }, chatCtx);
+	}
+
+	beforeEach(async () => {
+		handlers = new Map();
 		injected = [];
 		const pi: any = {
 			events: { emit: () => {} },
 			on: (event: string, handler: (e: any, ctx: any) => unknown) => {
-				const list = peerPiHandlers.get(event) ?? [];
-				list.push(handler);
-				peerPiHandlers.set(event, list);
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 			},
-			registerTool: (def: any) => peerTools.set(def.name, def),
+			registerTool: () => {},
 			registerCommand: () => {},
 			sendUserMessage: (text: string) => {
 				injected.push(text);
 			},
 		};
-		peerLink(pi);
-	}
-
-	async function emitPeer(event: string): Promise<void> {
-		for (const handler of peerPiHandlers.get(event) ?? []) await handler({ type: event }, peerCtx);
-	}
-
-	/** Send one `expectReply` through the real tool, as the model would. */
-	async function sendExpectReply(to: string, message: string): Promise<void> {
-		await peerTools.get("peer_send").execute(
-			"call-p",
-			{ to, message, expectReply: true },
-			undefined,
-			undefined,
-			peerCtx,
-		);
-	}
-
-	/** Wait for the 2 s delivery scan to inject an envelope (fs.watch accelerates it). */
-	async function waitForInjected(needle: string): Promise<void> {
-		const deadline = Date.now() + 15_000;
-		while (!injected.some((text) => text.includes(needle)) && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
-	}
-
-	beforeEach(async () => {
-		mailbox = await tmp("wo064-peer-mail-");
-		env = { name: process.env.PI_PEER_NAME, mailbox: process.env.PI_PEER_MAILBOX };
-		process.env.PI_PEER_NAME = "alice";
-		process.env.PI_PEER_MAILBOX = mailbox;
-		startPeerLink();
-		const cwd = await tmp("wo064-peer-cwd-");
-		peerCtx = {
-			cwd,
+		chat(pi);
+		chatCtx = {
+			cwd: await tmp("wo064-chat-cwd-"),
 			ui: { notify: () => {} },
 			sessionManager: {
 				getSessionFile: () => undefined,
 				getSessionName: () => undefined,
-				// peer-link records the session id for the model-error mail body, so
-				// session_start throws without it and the peer runtime never starts —
-				// the delivery these rows depend on.
 				getSessionId: () => "session-under-test",
 			},
 		};
-		// "bob" is a listed, online peer: the send gate refuses unlisted names.
-		writeHeartbeat(mailbox, { name: "bob", ts: Date.now() });
-		await emitPeer("session_start");
+		const restoreName = setEnvForRow("PI_PEER_NAME", `alice-${Date.now()}`);
+		const restoreSocket = setEnvForRow("CHATD_SOCKET", chatd.socket);
+		try {
+			await emitChat("session_start");
+		} finally {
+			restoreName();
+			restoreSocket();
+		}
 	});
 
 	afterEach(async () => {
-		await emitPeer("session_shutdown");
-		if (env.name === undefined) delete process.env.PI_PEER_NAME;
-		else process.env.PI_PEER_NAME = env.name;
-		if (env.mailbox === undefined) delete process.env.PI_PEER_MAILBOX;
-		else process.env.PI_PEER_MAILBOX = env.mailbox;
+		await emitChat("session_shutdown");
 	});
-
-	it("row 6: an unanswered expectReply stops an unset continue; the reply ends the wait", async () => {
-		const { h } = await freshHarness();
-
-		await sendExpectReply("bob", "which branch is main?");
-		const [outbound] = readIncoming(mailbox, "bob");
-		expect(outbound.expectReply).toBe(true);
-
-		// Revert: drop the sendTracked record → the checkpoint sends a kickoff
-		// while the seat is still holding for the answer.
-		const before = await h.checkpoint({});
-		expect(sentKickoff(h)).toBe(false);
-		expect(before.text).toContain('peer — reply from bob "which branch is main?"');
-
-		// The reply carries `inReplyTo`; the delivery scan matches it.
-		sendEnvelope(mailbox, {
-			id: "reply-1",
-			from: "bob",
-			to: "alice",
-			text: "main, and here is why",
-			expectReply: false,
-			inReplyTo: outbound.id,
-			sentAt: Date.now(),
-			broadcast: false,
-		});
-		await waitForInjected("main, and here is why");
-		expect(injected.join("\n")).toContain("main, and here is why");
-
-		// Revert (other half): never delete on inReplyTo → the wait outlives its
-		// reply and this checkpoint still stops.
-		const after = await h.checkpoint({});
-		expect(after.kickoff).toContain("NEXT-STEP");
-		expect(after.text).toContain("No wait pending → continuing");
-	}, 40_000);
-
-	it("row 11: an external peer's wait ends on any envelope from it, and not on another peer's", async () => {
-		const { h } = await freshHarness();
-		// A Claude Code peer: listed, never online, and its replies carry no `inReplyTo`.
-		writeHeartbeat(mailbox, { name: "claude-abc", external: true, ts: Date.now() });
-
-		await sendExpectReply("claude-abc", "which branch is main?");
-
-		// It is a wait, even though no `inReplyTo` will ever come back.
-		// Revert: carve external sends out of the record → this checkpoint continues.
-		const before = await h.checkpoint({});
-		expect(sentKickoff(h)).toBe(false);
-		expect(before.text).toContain('peer — reply from claude-abc "which branch is main?"');
-
-		// An envelope from a different peer does not end it.
-		// Revert: drop every wait on any inbound envelope → this assertion flips.
-		sendEnvelope(mailbox, {
-			id: "mail-other",
-			from: "bob",
-			to: "alice",
-			text: "unrelated question",
-			expectReply: false,
-			sentAt: Date.now(),
-			broadcast: false,
-		});
-		await waitForInjected("unrelated question");
-		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(1);
-
-		// An envelope from that peer, with no `inReplyTo`, ends it (ruling 3).
-		// Revert: drop the per-peer fallback → the wait survives and this stops.
-		sendEnvelope(mailbox, {
-			id: "mail-claude",
-			from: "claude-abc",
-			to: "alice",
-			text: "main, per the release notes",
-			expectReply: false,
-			sentAt: Date.now(),
-			broadcast: false,
-		});
-		await waitForInjected("main, per the release notes");
-		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
-
-		const after = await h.checkpoint({});
-		expect(after.kickoff).toContain("NEXT-STEP");
-		expect(after.text).toContain("No wait pending → continuing");
-	}, 40_000);
-
-	it("any envelope from the peer ends every wait for it, stamped reply included", async () => {
-		const { h } = await freshHarness();
-		await sendExpectReply("bob", "first question");
-		await sendExpectReply("bob", "second question");
-		const [first] = readIncoming(mailbox, "bob");
-		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(2);
-
-		// A stamped reply to the first send. Revert: scope the sender rule behind
-		// `else` → only the named wait ends and the second one blocks.
-		sendEnvelope(mailbox, {
-			id: "reply-first",
-			from: "bob",
-			to: "alice",
-			text: "answer to the first",
-			expectReply: false,
-			inReplyTo: first.id,
-			sentAt: Date.now(),
-			broadcast: false,
-		});
-		await waitForInjected("answer to the first");
-		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
-
-		const after = await h.checkpoint({});
-		expect(after.kickoff).toContain("NEXT-STEP");
-	}, 40_000);
-
-	it("a relayed reply from a third peer ends the wait it names (the fast path)", async () => {
-		const { h } = await freshHarness();
-		await sendExpectReply("bob", "route this through carol");
-		const [outbound] = readIncoming(mailbox, "bob");
-
-		// carol relays bob's answer; only the `inReplyTo` identifies it.
-		// Revert: delete the fast-path `awaitingReply.delete(env.inReplyTo)` → the
-		// wait survives (carol holds nothing) and the checkpoint stops.
-		writeHeartbeat(mailbox, { name: "carol", ts: Date.now() });
-		sendEnvelope(mailbox, {
-			id: "relay-1",
-			from: "carol",
-			to: "alice",
-			text: "bob says: main",
-			expectReply: false,
-			inReplyTo: outbound.id,
-			sentAt: Date.now(),
-			broadcast: false,
-		});
-		await waitForInjected("bob says: main");
-		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
-
-		const after = await h.checkpoint({});
-		expect(after.kickoff).toContain("NEXT-STEP");
-	}, 40_000);
 
 	it("row 9: mail starts a turn, does not clear a manual wait, and the next checkpoint still stops", async () => {
 		const { h } = await freshHarness();
 		await h.waitFor({ reason: "the owner's ruling on the retry policy", kind: "owner" });
 
-		sendEnvelope(mailbox, {
-			id: "mail-1",
-			from: "bob",
-			to: "alice",
-			text: "unrelated question while you wait",
-			expectReply: false,
-			sentAt: Date.now(),
-			broadcast: false,
-		});
-		await waitForInjected("unrelated question while you wait");
+		const bob = await chatd.client();
+		await bob.request("hello", { peer: `bob-${Date.now()}`, kind: "pi", session: "", cwd: "/w" });
+		const me = ((await bob.request("who")) as { name: string }[]).find((p) => p.name.startsWith("alice-"))!.name;
+		await bob.request("send", { to: me, text: "unrelated question while you wait" });
+		const deadline = Date.now() + 15_000;
+		while (!injected.some((t) => t.includes("unrelated question while you wait")) && Date.now() < deadline) await Bun.sleep(50);
+		bob.close();
 		// The wake-up is not the defect: mail still starts a turn.
 		expect(injected).toHaveLength(1);
 		expect(injected[0]).toContain("unrelated question while you wait");

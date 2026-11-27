@@ -1,7 +1,6 @@
 /**
  * pi peers: addressing, the send gate, delivery and its timing, identity, and
- * init failure. Ported from tests/peer-link.test.ts (row inventory:
- * ~/Developer/notes/stage3/peer-link-rows.md); each row cites its origin.
+ * init failure.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
@@ -28,7 +27,6 @@ for (const adapter of ADAPTERS) {
 			await bus.reset();
 		});
 
-		// peer-link.test.ts:101
 		it("a send to a connected pi peer is injected as [peer:<sender>] <text>", async () => {
 			const bob = await bus.connect(fresh("bob"), "pi");
 			const alice = await bus.connect(fresh("alice"), "pi");
@@ -38,7 +36,6 @@ for (const adapter of ADAPTERS) {
 			expect(alice.injected).toEqual([]);
 		}, 30_000);
 
-		// peer-link.test.ts:83 (shape half; path traversal is a file-layout row)
 		it("a send to a name outside the peer-name rule fails naming the rule", async () => {
 			const alice = await bus.connect(fresh("alice"), "pi");
 			for (const bad of ["../etc", "a/b", "x".repeat(65), "has space", ".hidden"]) {
@@ -46,7 +43,6 @@ for (const adapter of ADAPTERS) {
 			}
 		}, 30_000);
 
-		// peer-link.test.ts:143
 		it("delivery mode: one-way steers by default; followUp opts in; expectReply always pivots", async () => {
 			const bob = await bus.connect(fresh("bob"), "pi");
 			const alice = await bus.connect(fresh("alice"), "pi");
@@ -58,7 +54,6 @@ for (const adapter of ADAPTERS) {
 			expect((await injectedWith(bob, "a question")).deliverAs).toBe("followUp");
 		}, 30_000);
 
-		// peer-link.test.ts:121, 642
 		it("mail to a known offline peer is delivered when it next connects", async () => {
 			const bobName = fresh("bob");
 			const first = await bus.connect(bobName, "pi");
@@ -71,7 +66,6 @@ for (const adapter of ADAPTERS) {
 			expect(got.text).toBe(`[peer:${alice.name}] queued while you were away`);
 		}, 30_000);
 
-		// peer-link.test.ts:189
 		it("a UUID-tail address reaches the peer with that full name", async () => {
 			const tail = crypto.randomUUID();
 			const full = `2026-08-12T00-34-37-476Z_${tail}`;
@@ -82,7 +76,7 @@ for (const adapter of ADAPTERS) {
 			expect((await injectedWith(bob, "by tail")).text).toBe(`[peer:${alice.name}] by tail`);
 		}, 30_000);
 
-		describe("the send gate (peer-link.test.ts:222–247)", () => {
+		describe("the send gate", () => {
 			it("an online target accepts, with or without requireOnline", async () => {
 				const bob = await bus.connect(fresh("bob"), "pi");
 				const alice = await bus.connect(fresh("alice"), "pi");
@@ -114,7 +108,7 @@ for (const adapter of ADAPTERS) {
 			}, 30_000);
 		});
 
-		describe("identity (peer-link.test.ts:254–270)", () => {
+		describe("identity", () => {
 			it("PI_PEER_NAME wins over the display name", async () => {
 				const name = fresh("alice");
 				const p = await bus.connect(name, "pi", { sessionName: "bug-triage" });
@@ -133,7 +127,7 @@ for (const adapter of ADAPTERS) {
 			}, 30_000);
 		});
 
-		describe("at-least-once injection (peer-link.test.ts:341, 389)", () => {
+		describe("at-least-once injection", () => {
 			it("an injection that throws is not lost: it is retried and delivered", async () => {
 				let failNext = true;
 				const attempts: string[] = [];
@@ -169,7 +163,7 @@ for (const adapter of ADAPTERS) {
 			}, 40_000);
 		});
 
-		describe("init failure (peer-link.test.ts:597, 612)", () => {
+		describe("init failure", () => {
 			it("a throwing getSessionId rejects session_start naming the init, and notifies the human", async () => {
 				let err: (Error & { standin?: PiPeer }) | undefined;
 				try {

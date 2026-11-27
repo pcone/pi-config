@@ -3,7 +3,7 @@
  * § Names).
  *
  * A peer name is 1–64 characters of `[A-Za-z0-9._-]` starting with a letter or
- * digit, the rule peer-link's mailbox enforced. `localpart(name)` is `pi-`
+ * digit. `localpart(name)` is `pi-`
  * plus the name with `A–Z` written `_` + lowercase and `_` written `__`, so the
  * map is injective under Matrix's lowercase-only localparts.
  */
