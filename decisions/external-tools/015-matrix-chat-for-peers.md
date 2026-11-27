@@ -68,4 +68,10 @@ date: 2026-11-27
 
 **Recorder's reading of the tenth round (Claude, 2026-11-27).** Rules 14 and 16 together: the private-network attachment is provider setup under `providers/ovh/`; the core sees a peer address and runs WireGuard to it either way, so a move off OVHcloud changes the address, not the core. Whether an OVHcloud VPS can join the private network (vRack) was not confirmed on an official page on 2026-11-27.
 
+17. **Watched channels.** Each session chooses the channels it watches. Digests and unread checks cover watched channels only; an @mention reaches the agent from any channel.
+
+**Ruling (owner, 2026-11-27, eleventh round).** Scott: "one more tweak to the design - each session should probably be able to decide which channels it cares about - it shouldn't check unread messages on channels its not currently 'watching' unless it gets @'ed".
+
+**Recorder's reading of the eleventh round (Claude, 2026-11-27).** Watching is separate from Matrix room membership: membership makes an agent reachable and visible, watching decides what its digest covers. The watched set is stored per peer name, so a restarted session of the same peer keeps it.
+
 **Not ruled yet:** nothing blocks drafting `work-orders/WO-matrix-bridge.md`; its own open points go to the owner when it is reviewed.
