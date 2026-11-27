@@ -11,7 +11,7 @@
 - **priority**: high
 - **estimated_complexity**: large; one landing in the commits listed under § Commit sequence
 - **review_policy**: required
-- **revision**: 2, after plan review 2026-11-28 (REJECT_AND_REWORK: H1–H8, M1–M11, L1–L7, each answered below)
+- **revision**: 3, after plan review 2026-11-28 (rev 1 REJECT_AND_REWORK; rev 2 ACCEPT_WITH_FIXES, N1–N11 answered)
 
 ### Task Summary
 
@@ -53,7 +53,7 @@ Confirmed (infra `docs/tuwunel.md` § Local test server, 2026-11-28):
 
 Verify these before relying on them; on a false one, stop with `PREMISE FALSIFIED`:
 
-- **P3.** A Claude Code hook can name its Claude Code process: the nearest ancestor whose command is `claude`. Probe the ancestry from a hook.
+- **P3.** A Claude Code hook can name its Claude Code process: the nearest ancestor whose command is `claude`. A command run from Claude's Bash tool can do the same. Probe the ancestry from both.
 - **P4.** Element X writes `m.mentions.user_ids` when the owner @mentions an agent. Record it in the live smoke. The body fallback in `classify` covers clients that do not.
 - **P5.** The `Notification` hook's stdin carries `session_id`, `message` and `notification_type`, and the types for "waiting" are `permission_prompt`, `idle_prompt` and `elicitation_dialog` (code.claude.com/docs/en/hooks). Confirm with a logging hook in a scratch project. A hook marked `"async": true` does not block the session.
 
@@ -148,7 +148,7 @@ No room chatd creates sets `m.room.encryption` (015/29).
 
 **`classify(event, room, recipient) → push | digest | none`.** This is the one push rule; every delivery path calls it. The arms are tried in order:
 1. The sender is the recipient → `none`.
-2. The type is `m.room.encrypted` → `none`, logged with the room id.
+2. The type is `m.room.encrypted` → `none`. chatd logs it with the room id, and `@pi-system` DMs the owner once per room: agent rooms are unencrypted (015/29), and encrypted messages there are not delivered.
 3. The room is in the recipient's `m.direct` → `push`. DM-ness comes from `m.direct`, not member count.
 4. The recipient is mentioned → `push`. "Mentioned" means `m.mentions.user_ids` names them. When `m.mentions.user_ids` is absent or empty, a body containing the recipient's user id or `@<peer name>` as a token counts instead.
 5. `m.mentions.room` is true and the recipient is not a subagent → `push`.
@@ -174,6 +174,7 @@ A message without the fields, such as the owner's from Element, is `steer`. This
 **Presence.** chatd sets each puppet's Matrix presence:
 - pi and subagent puppets are online while connected.
 - A Claude puppet is online while registered and its Claude pid lives. chatd checks the pid on every query and every 30 s. A pid found dead ends the registration: presence goes offline, and a blocked `watch` for that peer exits 3.
+- The 30 s pass also re-asserts every puppet's presence, so a failed presence write is retried there.
 
 **Waits.**
 - chatd keeps a registry of live waits: waiter, target, asking event and its timestamp.
@@ -181,7 +182,8 @@ A message without the fields, such as the owner's from Element, is `steer`. This
 - A wait ends on either:
   - an event whose `m.relates_to.m.in_reply_to.event_id` is the asking event, from anyone;
   - an event from the target in the waiter↔target DM room, sent after the asking event (015/33).
-- A wait whose client reconnects after a chatd restart re-registers. chatd then checks `/relations/{event}` and the DM room since the asking event, so a reply sent during the gap still ends it.
+- When chatd restarts, a waiting client, the pi extension or a CLI `send --wait`, reconnects once, waiting at most 30 s, and re-registers the same asking event. If the reconnect fails, the CLI exits 1 naming chatd.
+- On re-registration chatd lists `/relations/{event}` unfiltered and keeps events whose `m.relates_to.m.in_reply_to.event_id` is the asking event. A rel-type filter returns nothing for replies (infra `docs/tuwunel.md`). It also reads the DM room since the asking event. A reply sent during the gap therefore still ends the wait.
 
 **Name resolution for `to`.**
 - An exact peer name wins.
@@ -190,14 +192,18 @@ A message without the fields, such as the owner's from Element, is `steer`. This
 
 **`#dm-mirror`** (015/32).
 - For each DM event whose sender and recipient are both agent puppets, chatd posts a copy as `@pi-system`: `<sender> → <recipient>: <text>`, with a `matrix.to` link to the original.
-- The copy's txnId is `mirror-<original event id>`, so a redelivered transaction makes no second copy. Tuwunel dedupes per puppet txnId, as the probe confirmed.
+- The copy's txnId is `mirror-<original event id>`, so a redelivered transaction makes no second copy. Tuwunel dedupes per puppet txnId, across a homeserver restart too, as the probes confirmed.
 - DMs with the owner are not mirrored.
 - An hourly sweep redacts copies older than 7 days. Its clock is injected for tests.
 - Nothing in `#dm-mirror` is a delivery path: no agent puppet is a member.
 
 **`@pi-system`.**
-- It is chatd-internal. Model-error mail and the certificate watch call it in-process; it has no socket identity.
-- Model-error rules port unchanged: classifier, 30 min window, count, 200-char bound, no prompt text, never self. The recipient is `dev.pi.last_correspondent`, else online non-subagent peers.
+- It has no socket identity: no client can `hello` as it.
+- chatd posts as it for the certificate watch, the mirror, and the internal socket message `system_mail {to: [peer], text}`.
+- Model-error mail splits across two processes:
+  - The classifier, 30 min window, count, 200-char bound and recipient choice stay in `extensions/chat/`, because they need pi's turn events. The rules port unchanged: no prompt text, never self, recipient `dev.pi.last_correspondent`, else online non-subagent peers.
+  - The extension hands the finished mail to chatd with `system_mail`, and chatd posts it as `@pi-system` DMs.
+- `system_mail` is internal: no tool or CLI subcommand exposes it.
 
 **Certificate watch.** Once a day, and at start, chatd opens a TLS connection to the homeserver and reads the certificate's `notAfter`. With fewer than 20 days left, `@pi-system` DMs the owner, at most once a day. A failed check is itself DMed.
 
@@ -226,12 +232,13 @@ Verbs, from [WO-matrix-bridge § Agent-facing API](WO-matrix-bridge.md#target-de
 | `wait` | `event_id`, `minutes` → `reply` (with the event) \| `offline` \| `checkin` |
 | `watch` | blocks until a pushed event; returns it and the rest of the queue |
 | `ack` | `event_ids` |
+| `system_mail` | internal, for `extensions/chat/`'s model-error mail only: `to`, `text` |
 
 **`send`.**
 - It parses `@<peer name>` tokens that resolve to a peer, and `@room`, from the text. It writes `m.mentions {user_ids, room}`. A token that resolves to nothing stays plain text.
 - In a `#room`, it invites every mentioned non-member first (015/17).
-- `to: owner` DMs `CHATD_OWNER`.
-- A DM to a peer finds or creates the two-member DM room and records it in both puppets' `m.direct`.
+- `to: owner` DMs `CHATD_OWNER`. The DM room is found through the sending puppet's `m.direct` entry for the owner. If there is none, chatd creates the room with `is_direct` and invites the owner, so Element lists it as a DM, and records it in that puppet's `m.direct`. The owner's own account data is not written. The notification hook (§ 4) uses the same path.
+- A DM to a peer finds or creates the two-member DM room, and records it in both puppets' `m.direct`.
 - `replyTo` writes `m.relates_to.m.in_reply_to`.
 - Errors, each loud with its reason:
   - an invalid name;
@@ -246,7 +253,7 @@ Verbs, from [WO-matrix-bridge § Agent-facing API](WO-matrix-bridge.md#target-de
 **Connecting.** On `session_start` the extension connects with the identity peer-link uses today:
 1. `PI_PEER_NAME`;
 2. the display name;
-3. host-pid, the existing fallback for an unnamed session (inventory rows 254–270).
+3. host-pid, the existing fallback for an unnamed session (inventory rows 254–270). No design doc settles unnamed sessions beyond peer-link's identity rule. 015/20's readability comes from the derived display name (§ 1), not from this name.
 
 A subagent connects with `kind: subagent` and its session id (`subagent-async/rpc.ts` sets `PI_PEER_NAME`). A refused or failed connection fails `session_start` loudly; init-failure rows as today. When the connection drops, the extension reconnects once systemd restarts chatd, waiting at most 30 s, and notifies the session if that fails.
 
@@ -298,6 +305,7 @@ Known hits:
 - `extensions/lib/waits.ts`.
 - `tests/model-error-mail.test.ts`, `tests/checkpoint-waits.test.ts`, `tests/subagent-id-resolution.test.ts`, `tests/session-trim.test.ts:396` (a tool-name fixture) and `tests/helpers/session-teardown.ts:11`.
 - `docs/design/model-error-mail.md` and `docs/design/checkpoint-waits.md`.
+- `docs/TODO.md:317–318`: rewrite or close the entries.
 
 Delete `extensions/peer-link/`, `tests/peer-link*.ts` once their rows are ported, and the mailbox constants. Leave `~/.pi/peer-mail/` on disk for the owner.
 
@@ -362,7 +370,7 @@ Delete `extensions/peer-link/`, `tests/peer-link*.ts` once their rows are ported
 ### Prohibitions
 
 - No bridge or fallback to the file mailbox, and no period where both run.
-- No send queue, and no retry beyond those named in § 1 (homeserver redelivery, background runs) and § 3 (one reconnect after a chatd restart).
+- No send queue, and no retry beyond those named in § 1 (homeserver redelivery, background runs) and § 1 and § 3 (one reconnect after a chatd restart, for the pi extension and a CLI wait).
 - No Matrix SDK dependency without an owner ask.
 - No path that pushes without `classify`. No writer of `dev.pi.pushed` but `ack`.
 - chatd never sets a notification level (015/28).
