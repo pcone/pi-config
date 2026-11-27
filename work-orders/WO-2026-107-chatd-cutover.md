@@ -212,4 +212,5 @@ Live smoke (manual script, like `peer-link-smoke.ts`), against `chat.sjmcd.me` w
 
 - **A Matrix client per session.** One daemon gives one token, one event stream, and digests computed where unread state is read (WO-matrix-bridge § Target design).
 - **A fake homeserver for tests.** The real binary starts in 0.26 s, and a fake drifts from Tuwunel's behaviour (the read-marker quirk in infra `docs/tuwunel.md` row 2 is the kind it would miss).
+- **MCP tools for Claude Code** (`send`, `read`, `rooms`, `who`). Deferred by the owner, 2026-11-28, offered it against one `chat` CLI (recommended, as a small additive change later): "yeah lets follow your recommendation". `watch` and `--wait` stay background commands either way: an MCP tool cannot wake a session.
 - **Testing against the VPS.** Shared state across runs, and network-dependent.
