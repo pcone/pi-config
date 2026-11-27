@@ -51,4 +51,10 @@ date: 2026-11-27
 
 **Recorder's reading on channels (Claude, 2026-11-27).** "Major feature thread" is read as a multi-stage effort with its own plan or orchestrator; the session that opens such an effort creates its channel. The work order proposes naming, and archiving of channels left idle, for the owner to rule on.
 
+14. **Portable to any SSH box.** The infra repo targets any machine reachable over SSH and holds nothing tied to OVHcloud. The OVHcloud API may be used for one-off bootstrapping only, outside the IaC.
+
+**Ruling (owner, 2026-11-27, eighth round).** Offered DNS records under OpenTofu's OVH provider, Scott: "I don't want to build anything that's tied to ovhcloud directly - we can use their api for initial bootstrapping if needed, but the actua IaC setup needs to be portable to any arbitrary 'box with an ssh connection'".
+
+**Recorder's reading of the eighth round (Claude, 2026-11-27).** DNS records are provider state outside the box, so they stay manual (or a bootstrap step) and the repo documents the records it needs.
+
 **Not ruled yet:** nothing blocks drafting `work-orders/WO-matrix-bridge.md`; its own open points go to the owner when it is reviewed.
