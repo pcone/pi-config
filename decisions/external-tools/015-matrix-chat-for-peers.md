@@ -171,7 +171,10 @@ Scott, on the mention trigger: "That feels a little too magic - id rather someth
 
 **Recorder's note.** The interim DM script printed the whole message; the session's own one-line `grep` of the script's output dropped the rest. The rule binds chatd's injection (WO-2026-107) and the S4 digest.
 
+**Ruling (owner, 2026-11-28, over Matrix).** On a `@pi-system` stale warning after 2 h idle: "Agree but 2h is too short - stale is more like days". On where a started session runs: "Pane multiple of these inside windows in main - 6 per window, yes on developer unless told otherwise - creating new dirs/git repos in there should be allowed".
+
+**Recorder's reading.** Started sessions run as panes in windows of tmux session `main`, six panes to a window, with a new window when the last is full. The working directory is `~/Developer` unless the ask names another. A started session may create directories and git repos under `~/Developer`.
+
 **Not ruled yet:**
-- where a started session runs (proposed: a new window in tmux session `main`, `pi --name <name>`, cwd from the message or `~/Developer`);
-- the stale threshold, and how the warning reaches the owner (proposed: a `@pi-system` DM after 2 h idle);
-- lifecycle (proposed: an ordinary named session, never restarted).
+- the exact stale threshold, in days (proposed: 3);
+- lifecycle (proposed: never restarted automatically; explanation asked for).
