@@ -1,7 +1,7 @@
 ---
 title: "Standard reviewers to DeepSeek V4 Flash 0731 — accept same-lab correlation for cost (reverses 016 model-diversity principle)"
 type: decision
-status: done
+status: superseded
 date: 2026-08-11
 ---
 

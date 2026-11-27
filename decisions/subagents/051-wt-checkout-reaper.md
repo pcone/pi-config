@@ -182,7 +182,7 @@ pass with no removal candidate pays nothing for it.
   removal path for a worktree. The orphan case is the single exception and has
   no repository to run it in.
 
-## Superseded note — the unused gate reads `/proc` on Linux (2026-11-27)
+## Note — the unused gate reads `/proc` on Linux (2026-11-27, [settings/006](../settings/006-linux-suite-parity.md))
 
 The gate's question ("is any process inside this tree?") was answered by `lsof -d cwd -Fpn`, which
 Debian does not install: on the box every candidate failed closed with "lsof unavailable", so nothing

@@ -1,7 +1,7 @@
 ---
 title: "Owner asks on the status bar — pi and Claude Code"
 type: decision
-status: active
+status: done
 date: 2026-10-17
 ---
 

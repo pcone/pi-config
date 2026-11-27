@@ -1,4 +1,4 @@
-# 052 — The recovery scan's metas dir and cargo home are process-wide, not per-file hooks
+# 053 — The recovery scan's metas dir and cargo home are process-wide, not per-file hooks
 
 **Date:** 2026-11-13
 **Status:** accepted — owner direction in WO-2026-099 (seat `8f90746f`,

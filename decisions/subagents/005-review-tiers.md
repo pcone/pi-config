@@ -1,7 +1,7 @@
 ---
 title: "Review tiers: standard (Mimo) vs thorough (GLM)"
 type: decision
-status: done
+status: superseded
 date: 2026-07-17
 ---
 

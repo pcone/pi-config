@@ -1,7 +1,7 @@
 ---
 title: "A transcript that lost its built-in tool declaration is repaired at session start"
 type: decision
-status: active
+status: done
 date: 2026-11-13
 ---
 

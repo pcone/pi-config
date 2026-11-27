@@ -7,25 +7,25 @@ date: 2026-07-14
 
 | # | Decision | Status |
 |---|---|---|
-| 001 | Progress-based timeout for subagents | planned |
-| 002 | Parent-as-supervisor with RPC mode | superseded by 003 |
+| 001 | Progress-based timeout for subagents | superseded by 015 |
+| 002 | Parent-as-supervisor with RPC mode | deferred (soft turn limit built as 046) |
 | 003 | Async subagents with organic parent supervision | done |
 | 004 | Parallel review gate (review-code + review-tests) for code-changing work | amended (reviewer invocation guard, WO-2026-011) |
-| 005 | Review tiers: standard (Mimo) vs thorough (GLM) | done |
+| 005 | Review tiers: standard (Mimo) vs thorough (GLM) | superseded by 017, 020 |
 | 006 | Reviewer-driven re-review signal and round cap | done |
 | 007 | Super-orchestrator (`plan` mode): role separation for multi-workstream work | superseded by 028 |
 | 008 | Orchestrator → GLM-5.2, compaction → DeepSeek V4 Flash | done |
 | 009 | Clean task identity vs. worktree-isolation prompt wrapper (commit-subject leak fix) | done |
 | 010 | Pricing source: pi.dev catalog instead of models.json cost overrides | done |
 | 011 | 0731 granular benchmarks unpublished — hold implement-pro/oracle, ship flash slots | done |
-| 012 | Implementer tier collapse — single implement-pro on 0731 flash | done |
+| 012 | Implementer tier collapse — single implement-pro on 0731 flash | done (agent renamed by 013) |
 | 013 | Implementer rename — implement-pro → implement (drop the "pro" suffix) | done |
 | 014 | Review-skip single source of truth — work order as first-class spawn parameter (`workOrderPath`) | done |
 | 015 | Silence-based progress-kill timeout (activates 001) | done |
-| 016 | Fleet speed experiment — standard reviewers to GPT-5.6 Luna, implementer stays Flash | done |
-| 017 | Single review tier — Luna standard, deep tier dormant (kept as insurance) | done |
+| 016 | Fleet speed experiment — standard reviewers to GPT-5.6 Luna, implementer stays Flash | superseded by 019, 020 |
+| 017 | Single review tier — Luna standard, deep tier dormant (kept as insurance) | done (model superseded by 019; deep tier deleted by 020) |
 | 018 | Overlap independent work during an implementer's review window (prompt-only; interim-report and orchestrator-owned-rework deferred) | done |
-| 019 | Standard reviewers to Flash 0731 — accept same-lab correlation for cost (reverses 016) | done |
+| 019 | Standard reviewers to Flash 0731 — accept same-lab correlation for cost (reverses 016) | superseded by 020 |
 | 020 | Fleet flash seat to zai/glm-5.3-flash — /fleet-model toggle, deep tier deleted, effort policy, models.json prune | done (model choice + toggle superseded by 022; effort table superseded by 021) |
 | 021 | Effort rebalance — flash :high, glm-5.3 :max, low banned | done (levels survive on v4.1-flash; GLM basis superseded by 022) |
 | 022 | OpenRouter-only fleet on deepseek/deepseek-v4.1-flash — /fleet-model toggle deleted, oracle off 0813 | done |
@@ -60,3 +60,4 @@ date: 2026-07-14
 | 052 | A duplicate evaluation of the extension is harmless — one `globalThis` registry, an owner-tagged live session, no path canonicalisation | active |
 | 053 | The recovery scan's metas dir and cargo home are process-wide env overrides, not per-file test hooks | done |
 | 054 | Per-spawn `model` override, gated by a per-agent `allowedModels` allowlist (owner 2026-11-25) | active |
+| 055 | Review seats stay on `deepseek-v4.1-flash` until OpenCode Go adds a model of equal cost and quality; 044's rollback withdrawn (owner 2026-11-27) | active |

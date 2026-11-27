@@ -1,7 +1,7 @@
 ---
 title: "Progress-based timeout for subagents"
 type: decision
-status: planned
+status: superseded
 date: 2026-07-14
 ---
 
