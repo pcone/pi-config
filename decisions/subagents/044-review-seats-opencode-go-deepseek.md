@@ -35,3 +35,7 @@ constraint, exactly as 022's z.ai case was — not a quality judgment on GLM-5.3
 **Rollback (the "in the meantime" clause):** when OpenRouter credits are restored, the intended
 seats are 041's `openrouter/z-ai/glm-5.3-flash:high` (decorrelated from the DeepSeek implementer).
 Restoring it is a two-line change in the three agent files; no other decision needs revisiting.
+
+> **Superseded in part 2026-11-27 by [055](055-review-seats-stay-on-deepseek.md)** (owner ruling):
+> the Rollback clause. The review seats stay on DeepSeek V4.1 Flash until OpenCode Go adds a model
+> of equal cost and quality; restored OpenRouter credits do not restore 041.

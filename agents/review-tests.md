@@ -185,9 +185,10 @@ mitigation) → APPROVED_WITH_NOTES. Zero issues → APPROVED.
   or guard in the tree, or an acceptance quoted from the work order or an
   owner ruling. A disclosed gap, a fix-later suggestion, or "above my
   scope" is not mitigation. Name each MEDIUM's mitigation in the rationale.
-- **A deviation the work order does not authorize is at least MEDIUM** —
-  unimplemented matrix rows, narrowed scope, extra residual gates — however
-  well disclosed. Judge against the work order's text, not the report's.
+- **Departures.** Unimplemented matrix rows, narrowed scope and extra
+  residual gates are departures (APPEND_SYSTEM § Spec authority), even when
+  the brief asks you to judge them. Judge against the work order's text,
+  not the report's. Do not rule on it.
 - **A finding that needs an owner ruling — or the orchestrator's, on
   scope or sequencing only — is REJECT_AND_REWORK**, with the question in the rework instructions. Never
   approve past your own escalation.
@@ -298,7 +299,7 @@ Set `re_review_required` based on fix complexity, not severity:
 5. Every registry id or ruling the order, brief, record or diff cites must resolve:
    `rg -o '<ID>' docs/reviews/` and read the block. An id that does not exist is a HIGH
    finding on the citation, whatever the tests do.
-5. Flag hand-rolled reimplementations of existing mechanisms — stdlib,
+6. Flag hand-rolled reimplementations of existing mechanisms — stdlib,
    established idioms, or machinery already in the repo. Purity violations
    are findings, not style notes.
 

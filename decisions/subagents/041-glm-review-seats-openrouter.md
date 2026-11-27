@@ -21,6 +21,9 @@ seat is untouched (038).
 > OpenRouter credits exhausted, so the three review seats moved to
 > `opencode-go/deepseek-v4.1-flash:high`. Suspended, not repudiated — restoring credits
 > restores this routing (044 § Rollback).
+>
+> **Superseded 2026-11-27 by [055](055-review-seats-stay-on-deepseek.md)** (owner ruling):
+> restoring credits no longer restores this routing.
 
 **Premise verified (2026-10-22):** live `GET https://openrouter.ai/api/v1/models` lists
 `z-ai/glm-5.3-flash` (canonical slug `z-ai/glm-5.3-flash-20260826`, 1,048,576 ctx,

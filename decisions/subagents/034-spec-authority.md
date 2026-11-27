@@ -85,3 +85,10 @@ the owner, never from an orchestrator's unsupervised reasoning. Pending as its o
 > quotes the order rather than summarizing it, lists deviations as plain facts, and never asks a
 > reviewer to judge one — the WO-2026-209 implementer asked review-code to "judge whether the
 > deviation … is justified", and review-code ruled.
+
+> **Amended (2026-10-22, owner):** *Spec authority* defines departure, process-only fact and the
+> three stop-reports once, under `APPEND_SYSTEM.md` § Landing work. No gate verdict, review or
+> `accepted_notes` entry accepts a departure. A structural claim carries its `rg` and count at the
+> tip, a supersession note cites an owner ruling, and deferred debt names its carrier. Recorded
+> 2026-11-27 from commit `08ce82b`; the owner's words were not captured. That commit changed
+> `review-code` and not `review-tests`, which follows it from 2026-11-27.
