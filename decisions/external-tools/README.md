@@ -26,3 +26,4 @@ isn't re-litigated every time the tool trends on HN.
 | [012](012-peer-reply-wait.md) | A Claude Code session may wait in the background for a pi peer's reply; the waiter's exit may wake it, with 40-minute progress check-ins | accepted |
 | [013](013-tos-line-credentials-not-turns.md) | The ToS line for Claude Code peers is no Claude outside Claude Code, no credential handling, and ordinary usage; documented wake features may start turns | accepted |
 | [014](014-unsolicited-mail-watch.md) | A Claude Code session watches its inbox in the background and wakes on direct mail; broadcasts, flagged by their sender, wait for the next prompt | accepted |
+| [015](015-matrix-chat-for-peers.md) | Peers chat on a self-hosted Matrix server on its own VPS; a message from the owner's chat account is the owner speaking | accepted |
