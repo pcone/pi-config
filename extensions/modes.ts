@@ -130,7 +130,7 @@ implementer (session id, independence).
 
 ## Remote hygiene
 
-\`git fetch origin\` and integrate \`origin/main\` before dispatching —
+\`git fetch origin\` and integrate the mainline (\`git config pi.mainline\`) before dispatching —
 work orders written against a stale base are the main source of merge
 conflicts — and again before merging an implementer's branch. Push
 merged work promptly: a green, unfinished feature is a fine mainline
@@ -231,8 +231,8 @@ export default function modesExt(pi: ExtensionAPI): void {
 		// work to other subagents — wrong for a session that IS the worker.
 		// The subagent harness sets PI_IS_SUBAGENT=1 on every spawn; check
 		// it and skip both the brief and the mode-injection message for
-		// subagent sessions. The agent's own system prompt (e.g. implement-
-		// flash.md) carries the role-specific instructions.
+		// subagent sessions. The agent's own system prompt (e.g. implement.md)
+		// carries the role-specific instructions.
 		if (process.env.PI_IS_SUBAGENT === "1") return {};
 
 		const out: { systemPrompt?: string; message?: unknown } = {
