@@ -68,10 +68,23 @@ date: 2026-11-27
 
 **Recorder's reading of the tenth round (Claude, 2026-11-27).** Rules 14 and 16 together: the private-network attachment is provider setup under `providers/ovh/`; the core sees a peer address and runs WireGuard to it either way, so a move off OVHcloud changes the address, not the core. Whether an OVHcloud VPS can join the private network (vRack) was not confirmed on an official page on 2026-11-27.
 
-17. **Watched channels.** Each session chooses the channels it watches. Digests and unread checks cover watched channels only; an @mention reaches the agent from any channel.
+17. **Watched channels are Matrix membership plus notification level.** A peer watches a room it has joined at "all messages"; its digest covers those rooms only. At "mentions only" it stays a member and only @mentions push. A non-member is reached by invite, and the invite is pushed; a peer's `send` invites a non-member it @mentions. *Twelfth round; replaces the eleventh round's separate watch list.*
 
 **Ruling (owner, 2026-11-27, eleventh round).** Scott: "one more tweak to the design - each session should probably be able to decide which channels it cares about - it shouldn't check unread messages on channels its not currently 'watching' unless it gets @'ed".
 
-**Recorder's reading of the eleventh round (Claude, 2026-11-27).** Watching is separate from Matrix room membership: membership makes an agent reachable and visible, watching decides what its digest covers. The watched set is stored per peer name, so a restarted session of the same peer keeps it.
+**Recorder's reading of the eleventh round (Claude, 2026-11-27).** Watching is separate from Matrix room membership: membership makes an agent reachable and visible, watching decides what its digest covers. The watched set is stored per peer name, so a restarted session of the same peer keeps it. *Superseded by the twelfth round.*
+
+**Ruling (owner, 2026-11-27, twelfth round).** Scott found the separate watch list "a bit messy" and asked: "wonder if watch and room membership should just be the same thing? whats the standard way this works in matrix clients?" Claude described Matrix's model (membership, a per-room notification level of all messages / mentions and keywords / mute stored as the user's push rules, invites to reach non-members) and recommended it over both the watch list and membership alone. Scott: "yeah this sounds good to me". Rule 17 states the result. Membership and notification levels live on the server as standard Matrix state, so the owner sees and changes the same settings in Element.
+
+18. **No send queue.** When the chat server or the link is down, `send` fails with the reason and the agent reports it.
+19. **Room names and archiving.** `#feat-<slug>` for feature threads, `#topic-<slug>` otherwise. A room with no message for 14 days is archived and listed in a weekly digest to the owner.
+
+**Ruling (owner, 2026-11-27, thirteenth round).** On the work order's Q-a (fail loud, no local queue) and Q-b (naming and 14-day archiving), both as recommended, Scott: "a. agree / b. agree".
+
+20. **Readable names.** Every session shows a readable name. Identifiers such as session ids go in the user's status or profile fields where Matrix supports them, not in the name.
+
+**Ruling (owner, 2026-11-27, fourteenth round).** On the work order's Q-d (keep `claude-<uuid>` as the account id with a readable display name), Scott: "yeah we should make sure each session has a readable name, and put stuff like session ids in statuses/bios if matrix supports that".
+
+**Recorder's reading of the fourteenth round (Claude, 2026-11-27).** The account id stays the unique peer name; the readable name is the Matrix display name. A session with no name of its own gets one derived from its repo and role, made unique by chatd. Which status or profile fields Element X shows is checked in stage 2.
 
 **Not ruled yet:** nothing blocks drafting `work-orders/WO-matrix-bridge.md`; its own open points go to the owner when it is reviewed.
