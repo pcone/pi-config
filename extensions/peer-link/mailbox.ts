@@ -13,9 +13,9 @@
  * that match no listed peer.)
  *
  * External peers (a non-pi tool, e.g. a Claude Code session via
- * `external.ts`) register a heartbeat with `external: true` but never poll:
- * their inbox is read only when their user next prompts. They are listed but
- * never online, and age out after EXTERNAL_TTL_MS instead of the pi window.
+ * `external.ts`) register a heartbeat with `external: true` and are read by
+ * their prompt hook or their watch, not by a poll. They are listed but never
+ * online, and age out after EXTERNAL_TTL_MS instead of the pi window.
  * See docs/design/peer-link-external.md.
  */
 
@@ -40,6 +40,8 @@ export interface Envelope {
 	deliverAs?: "steer" | "followUp";
 	inReplyTo?: string;
 	sentAt: number;
+	/** Set by the sender: true on each copy of a fan-out (`*` or a list). Broadcasts never wake a watch (decision external-tools/014). */
+	broadcast: boolean;
 }
 
 export interface PeerInfo {
@@ -140,8 +142,18 @@ export function sendEnvelope(mailbox: string, envelope: Envelope): string {
 	const dir = inboxDir(mailbox, envelope.to);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const file = path.join(dir, `${envelope.from}-${envelope.id}.json`);
-	fs.writeFileSync(file, JSON.stringify(envelope, null, 2), { mode: 0o600 });
+	writeFileAtomic(file, JSON.stringify(envelope, null, 2));
 	return file;
+}
+
+/**
+ * Write a file so a reader never parses a partial one: write a temp file whose
+ * name the readers skip (no `.json` suffix), then rename it into place.
+ */
+function writeFileAtomic(file: string, text: string): void {
+	const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp`);
+	fs.writeFileSync(tmp, text, { mode: 0o600 });
+	fs.renameSync(tmp, file);
 }
 
 function isEnvelope(value: unknown): value is Envelope {
@@ -152,20 +164,28 @@ function isEnvelope(value: unknown): value is Envelope {
 		typeof v.from === "string" &&
 		typeof v.to === "string" &&
 		typeof v.text === "string" &&
-		typeof v.sentAt === "number"
+		typeof v.sentAt === "number" &&
+		typeof v.broadcast === "boolean"
 	);
 }
 
-/** Valid envelopes in a peer's inbox, with their files. Unreadable files are skipped and left in place. */
-function scanInbox(mailbox: string, name: string): { file: string; envelope: Envelope }[] {
+/**
+ * A peer's inbox: valid envelopes with their files, and the files that are
+ * not valid envelopes. Unreadable files are left in place for manual inspection.
+ */
+export function scanInbox(
+	mailbox: string,
+	name: string,
+): { valid: { file: string; envelope: Envelope }[]; unreadable: string[] } {
 	const dir = inboxDir(mailbox, name);
 	let entries: string[];
 	try {
 		entries = fs.readdirSync(dir);
 	} catch {
-		return [];
+		return { valid: [], unreadable: [] };
 	}
-	const found: { file: string; envelope: Envelope }[] = [];
+	const valid: { file: string; envelope: Envelope }[] = [];
+	const unreadable: string[] = [];
 	for (const entry of entries) {
 		if (!entry.endsWith(".json")) continue;
 		const file = path.join(dir, entry);
@@ -173,12 +193,16 @@ function scanInbox(mailbox: string, name: string): { file: string; envelope: Env
 		try {
 			envelope = JSON.parse(fs.readFileSync(file, "utf8"));
 		} catch {
-			continue; // leave unreadable files for manual inspection
+			unreadable.push(file);
+			continue;
 		}
-		if (!isEnvelope(envelope)) continue;
-		found.push({ file, envelope });
+		if (!isEnvelope(envelope)) {
+			unreadable.push(file);
+			continue;
+		}
+		valid.push({ file, envelope });
 	}
-	return found;
+	return { valid, unreadable };
 }
 
 /**
@@ -190,7 +214,7 @@ function scanInbox(mailbox: string, name: string): { file: string; envelope: Env
  * silently dropped. Unreadable files are left in place for manual inspection.
  */
 export function readIncoming(mailbox: string, name: string): Envelope[] {
-	return scanInbox(mailbox, name).map((s) => s.envelope);
+	return scanInbox(mailbox, name).valid.map((s) => s.envelope);
 }
 
 /**
@@ -206,7 +230,7 @@ export function claimIncoming(
 	accept: (e: Envelope) => boolean = () => true,
 ): Envelope[] {
 	const claimed: Envelope[] = [];
-	for (const { file, envelope } of scanInbox(mailbox, name)) {
+	for (const { file, envelope } of scanInbox(mailbox, name).valid) {
 		if (!accept(envelope)) continue;
 		try {
 			fs.unlinkSync(file);
@@ -280,6 +304,18 @@ export function listPeers(mailbox: string, now = Date.now()): PeerInfo[] {
  */
 export function onlineExcept(peers: readonly PeerInfo[], self: string): PeerInfo[] {
 	return peers.filter((peer) => peer.online && peer.name !== self);
+}
+
+/**
+ * The peers a `*` send reaches, minus self: online pi peers and listed external
+ * peers. With requireOnline, online pi peers only, since an external peer is
+ * never online (decision external-tools/014 § Send and § 7). Both senders
+ * (pi's peer_send, external.ts send) throw on zero targets when requireOnline is set.
+ */
+export function broadcastTargets(peers: readonly PeerInfo[], self: string, requireOnline: boolean): PeerInfo[] {
+	return peers.filter(
+		(peer) => peer.name !== self && (requireOnline ? peer.online : peer.online || peer.external),
+	);
 }
 
 /**
@@ -361,7 +397,7 @@ export function deliveryDecision(
 		};
 	}
 	if (requireOnline && !known.online) {
-		const why = known.external ? "is external (reads mail only when its user prompts)" : "is offline";
+		const why = known.external ? "is external (not online: its mail is read at its next prompt or by its watch)" : "is offline";
 		return { ok: false, reason: `peer "${to}" ${why} and requireOnline is set — not queued` };
 	}
 	return { ok: true, online: known.online, external: known.external ?? false };
@@ -375,11 +411,11 @@ export function peerStatus(p: { online?: boolean; external?: boolean }): string 
 /** What a sender is told about where its message went. */
 export function queuedStatus(d: { online: boolean; external: boolean }): string {
 	if (d.online) return "online";
-	if (d.external) return "queued — external peer, read when its user next prompts";
+	if (d.external) return "queued — external peer";
 	return "queued for when it is online";
 }
 
-/** Build a fresh envelope (convenience for callers). */
+/** Build a fresh envelope (convenience for callers). A direct send is not a broadcast. */
 export function newEnvelope(
 	from: string,
 	to: string,
@@ -387,8 +423,9 @@ export function newEnvelope(
 	expectReply = false,
 	inReplyTo?: string,
 	deliverAs: "steer" | "followUp" = "steer",
+	broadcast = false,
 ): Envelope {
-	return { id: randomUUID(), from, to, text, expectReply, inReplyTo, deliverAs, sentAt: Date.now() };
+	return { id: randomUUID(), from, to, text, expectReply, inReplyTo, deliverAs, sentAt: Date.now(), broadcast };
 }
 
 /**
@@ -450,4 +487,123 @@ export function writeLastCorrespondent(mailbox: string, name: string, from: stri
 	const file = stateFile(mailbox, name);
 	fs.mkdirSync(stateDir(mailbox), { recursive: true, mode: 0o700 });
 	fs.writeFileSync(file, JSON.stringify({ from, at: Date.now() }, null, 2), { mode: 0o600 });
+}
+
+// ---------------------------------------------------------------------------
+// Live reply-waits and the watch (decision external-tools/014)
+//
+// Both are pid-keyed records under `_state/`. A record whose pid is dead is
+// stale and is deleted when it is read.
+// ---------------------------------------------------------------------------
+
+/** Whether a process is alive. EPERM means it is alive under another user. */
+export function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function unlinkIfPresent(file: string): void {
+	try {
+		fs.unlinkSync(file);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+}
+
+function readJsonIfPresent(file: string): unknown | undefined {
+	try {
+		return JSON.parse(fs.readFileSync(file, "utf8"));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw err;
+	}
+}
+
+/** A reply-wait this peer is running: it waits for mail from `to` sent at or after `sentAt`. */
+export interface Wait {
+	to: string;
+	sentAt: number;
+	pid: number;
+}
+
+function waitsDir(mailbox: string, name: string): string {
+	return path.join(stateDir(mailbox), `${sanitizePeerName(name)}.waits`);
+}
+
+/** Record a reply-wait before its send. Returns the record's file for removeWait. */
+export function writeWait(mailbox: string, name: string, wait: Wait): string {
+	const dir = waitsDir(mailbox, name);
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const file = path.join(dir, `${wait.pid}.json`);
+	writeFileAtomic(file, JSON.stringify(wait, null, 2));
+	return file;
+}
+
+export function removeWait(file: string): void {
+	unlinkIfPresent(file);
+}
+
+/** The live reply-waits of a peer. Records of dead pids are deleted here. */
+export function liveWaits(mailbox: string, name: string): Wait[] {
+	const dir = waitsDir(mailbox, name);
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(dir);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw err;
+	}
+	const waits: Wait[] = [];
+	for (const entry of entries) {
+		if (!entry.endsWith(".json")) continue;
+		const file = path.join(dir, entry);
+		const wait = readJsonIfPresent(file) as Wait | undefined;
+		if (wait === undefined) continue;
+		if (!pidAlive(wait.pid)) {
+			unlinkIfPresent(file);
+			continue;
+		}
+		waits.push(wait);
+	}
+	return waits;
+}
+
+/** Whether a live reply-wait owns the envelope: sent by its target at or after the wait's send. */
+export function ownedByLiveWait(envelope: Envelope, waits: readonly Wait[]): boolean {
+	return waits.some((w) => envelope.from === w.to && envelope.sentAt >= w.sentAt);
+}
+
+/** The watch record: the pid of the one live `watch` for a peer. */
+export interface WatchRecord {
+	pid: number;
+	startedAt: number;
+	/** The watch's parent at start. A change means the parent is gone and the watch is orphaned. */
+	ppid: number;
+}
+
+function watchFile(mailbox: string, name: string): string {
+	return path.join(stateDir(mailbox), `${sanitizePeerName(name)}.watch.json`);
+}
+
+/** The pid of the live watch for a peer, or undefined. A dead pid's record is deleted. */
+export function liveWatchPid(mailbox: string, name: string): number | undefined {
+	const file = watchFile(mailbox, name);
+	const record = readJsonIfPresent(file) as WatchRecord | undefined;
+	if (record === undefined) return undefined;
+	if (pidAlive(record.pid)) return record.pid;
+	unlinkIfPresent(file);
+	return undefined;
+}
+
+export function writeWatchRecord(mailbox: string, name: string, record: WatchRecord): void {
+	fs.mkdirSync(stateDir(mailbox), { recursive: true, mode: 0o700 });
+	writeFileAtomic(watchFile(mailbox, name), JSON.stringify(record, null, 2));
+}
+
+export function removeWatchRecord(mailbox: string, name: string): void {
+	unlinkIfPresent(watchFile(mailbox, name));
 }

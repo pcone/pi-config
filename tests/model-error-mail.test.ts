@@ -518,6 +518,7 @@ describe("recipient liveness", () => {
 				text: "status?",
 				expectReply: false,
 				sentAt: Date.now(),
+				broadcast: false,
 			},
 		});
 		try {
@@ -833,6 +834,7 @@ describe("the mail never enters this session's branch", () => {
 				text: "status?",
 				expectReply: false,
 				sentAt: Date.now(),
+				broadcast: false,
 			},
 		});
 		try {

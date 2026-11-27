@@ -602,6 +602,7 @@ describe("derived: peer reply", () => {
 			expectReply: false,
 			inReplyTo: outbound.id,
 			sentAt: Date.now(),
+			broadcast: false,
 		});
 		await waitForInjected("main, and here is why");
 		expect(injected.join("\n")).toContain("main, and here is why");
@@ -635,6 +636,7 @@ describe("derived: peer reply", () => {
 			text: "unrelated question",
 			expectReply: false,
 			sentAt: Date.now(),
+			broadcast: false,
 		});
 		await waitForInjected("unrelated question");
 		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(1);
@@ -648,6 +650,7 @@ describe("derived: peer reply", () => {
 			text: "main, per the release notes",
 			expectReply: false,
 			sentAt: Date.now(),
+			broadcast: false,
 		});
 		await waitForInjected("main, per the release notes");
 		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
@@ -674,6 +677,7 @@ describe("derived: peer reply", () => {
 			expectReply: false,
 			inReplyTo: first.id,
 			sentAt: Date.now(),
+			broadcast: false,
 		});
 		await waitForInjected("answer to the first");
 		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
@@ -699,6 +703,7 @@ describe("derived: peer reply", () => {
 			expectReply: false,
 			inReplyTo: outbound.id,
 			sentAt: Date.now(),
+			broadcast: false,
 		});
 		await waitForInjected("bob says: main");
 		expect(h.waits().filter((w) => w.kind === "peer")).toHaveLength(0);
@@ -718,6 +723,7 @@ describe("derived: peer reply", () => {
 			text: "unrelated question while you wait",
 			expectReply: false,
 			sentAt: Date.now(),
+			broadcast: false,
 		});
 		await waitForInjected("unrelated question while you wait");
 		// The wake-up is not the defect: mail still starts a turn.

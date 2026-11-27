@@ -36,8 +36,8 @@
  * (heartbeat present, online or stale) accept queued offline delivery.
  *
  * External peers (Claude Code sessions via `external.ts`) are listed but never
- * online: mail to them waits until their user next prompts. Nothing here ever
- * reads or injects into their inbox.
+ * online: mail to them is read at their next prompt, or by their watch. Nothing
+ * here ever reads or injects into their inbox.
  *
  * Waits (decision checkpoint/003): an unanswered `expectReply` send is a
  * derived wait, so a checkpoint does not continue the seat that is holding for
@@ -68,7 +68,7 @@ import {
 	listPeers,
 	mailboxRoot,
 	newEnvelope,
-	onlineExcept,
+	broadcastTargets,
 	ownPeerName,
 	peerIdentityFrom,
 	peerStatus,
@@ -460,7 +460,7 @@ export default function (pi: ExtensionAPI) {
 		name: "peer_send",
 		label: "Peer Send",
 		description:
-			"Send a message to another pi session (peer) or an external peer (a Claude Code session; it reads mail only when its user next prompts, so do not wait on its reply). A pi peer's message is injected into the peer's session as a user message, triggering its agent. Use peer_list to discover peers. Set expectReply to true to have the peer's response sent back to this session automatically. Use to: \"*\" to broadcast to all online peers. Keep the message information-dense — lead with the ask, skip filler.",
+			"Send a message to another pi session (peer) or an external peer (a Claude Code session: a direct send wakes its watch, and a broadcast reaches it at its next prompt). A pi peer's message is injected into the peer's session as a user message, triggering its agent. Use peer_list to discover peers. Set expectReply to true to have the peer's response sent back to this session automatically. Use to: \"*\" to broadcast to all online peers and external peers (an external peer reads a broadcast at its next prompt, and it does not wake it). Keep the message information-dense — lead with the ask, skip filler.",
 		promptSnippet: "Send a message to another pi session and optionally await its reply",
 		promptGuidelines: [
 			"Use peer_send when the user asks to coordinate with another pi session or another agent.",
@@ -475,7 +475,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			to: Type.String({
 				description:
-					'Peer name (or UUID tail) to send to, or "*" to broadcast to all online peers. Names not matching a listed peer fail loudly — call peer_list first.',
+					'Peer name (or UUID tail) to send to, or "*" to broadcast to all online peers and external peers. Names not matching a listed peer fail loudly — call peer_list first.',
 			}),
 			message: Type.String({
 				description:
@@ -502,16 +502,18 @@ export default function (pi: ExtensionAPI) {
 			const expectReply = params.expectReply ?? false;
 			const deliverAs = params.followUp ? "followUp" : "steer";
 			if (params.to === "*") {
-				const targets = onlineExcept(listPeers(state.mailbox), state.peerName);
+				const targets = broadcastTargets(listPeers(state.mailbox), state.peerName, params.requireOnline ?? false);
 				if (params.requireOnline && targets.length === 0) {
 					throw new Error("peer_send: no online peers to broadcast to (requireOnline set) — not queued");
 				}
 				for (const t of targets) {
-					sendTracked(newEnvelope(state.peerName, t.name, params.message, expectReply, undefined, deliverAs));
+					sendTracked(
+						newEnvelope(state.peerName, t.name, params.message, expectReply, undefined, deliverAs, true),
+					);
 				}
 				return {
 					content: [
-						{ type: "text", text: `Broadcast sent to ${targets.length} online peer(s).` },
+						{ type: "text", text: `Broadcast sent to ${targets.length} peer(s) (online or external).` },
 					],
 					details: { broadcast: true, recipients: targets.map((t) => t.name) },
 				};
