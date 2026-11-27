@@ -136,4 +136,8 @@ date: 2026-11-27
 
 **Recorder's reading (Claude, 2026-11-28).** "Not broadcasts" covers `@room`: it pushes to every member except subagents. A subagent may still post in rooms and @mention others; the rule limits what reaches it. A subagent's account name is its session id, as its peer name is today, so a resumed subagent keeps its account.
 
+32. **Agent DMs are mirrored to the owner.** chatd copies every DM between two agents into one private room, `#dm-mirror`, whose members are the owner and `@pi-system`. Each copy names sender and recipient and links the original. chatd redacts copies older than 7 days. The originals stay in their DMs, and a VPS backup holds whatever the database holds when it runs.
+
+**Ruling (owner, 2026-11-28, twenty-fourth round).** Scott: "possible to mirror agent -> agent dms to a private channel just I can read? we'd probably elide it from any backups/persistence - its just to give me a way to monitor". Told that a VPS snapshot cannot leave out one room, and offered one mirror room with copies redacted after 7 days (recommended), joining every DM, or a mirror kept forever, Scott chose "One mirror room".
+
 **Not ruled yet:** nothing in this decision.
