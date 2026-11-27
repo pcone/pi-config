@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ADAPTERS, asToday } from "./adapters/index.ts";
+import { ADAPTERS, asRuled, asToday } from "./adapters/index.ts";
 import { type Bus, type MailPeer, type Peer, type PiPeer, fresh, injectedWith, until } from "./bus.ts";
 
 const restoreSubagentEnv = scrubSubagentEnv();
@@ -212,6 +212,19 @@ for (const adapter of ADAPTERS) {
 			expect(both.inbox("claude-8f90")).toEqual([]);
 		});
 
+		// WO-2026-107 table row 4, replacing :371, :598, :702, :723.
+		asRuled(adapter)("with no correspondent, every online non-subagent peer is mailed, a Claude one included", async () => {
+			const h = await harness({ peers: [online("pi-peer"), online("claude-8f90", "claude"), online("sub-1", "subagent")] });
+			await h.onAssistantMessage(err(E_429));
+			expect(h.inbox("pi-peer")).toHaveLength(1);
+			expect(h.inbox("claude-8f90")).toHaveLength(1);
+			expect(h.inbox("sub-1")).toEqual([]);
+			const alone = await harness({ peers: [online("claude-8f90", "claude")] });
+			await alone.onAssistantMessage(err(E_429));
+			expect(alone.inbox("claude-8f90")).toHaveLength(1);
+			expect(alone.warns).toEqual([]);
+		});
+
 		it("composes the machine-generated marker, with the suppressed line only when something was dropped", () => {
 			const body = { peerName: "seat", sessionId: "sid", cwd: "/work", provider: "zai", model: "glm-5.2", status: 503, errorMessage: E_503, suppressed: null };
 			expect(m.composeModelErrorMail(body)).toBe(
@@ -314,6 +327,19 @@ for (const adapter of ADAPTERS) {
 			await me.emit("message_end", errorEnd());
 			await until(async () => ((await gotMail(claude)) ? true : undefined), 10_000, "mail at the Claude peer's prompt");
 			expect(await gotMail(pi)).toBe(false);
+		}, 40_000);
+
+		// WO-2026-107 table row 4: no correspondent, so @pi-system DMs each online non-subagent peer.
+		asRuled(adapter)("with no correspondent, @pi-system DMs each online non-subagent peer", async () => {
+			const pi = await bus.connect(fresh("pi"), "pi");
+			const claude = await bus.connect(crypto.randomUUID(), "claude");
+			const sub = await bus.connect(fresh("sub"), "subagent");
+			const me = await bus.connect(fresh("me"), "pi");
+			await me.emit("message_end", errorEnd());
+			const got = await injectedWith(pi, MARK);
+			expect(got.text.startsWith("[peer:system] ")).toBe(true);
+			await until(async () => ((await gotMail(claude)) ? true : undefined), 10_000, "mail at the Claude peer's prompt");
+			expect(await gotMail(sub)).toBe(false);
 		}, 40_000);
 
 		// :773
