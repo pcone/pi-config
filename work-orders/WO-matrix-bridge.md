@@ -49,7 +49,7 @@ Agents and the owner talk in Matrix as in team chat. Matrix is the only message 
 | joined, mentions only | mentions pushed; not digested |
 | not a member | nothing; reachable by invite |
 
-A peer's `send` invites any non-member it @mentions, as Element offers to. chatd reads levels from the server, so the owner sees and changes an agent's levels in Element.
+A peer's `send` invites any non-member it @mentions, as Element offers to. Each agent sets its own levels; the owner changes one by asking the agent (015/28).
 
 Broadcast stops being a separate concept: it is a post in a shared room, pulled, or an `@room` mention when it must push. The broadcast flag, the `*` target and its `--require-online` rule have no successor.
 
@@ -67,7 +67,7 @@ Broadcast stops being a separate concept: it is a post in a shared room, pulled,
 **chatd, the local daemon on the dev box.**
 - It is the application service: it receives the homeserver's transactions over the private link and holds the namespace token.
 - It serves one Unix socket to local sessions. A session connects, names its peer, and receives its pushed messages as they arrive.
-- Connection is presence: connected means online. chatd sets the puppet's Matrix presence, so the owner sees in Element who is live.
+- Connection is presence: connected means online. chatd sets the puppet's Matrix presence, so a client that shows presence shows who is live. Element X shows none (S2 row 3).
 - One daemon instead of a Matrix client per session: one sync stream, one token, digests computed where unread state is read. A session restart reconnects without losing anything.
 
 **Agent-facing API.** pi tools; the Claude Code CLI exposes the same verbs as `chat <verb>`.
@@ -108,7 +108,7 @@ Each stage is its own numbered implement order with its own Preparatory refactor
 
 **S2 — Tuwunel staging test (gates 015/10).** `core/stacks/tuwunel`: federation off, registration closed, application service in config. Rows, each recorded with its observation:
 1. A stub service on the dev box receives transactions over the link and creates a namespaced user on demand.
-2. Read markers, account data, presence and per-room push rules set for a namespaced user round-trip, and a level set from Element is visible to the stub service.
+2. Read markers, account data, presence and per-room push rules set for a namespaced user round-trip.
 3. Element X on the owner's phone logs in with registration closed, no MAS, and shows a namespaced user's display name and status message (and custom profile fields, if supported); the observation records which ones it shows.
 4. Resident memory after a day idle and after 1,000 messages across 20 users.
 
@@ -121,7 +121,7 @@ Any row failing stops the stage (`PREMISE FALSIFIED`); Continuwuity, then Synaps
 - Certificate watch: a daily check that `chat.sjmcd.me`'s certificate has at least 20 days left, sent as a DM from `@pi-system` to the owner when it has not. Renewal by DNS-01 fails silently otherwise, for example on a revoked deSEC token. Owner, 2026-11-28, offered it now or with chatd: "yeah adding it then makes sense".
 
 **S4 — digest and check points.** In `extensions/chat/` and the Claude hook, per 015/8, 015/9 and 015/11.
-- Acceptance: a message in a mentions-only room never enters the digest, and an @mention there is pushed; an @mention of a non-member invites them and the invite is pushed; a level set in Element is the level the agent's digest uses; a restarted session of the same peer keeps its rooms and levels; one unread message digested after 15 min at the next turn; an engaged room's message reaches the next turn unthrottled and goes back to throttled 10 min after the agent's last post or mention; an idle session gets nothing until its next turn; each digest writes its log line; a subagent loads no chat extension.
+- Acceptance: a message in a mentions-only room never enters the digest, and an @mention there is pushed; an @mention of a non-member invites them and the invite is pushed; a level the agent sets is the level its digest uses; a restarted session of the same peer keeps its rooms and levels; one unread message digested after 15 min at the next turn; an engaged room's message reaches the next turn unthrottled and goes back to throttled 10 min after the agent's last post or mention; an idle session gets nothing until its next turn; each digest writes its log line; a subagent loads no chat extension.
 
 **S5 — docs.** APPEND_SYSTEM § Who rules gains 015/2. APPEND_SYSTEM § Peers, `docs/design/peer-link-external.md` and the external-tools decisions 003, 007, 012, 014 get superseded notes citing 015/15; the design doc is rewritten as `docs/design/chat.md`. Lands with S3's cutover.
 

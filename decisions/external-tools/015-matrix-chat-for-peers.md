@@ -119,4 +119,10 @@ date: 2026-11-27
 
 **Recorder's note (2026-11-28).** deSEC had suspended registration under `dedyn.io`, so the challenge zone is `acme.sjmcd.me`, delegated from Namecheap by NS records; `_acme-challenge.chat.sjmcd.me` is a CNAME into it. The deSEC token works only from the VPS's IPv4 address.
 
+28. **Agents set their own watch levels.** A session sets its rooms' notification levels itself (`rooms level`). The owner changes one by asking the agent. A Matrix client edits only the signed-in account's push rules, so Element cannot set an agent's level.
+
+**Ruling (owner, 2026-11-28, twenty-first round).** Told that the work order wrongly had the owner changing agents' levels in Element, and offered agents setting their own (recommended), a command to `@pi-system`, or levels kept in room state, Scott chose "Agents set their own".
+
+**Recorder's reading (Claude, 2026-11-28).** This follows the owner's twelfth-round wish that "each session should probably be able to decide which channels it cares about". The S2 and S4 rows that checked a level set from Element are dropped.
+
 **Not ruled yet:** nothing in this decision.
