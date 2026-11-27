@@ -10,12 +10,16 @@
  */
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, lstatSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { childEnv } from "./helpers/subagent-env.ts";
+
 const SETUP = join(import.meta.dir, "..", "bin", "setup");
+const HOOK = join(import.meta.dir, "..", "bin", "pre-push");
 /** name in `~/.pi/agent` -> the repo path it links to. */
 const AGENT_LINKS: Record<string, string> = {
 	agents: "agents",
@@ -137,6 +141,9 @@ async function skeleton(opts: {
 	const source = readFileSync(SETUP, "utf-8");
 	await writeFile(join(repo, "bin", "setup"), source);
 	chmodSync(join(repo, "bin", "setup"), 0o755);
+	// setup installs bin/pre-push into the repo's git hooks, so the skeleton is a git repo holding it.
+	writeFileSync(join(repo, "bin", "pre-push"), readFileSync(HOOK), { mode: 0o755 });
+	execFileSync("git", ["init", "-q"], { cwd: repo, env: childEnv() });
 
 	return { root, repo, home, bin, globalRoot, bunCalls };
 }
@@ -267,6 +274,61 @@ describe("bin/setup — ~/.pi/agent links", () => {
 		const overridden = await run(env, { GLOBAL_MODULES: env.globalRoot });
 		expect(overridden.code).toBe(0);
 		expect(overridden.out).toContain(`Global pi: ${env.globalRoot}`);
+	}, 20_000);
+});
+
+describe("bin/setup — pre-push hook and pi.mainline", () => {
+	const hookPath = (env: Skeleton) => join(realpathSync(env.repo), ".git", "hooks", "pre-push");
+	const mainline = (env: Skeleton) => {
+		const r = spawnSync("git", ["-C", env.repo, "config", "--get", "pi.mainline"], {
+			encoding: "utf-8",
+			env: childEnv({ HOME: env.home }),
+		});
+		return { status: r.status, out: r.stdout.trim() };
+	};
+
+	it("links the hook as a relative symlink that resolves to bin/pre-push", async () => {
+		const env = await skeleton({ baba: "repo" });
+		expect((await run(env)).code).toBe(0);
+		expect(lstatSync(hookPath(env)).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(hookPath(env))).toBe("../../bin/pre-push");
+		expect(realpathSync(hookPath(env))).toBe(realpathSync(join(env.repo, "bin", "pre-push")));
+	}, 20_000);
+
+	it("is idempotent: a second run relinks the hook and keeps pi.mainline", async () => {
+		const env = await skeleton({ baba: "repo" });
+		expect((await run(env)).code).toBe(0);
+		expect((await run(env)).code).toBe(0);
+		expect(readlinkSync(hookPath(env))).toBe("../../bin/pre-push");
+		expect(mainline(env).out).toBe("main");
+	}, 20_000);
+
+	it("refuses a real file at the hook path, naming it, and leaves it as it was", async () => {
+		const env = await skeleton({ baba: "repo" });
+		writeFileSync(hookPath(env), "#!/bin/sh\necho mine\n");
+		const result = await run(env);
+		expect(result.code).toBe(1);
+		expect(result.err).toContain(hookPath(env));
+		expect(lstatSync(hookPath(env)).isSymbolicLink()).toBe(false);
+		expect(readFileSync(hookPath(env), "utf-8")).toBe("#!/bin/sh\necho mine\n");
+	}, 20_000);
+
+	it("sets pi.mainline to main when unset", async () => {
+		const env = await skeleton({ baba: "repo" });
+		expect(mainline(env).status).toBe(1);
+		const result = await run(env);
+		expect(result.code).toBe(0);
+		expect(mainline(env).out).toBe("main");
+		expect(result.out).toContain("pi.mainline: unset, set to main");
+	}, 20_000);
+
+	it("leaves pi.mainline alone when it is already set", async () => {
+		const env = await skeleton({ baba: "repo" });
+		execFileSync("git", ["-C", env.repo, "config", "--local", "pi.mainline", "hamster"], { env: childEnv({ HOME: env.home }) });
+		const result = await run(env);
+		expect(result.code).toBe(0);
+		expect(mainline(env).out).toBe("hamster");
+		expect(result.out).not.toContain("pi.mainline");
 	}, 20_000);
 });
 

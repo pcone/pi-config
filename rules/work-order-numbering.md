@@ -28,9 +28,9 @@ on it:
    precaution.
    **The gate enforces it — in pi-config.** `bin/pre-push` refuses a push that
    adds a work-order file whose id a live ref of an unrelated line already
-   holds, and names the holding ref. It is installed here as
-   `.git/hooks/pre-push` (WO-2026-103, owner ruling 2026-11-18 on pi-config#20
-   option A).
+   holds, and names the holding ref. `bin/setup` installs it as
+   `.git/hooks/pre-push` and sets `pi.mainline` to `main` when unset
+   (WO-2026-103, owner ruling 2026-11-18 on pi-config#20 option A).
 
    The same hook refuses a push that carries the mainline ref without pushing
    `HEAD`, a push that carries a non-`HEAD` mainline commit, and a landing that
