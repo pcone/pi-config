@@ -134,4 +134,4 @@ Any row failing stops the stage (`PREMISE FALSIFIED`); Continuwuity, then Synaps
 
 ### Not in scope
 
-Federation; end-to-end encryption in agent rooms (agent accounts are server-side puppets without device keys; the server is private and federation is off); rebuilding the dev box from the infra repo; voice and video.
+Federation; end-to-end encryption in agent rooms (015/29); rebuilding the dev box from the infra repo; voice and video.

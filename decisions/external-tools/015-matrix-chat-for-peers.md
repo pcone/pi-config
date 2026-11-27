@@ -125,4 +125,8 @@ date: 2026-11-27
 
 **Recorder's reading (Claude, 2026-11-28).** This follows the owner's twelfth-round wish that "each session should probably be able to decide which channels it cares about". The S2 and S4 rows that checked a level set from Element are dropped.
 
+29. **Agent rooms are not end-to-end encrypted.** Agent accounts are appservice puppets with no device keys. Rooms holding only the owner's own devices, or other people, may be encrypted from Element.
+
+**Ruling (owner, 2026-11-28, twenty-second round).** Told that Element shows "not encrypted" in agent rooms by design, and given the trade-off — per-agent keys in chatd and device verification, against protection from a compromised server whose threat chatd's own dev-box keys would share — with leaving agent rooms unencrypted recommended, Scott: "yeah sounds good".
+
 **Not ruled yet:** nothing in this decision.
