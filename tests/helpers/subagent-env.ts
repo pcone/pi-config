@@ -9,10 +9,12 @@
  * it (pi-config#9): a file whose rows are not about env control scrubs it in
  * `beforeAll`, and a row that *is* about env control sets the value it exercises.
  *
- * Bun hands a child the env snapshot taken at process start: an in-process
- * `delete process.env.X` never reaches a spawn that omits `env` — verified on
- * bun 1.3.11 (pi-config#7, commit afe16c9). Spawns therefore pass `childEnv()`,
- * which spreads the *live* env, not the startup snapshot.
+ * A spawn that omits `env` gets whatever the runner's default is, and that
+ * default changed under us: bun 1.3.11 handed the child the env snapshot taken at
+ * process start, 1.4.5 hands it the live env (pi-config#7, commit afe16c9). Spawns
+ * therefore pass `childEnv()`,
+ * which spreads the *live* env, so the child's env does not depend on which
+ * runner ran us.
  *
  * The vars are injected into every run by `.env.test` (pi-config#22), so the scrub
  * is not a workaround for an inherited value: it is how a file says its rows are

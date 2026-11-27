@@ -8,8 +8,9 @@
  * - withLock() serialises creation and removes a lock whose holder has exited.
  * - createPod() retries Runpod's transient no-capacity 400, and nothing else.
  *
- * No network: fetch is replaced. converge() and createPod() read keys from the
- * Keychain items `runpod-api-key` and `bonsai-llama-api-key`, which must exist.
+ * No network: fetch is replaced. Keys go through the module's reader seam, so the
+ * rows need no Keychain: the two failure messages are pinned separately against
+ * `keychain()`'s own seam.
  *
  * Run: bun test tests/runpod-bonsai.test.ts
  */
@@ -20,9 +21,39 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { childEnv } from "./helpers/subagent-env.ts";
 import { join } from "node:path";
-import { converge, createPod, type Pod, winner, withLock } from "../extensions/runpod-bonsai/index.ts";
+import { _testSetKeyReader, converge, createPod, keychain, type Pod, winner, withLock } from "../extensions/runpod-bonsai/index.ts";
+
+// No Keychain on the machine running this file: the reader seam answers with a
+// fixed key, and the two failure messages are pinned through `keychain()` below.
+_testSetKeyReader((item) => `test-key-for-${item}`);
 
 const pod = (id: string, createdAt: string, status = "RUNNING", name = "pi-bonsai"): Pod => ({ id, name, status, createdAt });
+
+describe("keychain — a missing item and a machine without `security` are different states", () => {
+	// Both throw: an exec seam that returns normally would reach `.trim()` instead.
+	const enoent = () => {
+		throw Object.assign(new Error("spawnSync security ENOENT"), { code: "ENOENT" });
+	};
+
+	it("says the platform cannot read a Keychain when `security` is absent", () => {
+		// The Linux box: the item may well exist, and nothing there can read it.
+		expect(() => keychain("runpod-api-key", enoent as never)).toThrow(/no `security` tool on PATH/);
+	});
+
+	it("carries the reason and the command that adds the item when the read fails otherwise", () => {
+		const denied = () => {
+			throw Object.assign(new Error("security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain."), { code: 44 });
+		};
+		expect(() => keychain("runpod-api-key", denied as never)).toThrow(
+			/cannot read Keychain item "runpod-api-key": security: SecKeychainSearchCopyNext.*If the item is missing, add it with: security add-generic-password -s runpod-api-key -a pi -w <key>/,
+		);
+		// A read that failed for a reason other than a missing item is not reported as
+		// a missing item: the caller can only act on the reason the tool gave.
+		expect(() => keychain("k", (() => {
+			throw new Error("security: user interaction is not allowed");
+		}) as never)).toThrow(/user interaction is not allowed/);
+	});
+});
 
 describe("winner — the pod every session uses", () => {
 	it("is the oldest running pi-bonsai pod", () => {

@@ -12,3 +12,4 @@ date: 2026-07-15
 | 003 | Claude Code subagents default to Haiku; Opus is escalation | done |
 | 004 | Writing guidance draws on Gopen & Swan, Diátaxis and tested examples | done |
 | 005 | One install script for a checkout, on macOS and Debian | done |
+| 006 | The suite runs on the Debian box: five rows that were macOS-only | done |

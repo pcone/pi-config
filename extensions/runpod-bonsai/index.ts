@@ -8,7 +8,10 @@
  * then go to the pod through pi's own OpenAI-compatible client.
  *
  * Keys come from the macOS Keychain: `runpod-api-key` (Runpod REST) and
- * `bonsai-llama-api-key` (the pod's llama-server, also passed to new pods).
+ * `bonsai-llama-api-key` (the pod's llama-server, also passed to new pods). The
+ * Keychain is macOS-only, so on a machine without `security` the provider cannot
+ * serve a request and says exactly that; a key source for Linux is an owner
+ * question, not something this code guesses at.
  */
 
 import {
@@ -68,19 +71,44 @@ export interface Pod {
 	createdAt: string;
 }
 
-function keychain(item: string): string {
+type KeyReader = (item: string) => string;
+
+/** Read one Keychain item. `exec` is a seam so the two failure messages can be
+ *  pinned without a Keychain on the machine running the tests. */
+export function keychain(item: string, exec: typeof execFileSync = execFileSync): string {
 	try {
-		return execFileSync("security", ["find-generic-password", "-s", item, "-w"], { encoding: "utf8" }).trim();
-	} catch {
-		throw new Error(`Keychain item "${item}" not found. Add it with: security add-generic-password -s ${item} -a pi -w <key>`);
+		return exec("security", ["find-generic-password", "-s", item, "-w"], { encoding: "utf8" }).trim();
+	} catch (err) {
+		// No `security` binary is a different state from a missing item: the item may
+		// exist and the platform simply cannot read it. Reporting "not found" there
+		// sends the reader to add a password that a Linux box has nowhere to keep.
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+			throw new Error(
+				`cannot read Keychain item "${item}": there is no \`security\` tool on PATH. This provider keeps its keys in the macOS Keychain (decisions/providers/001), so it cannot serve a request here`,
+			);
+		}
+		// A locked Keychain, a denied ACL and a timeout land here too, so the reason
+		// rides in the message: only the caller knows which of those it hit.
+		const reason = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`cannot read Keychain item "${item}": ${reason.trim() || "the read failed"}. If the item is missing, add it with: security add-generic-password -s ${item} -a pi -w <key>`,
+		);
 	}
+}
+
+let readKey: KeyReader = (item) => keychain(item);
+
+/** Test seam (@for-testing-only): replace the Keychain reader, so rows that are
+ *  about pod convergence and retries do not need a Keychain to exist. */
+export function _testSetKeyReader(reader: KeyReader | null): void {
+	readKey = reader ?? ((item) => keychain(item));
 }
 
 async function runpod(method: string, path: string, signal?: AbortSignal, body?: unknown): Promise<any> {
 	const res = await fetch(`${RUNPOD_API}${path}`, {
 		method,
 		signal,
-		headers: { Authorization: `Bearer ${keychain(RUNPOD_KEY_ITEM)}`, "Content-Type": "application/json" },
+		headers: { Authorization: `Bearer ${readKey(RUNPOD_KEY_ITEM)}`, "Content-Type": "application/json" },
 		body: body === undefined ? undefined : JSON.stringify(body),
 	});
 	const text = await res.text();
@@ -212,7 +240,7 @@ export async function createPod(signal?: AbortSignal, retryMs = CREATE_RETRY_MS)
 	for (let attempt = 1; ; attempt++) {
 		status(`Bonsai: creating pod (RTX 4090)${attempt > 1 ? `, attempt ${attempt}/${CREATE_ATTEMPTS}` : ""}…`);
 		try {
-			return (await runpod("POST", "/pods", signal, podSpec(keychain(LLAMA_KEY_ITEM)))) as Pod;
+			return (await runpod("POST", "/pods", signal, podSpec(readKey(LLAMA_KEY_ITEM)))) as Pod;
 		} catch (err) {
 			const noCapacity = err instanceof RunpodError && err.status === 400 && /does not have the resources|no instances available/i.test(err.body);
 			if (!noCapacity || attempt === CREATE_ATTEMPTS) throw err;

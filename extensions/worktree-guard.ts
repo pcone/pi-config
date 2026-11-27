@@ -96,11 +96,17 @@ export interface BlockResult {
  */
 export function resolveAnchor(anchor: string): string {
 	if (!anchor) return "";
+	let resolved: string;
 	try {
-		return realpathSync(anchor);
+		resolved = realpathSync(anchor);
 	} catch {
-		return anchor;
+		resolved = anchor;
 	}
+	// A trailing separator must not reach a prefix comparison: `parentCwd/` plus sep
+	// spells `parentCwd//`, which no input path starts with. realpathSync strips it
+	// only when the path exists, so the strip cannot depend on the filesystem.
+	const stripped = resolved.replace(/\/+$/, "");
+	return stripped.length > 0 ? stripped : "/";
 }
 
 /**

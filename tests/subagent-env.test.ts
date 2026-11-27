@@ -2,13 +2,12 @@
  * tests/helpers/subagent-env.ts — the one env-control helper the subagent-boundary
  * files share (pi-config#9).
  *
- * Three things are load-bearing enough to pin here rather than re-derive in the
- * files that import it: the scrub restores exactly what it found (including
- * "was absent"), `childEnv()` carries the *live* env, and a spawn that omits
- * `env` does not — Bun hands it the startup snapshot, which is why
- * `childEnv()` exists at all. The quirk row is self-contained (a middle child
- * receives a probe var at its own startup) so this file's verdict never depends
- * on the env its runner happens to have.
+ * Two things are load-bearing enough to pin here rather than re-derive in the files
+ * that import it: the scrub restores exactly what it found (including "was absent"),
+ * and `childEnv()` carries the *live* env — including a variable set after the
+ * process started, which is the value a spawn that omits `env` may not get. Which
+ * default the runner uses for an omitted `env` is the runner's business and changed
+ * between bun 1.3.11 and 1.4.5; this file pins what our code owes instead.
  *
  * Run: bun test tests/subagent-env.test.ts
  */
@@ -85,17 +84,22 @@ describe("childEnv", () => {
 		expect(out).toBe("2");
 	}, 30_000);
 
-	it("is required: a spawn without `env` gets the startup snapshot (bun 1.3.11, observed 2026-10-21)", () => {
-		// A middle child receives PROBE_STARTUP at its own startup, deletes it, then
-		// spawns a grandchild both ways. If this row ever reds, Bun started passing
-		// the live env — `childEnv()` is then merely explicit, still correct.
-		const middle = `
-			const { spawnSync } = require("node:child_process");
-			delete process.env.PROBE_STARTUP;
-			const read = (options) => spawnSync(process.execPath, ["-e", "process.stdout.write(process.env.PROBE_STARTUP ?? '<unset>')"], { encoding: "utf8", ...options }).stdout;
-			process.stdout.write("no-env=" + read({}) + " explicit=" + read({ env: { ...process.env } }));
-		`;
-		const out = bunEval(middle, { ...process.env, PROBE_STARTUP: "startup" });
-		expect(out).toBe("no-env=startup explicit=<unset>");
+	it("is complete: it carries the live env, so no spawn depends on the runner's default", () => {
+		// The default for a spawn that omits `env` changed between bun 1.3.11 and
+		// 1.4.5 (startup snapshot, then the live env), so a row pinning that default
+		// pins the runner, not us. What we own: `childEnv()` spreads the *live* env,
+		// so a var set after startup reaches the child on either version.
+		const key = "PROBE_LIVE_ONLY";
+		expect(process.env[key]).toBeUndefined();
+		process.env[key] = "set-after-startup";
+		try {
+			const env = childEnv({ PI_SUBAGENT_DEPTH: "2" });
+			expect(env[key]).toBe("set-after-startup");
+			expect(env.PI_SUBAGENT_DEPTH).toBe("2");
+			const out = bunEval("process.stdout.write(process.env.PROBE_LIVE_ONLY ?? '<unset>')", env);
+			expect(out).toBe("set-after-startup");
+		} finally {
+			delete process.env[key];
+		}
 	}, 30_000);
 });

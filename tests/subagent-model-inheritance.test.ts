@@ -31,7 +31,7 @@
 import { waitUntilUntracked } from "./helpers/subagent-lifecycle.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import subagentFactory, {
@@ -200,7 +200,7 @@ function resolvePiEntry(): string {
  * which reads as a model-inheritance failure. Production never sees this because
  * argv[1] is already pi's JS entry there.
  */
-export function followToJsEntry(entry: string, maxHops = 5): string {
+export function followToJsEntry(entry: string, maxHops = 5, home = homedir()): string {
 	let current = entry;
 	for (let hop = 0; hop < maxHops; hop++) {
 		const source = readFileSync(current, "utf8");
@@ -211,7 +211,11 @@ export function followToJsEntry(entry: string, maxHops = 5): string {
 		// argv[1], and bun would die parsing a shell script as JS with no message
 		// pointing here (the failure that cost three rows: pi-config#11 thread).
 		if (!exec) throw new Error(`pi wrapper ${current} has no exec line to follow`);
-		current = realpathSync(exec[1].startsWith("/") ? exec[1] : join(dirname(current), exec[1]));
+		// Wrappers spell the real entry either absolutely or through `$HOME`
+		// (`exec $HOME/.local/bin/pi "$@"` on the Debian box); a target that is not
+		// expanded here is read as a relative path and the row dies on ENOENT.
+		const target = exec[1].replace(/\$\{HOME\}|\$HOME/g, home).replace(/^~(?=\/)/, home);
+		current = realpathSync(target.startsWith("/") ? target : join(dirname(current), target));
 	}
 	throw new Error(`pi wrapper chain from ${entry} is still a shell script after ${maxHops} hops`);
 }
@@ -240,10 +244,28 @@ describe("resolvePiEntry follows the PATH pi to a JS entry", () => {
 		expect(followToJsEntry(chain(2))).toEndWith("entry.js");
 	});
 
+	it("expands $HOME and ${HOME} in a wrapper's exec line, as the box's ~/bin/pi spells it", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-wrapper-home-"));
+		dirs.push(dir);
+		const js = join(dir, "entry.js");
+		writeFileSync(js, "process.exit(0);\n");
+		symlinkSync(js, join(dir, "entry-link"));
+		// Unquoted and through $HOME, exactly as /home/agent/bin/pi writes it:
+		// `exec $HOME/.local/bin/pi "$@"`. Unread here, the target is a relative path
+		// and the whole file dies on ENOENT before a single row runs.
+		const plain = join(dir, "pi");
+		writeFileSync(plain, "#!/bin/sh\nexec $HOME/entry-link \"$@\"\n");
+		expect(followToJsEntry(plain, 5, dir)).toBe(realpathSync(js));
+		const braced = join(dir, "pi-braced");
+		writeFileSync(braced, "#!/bin/sh\nexec ${HOME}/entry-link \"$@\"\n");
+		expect(followToJsEntry(braced, 5, dir)).toBe(realpathSync(js));
+	});
+
 	it("fails loud on a wrapper chain it cannot finish", () => {
 		// Silent here means argv[1] stays a `#!/bin/sh` script, and bun dies parsing
 		// it as JS with no message naming this helper.
 		expect(() => followToJsEntry(chain(4), 2)).toThrow(/still a shell script after 2 hops/);
+
 	});
 });
 
