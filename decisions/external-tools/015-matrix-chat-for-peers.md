@@ -61,4 +61,11 @@ date: 2026-11-27
 
 **Recorder's reading of the ninth round (Claude, 2026-11-27).** Rule 14 reads "provider" for "ovhcloud", since the same quarantine fits any provider. DNS records can be automated: a provider-neutral tool (for example dnscontrol or OctoDNS) declares the records in the core, and the provider adapter and its credentials sit in the per-provider directory. Where a neutral tool covers a step, provider-specific code for it is not committed.
 
+15. **Matrix replaces the mailbox.** Matrix is the one message bus for peers. The peer-link file mailbox is deprecated and removed, not bridged; the API is designed for the target system, not as a port of the mailbox's.
+16. **Private network.** The VPS and the dev box, both in OVHcloud Singapore, link over OVHcloud's private network where it can.
+
+**Ruling (owner, 2026-11-27, tenth round).** Shown a draft where the bridge mirrored mailbox envelopes into Matrix, Scott: "I don't know that we should be piggybacking on the mailbox for this? feels like this just replaces the mailbox entirely?" Then: "we should be able to link the two boxes together inside ovhs private network - they're both in singapore. also please rethink the api in the context of 'what does the correct final design look like' too - the old mailbox system is just a separate thing we're deprecating/removing".
+
+**Recorder's reading of the tenth round (Claude, 2026-11-27).** Rules 14 and 16 together: the private-network attachment is provider setup under `providers/ovh/`; the core sees a peer address and runs WireGuard to it either way, so a move off OVHcloud changes the address, not the core. Whether an OVHcloud VPS can join the private network (vRack) was not confirmed on an official page on 2026-11-27.
+
 **Not ruled yet:** nothing blocks drafting `work-orders/WO-matrix-bridge.md`; its own open points go to the owner when it is reviewed.
