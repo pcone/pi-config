@@ -107,6 +107,7 @@ describe("peer-link mailbox", () => {
 			text: "hello",
 			expectReply: true,
 			sentAt: Date.now(),
+			broadcast: false,
 		};
 		sendEnvelope(dir, env);
 		const got = readIncoming(dir, "bob");
@@ -125,6 +126,7 @@ describe("peer-link mailbox", () => {
 			text: "hi",
 			expectReply: false,
 			sentAt: Date.now(),
+			broadcast: false,
 		};
 		sendEnvelope(dir, env);
 		expect(readIncoming(dir, "carol")).toHaveLength(1);
@@ -146,6 +148,7 @@ describe("peer-link mailbox", () => {
 			text: "t",
 			expectReply: false,
 			sentAt: 0,
+			broadcast: false,
 			...over,
 		});
 		// One-way: default steer, explicit follow-up honored.
@@ -179,7 +182,7 @@ describe("peer-link mailbox", () => {
 		const full = "2026-08-09T04-04-38-441Z_019fe4b1-b1a8-79b4-9321-0179b19b1976";
 		expect(full.length).toBe(61);
 		ensureMailbox(dir, full);
-		sendEnvelope(dir, { id: "env-long", from: "x", to: full, text: "t", expectReply: false, sentAt: Date.now() });
+		sendEnvelope(dir, { id: "env-long", from: "x", to: full, text: "t", expectReply: false, sentAt: Date.now(), broadcast: false });
 		expect(readIncoming(dir, full)).toHaveLength(1);
 	});
 
@@ -356,6 +359,7 @@ describe("peer-link consumeInbox acks after delivery", () => {
 				text: "retry me",
 				expectReply: false,
 				sentAt: Date.now(),
+				broadcast: false,
 			});
 			await fake.sessionStart(fakeExtensionCtx(mailbox));
 
@@ -395,8 +399,8 @@ describe("peer-link consumeInbox acks after delivery", () => {
 		});
 		try {
 			peerLink(fake.api);
-			sendEnvelope(mailbox, { id: "env-bad", from: "alice", to: "bob", text: "bad message", expectReply: false, sentAt: Date.now() });
-			sendEnvelope(mailbox, { id: "env-good", from: "alice", to: "bob", text: "good message", expectReply: false, sentAt: Date.now() });
+			sendEnvelope(mailbox, { id: "env-bad", from: "alice", to: "bob", text: "bad message", expectReply: false, sentAt: Date.now(), broadcast: false });
+			sendEnvelope(mailbox, { id: "env-good", from: "alice", to: "bob", text: "good message", expectReply: false, sentAt: Date.now(), broadcast: false });
 			await fake.sessionStart(fakeExtensionCtx(mailbox));
 
 			expect(attempts.some((t) => t.includes("good message"))).toBe(true);
@@ -482,6 +486,58 @@ describe("peer_send broadcast", () => {
 		).rejects.toThrow(/no online peers to broadcast/);
 		expect(readIncoming(mailbox, "alice")).toHaveLength(0);
 	});
+
+	it("flags every copy as a broadcast, and also queues a copy for each external peer", async () => {
+		writeHeartbeat(mailbox, { name: "bob", ts: Date.now() });
+		writeHeartbeat(mailbox, { name: "claude-x", ts: Date.now(), external: true });
+		await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+		const result = await callTool(fake, "peer_send", { to: "*", message: "status?" }, fakeExtensionCtx(mailbox));
+
+		expect(result.details.recipients.sort()).toEqual(["bob", "claude-x"]);
+		expect(readIncoming(mailbox, "bob")[0]).toMatchObject({ text: "status?", broadcast: true });
+		expect(readIncoming(mailbox, "claude-x")[0]).toMatchObject({ text: "status?", broadcast: true });
+	});
+
+	it("a requireOnline broadcast counts only online pi peers, so an external peer alone fails it", async () => {
+		writeHeartbeat(mailbox, { name: "claude-x", ts: Date.now(), external: true });
+		await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+		await expect(
+			callTool(
+				fake,
+				"peer_send",
+				{ to: "*", message: "status?", requireOnline: true },
+				fakeExtensionCtx(mailbox),
+			),
+		).rejects.toThrow(/no online peers to broadcast/);
+		expect(readIncoming(mailbox, "claude-x")).toHaveLength(0);
+	});
+
+	it("a requireOnline broadcast reaches the online pi peers and no external peer", async () => {
+		writeHeartbeat(mailbox, { name: "bob", ts: Date.now() });
+		writeHeartbeat(mailbox, { name: "claude-x", ts: Date.now(), external: true });
+		await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+		const result = await callTool(
+			fake,
+			"peer_send",
+			{ to: "*", message: "status?", requireOnline: true },
+			fakeExtensionCtx(mailbox),
+		);
+
+		expect(result.details.recipients).toEqual(["bob"]);
+		expect(readIncoming(mailbox, "claude-x")).toHaveLength(0);
+	});
+
+	it("a direct peer_send is not flagged as a broadcast", async () => {
+		writeHeartbeat(mailbox, { name: "bob", ts: Date.now() });
+		await fake.sessionStart(fakeExtensionCtx(mailbox));
+
+		await callTool(fake, "peer_send", { to: "bob", message: "just you" }, fakeExtensionCtx(mailbox));
+
+		expect(readIncoming(mailbox, "bob")[0]).toMatchObject({ text: "just you", broadcast: false });
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -534,6 +590,7 @@ describe("peer-link init failure", () => {
 			text: "queued before a failed init",
 			expectReply: false,
 			sentAt: Date.now(),
+			broadcast: false,
 		};
 	}
 
@@ -758,6 +815,7 @@ describe("peer-link integration", () => {
 				text: "ping from alice",
 				expectReply: true,
 				sentAt: Date.now(),
+				broadcast: false,
 			};
 			sendEnvelope(mailbox, incoming);
 
@@ -879,6 +937,7 @@ describe("peer-link integration", () => {
 					"After the tool call, reply with the text 'answer for alice' and nothing else.",
 				expectReply: true,
 				sentAt: Date.now(),
+				broadcast: false,
 			});
 
 			await waitFor(
@@ -919,6 +978,7 @@ describe("peer-link integration", () => {
 					"After the tool call, reply with the text 'answer for alice' and nothing else.",
 				expectReply: true,
 				sentAt: Date.now(),
+				broadcast: false,
 			});
 
 			await waitFor(
