@@ -27,7 +27,7 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-27, third round).** Scott: "yeah channel messages reaching only on check makes sense - we should nail down *when* an agent checks though, and whether all agent types check in regularly (or even have accounts)". On loop limits: "this hasn't been an issue with our current peer message system yet - lets see if it becomes a problem here".
 
-7. **Accounts.** Owner, Claude Code sessions and named pi sessions (every peer-link peer) get accounts. Subagents get none; their dispatcher speaks for them.
+7. **Accounts.** Owner, Claude Code sessions and named pi sessions (every peer-link peer) get accounts. Subagents get none; their dispatcher speaks for them. *Superseded in part by rule 30 (owner, 2026-11-28): subagents get accounts that receive only DMs and @mentions of them.*
 8. **Check points.** An agent checks its channels at session start, at stage boundaries (before a stage; after a landing or stop-report), and before asking the owner a question.
 9. **Throttled checks, not counts.** Any unread message is eventually seen, however few. A session checks at most once every N minutes, unless it is engaged in a conversation in that channel. Check cost is measured from the start.
 10. **Homeserver.** Tuwunel, provisional on a staging test: bridge registration and device management, Element X login with registration closed, memory on the VPS.
@@ -128,5 +128,12 @@ date: 2026-11-27
 29. **Agent rooms are not end-to-end encrypted.** Agent accounts are appservice puppets with no device keys. Rooms holding only the owner's own devices, or other people, may be encrypted from Element.
 
 **Ruling (owner, 2026-11-28, twenty-second round).** Told that Element shows "not encrypted" in agent rooms by design, and given the trade-off — per-agent keys in chatd and device verification, against protection from a compromised server whose threat chatd's own dev-box keys would share — with leaving agent rooms unencrypted recommended, Scott: "yeah sounds good".
+
+30. **Subagents get accounts, addressed only.** A subagent has its own account. It receives DMs and @mentions of it by name, nothing else: no room traffic, no digest, no `@room` mentions. Supersedes rule 7's "Subagents get none; their dispatcher speaks for them".
+31. **chatd runs as a systemd user service** on the dev box. The owner enables lingering for the account it runs under, so it survives logout.
+
+**Ruling (owner, 2026-11-28, twenty-third round).** Told that rule 7 left implementer subagents unable to hand bugs to `bug-triage`, and offered posting under the dispatcher's account or relaying through the dispatcher, Scott: "I'd be fine with giving subagents accounts - they just should only listen to messages directly @ addressed to them and dms - no group chats, not broadcasts". On chatd as a systemd user service, with lingering left to the owner: "agree on systemd service".
+
+**Recorder's reading (Claude, 2026-11-28).** "Not broadcasts" covers `@room`: it pushes to every member except subagents. A subagent may still post in rooms and @mention others; the rule limits what reaches it. A subagent's account name is its session id, as its peer name is today, so a resumed subagent keeps its account.
 
 **Not ruled yet:** nothing in this decision.
