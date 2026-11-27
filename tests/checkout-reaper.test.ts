@@ -5,8 +5,8 @@
  * fixture in a temp home — a repo with an origin, worktrees of it, standalone
  * clones, scratch directories and the row's own shared cargo dir. Nothing in
  * this file reads or writes the box's real `~/Developer/wt`,
- * `~/.cache/cargo-target` or process table: the home, the root and the `lsof`
- * cwd probe are all injected, and the reap removes only inside the temp home.
+ * `~/.cache/cargo-target` or process table: the home, the root and the cwd
+ * probe are all injected, and the reap removes only inside the temp home.
  *
  * The removal path is 091's real `removeWorktreeTree`, so R1's "tree, branch,
  * target and cache attribution all gone" is the production sequence, not a
@@ -23,7 +23,6 @@ import {
 	formatReport,
 	IDLE_DAYS,
 	parseStatus,
-	lsofProcessCwds,
 	readReaperReport,
 	reapCheckouts,
 	_testSetReaperHome,
@@ -34,6 +33,11 @@ import {
 	type ProcessCwd,
 	type ReaperReport,
 } from "../extensions/lib/checkout-reaper.ts";
+import {
+	lsofProcessCwds,
+	procCwdProbe,
+	processCwdProbe,
+} from "../extensions/lib/cwd-probe.ts";
 import subagentFactory, { removeWorktreeTree } from "../extensions/subagent-async/index.ts";
 import { addWorktree, backdate, gitDirOf, makeRepo, mustGit } from "./helpers/reaper-fixtures.ts";
 import { scrubSubagentEnv } from "./helpers/subagent-env.ts";
@@ -343,6 +347,10 @@ describe("R5 — a process whose cwd is inside", () => {
 		});
 		expect(verdictOf(rowFor(report, tree))).toBe("kept:no-cwd-evidence");
 		expect(report.problems.join()).toContain("lsof -d cwd failed");
+		// The row names the state, not the tool: the same gate keeps on a box where the
+		// sweep was /proc and lsof was never invoked.
+		expect(rowFor(report, tree)?.detail).toContain("cwd evidence unavailable");
+		expect(rowFor(report, tree)?.detail).toContain("lsof -d cwd failed: exit 1");
 		expect(existsSync(tree)).toBe(true);
 	});
 });
@@ -812,6 +820,72 @@ describe("the probes", () => {
 		const probe = await lsofProcessCwds(async () => ({ stdout: "", stderr: "lsof: not found", exitCode: 127 }));
 		expect(probe.cwds).toEqual([]);
 		expect(probe.problem).toContain("lsof -d cwd failed");
+	});
+
+	it("picks the sweep the platform has: one lsof pass on macOS, a /proc read on Linux", async () => {
+		let spawned = 0;
+		const run = async () => {
+			spawned += 1;
+			return { stdout: "p100\nn/tmp/a\n", stderr: "", exitCode: 0 };
+		};
+		const mac = await processCwdProbe(run, "/tmp", "darwin");
+		expect(spawned).toBe(1);
+		expect(mac).toEqual({ cwds: [{ pid: 100, cwd: "/tmp/a" }], problem: null });
+		// Linux answers from /proc and spawns nothing. On a Mac the same call reports
+		// an unlistable /proc, which is the "no evidence, no removal" state, not a spawn.
+		const linux = await processCwdProbe(run, "/tmp", "linux");
+		expect(spawned).toBe(1);
+		expect(linux.problem === null).toBe(existsSync("/proc"));
+	});
+
+	it("reads the same table from /proc, and counts what it could not read", () => {
+		const dir = mkdtempSync(join(tmpdir(), "proc-cwds-"));
+		try {
+			for (const [pid, cwd] of [["202", "/home/x/b"], ["101", "/home/x/a"]] as const) {
+				mkdirSync(join(dir, pid));
+				symlinkSync(cwd, join(dir, pid, "cwd"));
+			}
+			mkdirSync(join(dir, "303")); // a kernel thread: no cwd link to read
+			writeFileSync(join(dir, "not-a-pid"), "");
+			const probe = procCwdProbe(dir);
+			expect(probe.problem).toBeNull();
+			// Sorted by pid: `processInside` reports the first match, so readdir order
+			// must not decide which holder the report names.
+			expect(probe.cwds).toEqual([
+				{ pid: 101, cwd: "/home/x/a" },
+				{ pid: 202, cwd: "/home/x/b" },
+			]);
+			// A partial sweep says how far it saw; it is not an empty table.
+			expect(probe.note).toBe("cwd sweep: 1 process not readable (other users or kernel threads)");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reports an unlistable /proc rather than an empty process table", () => {
+		const probe = procCwdProbe(join(tmpdir(), "no-such-proc-dir-for-the-reaper"));
+		expect(probe.cwds).toEqual([]);
+		expect(probe.problem).toContain("cannot list");
+	});
+
+	it("reports how far the sweep saw: a partial sweep rides in problems, and still gates", async () => {
+		const f = fixture();
+		const { repo } = makeRepo(f.home);
+		const tree = join(f.subagentBase, "myrepo-eeeeeeeeeee3");
+		addWorktree(repo, tree, "wt-r5c");
+		backdate(gitDirOf(tree));
+		backdate(tree);
+		const { report } = await reap(f, {
+			listCwds: async () => ({
+				cwds: [{ pid: 7, cwd: tree }],
+				problem: null,
+				note: "cwd sweep: 41 processes not readable (other users or kernel threads)",
+			}),
+		});
+		// The note is the pass saying what it could not see; dropping the wiring makes it
+		// an unstated blindness, so the row asserts the report carries it.
+		expect(report.problems.join("\n")).toContain("41 processes not readable");
+		expect(verdictOf(rowFor(report, tree))).toBe("kept:in-use");
 	});
 
 	it("finds the worktree roots under a home", () => {

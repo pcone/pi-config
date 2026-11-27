@@ -44,6 +44,13 @@ that is not 091's, and the only one that can be (owner 2026-11-09).
 Every gate must hold. A gate that cannot be evaluated is a keep. The probes run
 cheapest first, so a checkout that is young or locked costs no spawn.
 
+The unused gate answers only for the processes the invoking user can inspect: on
+macOS `lsof` without root omits other users' processes, and on Linux `/proc`, which
+this reads directly, refuses another user's `cwd`. A checkout held open by a
+different user's process can therefore be removed. The sweep reports how many
+processes it could not read, so the pass states its own reach
+(`decisions/settings/006-linux-suite-parity.md`).
+
 | gate | probe | cost |
 |---|---|---|
 | locked | `<gitdir>/locked` exists | `stat` |
@@ -53,7 +60,7 @@ cheapest first, so a checkout that is young or locked costs no spawn.
 | nothing only local | `git log --source <HEAD\|--branches HEAD --tags> --not --remotes` is empty; a worktree in sync with its upstream (`ahead 0` in the status header) skips the spawn | 0–1 spawn |
 | ignored bytes | `du -csk` over the paths git ignores — reported, never a blocker | 1 spawn, only when something is ignored |
 | idle again | the newest file mtime in the tree (`.git` and git-ignored paths excluded) is ≥ 7 days old | stat walk, removal candidates only |
-| unused | one `lsof -d cwd -Fpn` pass for the whole box, resolved on first need | 1 spawn per pass |
+| unused | one cwd sweep for the whole box, resolved on first need: `lsof -d cwd -Fpn` on macOS, one `readlink` per pid over `/proc/<pid>/cwd` on Linux (`cwd-probe.ts`) | 1 spawn per pass on macOS, none on Linux |
 
 The age screen reads the checkout's own metadata, not the tree: a full-tree walk
 of 100 worktrees costs minutes (a single 8,000-file `target/` is ~250 ms), and
@@ -162,15 +169,16 @@ pass, `dryRun`, nothing removable:
 | `walkCheckouts`: 141 entries classified | 33–53 ms warm, 281 ms cold (re-measured 2026-11-09; an earlier run on the same box read 87 ms) |
 | the checkouts' gates (17 locked, 71 active, 2 dirty — 2 `git status` spawns) | 150 ms |
 | one batched `du -sk` over the 40 scratch dirs (1.44 GiB) | 1062 ms |
-| the `lsof` pass, on a box where a candidate reached the unused gate | 388–1790 ms |
+| the `lsof` pass, on a box where a candidate reached the unused gate | 388–1790 ms (macOS, measured 2026-11-09) |
+| the `/proc` sweep: 236 entries, 170 unreadable | 2.5 ms (Debian box, measured 2026-11-27) |
 | `du -csk` of one tree's in-tree `target/` (2.8 GiB) | 76 ms |
 
 So the steady-state floor is ~250 ms and the scratch sizes are the pass's only
 heavy report step: they run last, under whatever budget is left, and a `du` the
 budget kills leaves the directories it finished measured and the rest saying
-"size not measured". `lsof` is the other heavy probe and runs only when a
+"size not measured". The cwd sweep is the other probe and runs only when a
 candidate has passed every other gate, so a pass that removes nothing does not
-pay for it.
+pay for it — and on Linux it spawns nothing at all.
 
 Over budget (1800 ms) the gates stop and the candidates they did not reach are
 written as `deferred`, not as keeps: the next session start continues from the
@@ -185,7 +193,8 @@ probe handed the remaining budget, and it is killed at it.
 ## Refusals
 
 - A checkout with uncommitted work, an unpushed commit, a stash, a lock, or a
-  process inside it is never removed, whatever else holds.
+  process the reaper can see inside it is never removed, whatever else holds. The
+  unused gate sees this user's processes and reports the ones it could not read.
 - `scratch` is never deleted.
 - `~/Developer/<repo>` main checkouts are outside the walk: `root` is
   `~/Developer/wt`.

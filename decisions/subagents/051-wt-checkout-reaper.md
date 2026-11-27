@@ -181,3 +181,15 @@ pass with no removal candidate pays nothing for it.
 - **A second `git worktree remove`.** 091's `removeWorktreeTree` is the one
   removal path for a worktree. The orphan case is the single exception and has
   no repository to run it in.
+
+## Superseded note — the unused gate reads `/proc` on Linux (2026-11-27)
+
+The gate's question ("is any process inside this tree?") was answered by `lsof -d cwd -Fpn`, which
+Debian does not install: on the box every candidate failed closed with "lsof unavailable", so nothing
+would ever have been removed. `processCwdProbe` now picks the sweep the platform can do — `lsof` on
+macOS, one `readlink` per pid over `/proc/<pid>/cwd` on Linux, which needs no tool. Linux shows only
+this user's processes; the count it could not read rides in the report as a `problems` line, so a
+partial sweep is stated rather than passed off as an empty one. The deferral until a candidate needs
+the sweep, the "no evidence, no removal" rule and the call site are unchanged; the probe result gained
+a `note`, the `listCwds` seam is typed `CwdProbe`, `processCwdProbe` replaces `lsofProcessCwds` as the
+default, and the family moved to `extensions/lib/cwd-probe.ts`.

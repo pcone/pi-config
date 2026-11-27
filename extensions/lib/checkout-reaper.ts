@@ -14,9 +14,10 @@
  * Two facts shape the implementation more than the rest:
  *
  * - **Cost.** This runs at every session start. The classification and the one
- *   `lsof` pass cost ~0.5 s on this box's ~300 entries, and a gate costs one
- *   git spawn, so the gates run under a wall-time budget: what the pass did not
- *   reach is reported as deferred, not silently kept.
+ *   cwd sweep cost ~0.5 s on this box's ~300 entries (2.5 ms over 236 `/proc`
+ *   entries on a Debian box), and a gate costs one git spawn, so the gates run
+ *   under a wall-time budget: what the pass did not reach is reported as
+ *   deferred, not silently kept.
  * - **Nothing goes with unsaved work.** A gate that cannot be evaluated is a
  *   keep. There is one removal path for a worktree, `removeWorktreeTree`
  *   (WO-2026-091), passed in as `removeWorktree`; this module never runs
@@ -468,10 +469,7 @@ function formatBytes(bytes: number): string {
 // The cwd sweep lives in `cwd-probe.ts` (one concern, one file); re-exported
 // because that is the surface the reaper's tests and callers already use.
 
-import { lsofProcessCwds, processInside, type ProcessCwd } from "./cwd-probe.ts";
-
-export { lsofProcessCwds, processInside };
-export type { ProcessCwd };
+import { processCwdProbe, processInside, type CwdProbe, type ProcessCwd } from "./cwd-probe.ts";
 
 // ── The pass ───────────────────────────────────────────────────────────────
 
@@ -515,10 +513,10 @@ export interface ReapCheckoutsOptions {
 	 *  yielded nothing, or the meta whose processing threw. Reported so the
 	 *  operator can tell a torn file to delete from a failure to investigate. */
 	subagentScopeDetail?: string;
-	/** Injection seams: the real ones are `runGit`, lsof and `du`. */
+	/** Injection seams: the real ones are `runGit`, the cwd sweep and `du`. */
 	git?: typeof runGit;
 	run?: CommandRunner;
-	listCwds?: () => Promise<{ cwds: ProcessCwd[]; problem: string | null }>;
+	listCwds?: () => Promise<CwdProbe>;
 }
 
 export interface ReapCheckoutsResult {
@@ -535,7 +533,7 @@ export interface ReapCheckoutsResult {
  * deferred until something needs them, because on a box where nothing is
  * removable they must cost nothing:
  *
- * - the `lsof` cwd pass runs when the first candidate reaches the unused gate;
+ * - the cwd sweep runs when the first candidate reaches the unused gate;
  * - the scratch sizes are report-only, so they are measured after every checkout
  *   and only when the pass still has most of its budget left.
  */
@@ -553,7 +551,7 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 		problems: [],
 	};
 	const run = opts.run ?? spawnRunner;
-	let probe: { cwds: ProcessCwd[]; problem: string | null } | null = null;
+	let probe: CwdProbe | null = null;
 	const ctx: ReapContext = {
 		home: opts.home ?? reaperHome(),
 		now,
@@ -561,8 +559,9 @@ export async function reapCheckouts(opts: ReapCheckoutsOptions): Promise<ReapChe
 		run,
 		cwds: async () => {
 			if (!probe) {
-				probe = opts.listCwds ? await opts.listCwds() : await lsofProcessCwds(run, reaperHome());
+				probe = opts.listCwds ? await opts.listCwds() : await processCwdProbe(run, reaperHome());
 				if (probe.problem) report.problems.push(probe.problem);
+				if (probe.note) report.problems.push(probe.note);
 			}
 			return probe;
 		},
@@ -638,9 +637,9 @@ interface ReapContext {
 	/** The pass's report, so a probe that cannot answer says so in `problems`
 	 *  instead of throwing the row away. */
 	report: ReaperReport;
-	/** The one `lsof` pass, run on first need and cached: a pass that removes
+	/** The one cwd sweep, run on first need and cached: a pass that removes
 	 *  nothing must not pay for it. */
-	cwds: () => Promise<{ cwds: ProcessCwd[]; problem: string | null }>;
+	cwds: () => Promise<CwdProbe>;
 	checkedAt: string;
 	entries: readonly CheckoutEntry[];
 	dryRun: boolean;
@@ -784,7 +783,7 @@ async function gateAndReap(entry: CheckoutEntry, ctx: ReapContext): Promise<Reap
 	}
 
 	// gate 4b — unused, and the last expensive probe before a removal: a pass
-	// that removes nothing never pays for the `lsof` sweep. Without the probe
+	// that removes nothing never pays for the cwd sweep. Without the probe
 	// there is no evidence either way, and "probably fine" is a keep.
 	const busy = await unusedCheck(entry, ctx);
 	if (busy) return keep(busy.gate, { unsaved: busy.unsaved, detail: busy.detail });
@@ -800,11 +799,11 @@ async function gateAndReap(entry: CheckoutEntry, ctx: ReapContext): Promise<Reap
 	return { ...row, state: "removed", gate: null, removed: { ...removal.facts, ...(sharedWith.length > 0 ? { sharedWith } : {}) } };
 }
 
-/** Gate 4b: the one `lsof` sweep, resolved on first need. The returned row is
+/** Gate 4b: the one cwd sweep, resolved on first need. The returned row is
  *  set when the checkout cannot be shown unused, and names why. */
 async function unusedCheck(entry: CheckoutEntry, ctx: ReapContext): Promise<ReaperRow | null> {
 	const probe = await ctx.cwds();
-	if (probe.problem !== null) return { ...baseRow(entry, ctx.checkedAt), gate: "no-cwd-evidence", detail: "lsof unavailable: not removing" };
+	if (probe.problem !== null) return { ...baseRow(entry, ctx.checkedAt), gate: "no-cwd-evidence", detail: `cwd evidence unavailable: not removing (${probe.problem})` };
 	const busy = processInside(probe.cwds, entry.path);
 	if (!busy) return null;
 	return { ...baseRow(entry, ctx.checkedAt), gate: "in-use", unsaved: { pid: busy.pid, processCwd: busy.cwd } };
