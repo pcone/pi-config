@@ -154,6 +154,80 @@ describe("rule (A): a mainline push must be HEAD", () => {
 	});
 });
 
+describe("rule (C): the previous tip stays on the first-parent line", () => {
+	// Each row starts from main and leaves the repo on main. Files are unique per row, so a merge
+	// conflict is never the verdict.
+	function commitFile(name: string): string {
+		fs.writeFileSync(path.join(repo, name), `${name}\n`);
+		git("add", "-A");
+		git("commit", "-q", "-m", `add ${name}`);
+		return git("rev-parse", "HEAD");
+	}
+
+	it("refuses a merge of the remote tip into local work, naming both shas", () => {
+		git("checkout", "-q", "main");
+		git("checkout", "-q", "-b", "local-c1");
+		commitFile("c1-local.txt");
+		git("checkout", "-q", "main");
+		const remoteTip = commitFile("c1-remote.txt");
+		git("checkout", "-q", "local-c1");
+		git("merge", "-q", "--no-ff", "-m", "merge remote into local", "main");
+		const tip = git("rev-parse", "HEAD");
+		const r = runHook([line("refs/heads/main", tip, "refs/heads/main", remoteTip)]);
+		git("checkout", "-q", "main");
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("NOT LANDED");
+		expect(r.stderr).toContain(remoteTip);
+		expect(r.stderr).toContain(tip);
+	});
+
+	it("passes direct commits rebased on top of the previous tip", () => {
+		git("checkout", "-q", "main");
+		const old = git("rev-parse", "HEAD");
+		commitFile("c2-a.txt");
+		const tip = commitFile("c2-b.txt");
+		const r = runHook([line("refs/heads/main", tip, "refs/heads/main", old)]);
+		expect(r).toMatchObject({ code: 0, stderr: "" });
+	});
+
+	it("passes a --no-ff merge made from the previous tip, with a mainline merge inside the branch", () => {
+		git("checkout", "-q", "main");
+		const base = git("rev-parse", "HEAD");
+		git("checkout", "-q", "-b", "feat3", base);
+		commitFile("f3-work.txt");
+		git("checkout", "-q", "main");
+		const old = commitFile("f3-main.txt");
+		git("checkout", "-q", "feat3");
+		git("merge", "-q", "--no-ff", "-m", "feat3 takes main", "main");
+		git("checkout", "-q", "main");
+		git("merge", "-q", "--no-ff", "-m", "land feat3", "feat3");
+		const tip = git("rev-parse", "HEAD");
+		const r = runHook([line("refs/heads/main", tip, "refs/heads/main", old)]);
+		expect(r).toMatchObject({ code: 0, stderr: "" });
+	});
+
+	it("passes a push that creates the mainline ref", () => {
+		git("checkout", "-q", "main");
+		const tip = commitFile("c4.txt");
+		const r = runHook([line("refs/heads/main", tip, "refs/heads/main", ZERO)]);
+		expect(r).toMatchObject({ code: 0, stderr: "" });
+	});
+
+	it("passes a side-branch push of the same foxtrot shape, since the rule is mainline-only", () => {
+		git("checkout", "-q", "main");
+		git("checkout", "-q", "-b", "local-c5");
+		commitFile("c5-local.txt");
+		git("checkout", "-q", "main");
+		const remote = commitFile("c5-remote.txt");
+		git("checkout", "-q", "local-c5");
+		git("merge", "-q", "--no-ff", "-m", "merge main into side", "main");
+		const tip = git("rev-parse", "HEAD");
+		git("checkout", "-q", "main");
+		const r = runHook([line("refs/heads/side5", tip, "refs/heads/side5", remote)]);
+		expect(r).toMatchObject({ code: 0, stderr: "" });
+	});
+});
+
 describe("rule (B): a work-orders id no live ref holds", () => {
 	it("refuses an id a live ref already holds, naming the ref", () => {
 		const base = git("rev-parse", "HEAD");

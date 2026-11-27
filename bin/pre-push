@@ -13,14 +13,16 @@
 #     (rules/work-order-numbering.md). "Adds" is measured against the ref's old tip, or for a
 #     new ref against the commits no other ref holds; a ref this push descends from is not a
 #     rival, so a merge landing its branch's ids is not refused.
+# (C) A push that moves the mainline must keep its previous tip on the pushed tip's first-parent
+#     line: a direct commit on it, or a merge made from it. Git takes a merge of the old tip into
+#     local work as a fast-forward, so only this rule refuses it (APPEND_SYSTEM § Landing work).
 #
 # The mainline is the calling repo's, never a literal: `git config pi.mainline` (pi-config:
 # main, tfd: hamster). Unset is a hard error, not a default — a gate that quietly picks the
 # wrong branch is the failure this file exists to prevent.
 #
 # Installation is a relative symlink (`.git/hooks/pre-push -> ../../bin/pre-push`), so the gate
-# tracks the worktree; measure across commits by copying the file out first. tfd wiring this is
-# a tfd order and is not done yet, so nothing outside pi-config is gated by these rules.
+# tracks the worktree; measure across commits by copying the file out first. `bin/setup` installs it.
 #
 # Narrow on purpose: a push carrying no mainline ref passes the landing rules silently (a side
 # branch, a keep ref, a restore), and rule (B) reads only work-orders/ paths the push adds.
@@ -84,6 +86,29 @@ if [ -n "$target" ]; then
         echo "  HEAD is   ${head_sha}" >&2
         echo "  Cut a branch at the commit you mean to land and push from it." >&2
         exit 1
+    fi
+fi
+
+# ── (C) the previous mainline tip is on the pushed tip's first-parent line ────
+# The oldest commit of the first-parent walk from the tip down to the old tip must have the old
+# tip as its first parent. A walk that meets an ancestor of the old tip first has a foxtrot shape.
+# A created mainline ref has no old tip to judge.
+old=$(printf '%s\n' "$pushed" | awk -v ref="$mainline_ref" '$3 == ref {print $4; exit}')
+if [ -n "$target" ] && [ "$old" != "$zero" ]; then
+    span=$(git rev-list --first-parent "$old..$target") \
+        || die "cannot diff $mainline_ref ($old) against $target."
+    if [ -n "$span" ]; then
+        oldest=$(printf '%s\n' "$span" | tail -n 1)
+        oldest_parents=$(git log -1 --format=%P "$oldest") \
+            || die "cannot read the parents of $oldest."
+        if [ "${oldest_parents%% *}" != "$old" ]; then
+            echo "NOT LANDED: the previous $mainline_ref tip is not on the first-parent line of the commit pushed to it." >&2
+            echo "  previous tip is ${old}" >&2
+            echo "  pushing        ${target}" >&2
+            echo "  Rebase unpushed direct commits onto the previous tip (git pull --rebase), or rebase the" >&2
+            echo "  branch and merge it --no-ff from a detached $mainline_branch tip." >&2
+            exit 1
+        fi
     fi
 fi
 
