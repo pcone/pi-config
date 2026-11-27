@@ -798,6 +798,21 @@ describe("peer-link integration", () => {
 		}
 	}, 240_000);
 
+	it("a mailbox removed under a live session stops the timers, instead of throwing into them (#25)", async () => {
+		const mailbox = await mkdtemp(join(tmpdir(), "peer-link-mail-"));
+		const env = await setupSession({ peerName: "dave", mailbox, tools: ["peer_list"] });
+		try {
+			// The bug's other trigger, without any teardown: the tree the timers publish
+			// into is deleted while the runtime is still armed. Both ticks must ask before
+			// writing — an uncaught ENOENT here lands on whichever row is next.
+			await rm(mailbox, { recursive: true, force: true });
+			await new Promise((resolve) => setTimeout(resolve, 6000));
+			expect(existsSync(mailbox)).toBe(false);
+		} finally {
+			await env.cleanup();
+		}
+	}, 30_000);
+
 	it("teardown stops the heartbeat, so its own row is not the one an ENOENT lands on (#25)", async () => {
 		const mailbox = await mkdtemp(join(tmpdir(), "peer-link-mail-"));
 		const env = await setupSession({ peerName: "carol", mailbox, tools: ["peer_list"] });

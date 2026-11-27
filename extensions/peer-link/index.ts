@@ -205,8 +205,17 @@ export default function (pi: ExtensionAPI) {
 		stopRuntime();
 		publishHeartbeat();
 		consumeInbox();
-		scanTimer = setInterval(() => consumeInbox(), SCAN_MS);
+		scanTimer = setInterval(() => {
+			if (mailboxPresent()) consumeInbox();
+		}, SCAN_MS);
 		heartbeatTimer = setInterval(() => {
+			// The mailbox root can go while this runtime is still armed: a host that
+			// tears the peer link down without `session_shutdown`, or a user emptying
+			// `~/.pi/peer-mail`. Both timer bodies ask first, so the tick states the
+			// state instead of throwing into the event loop, where the failure lands on
+			// whatever is running (pi-config#25; decision subagents/026 for the shape —
+			// an explicit liveness check, never a catch).
+			if (!mailboxPresent()) return;
 			publishHeartbeat();
 			sweepStalePeers(state.mailbox);
 		}, HEARTBEAT_MS);
@@ -233,6 +242,20 @@ export default function (pi: ExtensionAPI) {
 		}
 		watcher = undefined;
 		if (state.mailbox && state.peerName) removeHeartbeat(state.mailbox, state.peerName);
+	}
+
+	/** False once the mailbox root this session published into is gone. Warned once,
+	 *  named, not swallowed: the state is "nothing to publish to", and it is answered
+	 *  here so no caller has to catch it. */
+	let warnedMailboxGone = false;
+	function mailboxPresent(): boolean {
+		if (!state.mailbox) return false;
+		if (fs.existsSync(state.mailbox)) return true;
+		if (!warnedMailboxGone) {
+			warnedMailboxGone = true;
+			mailWarn(`peer-link: mailbox ${state.mailbox} is gone; heartbeats and the inbox scan have stopped`);
+		}
+		return false;
 	}
 
 	function publishHeartbeat(): void {
