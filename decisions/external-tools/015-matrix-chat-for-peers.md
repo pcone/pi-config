@@ -149,11 +149,20 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-28, twenty-sixth round, over Matrix).** Scott: "possible to start signalling that you're typing when you initially receive the chat message?" Offered the same in chatd as a follow-up order, not a change to the in-flight WO-2026-107, Scott: "cool yeah sounds good".
 
-36. **The owner starts pi sessions from a group room.** When the owner @mentions a peer name in a group room and no session has that name, chatd starts a pi session with it in that room. The owner's message is its first prompt, so the room's other members see the ask and the new session's work from the start. Only the owner's account can trigger it. Claude sessions are never started (013). Starting one by DMing a new name is deferred. Built after WO-2026-107, as WO-2026-109.
+36. **The owner starts pi sessions from a group room.** When the owner @mentions a peer name in a group room and no session has that name, chatd starts a pi session with it in that room. The owner's message is its first prompt, so the room's other members see the ask and the new session's work from the start. Only the owner's account can trigger it. Claude sessions are never started (013). Starting one by DMing a new name is deferred. Built after WO-2026-107, as WO-2026-109. *Trigger superseded by rule 37 (owner, 2026-11-28): an @mention of `@pi-system` in plain English, not a mention of a new name.*
 
 **Ruling (owner, 2026-11-28, twenty-seventh round, over Matrix).** Scott: "For the pi sessions, where we don't have to worry about tos violations I think we should have a hook for launching a brand new session + user". Offered a DM to a new name (recommended) or a command to `@pi-system`, owner-only, Scott: "Can we make the trigger an ask in any group instead? Only from me still of course - that way other sessions that might be relevant are made aware of it and what it's doing straight away. Dming a new name could be useful too but we don't need to build that in the first pass."
 
+Scott, on the mention trigger: "That feels a little too magic - id rather something that makes the intent more obvious".
+
+37. **`@pi-system` takes plain-English instructions; actions are gated mechanically.** The owner @mentions `@pi-system` in a room and says what he wants in plain English. A model interprets the intent. Privileged actions, starting a session first among them, run only for a message from the owner's account that @mentions `@pi-system`, and chatd's code checks that, not the model.
+
+**Ruling (owner, 2026-11-28, twenty-eighth round, over Matrix).** Offered a `!start <name> in <repo>: <task>` command (recommended) or a mention of `@pi-system`, Scott: "Hmm - tagging a system account makes sense, can we just accept organic instructions though - if I ask it to do something in plain English it should be able to do it. Things like launching new agents should require an @ tagged message from me, and that should be enforced mechanically,but intent interpretation can be up to the receiving model".
+
+**Recorder's reading (Claude, 2026-11-28).** A standing pi session, as `bug-triage` is today, on a non-Claude model (013), answers mentions of `@pi-system`. Its privileged tools, such as starting a session, take the id of the triggering event. chatd runs one only if that event's sender is the owner, it @mentions `@pi-system`, and no earlier action has used it.
+
 **Not ruled yet:**
+- the model behind `@pi-system`;
 - where a started session runs (proposed: a new window in tmux session `main`, `pi --name <name>`, cwd from the message or `~/Developer`);
 - a cap on concurrent started sessions (proposed: 4);
 - lifecycle (proposed: an ordinary named session, never restarted).
