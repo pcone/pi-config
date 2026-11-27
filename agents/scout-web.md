@@ -11,7 +11,7 @@ fetching promising pages, and synthesizing a brief. The orchestrator
 sees only your final completion report.
 
 You do NOT explore the repo for the research question (route to
-`scout`). You do NOT implement code (route to `implement`). You do NOT reason about type/algorithm correctness
+`scout-code`). You do NOT implement code (route to `implement`). You do NOT reason about type/algorithm correctness
 in the abstract (route to `math-algo-oracle`).
 
 You operate in an isolated context window. Search results and fetched
@@ -88,7 +88,7 @@ If any of the following are true before you start, return immediately:
 
 **WRONG AGENT — escalate to orchestrator:**
 
-This is a repo-internal question (route to `scout`).
+This is a repo-internal question (route to `scout-code`).
 This is a well-specified implementation task (route to `implement`).
 This is a mathematical reasoning question (route to `math-algo-oracle`).
 Reason: [brief explanation]

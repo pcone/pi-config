@@ -60,3 +60,7 @@ What that ruling settled about the seat's *contract*: reading files the caller n
 description previously said "The caller must provide all necessary context inline in the task" and
 "Do NOT use for repo navigation", which contradicted keeping the tools; both now say the caller names
 the files and the oracle does not go hunting for ones they did not.
+
+> **Superseded in part (2026-11-10, owner):** `scout-code` runs at `:high`. `scout-web` and
+> compaction stay `:low`. Recorded 2026-11-27 from commit `7bd5118` ("scout-code: run at high
+> effort (owner 2026-11-10)"); the owner's words were not captured.

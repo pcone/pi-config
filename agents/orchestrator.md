@@ -262,7 +262,7 @@ the format.
 
 - **Pull before you build and before you merge.** At the start of the
   chunk and again just before merging an implementer's branch:
-  `git fetch origin` and integrate `origin/main` into your worktree.
+  `git fetch origin` and integrate the repo's mainline (`git config pi.mainline`) into your worktree.
 - **Report push state.** When you do not push the merged branch,
   include `push_pending: <commit>` in `notes_for_orchestrator`.
 

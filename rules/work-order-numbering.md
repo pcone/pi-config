@@ -79,7 +79,7 @@ on it:
    (ledger, roadmap rows, dispatch text) into its gate commit rather than as
    a separate one — so the id and its references move together.
 4. **Non-fast-forward rejection is the collision alarm.** On rejection:
-   pull-merge; if the merge brought a WO holding your id, renumber to the new
+   rebase onto the remote (`git pull --rebase`); if it brought a WO holding your id, renumber to the new
    next-free id, rewrite the id inside the file (and any references), re-push.
    Repeat until the push lands.
 5. The id exists on the shared remote
