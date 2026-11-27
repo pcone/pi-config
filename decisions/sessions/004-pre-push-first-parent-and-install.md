@@ -16,8 +16,11 @@ date: 2026-11-27
 **Ruling:** owner, 2026-11-27, on the two findings put to him (the hook missing on tfd-box and
 absent from `bin/setup`; no foxtrot guard in pi-config): "yeah we should add these".
 
-Recorder's reading: both land. Setting `pi.mainline` in setup is the recorder's choice, not the
-owner's words: the hook refuses every push while it is unset, so an install that left it unset
+Recorder's reading: both land.
+
+**Ruling:** owner, 2026-11-27, on setup setting `pi.mainline` to `main` when a clone has none,
+put to him as the recorder's choice with the alternative that setup stop and tell the user:
+"agree". The hook refuses every push while the value is unset, so an install that left it unset
 would block the clone.
 
 **Why:**
