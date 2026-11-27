@@ -179,6 +179,10 @@ describe("rule (C): the previous tip stays on the first-parent line", () => {
 		expect(r.stderr).toContain("NOT LANDED");
 		expect(r.stderr).toContain(remoteTip);
 		expect(r.stderr).toContain(tip);
+		// The shape by name: a repo that imports this gate (tfd) asserts the refusal from here,
+		// so the wording carries the vocabulary its own check used to (decisions/sessions/004).
+		expect(r.stderr).toContain("foxtrot merge");
+		expect(r.stderr).toContain("first-parent line");
 	});
 
 	it("passes direct commits rebased on top of the previous tip", () => {

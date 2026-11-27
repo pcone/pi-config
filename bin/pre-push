@@ -102,7 +102,7 @@ if [ -n "$target" ] && [ "$old" != "$zero" ]; then
         oldest_parents=$(git log -1 --format=%P "$oldest") \
             || die "cannot read the parents of $oldest."
         if [ "${oldest_parents%% *}" != "$old" ]; then
-            echo "NOT LANDED: the previous $mainline_ref tip is not on the first-parent line of the commit pushed to it." >&2
+            echo "NOT LANDED: the previous $mainline_ref tip is not on the first-parent line of the commit pushed to it — a foxtrot merge, so the landing does not build on it (R98)." >&2
             echo "  previous tip is ${old}" >&2
             echo "  pushing        ${target}" >&2
             echo "  Rebase unpushed direct commits onto the previous tip (git pull --rebase), or rebase the" >&2
