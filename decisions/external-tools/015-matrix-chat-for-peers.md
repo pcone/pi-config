@@ -161,9 +161,11 @@ Scott, on the mention trigger: "That feels a little too magic - id rather someth
 
 **Recorder's reading (Claude, 2026-11-28).** A standing pi session, as `bug-triage` is today, on a non-Claude model (013), answers mentions of `@pi-system`. Its privileged tools, such as starting a session, take the id of the triggering event. chatd runs one only if that event's sender is the owner, it @mentions `@pi-system`, and no earlier action has used it.
 
-**Ruling (owner, 2026-11-28, over Matrix).** The model behind `@pi-system`: "deepseek-v4.1-flash, just like the other pi models".
+**Ruling (owner, 2026-11-28, over Matrix).** The model behind `@pi-system`: "deepseek-v4.1-flash, just like the other pi models". On the proposed cap of 4 started sessions: "on the cap - possible to just cal at 4 *actively processing* sessions - more should be able to exist, and stale ones should just be a warning".
+
+**Recorder's reading.** The cap counts started sessions that are processing a turn, not ones that exist. A start request beyond it creates the session, which waits to take its first prompt until fewer than 4 are processing. A session idle past a threshold is reported to the owner as stale, and nothing stops it.
 
 **Not ruled yet:**
 - where a started session runs (proposed: a new window in tmux session `main`, `pi --name <name>`, cwd from the message or `~/Developer`);
-- a cap on concurrent started sessions (proposed: 4);
+- the stale threshold, and how the warning reaches the owner (proposed: a `@pi-system` DM after 2 h idle);
 - lifecycle (proposed: an ordinary named session, never restarted).
