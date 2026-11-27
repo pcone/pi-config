@@ -109,4 +109,12 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-27, eighteenth round).** Scott, on rule 24: "I'm fine with provider managed backups for this - would rather than than paying for separate storage resources again".
 
+26. **VPS SSH over WireGuard only.** The VPS admits SSH on `wg0` only, as the dev box does.
+
+**Ruling (owner, 2026-11-28, nineteenth round).** Shown a scan where the VPS answered on public TCP 22, 80 and 443, Scott: "yeah ssh on the VPS should be wireguard only - is it possible for the caddy (I assume this is needed for matrix?) to be wireguard only too? I don't need to access it from anything other than devices that I can install wireguard on".
+
+27. **HTTPS over WireGuard only.** Caddy answers on `wg0` only; `chat.sjmcd.me` resolves to `10.213.47.10`. Certificates come from Let's Encrypt by DNS-01: `_acme-challenge.chat.sjmcd.me` is delegated by CNAME from Namecheap to deSEC, and Caddy writes the challenge there. The owner's MacBook and phone are WireGuard peers of the VPS. The only public port left is WireGuard's UDP port. LLMNR is turned off on the VPS.
+
+**Ruling (owner, 2026-11-28, twentieth round).** Offered DNS-01 through a deSEC-delegated challenge name (recommended), a private CA, or a public port 80 for ACME, with the owner's devices as direct VPS peers, Scott: "your recommendations sound good".
+
 **Not ruled yet:** nothing in this decision.
