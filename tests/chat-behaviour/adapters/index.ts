@@ -13,3 +13,8 @@ export const ADAPTERS: readonly Adapter[] = [peerLinkAdapter, chatdAdapter];
 export function asToday(adapter: Adapter): typeof it | typeof it.skip {
 	return adapter.name === "peer-link" ? it : it.skip;
 }
+
+/** A row as a WO-2026-107 design ruling has it: it runs where the ruling is built. */
+export function asRuled(adapter: Adapter): typeof it | typeof it.skip {
+	return adapter.name === "chatd" ? it : it.skip;
+}

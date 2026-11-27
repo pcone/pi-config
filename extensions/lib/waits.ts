@@ -254,7 +254,7 @@ export function renderWaitList(waits: readonly Wait[]): string {
 		"Leaving `continue` unset stops the next checkpoint. " +
 			`Clear a manual wait with wait_for({ clear: true${waits.some((w) => w.source === "manual") ? ', id: "<id>"' : ""} }); ` +
 			"a derived wait clears when its source ends. An inbound message does not clear a manual wait; " +
-			"a peer wait ends on any envelope from that peer.",
+			"a peer wait ends on a reply to the asking message, or on a DM from that peer sent after it.",
 	);
 	return lines.join("\n");
 }
@@ -325,7 +325,7 @@ export function registerWaitSurface(pi: ExtensionAPI): void {
 			"Running subagents and unanswered expectReply sends are already waits, so record what nothing else can see: " +
 			"the owner's ruling, a restart, a handoff. " +
 			"Clear it with `{ clear: true }` once the thing you waited for has happened. An inbound message does not clear a " +
-			"manual wait (a peer wait ends on any envelope from that peer), so answer what arrives and go back to waiting.",
+			"manual wait (a peer wait ends on a reply to the asking message, or on a DM from that peer sent after it), so answer what arrives and go back to waiting.",
 		parameters: Type.Object({
 			reason: Type.Optional(
 				Type.String({
