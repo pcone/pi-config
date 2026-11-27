@@ -175,6 +175,14 @@ Scott, on the mention trigger: "That feels a little too magic - id rather someth
 
 **Recorder's reading.** Started sessions run as panes in windows of tmux session `main`, six panes to a window, with a new window when the last is full. The working directory is `~/Developer` unless the ask names another. A started session may create directories and git repos under `~/Developer`.
 
-**Not ruled yet:**
-- the exact stale threshold, in days (proposed: 3);
-- lifecycle (proposed: never restarted automatically; explanation asked for).
+**Ruling (owner, 2026-11-28, over Matrix).** Offered a 3-day stale threshold, and, for a started session whose process ends unasked, a `@pi-system` DM naming the session and reason with no automatic restart, resumable on request: "Yeah 3 days is good, agree on the notify but don't resume automatically". On WO-2026-107's invite reading (an invite pushes only while it is pending; invites chatd joins itself push nothing, and the room's first message pushes instead) and the registration's alias claim: "2. Agree on recommendations, agree on 3".
+
+**What holds now for rules 36–37 (WO-2026-109).**
+- The owner @mentions `@pi-system` in plain English. A deepseek-v4.1-flash pi session interprets the message.
+- Starting a session runs only for an owner message that @mentions `@pi-system`, checked by chatd per event.
+- Started sessions run as panes, 6 per tmux window in `main`, in `~/Developer` unless told otherwise.
+- At most 4 started sessions process at once; more may exist.
+- A session idle for 3 days is reported as stale.
+- A session that exits unasked is reported and not restarted.
+
+**Not ruled yet:** nothing in this decision.

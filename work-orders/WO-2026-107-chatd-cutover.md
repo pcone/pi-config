@@ -155,7 +155,7 @@ No room chatd creates sets `m.room.encryption` (015/29).
 6. The recipient is a subagent → `none`.
 7. The recipient's level for the room is "all messages" → `digest`. Otherwise → `none`. S3 has no consumer for `digest`: the event stays unread.
 
-An invite to the recipient → `push`. chatd joins every DM invite (`is_direct`) for its invitee, and every invite to a subagent. Joining sets membership, not a level. Other puppets join rooms themselves (`rooms join`).
+An invite to the recipient → `push` while it is pending. An invite chatd joins itself (DMs, subagents, `#peers`) pushes nothing; the room's first message pushes instead (owner 2026-11-28, over Matrix: "Agree on recommendations"). chatd joins every DM invite (`is_direct`) for its invitee, and every invite to a subagent. Joining sets membership, not a level. Other puppets join rooms themselves (`rooms join`).
 
 **Delivery and ack.**
 - chatd keeps a queue of pushed events for each connected peer, in arrival order per room. It sends them to the connection, and the client acks event ids.
