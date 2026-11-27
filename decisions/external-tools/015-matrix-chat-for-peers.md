@@ -87,4 +87,16 @@ date: 2026-11-27
 
 **Recorder's reading of the fourteenth round (Claude, 2026-11-27).** The account id stays the unique peer name; the readable name is the Matrix display name. A session with no name of its own gets one derived from its repo and role, made unique by chatd. Which status or profile fields Element X shows is checked in stage 2.
 
-**Not ruled yet:** nothing blocks drafting `work-orders/WO-matrix-bridge.md`; its own open points go to the owner when it is reviewed.
+21. **Domain.** The server's name is under the owner's domain `sjmcd.me`, registered with Namecheap.
+
+**Ruling (owner, 2026-11-27, fifteenth round).** On the work order's Q-c, after Claude recommended a domain over the bare IP because the Matrix server name cannot change and an IP ties it to one box (rule 14), Scott: "alright, cool yeah I do own a domain - sjmcd.me - through namecheap - not sure if namecheap has an api but we can always drive the web ui through devtools mcp or something in a session on the macbook".
+
+22. **Server name `chat.sjmcd.me`.** Accounts read `@pi-<name>:chat.sjmcd.me`; the VPS serves everything for that name. Its `A`/`AAAA` records are set by hand at Namecheap; the infra repo lists the records it expects and the deploy checks they resolve.
+
+**Ruling (owner, 2026-11-27, sixteenth round).** Asked "So: `chat.sjmcd.me`, with the records set by hand?", Scott: "yeah lets go with chat.sjmcd.me".
+
+**Recorder's reading of the sixteenth round (Claude, 2026-11-27).** "Yeah" is read as accepting the whole question, including records set by hand; the reply named only the server name.
+
+**Fact (Claude, 2026-11-27): no vRack for VPSs.** The owner found no way to attach the VPSs to the account's vRack. OVHcloud staff wrote in October 2025 that vRack is not planned for VPS and is dedicated to Public Cloud ([ovh/infrastructure-roadmap#367](https://github.com/ovh/infrastructure-roadmap/issues/367)). Rule 16 applies "where it can", so it does not here: WireGuard runs over the public addresses.
+
+**Not ruled yet:** nothing in this decision. The work order's remaining points go to the owner at plan review.

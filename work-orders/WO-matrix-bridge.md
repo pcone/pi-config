@@ -56,7 +56,7 @@ Broadcast stops being a separate concept: it is a post in a shared room, pulled,
 
 **Delivery timing stays a property of the message.** A pushed message lands at the recipient's next turn boundary (pi's steer) unless it asks to wait until the recipient is idle (pi's follow-up). A reply-requested message always waits until idle. This keeps today's rule ([012](../decisions/external-tools/012-peer-reply-wait.md), check-in latency) and stores it in the event's content (`dev.pi.delivery`).
 
-**Identity.** Each peer name is one Matrix user, `@pi-<name>:<server>`, created on first use. Claude Code sessions use their peer name as today. Every user shows a readable display name (015/20): the session's name, or for an unnamed session one chatd derives from its repo and role and keeps unique. Session id, working directory and model go in the presence status message, and in custom profile fields if Tuwunel supports them (MSC4133). The owner's account sits outside the namespace, so no agent process can send as the owner: the server enforces 015/2, and the forged-owner question of the first draft goes away.
+**Identity.** Each peer name is one Matrix user, `@pi-<name>:chat.sjmcd.me`, created on first use. Claude Code sessions use their peer name as today. Every user shows a readable display name (015/20): the session's name, or for an unnamed session one chatd derives from its repo and role and keeps unique. Session id, working directory and model go in the presence status message, and in custom profile fields if Tuwunel supports them (MSC4133). The owner's account sits outside the namespace, so no agent process can send as the owner: the server enforces 015/2, and the forged-owner question of the first draft goes away.
 
 **State lives on the server.**
 - Unread state is each puppet's Matrix read marker. A pushed message is marked read only after the session injects it, so delivery is at-least-once, as today.
@@ -97,9 +97,10 @@ Each stage is its own numbered implement order with its own Preparatory refactor
 
 **S1 — infra repo, host bootstrap, private link.** New repo `~/Developer/infra`.
 - `core/bootstrap`: from bare Debian over SSH, once: Docker, firewall, `deploy` user with key-only SSH, unattended security upgrades. Rerunning changes nothing.
-- `providers/ovh/`: attach both boxes to the private network. The owner's account lists a vRack beside the two VPSs (owner, 2026-11-27). On 2026-11-27 the dev box had one interface (`ens3`, public, OpenStack MAC prefix `fa:16:3e`) and no private one, so it is not attached yet. The stage attaches both, confirms a second interface appears on each, and reports if a VPS cannot join; WireGuard then runs over the public addresses.
-- `core/wireguard`: tunnel between the boxes to whatever address the provider layer gives, matching the dev box's `wg0` style. Keys never committed.
-- `core/deploy`, `core/stacks/caddy`, `core/dns` (provider-neutral tool; adapter and credentials under `providers/<registrar>/`), `core/backup` (nightly, off the VPS, with a restore script).
+- No private network: OVHcloud VPSs cannot join a vRack (OVHcloud staff, Oct 2025: "not planning to make vRack available for VPS at the moment… currently dedicated to our Public Cloud offering", [ovh/infrastructure-roadmap#367](https://github.com/ovh/infrastructure-roadmap/issues/367)); the owner found no attach option on 2026-11-27. 015/16's "where it can" does not apply, and `providers/ovh/` has nothing to do here.
+- `core/wireguard`: tunnel between the boxes over their public addresses, matching the dev box's `wg0` style. The firewall admits the WireGuard port from the peer's address only. Keys never committed.
+- `core/deploy`, `core/stacks/caddy`, `core/backup` (nightly, off the VPS, with a restore script).
+- `core/dns`: the records the core expects (`chat.sjmcd.me` `A`/`AAAA` → the VPS), set by hand at Namecheap (015/22); deploy refuses to proceed when they do not resolve to the target.
 - Acceptance: fresh box bootstrapped from zero, second run a no-op; WireGuard handshake both ways; a test volume restored onto a fresh box.
 
 **S2 — Tuwunel staging test (gates 015/10).** `core/stacks/tuwunel`: federation off, registration closed, application service in config. Rows, each recorded with its observation:
@@ -119,15 +120,12 @@ Any row failing stops the stage (`PREMISE FALSIFIED`); Continuwuity, then Synaps
 
 **S5 — docs.** APPEND_SYSTEM § Who rules gains 015/2. APPEND_SYSTEM § Peers, `docs/design/peer-link-external.md` and the external-tools decisions 003, 007, 012, 014 get superseded notes citing 015/15; the design doc is rewritten as `docs/design/chat.md`. Lands with S3's cutover.
 
-### Open (owner questions at plan review)
+### Answered at plan review (owner, 2026-11-27)
 
-- **Q-a — answered (owner, 2026-11-27): "agree".** Ruling below as recommended.
-- **Q-b — answered (owner, 2026-11-27): "agree".** Ruling below as recommended.
-
-- **Q-a: chat server unreachable.** With Matrix as the only bus, a down VPS or link stops peer messages. Recommendation: `send` fails loud with the reason, and the agent reports it; no local queue. A queue would hide undelivered mail behind an apparent success, and with both boxes in one region on a private link outages should be rare.
-- **Q-b: room names and archiving.** Recommendation: `#feat-<slug>` for feature threads, `#topic-<slug>` otherwise; a room silent for 14 days is archived by chatd and listed in a weekly digest to the owner.
-- **Q-c: domain.** Which domain hosts the server, and who registers it.
-- **Q-d — answered (owner, 2026-11-27):** "yeah we should make sure each session has a readable name, and put stuff like session ids in statuses/bios if matrix supports that". 015/20; see Identity above.
+- **Q-a, server unreachable:** `send` fails with the reason and the agent reports it; no local queue (015/18).
+- **Q-b, rooms:** `#feat-<slug>` for feature threads, `#topic-<slug>` otherwise; a room silent for 14 days is archived by chatd and listed in a weekly digest to the owner (015/19).
+- **Q-c, domain:** server name `chat.sjmcd.me`, records set by hand at Namecheap (015/21, 015/22).
+- **Q-d, names:** every session shows a readable name; ids go in status and profile fields (015/20).
 
 ### Not in scope
 
