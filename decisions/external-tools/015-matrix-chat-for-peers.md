@@ -51,10 +51,14 @@ date: 2026-11-27
 
 **Recorder's reading on channels (Claude, 2026-11-27).** "Major feature thread" is read as a multi-stage effort with its own plan or orchestrator; the session that opens such an effort creates its channel. The work order proposes naming, and archiving of channels left idle, for the owner to rule on.
 
-14. **Portable to any SSH box.** The infra repo targets any machine reachable over SSH and holds nothing tied to OVHcloud. The OVHcloud API may be used for one-off bootstrapping only, outside the IaC.
+14. **Portable to any SSH box; provider code quarantined.** The infra repo's core targets any machine reachable over SSH. Provider-specific automation (OVHcloud or any other) is committed only where the provider's own interface is the only way to automate the step, and lives under a separate per-provider directory, outside the portable core.
 
 **Ruling (owner, 2026-11-27, eighth round).** Offered DNS records under OpenTofu's OVH provider, Scott: "I don't want to build anything that's tied to ovhcloud directly - we can use their api for initial bootstrapping if needed, but the actua IaC setup needs to be portable to any arbitrary 'box with an ssh connection'".
 
-**Recorder's reading of the eighth round (Claude, 2026-11-27).** DNS records are provider state outside the box, so they stay manual (or a bootstrap step) and the repo documents the records it needs.
+**Recorder's reading of the eighth round (Claude, 2026-11-27).** DNS records are provider state outside the box, so they stay manual (or a bootstrap step) and the repo documents the records it needs. *Superseded by the ninth round.*
+
+**Ruling (owner, 2026-11-27, ninth round).** Scott: "also fyi automating and committing ovhcloud specific stuff is allowed and encouraged, just *only* if the ovhcloud specific way is the only way it can be automated, and it's clearly path separated in a 'this is bad cruft we have to build per cloud provider' dir".
+
+**Recorder's reading of the ninth round (Claude, 2026-11-27).** Rule 14 reads "provider" for "ovhcloud", since the same quarantine fits any provider. DNS records can be automated: a provider-neutral tool (for example dnscontrol or OctoDNS) declares the records in the core, and the provider adapter and its credentials sit in the per-provider directory. Where a neutral tool covers a step, provider-specific code for it is not committed.
 
 **Not ruled yet:** nothing blocks drafting `work-orders/WO-matrix-bridge.md`; its own open points go to the owner when it is reviewed.
