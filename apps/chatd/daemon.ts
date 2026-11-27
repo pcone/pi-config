@@ -14,6 +14,7 @@ import { chmodSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { defaultOwnerProbe } from "../../extensions/lib/subagent-state.ts";
 import { type Level, type PeerKind, type Recipient, bodyMentions, classify } from "./classify.ts";
 import type { Config } from "./config.ts";
 import { Homeserver, HomeserverError, type MatrixEvent } from "./matrix.ts";
@@ -98,15 +99,6 @@ interface WaitRec {
 
 function sha(s: string): Buffer {
 	return createHash("sha256").update(s).digest();
-}
-
-function pidAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err) {
-		return (err as NodeJS.ErrnoException).code === "EPERM";
-	}
 }
 
 /** The repo a cwd belongs to: the nearest directory holding `.git`, else the cwd itself. */
@@ -477,7 +469,7 @@ export class Chatd {
 	private online(reg: Registration | undefined): boolean {
 		if (!reg) return false;
 		if (reg.kind === "claude") {
-			if (reg.claudePid !== undefined && pidAlive(reg.claudePid)) return true;
+			if (reg.claudePid !== undefined && defaultOwnerProbe.exists(reg.claudePid)) return true;
 			this.endRegistration(reg, "its Claude Code process is gone");
 			return false;
 		}
