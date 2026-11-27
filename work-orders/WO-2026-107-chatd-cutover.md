@@ -174,7 +174,7 @@ A message without the fields, such as the owner's from Element, is `steer`. This
 **Presence.** chatd sets each puppet's Matrix presence:
 - pi and subagent puppets are online while connected.
 - A Claude puppet is online while registered and its Claude pid lives. chatd checks the pid on every query and every 30 s. A pid found dead ends the registration: presence goes offline, and a blocked `watch` for that peer exits 3.
-- The 30 s pass also re-asserts every puppet's presence, so a failed presence write is retried there.
+- The 30 s pass rewrites a puppet's presence when it changed or its last write failed. That is the retry for a failed presence write.
 
 **Waits.**
 - chatd keeps a registry of live waits: waiter, target, asking event and its timestamp.
@@ -203,7 +203,7 @@ A message without the fields, such as the owner's from Element, is `steer`. This
 - Model-error mail splits across two processes:
   - The classifier, 30 min window, count, 200-char bound and recipient choice stay in `extensions/chat/`, because they need pi's turn events. The rules port unchanged: no prompt text, never self, recipient `dev.pi.last_correspondent`, else online non-subagent peers.
   - The extension hands the finished mail to chatd with `system_mail`, and chatd posts it as `@pi-system` DMs.
-- `system_mail` is internal: no tool or CLI subcommand exposes it.
+- `system_mail` is internal: no tool or CLI subcommand exposes it. It is undocumented, not unreachable: under the trust boundary above, any process of the `agent` user can send it.
 
 **Certificate watch.** Once a day, and at start, chatd opens a TLS connection to the homeserver and reads the certificate's `notAfter`. With fewer than 20 days left, `@pi-system` DMs the owner, at most once a day. A failed check is itself DMed.
 
