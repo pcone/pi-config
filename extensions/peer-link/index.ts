@@ -215,6 +215,13 @@ export default function (pi: ExtensionAPI) {
 			// state instead of throwing into the event loop, where the failure lands on
 			// whatever is running (pi-config#25; decision subagents/026 for the shape —
 			// an explicit liveness check, never a catch).
+			//
+			// Not a guarantee against the write itself: the root can vanish between this
+			// check and `writeFileSync`, and `writeHeartbeat` still throws then, on
+			// purpose — a writer that no-ops hides a real failure from every caller. What
+			// closes the teardown case is `stopRuntime()` clearing these timers; the
+			// remaining window needs a host that never emits `session_shutdown`, so the
+			// writer-level "target gone" outcome waits on the SDK ruling in #25.
 			if (!mailboxPresent()) return;
 			publishHeartbeat();
 			sweepStalePeers(state.mailbox);

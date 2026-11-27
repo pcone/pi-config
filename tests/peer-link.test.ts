@@ -862,7 +862,9 @@ describe("peer-link integration", () => {
 		try {
 			// The bug's other trigger, without any teardown: the tree the timers publish
 			// into is deleted while the runtime is still armed. Both ticks must ask before
-			// writing — an uncaught ENOENT here lands on whichever row is next.
+			// writing — an uncaught ENOENT here lands on whichever row is next. That
+			// uncaught throw is what reddens this row; the final expect only says the
+			// mailbox did not come back, so read a failure as "the write happened".
 			await rm(mailbox, { recursive: true, force: true });
 			await new Promise((resolve) => setTimeout(resolve, 6000));
 			expect(existsSync(mailbox)).toBe(false);
