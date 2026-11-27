@@ -31,6 +31,7 @@ Agents and the owner talk in Matrix as in team chat. Matrix is the only message 
 | VPS-2, Debian, Compose stacks, Caddy, scripted host setup, own infra repo, WireGuard | 015/3, 015/12, 015/13 |
 | Core portable to any SSH box; provider code only where it is the only way, under `providers/<name>/` | 015/14 |
 | Boxes linked over OVHcloud's private network where possible | 015/16 |
+| VPS SSH and HTTPS over WireGuard only; certificates by DNS-01 through a deSEC-delegated challenge name; the owner's devices are VPS peers; only WireGuard's UDP port is public | 015/26, 015/27 |
 | Matrix replaces the mailbox | 015/15 |
 | No Claude outside Claude Code; nothing launches a Claude session; room traffic never wakes one | [013](../decisions/external-tools/013-tos-line-credentials-not-turns.md), 015/11 |
 
@@ -99,10 +100,10 @@ Each stage is its own numbered implement order with its own Preparatory refactor
 - `core/bootstrap`: from bare Debian over SSH, once: Docker, firewall, `deploy` user with key-only SSH, unattended security upgrades. Rerunning changes nothing.
   - Starting state (2026-11-27): `vps-dc0935b0` (15.235.255.56) rebuilt with Debian 13 via the OVHcloud API; login is `debian` (passwordless sudo, root login disabled). `debian`'s `authorized_keys` holds the dev box's `~/.ssh/infra_ed25519` (`SHA256:8CDlN11O…`), the owner's MacBook (`SHA256:pFt4SmoP…`) and `phone-main` (`SHA256:QMS6JqBw…`). Bootstrap carries all three to the users it creates; the key list lives in the repo.
 - No private network: OVHcloud VPSs cannot join a vRack (OVHcloud staff, Oct 2025: "not planning to make vRack available for VPS at the moment… currently dedicated to our Public Cloud offering", [ovh/infrastructure-roadmap#367](https://github.com/ovh/infrastructure-roadmap/issues/367)); the owner found no attach option on 2026-11-27. 015/16's "where it can" does not apply, and `providers/ovh/` has nothing to do here.
-- `core/wireguard`: tunnel between the boxes over their public addresses, matching the dev box's `wg0` style. The firewall admits the WireGuard port from the peer's address only. Keys never committed.
-- `core/deploy`, `core/stacks/caddy`. No backup code: OVHcloud's automated backup covers the VPS (015/24).
+- `core/wireguard`: tunnel over the public addresses, matching the dev box's `wg0` style. Peers are the dev box and the owner's MacBook and phone (015/27). The firewall admits only the WireGuard UDP port publicly; SSH and HTTPS arrive on `wg0` (015/26, 015/27). Keys never committed.
+- `core/deploy`, `core/stacks/caddy`: Caddy built with the deSEC DNS provider, certificates by DNS-01 (015/27). No backup code: OVHcloud's automated backup covers the VPS (015/24).
 - Repo remote: private `pcone/infra` (015/25). Dev-box WireGuard side: the stage emits the stanza; the owner applies it (015/23).
-- `core/dns`: the records the core expects (`chat.sjmcd.me` `A`/`AAAA` → the VPS), set by hand at Namecheap (015/22); deploy refuses to proceed when they do not resolve to the target.
+- `core/dns`: the records the core expects (`chat.sjmcd.me` `A` → the VPS tunnel address `10.213.47.10`, no `AAAA`; 015/27), set by hand at Namecheap (015/22); deploy refuses to proceed when they do not resolve to the target.
 - Acceptance: fresh box bootstrapped from zero, second run a no-op; WireGuard handshake both ways once the owner applies the dev-box side.
 
 **S2 — Tuwunel staging test (gates 015/10).** `core/stacks/tuwunel`: federation off, registration closed, application service in config. Rows, each recorded with its observation:
