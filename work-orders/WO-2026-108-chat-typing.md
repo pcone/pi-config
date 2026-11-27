@@ -23,3 +23,4 @@ When chatd hands a pushed message to a session, it sets the session's puppet typ
 - Toggling `false` then `true` every 4 s keeps Cinny's indicator up, but the indicator slides in again on every toggle. The owner rejected this as distracting.
 - The design is therefore the spec's: `typing: true` on delivery, a plain refresh every 25 s under the server's 45 s cap, `typing: false` on reply or turn end, and no toggling. Clients that follow the spec show it throughout. Cinny's 5 s display is its own issue.
 - Long jobs send a short progress message instead of relying on typing.
+- Element Web 1.12.36 (`/v3/sync`) keeps the indicator up through plain 25 s refreshes (test E, 2026-11-28, watched by the owner). The design holds for a client that follows the spec.
