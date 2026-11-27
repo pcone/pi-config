@@ -117,4 +117,6 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-28, twentieth round).** Offered DNS-01 through a deSEC-delegated challenge name (recommended), a private CA, or a public port 80 for ACME, with the owner's devices as direct VPS peers, Scott: "your recommendations sound good".
 
+**Recorder's note (2026-11-28).** deSEC had suspended registration under `dedyn.io`, so the challenge zone is `acme.sjmcd.me`, delegated from Namecheap by NS records; `_acme-challenge.chat.sjmcd.me` is a CNAME into it. The deSEC token works only from the VPS's IPv4 address.
+
 **Not ruled yet:** nothing in this decision.
