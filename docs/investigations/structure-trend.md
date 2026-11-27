@@ -1377,3 +1377,30 @@ from every live production site: `rg -n 'proc\.killed|\.killed ' extensions/` �
 lines, all accounted for: the mirror's stub write and its assertions (`:222,542,558`,
 stub fidelity), `git-run.ts:59` (`ExecException`'s own timeout flag), and
 `subagent/_index.ts.off:459`, a dead file that no build reads.
+
+## Snapshot 2026-11-27 — the Debian box (suite parity, on `cdc69c6`)
+
+**growth.** `git diff --numstat 99a7820 cdc69c6`: `extensions/lib/checkout-reaper.ts`
+**+18/−55 (1200 lines)** — the probe family left it — and `extensions/lib/cwd-probe.ts`
+new at **117**. That is the extraction this register asked for in its 2026-11-10 note
+("`checkout-reaper.ts` at 1232 lines is past the repo's 1,000-line floor … its next
+chunk should extract the two clusters above before adding gates"). The file takes its
+**second** flag here and the refactor lands in the same push (`8fe2e6d`, behaviour
+preserved: `tests/checkout-reaper.test.ts` unchanged and green), so the area is closed
+and reopened in one landing, not closed against a future one.
+
+Other files: `extensions/runpod-bonsai/index.ts` +35/−7 (a key seam and two messages),
+`extensions/worktree-guard.ts` +8/−2, and four test files +25…+77 (rows, not code).
+
+**unification.** One place answers "is a process working in this checkout?":
+`rg -n 'readlinkSync|"lsof"' extensions/` → 4 lines outside a test mirror: the two in
+`cwd-probe.ts` (the /proc arm's readlink and the lsof invocation), `subagent-state.ts:84` reading
+`/proc/<pid>/stat` for a *different* question (liveness/start token). No second
+liveness or cwd mechanism was added; `processCwdProbe` is the only chooser and
+`checkout-reaper.ts` calls it once.
+
+**flag, carried.** The sweep sees only the invoking user's processes on either
+platform, and the report says how many it could not read. Whether `lsof` as a
+non-root user can see another user's process cwd on macOS is unmeasured, so the Linux
+arm is not known to be weaker — recorded in `decisions/settings/006-linux-suite-parity.md`
+rather than asserted in a comment.

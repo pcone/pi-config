@@ -42,3 +42,18 @@ over N slots must wake when any slot frees, and must print the holder every 60 s
 releases each lock when its holder dies.
 
 Open: when the holder is SIGKILLed, the child keeps running without a slot. Nothing stops it.
+
+## Slots per machine — three on the box (owner, 2026-11-27, Claude session 6af3ba2a)
+
+The one-slot line above was written for the 6-core Mac. tfd-box has 8 vCPU and 22 GB, and under
+`HEAVY_SLOTS=2` two concurrent jobs each used all 8 cores: measured bursts of 36–41 runnable threads,
+33–37 % system time, no I/O wait. Asked to pick between 3 slots of 4 cores and 2 slots of 6, Scott
+chose **3x4** ("yeah lets do 3x4").
+
+Applied in the box's `~/.zshenv`, not in any tracked file: `HEAVY_SLOTS=3`, `CARGO_BUILD_JOBS=4`,
+`RUST_TEST_THREADS=4`. The two Rust vars are what caps a *single* job at 4 cores, which is the half of
+the ruling `bin/heavy` cannot enforce.
+
+`bin/heavy_slot.py` keeps its `HEAVY_SLOTS=1` default: a machine states its width in its own
+environment, and a repo default of 3 would over-subscribe a 2-core CI runner. A running pi seat picks
+the new value up on restart, since the env is read at process start.
