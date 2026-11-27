@@ -99,4 +99,14 @@ date: 2026-11-27
 
 **Fact (Claude, 2026-11-27): no vRack for VPSs.** The owner found no way to attach the VPSs to the account's vRack. OVHcloud staff wrote in October 2025 that vRack is not planned for VPS and is dedicated to Public Cloud ([ovh/infrastructure-roadmap#367](https://github.com/ovh/infrastructure-roadmap/issues/367)). Rule 16 applies "where it can", so it does not here: WireGuard runs over the public addresses.
 
-**Not ruled yet:** nothing in this decision. The work order's remaining points go to the owner at plan review.
+23. **Dev-box WireGuard is applied by the owner.** The session has no root on the dev box; stage 1 produces the dev-box `[Peer]` stanza and command, and the owner runs them.
+24. **Backups are OVHcloud's automated VPS backup.** The infra repo builds no backup of its own. On 2026-11-27 the VPS's `automatedBackup` was `enabled`, daily at 10:26, rotation 1 (one restore point).
+25. **Infra repo remote:** private GitHub `pcone/infra`.
+
+**Ruling (owner, 2026-11-27, seventeenth round).** Asked how the dev-box side of WireGuard gets applied, Scott picked "I apply it (Recommended)". Asked where backups go, he answered: "I believe we already get backups managed by ovh - it was part of the black friday deal". Asked where the infra repo lives, he picked "Private GitHub pcone/infra (Recommended)".
+
+**Recorder's reading of the seventeenth round (Claude, 2026-11-27).** Rule 24 is provider-managed state outside the repo, so rule 14 is not engaged. With rotation 1, damage noticed more than a day late cannot be restored; a portable backup is not built until the owner asks for one.
+
+**Ruling (owner, 2026-11-27, eighteenth round).** Scott, on rule 24: "I'm fine with provider managed backups for this - would rather than than paying for separate storage resources again".
+
+**Not ruled yet:** nothing in this decision.

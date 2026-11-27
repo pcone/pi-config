@@ -97,11 +97,13 @@ Each stage is its own numbered implement order with its own Preparatory refactor
 
 **S1 — infra repo, host bootstrap, private link.** New repo `~/Developer/infra`.
 - `core/bootstrap`: from bare Debian over SSH, once: Docker, firewall, `deploy` user with key-only SSH, unattended security upgrades. Rerunning changes nothing.
+  - Starting state (2026-11-27): `vps-dc0935b0` (15.235.255.56) rebuilt with Debian 13 via the OVHcloud API; login is `debian` (passwordless sudo, root login disabled). `debian`'s `authorized_keys` holds the dev box's `~/.ssh/infra_ed25519` (`SHA256:8CDlN11O…`), the owner's MacBook (`SHA256:pFt4SmoP…`) and `phone-main` (`SHA256:QMS6JqBw…`). Bootstrap carries all three to the users it creates; the key list lives in the repo.
 - No private network: OVHcloud VPSs cannot join a vRack (OVHcloud staff, Oct 2025: "not planning to make vRack available for VPS at the moment… currently dedicated to our Public Cloud offering", [ovh/infrastructure-roadmap#367](https://github.com/ovh/infrastructure-roadmap/issues/367)); the owner found no attach option on 2026-11-27. 015/16's "where it can" does not apply, and `providers/ovh/` has nothing to do here.
 - `core/wireguard`: tunnel between the boxes over their public addresses, matching the dev box's `wg0` style. The firewall admits the WireGuard port from the peer's address only. Keys never committed.
-- `core/deploy`, `core/stacks/caddy`, `core/backup` (nightly, off the VPS, with a restore script).
+- `core/deploy`, `core/stacks/caddy`. No backup code: OVHcloud's automated backup covers the VPS (015/24).
+- Repo remote: private `pcone/infra` (015/25). Dev-box WireGuard side: the stage emits the stanza; the owner applies it (015/23).
 - `core/dns`: the records the core expects (`chat.sjmcd.me` `A`/`AAAA` → the VPS), set by hand at Namecheap (015/22); deploy refuses to proceed when they do not resolve to the target.
-- Acceptance: fresh box bootstrapped from zero, second run a no-op; WireGuard handshake both ways; a test volume restored onto a fresh box.
+- Acceptance: fresh box bootstrapped from zero, second run a no-op; WireGuard handshake both ways once the owner applies the dev-box side.
 
 **S2 — Tuwunel staging test (gates 015/10).** `core/stacks/tuwunel`: federation off, registration closed, application service in config. Rows, each recorded with its observation:
 1. A stub service on the dev box receives transactions over the link and creates a namespaced user on demand.
