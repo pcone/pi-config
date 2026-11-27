@@ -1404,3 +1404,25 @@ platform, and the report says how many it could not read. Whether `lsof` as a
 non-root user can see another user's process cwd on macOS is unmeasured, so the Linux
 arm is not known to be weaker — recorded in `decisions/settings/006-linux-suite-parity.md`
 rather than asserted in a comment.
+
+## Snapshot 2026-11-28 — WO-2026-107 (chatd and the peer-link cutover)
+
+**growth.** `extensions/peer-link/` (1,898 lines in four files) is deleted. New:
+`apps/chatd/daemon.ts` **1,141** (past the 1,000-line floor on arrival),
+`extensions/chat/index.ts` 515, `apps/chatd/cli.ts` 352, `apps/chatd/matrix.ts` 248,
+`extensions/chat/model-error-mail.ts` 170, and six files under 90 each.
+`daemon.ts` is one class with four separable clusters: the socket verbs
+(`send`/`read`/`rooms`/`system_mail`/`notify`, ~280 lines), the reply-wait registry
+(`wait`/`ends`/`endWithReply`/`endWait`/`dropWait`, ~110), the rooms chatd owns
+(`ownedRoom`/`mirror`/`agentPair`/`sweepMirror`/`certificateWatch`/`systemDm`, ~150),
+and delivery (`classify` calls, queue, `ack`, `backlog`/`catchUp`). **Flag 1** for
+`apps/chatd/daemon.ts`: its next chunk (S4's digests read the same queue and levels)
+extracts the verbs and the wait registry before adding to it.
+
+**unification.** One push rule: `rg -n 'classify\(' apps` → one call
+site, `offer` in `daemon.ts`; every path that queues (live transaction, `backlog`,
+`catchUp`) goes through `offer`. One writer of `dev.pi.pushed`:
+`rg -n 'dev\.pi\.pushed' apps extensions` → one `putAccountData`, in `ack`. The pid
+liveness check reuses `defaultOwnerProbe.exists` (`extensions/lib/subagent-state.ts`);
+`runpod-bonsai/index.ts:155` keeps its own copy, predating this order. The socket client
+(`apps/chatd/client.ts`) is shared by the CLI and the extension.

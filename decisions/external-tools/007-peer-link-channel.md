@@ -7,6 +7,8 @@ date: 2026-11-02
 
 # peer-link mail through a Claude Code channel
 
+> **Superseded in part (owner 2026-11-27, [015](015-matrix-chat-for-peers.md) rule 15).** Matrix replaces the peer-link file mailbox, removed rather than bridged. The behaviour this ruling set that carries over, and what replaced the rest, is in `docs/design/chat.md`.
+>
 > **Superseded in part (owner 2026-11-26, [013](013-tos-line-credentials-not-turns.md)).** Any documented wake feature may start a turn, so the channel is not needed as the permitted path. WO-2026-063 is retired.
 >
 > **Superseded in part (owner 2026-11-26, [012](012-peer-reply-wait.md)).** The channel is no longer the only path that may start a turn: a background reply-wait may too.

@@ -7,6 +7,8 @@ date: 2026-10-11
 
 # Claude Code joins peer-link as an external peer
 
+> **Superseded in part (owner 2026-11-27, [015](015-matrix-chat-for-peers.md) rule 15).** Matrix replaces the peer-link file mailbox, removed rather than bridged. The behaviour this ruling set that carries over, and what replaced the rest, is in `docs/design/chat.md`.
+>
 > **Superseded in part (owner 2026-11-26, [013](013-tos-line-credentials-not-turns.md)).** What holds now: the ToS line is no Claude outside Claude Code, no credential handling, and ordinary usage. Any documented Claude Code wake feature may start a turn, including a watcher on unsolicited mail. `claude -p` from pi and a continuing Stop hook stay rejected.
 >
 > **Superseded in part (owner 2026-11-02, [007](007-peer-link-channel.md)).** A Claude Code channel may deliver mail and start a turn. Every other turn-starting path below stays rejected.

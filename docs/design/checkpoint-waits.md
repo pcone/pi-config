@@ -10,7 +10,7 @@ feature: checkpoint
 
 A session can be waiting on someone: the owner's ruling, a restart, a peer's reply, a subagent it must gate. That wait is session state. A checkpoint continues only when none is pending, so a seat that is holding does not start new work after its context is cleared.
 
-Code: `extensions/lib/waits.ts` (store, sources, continuation rule, kickoff), `extensions/checkpoint.ts` (the `wait_for` tool, the surfaces). Decision: `decisions/checkpoint/003-wait-state-survives-checkpoint.md`. Tests: `tests/checkpoint-waits.test.ts`.
+Code: `extensions/lib/waits.ts` (store, sources, continuation rule, kickoff), `extensions/checkpoint.ts` (the `wait_for` tool, the surfaces). Decision: `decisions/checkpoint/003-wait-state-survives-checkpoint.md`. Tests: `tests/checkpoint-waits.test.ts`; the peer wait's rows: `tests/chat-behaviour/waits.test.ts`.
 
 ## The rule
 
@@ -23,12 +23,12 @@ Wording alone was the defect this replaces. A seat replied RESTARTABLE, checkpoi
 | Kind | Source | Who registers it |
 |---|---|---|
 | `manual` | `wait_for({ reason, kind? })` | the model itself |
-| `derived` | the feature that owns the state, on demand | `subagent-async`, `peer-link` |
+| `derived` | the feature that owns the state, on demand | `subagent-async`, `chat` |
 
 A wait is `{ id, kind, reason, since, source }`. `kind` is one of `owner`, `peer`, `restart`, `subagent`, `other`.
 
 - A **running child** is a `subagent` wait. Derived from the subagent meta registry, so a restart still sees a child that outlived its parent process. A child that ends stops being a wait without anyone clearing it. An orphaned child is not a wait: its owner is gone, nothing will deliver its result, and resuming it is work rather than waiting.
-- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the envelope is sent. It ends on any envelope from that peer arriving in the delivery scan: the sender's identity is answer enough, which is what makes a Claude Code peer's reply — it stamps no `inReplyTo` — end its wait. A matching `inReplyTo` is the fast path and also covers a reply relayed through a third peer.
+- An **unanswered `expectReply` send** is a `peer` wait. Recorded when the message is sent, and held at chatd. It ends on a reply to the asking message from anyone, a relayed reply included, or on a DM from the target to this session sent after it (015/33). A target's post in a group room does not end it.
 
 ## Where a manual wait is stored
 
@@ -45,7 +45,7 @@ Full snapshots rather than deltas: replay takes the last one, so an overwritten 
 
 A **manual** wait clears only through `wait_for({ clear: true })` (one by `id`, or all). No inbound message clears it — a waiting seat answers mail and goes back to waiting. That is the owner's ruling: holding mail would leave the very message that ends the wait unread.
 
-A **derived** wait clears when its source ends: the child finishes; an envelope from the peer arrives, matched by `inReplyTo` (fast path, and the only way a relayed reply is seen) or by the sender.
+A **derived** wait clears when its source ends: the child finishes; chatd reports the reply that ends a peer wait (docs/design/chat.md § Reply-waits).
 
 ## What the model sees
 
@@ -58,6 +58,6 @@ The waits are resolved once, at the checkpoint call, so the tool result and the 
 
 ## Limits
 
-- A derived peer wait lives in the sending process. A restart forgets an unanswered `expectReply`; the durable kind is the manual wait.
-- An `expectReply` sent to a Claude Code peer is a wait like any other, and `external.ts` is untouched: its replies carry no `inReplyTo`. Such a wait ends on any envelope from that peer (ruling 3), so a peer that answers at all ends it, and one that never answers leaves it pending until the seat is told to continue or the process restarts.
+- A derived peer wait lives in the sending process. A pi restart forgets an unanswered `expectReply`; the durable kind is the manual wait. A chatd restart does not: the extension reconnects once and re-registers it.
+- A Claude Code peer's answer is a DM from it, so it ends the wait whether or not it stamps a reply; one that never answers leaves the wait pending until the seat is told to continue or the process restarts.
 - `checkpoint_fork` copies the source session's **manual** waits into the new session, as a real `checkpoint-wait` entry on the new branch (ruling 4), so a store over that branch replays them. Derived waits do not travel: each belongs to a process and a source, and the new session has neither.
