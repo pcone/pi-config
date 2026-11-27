@@ -145,4 +145,8 @@ date: 2026-11-27
 
 **Ruling (owner, 2026-11-28, twenty-fifth round).** A plan review found that a wait ending only on a reply relation breaks 012's check-in, whose answer is not a reply. Offered "reply or DM from the target" (recommended) or replies only, Scott chose "Reply or DM from target". On Claude sessions blocking on approval prompts or the question dialog while he is on Matrix, offered a Notification hook and an ask-in-chat instruction in WO-2026-107 (recommended), a follow-up order, or the instruction alone, Scott chose "Add both to this order".
 
+35. **Typing notices.** When chatd delivers a pushed message to a session, the session's puppet shows as typing in that room. The notice clears when the session replies there, or when its turn ends. Built after WO-2026-107 lands, as WO-2026-108.
+
+**Ruling (owner, 2026-11-28, twenty-sixth round, over Matrix).** Scott: "possible to start signalling that you're typing when you initially receive the chat message?" Offered the same in chatd as a follow-up order, not a change to the in-flight WO-2026-107, Scott: "cool yeah sounds good".
+
 **Not ruled yet:** nothing in this decision.
