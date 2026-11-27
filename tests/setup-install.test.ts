@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { childEnv } from "./helpers/subagent-env.ts";
+import { TUWUNEL_ASSET, TUWUNEL_SHA256, tuwunelBinary, tuwunelCacheDir } from "./helpers/tuwunel.ts";
 
 const SETUP = join(import.meta.dir, "..", "bin", "setup");
 const HOOK = join(import.meta.dir, "..", "bin", "pre-push");
@@ -63,6 +64,12 @@ async function skeleton(opts: {
 	baba?: "repo" | "dangling" | "dir" | "absent";
 	/** Platform `uname -s` answers. */
 	platform?: string;
+	/** Machine `uname -m` answers (default arm64, where no Tuwunel binary exists). */
+	machine?: string;
+	/** What the `gh` shim's release download writes: a copy of this file, or nothing. */
+	ghAsset?: string;
+	/** Seed the Tuwunel cache in the fake HOME. */
+	tuwunelCached?: boolean;
 	/** Put a real file where `~/.pi/agent/settings.json`'s link belongs. */
 	realSettingsFile?: boolean;
 	/** Omit typebox from the fake global pi, so the second link's target is missing. */
@@ -129,7 +136,16 @@ async function skeleton(opts: {
 	// platform, `npm` reports the fake global root.
 	for (const [name, body] of [
 		["bun", `#!/bin/sh\necho "$@" >> "${bunCalls}"\nmkdir -p node_modules\n`],
-		["uname", `#!/bin/sh\necho "${opts.platform ?? "Darwin"}"\n`],
+		[
+			"uname",
+			`#!/bin/sh\nif [ "$1" = -m ]; then echo "${opts.machine ?? "arm64"}"; else echo "${opts.platform ?? "Darwin"}"; fi\n`,
+		],
+		// `gh release download … -D <dir>`: records its args, writes the asset it was given.
+		[
+			"gh",
+			`#!/bin/sh\necho "$@" >> "${join(root, "gh-calls")}"\nwhile [ $# -gt 0 ]; do [ "$1" = -D ] && dir="$2"; shift; done\n` +
+				(opts.ghAsset ? `cp "${opts.ghAsset}" "$dir/${TUWUNEL_ASSET}"\n` : "exit 1\n"),
+		],
 		["npm", `#!/bin/sh\necho "${join(root, "npm-global")}"\n`],
 	] as const) {
 		const path = join(bin, name);
@@ -137,6 +153,13 @@ async function skeleton(opts: {
 		chmodSync(path, 0o755);
 	}
 	if (opts.noNpm) await rm(join(bin, "npm"));
+	writeFileSync(join(root, "gh-calls"), "");
+	if (opts.tuwunelCached) {
+		const cache = tuwunelCacheDir(home);
+		await mkdir(cache, { recursive: true });
+		writeFileSync(join(cache, TUWUNEL_ASSET), "cached");
+		writeFileSync(join(cache, "tuwunel"), "#!/bin/sh\n", { mode: 0o755 });
+	}
 
 	const source = readFileSync(SETUP, "utf-8");
 	await writeFile(join(repo, "bin", "setup"), source);
@@ -364,4 +387,45 @@ describe("bin/setup — baba", () => {
 		expect(result.err).toContain("extensions/baba does not resolve");
 		expect(result.err).toContain(join(env.root, "no-such-baba-pi"));
 	}, 20_000);
+});
+
+describe("bin/setup — the Tuwunel test binary", () => {
+	const ghCalls = (env: Skeleton) => readFileSync(join(env.root, "gh-calls"), "utf8");
+
+	it("leaves a cached binary alone, and fetches nothing", async () => {
+		const env = await skeleton({ baba: "dangling", platform: "Linux", machine: "x86_64", tuwunelCached: true });
+		const result = await run(env);
+		expect(result.code).toBe(0);
+		expect(result.out).toContain(`tuwunel: cached at ${tuwunelCacheDir(env.home)}`);
+		expect(ghCalls(env)).toBe("");
+	}, 20_000);
+
+	it("says the chat rows cannot run where no release binary exists", async () => {
+		const env = await skeleton({ baba: "dangling", platform: "Linux", machine: "aarch64" });
+		const result = await run(env);
+		expect(result.code).toBe(0);
+		expect(result.out).toContain("tuwunel: no release binary for Linux aarch64");
+		expect(ghCalls(env)).toBe("");
+	}, 20_000);
+
+	it("refuses an archive whose sha256 is not the pinned one, and removes it", async () => {
+		const bogus = join(await mkdtemp(join(tmpdir(), "bogus-")), "asset");
+		roots.push(join(bogus, ".."));
+		writeFileSync(bogus, "not the release");
+		const env = await skeleton({ baba: "dangling", platform: "Linux", machine: "x86_64", ghAsset: bogus });
+		const result = await run(env);
+		expect(result.code).toBe(1);
+		expect(result.err).toContain(`expected ${TUWUNEL_SHA256}`);
+		expect(existsSync(join(tuwunelCacheDir(env.home), TUWUNEL_ASSET))).toBe(false);
+		expect(ghCalls(env)).toContain(`release download v2.1.0 -R matrix-construct/tuwunel -p ${TUWUNEL_ASSET}`);
+	}, 20_000);
+
+	it("fetches the pinned release, checks it and unpacks an executable", async () => {
+		const real = join(tuwunelBinary(), "..", TUWUNEL_ASSET);
+		const env = await skeleton({ baba: "dangling", platform: "Linux", machine: "x86_64", ghAsset: real });
+		const result = await run(env);
+		expect(result.code).toBe(0);
+		expect(result.out).toContain("tuwunel: fetched v2.1.0");
+		expect(lstatSync(join(tuwunelCacheDir(env.home), "tuwunel")).mode & 0o111).not.toBe(0);
+	}, 60_000);
 });
