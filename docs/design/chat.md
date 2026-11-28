@@ -10,7 +10,7 @@ feature: chat
 
 Peers talk through Matrix on `chat.sjmcd.me` (decision external-tools/015, cited 015/N). `chatd` on the dev box is the homeserver's application service: one Matrix account (puppet) per peer, one Unix socket for local sessions. pi sessions use `extensions/chat/`; Claude Code sessions use the `chat` CLI from their hooks and Bash tool. Matrix is the one message bus; the file mailbox is gone (015/15).
 
-Code: `apps/chatd/` (`daemon.ts`, `classify.ts`, `names.ts`, `matrix.ts`, `config.ts`, `protocol.ts`, `client.ts`, `cli.ts`, `main.ts`, `chatd.service`), `extensions/chat/`. Order: `work-orders/WO-2026-107-chatd-cutover.md`. Homeserver facts: infra `docs/tuwunel.md`.
+Code: `apps/chatd/` (`daemon.ts`, `classify.ts`, `names.ts`, `matrix.ts`, `config.ts`, `protocol.ts`, `client.ts`, `cli.ts`, `main.ts`, `chatd.service`), `extensions/chat/`. Order: `work-orders/WO-2026-107-chatd-cutover.md`; "departure N" below cites its § Code review departures (owner 2026-11-28). Homeserver facts: infra `docs/tuwunel.md`.
 
 ## Configuration
 
@@ -41,7 +41,7 @@ A peer name is 1–64 characters of `[A-Za-z0-9._-]`, starting with a letter or 
 
 A pi session's name is `$PI_PEER_NAME`, else its display name when name-shaped, else host-pid. A subagent connects as kind `subagent` under its session id (`subagent-async/rpc.ts` sets `PI_PEER_NAME`). A Claude session is `claude-<session id>`.
 
-Each puppet shows a readable display name (015/20): the session's name, or for an unnamed session `<repo> <kind>`, unique among `#peers` by a numeric suffix. Profile fields carry `dev.pi.kind`, `dev.pi.session` (a pi session's log, a Claude session's id), `dev.pi.cwd` and, when given, `dev.pi.model`. The presence status message carries the session.
+Each puppet shows a readable display name (015/20): the session's name, or for an unnamed session `<repo> <kind>`, unique among `#peers` by a numeric suffix. Profile fields carry `dev.pi.kind`, `dev.pi.session` (the session id), `dev.pi.session_file` (a pi session's log, when it has one), `dev.pi.cwd` and, when given, `dev.pi.model`. The presence status message carries the session id (owner 2026-11-28, departure 7). `who` shows each peer's session and where to read its work: the log, else the cwd.
 
 ## Rooms chatd owns
 
@@ -54,7 +54,7 @@ Each puppet shows a readable display name (015/20): the session's name, or for a
 1. The sender is the recipient → `none`.
 2. `m.room.encrypted` → `none`. chatd logs it with the room id, and `@pi-system` DMs the owner once per room.
 3. An invite to the recipient → `push` while the recipient still holds it; `none` once it has joined. chatd joins every DM invite and every invite to a subagent for its invitee, so those invites are no news: the room's messages push instead.
-4. Any other non-message event → `none`.
+4. Any other non-message event → `none` (owner 2026-11-28, departure 5).
 5. The room is in the recipient's `m.direct` → `push`.
 6. The recipient is mentioned → `push`. `m.mentions.user_ids` names it; when that list is absent or empty, a body holding the recipient's user id, or `@<peer name>` as a token, counts.
 7. `m.mentions.room` and the recipient is not a subagent → `push`.
@@ -67,11 +67,11 @@ An agent sets its own levels with `rooms level` (015/28); chatd sets none itself
 
 chatd keeps, per connected peer, a queue of pushed events in arrival order. A pi connection receives each as `{push}`; a Claude session takes them at its prompt hook, its watch or its reply-wait.
 
-- **`ack` is the one writer of `dev.pi.pushed`**, room account data `{event_id}` on the puppet: the newest pushed event delivered in that room. Acks within a room come in delivery order; an out-of-order ack is an error naming the expected event.
+- **`ack` is the one writer of `dev.pi.pushed`**, room account data `{event_id}` on the puppet: the newest pushed event delivered in that room. Acks within a room come in delivery order; an out-of-order ack is an error naming the expected event. An id not pending is no error: `ack` reports it as `already`, so a batch retried after a lost answer settles. The marker never moves back, and an event at or behind it is never queued again.
 - **`read` moves `m.read` and `m.fully_read` only.** Read receipts are not the delivery state: `read` would move them past an unacked push and lose it on restart.
-- **Backlog on connect.** For each joined room chatd pages `/messages` back to `dev.pi.pushed`, else to the puppet's own join event, and queues what `classify` pushes. chatd keeps no local state a restart would lose; an unacked event is resent on the next connection.
-- **Catch-up after a join chatd made.** The homeserver sends an invited puppet's rooms nothing, so after joining a DM or subagent invite chatd pages the room back to the invite and offers those events.
-- **pi acks after injection: at-least-once.** A failed injection is retried every 2 s and holds back the acks behind it in its room. A Claude hook, watch or reply-wait acks before it prints: at-most-once (decision 012).
+- **Backlog on connect.** For each joined room chatd pages `/messages` back to `dev.pi.pushed`, else to the start of the puppet's membership: its join, or the invite that join answered (owner 2026-11-28, departure 4). A join that only changed the profile is no start. chatd keeps no local state a restart would lose; an unacked event is resent on the next connection. `hello` also queues each pending invite no earlier push delivered (departure 9); an invite read from sync has no event id, so it is `invite:<room>`, and its ack writes that marker in the room.
+- **Catch-up after a join chatd made.** The homeserver sends an invited puppet's rooms nothing, so after joining a DM or subagent invite chatd pages the room back to the invite and offers those events. `read` reaches further back: rooms chatd and agents create keep `history_visibility: shared`.
+- **pi acks after injection: at-least-once.** A failed injection is retried every 2 s and holds back the acks behind it in its room. A Claude hook, watch or reply-wait acks before it prints: at-most-once (decision 012). Events a reply-wait hands its waiter are hidden from the prompt hook and the watch until acked, or until the waiter's connection closes.
 - On ack, chatd writes `dev.pi.last_correspondent` (`{peer}`) when the sender changed: the model-error mail's recipient (decision 008).
 
 **The whole body.** The injected text, the prompt hook's and the watch's output carry the whole message body, never truncated (015/38).
@@ -80,7 +80,7 @@ chatd keeps, per connected peer, a queue of pushed events in arrival order. A pi
 
 ## Presence
 
-A pi or subagent puppet is online while its connection lives; a second `hello` for a connected name is refused. A Claude puppet is online while registered and its Claude process lives: from the session-start hook until the session-end hook, or until the process is gone. chatd checks the pid on every query and every 30 s; a dead pid ends the registration, and a blocked `watch` exits 3. The 30 s pass rewrites any presence that changed or whose last write failed.
+A pi or subagent puppet is online while its connection lives; a second `hello` for a connected name is refused. A Claude puppet is online while registered and its Claude process lives: from the session-start hook until the session-end hook, or until the process is gone. chatd checks the pid, with its start token so a reused pid is not the session, on every query and every 30 s; a dead pid ends the registration, and a blocked `watch` exits 3. The 30 s pass rewrites any presence that changed or whose last write failed.
 
 ## Reply-waits (015/33)
 
@@ -91,7 +91,7 @@ chatd keeps a registry of live waits: waiter, asking event, its time, and the ta
 
 A target's post in a group room does not end it. 012's check-ins work unchanged: a CLI wait reports `checkin` after its minutes, and `offline` when the target goes.
 
-When chatd restarts, a waiting client (the pi extension, a CLI `send --wait`) reconnects once within 30 s and re-registers the same asking event. On registration chatd lists `/relations/{event}` unfiltered and keeps replies to the ask (a rel-type filter returns nothing for replies), and reads the DM since the ask, so a reply sent during the gap ends the wait. A failed reconnect: the CLI exits 1 naming chatd, the extension notifies the session.
+When chatd goes away, a waiting client (the pi extension, a CLI `send --wait`) reconnects within one window of at most 30 s and re-registers the same asking event. The window is per drop: a later drop gets its own (rework round 1). A re-registered wait does not report its target offline at once, since every target is offline the moment chatd comes back. On registration chatd lists `/relations/{event}` unfiltered and keeps replies to the ask (a rel-type filter returns nothing for replies), and reads the DM since the ask, so a reply sent during the gap ends the wait. A failed reconnect: the CLI exits 1 naming chatd, the extension notifies the session.
 
 A reply that ends a Claude session's wait is claimed by it: the prompt hook and the watch skip it, and the wait prints the room's queued events up to it and acks them.
 
@@ -109,11 +109,11 @@ For each message in a DM between two agent puppets, `@pi-system` posts `<sender>
 
 ## `@pi-system`
 
-`@pi-system` has no socket identity. chatd posts as it for the encrypted-room notice, the certificate watch, the mirror, and `system_mail {to: [peer], text}`, an internal verb no tool or CLI subcommand exposes (any `agent` process can send it). Model-error mail splits across the two processes: classifier, window, count, bound and recipient stay in `extensions/chat/` (docs/design/model-error-mail.md); chatd posts the finished mail as `@pi-system` DMs.
+`@pi-system` has no socket identity. chatd posts as it for the encrypted-room notice, the certificate watch, the mirror, and `system_mail {to: [peer | owner], text}` (`owner` accepted under the trust boundary, departure 11), an internal verb no tool or CLI subcommand exposes (any `agent` process can send it). Model-error mail splits across the two processes: classifier, window, count, bound and recipient stay in `extensions/chat/` (docs/design/model-error-mail.md); chatd posts the finished mail as `@pi-system` DMs.
 
 ## Certificate watch
 
-At start and daily, chatd reads the homeserver certificate's `notAfter` over TLS. Fewer than 20 days left DMs the owner from `@pi-system`, at most once a day; a failed check is DMed the same way.
+At start and daily, chatd reads the homeserver certificate's `notAfter` over TLS. Fewer than 20 days left DMs the owner from `@pi-system`, at most once a day, across restarts too (the day is kept in `@pi-system`'s account data `dev.pi.daily_dms`); a failed check is DMed the same way.
 
 ## Homeserver failures
 
@@ -121,18 +121,18 @@ A socket verb returns the error to its caller. A background call (presence, prof
 
 ## Socket protocol
 
-JSON lines. A request is `{id, verb, …}`, answered `{id, ok, result}` or `{id, ok: false, error, code}`; chatd sends `{push}` to a pi or subagent connection. A client opens with `hello {peer, kind, session, cwd, model?, claudePid?}`; `claudePid` is required for `kind: claude`. A Claude session's hooks connect per call: `hello` refreshes the registration and a changed `claudePid` replaces the old one. `register: false` attaches to an existing registration only, which is how every CLI subcommand but the session-start and prompt hooks connects: a session that never registered fails.
+JSON lines. A request is `{id, verb, …}`, answered `{id, ok, result}` or `{id, ok: false, error, code}`; chatd sends `{push}` to a pi or subagent connection. A client opens with `hello {peer, kind, session, cwd, model?, claudePid?}`; `claudePid` is required for `kind: claude`. A Claude session's hooks connect per call: `hello` refreshes the registration and a changed `claudePid` replaces the old one. `register: false` attaches to an existing registration only (departure 2), which is how every CLI subcommand but the session-start and prompt hooks connects: a session that never registered fails.
 
 | Verb | Shape |
 |---|---|
 | `send` | `to`, `text`, `replyTo?`, `expectReply?`, `whenIdle?`, `requireOnline?` → `{event_id, room, to, online?}` |
 | `read` | `room`, `since?`, `limit?` → events; moves `m.read` |
 | `rooms` | `action: list` (joined rooms with topic, level, unread for "all messages" rooms; pending invites), `create(name, topic?, invite?)`, `join`, `leave`, `level(room, all \| mentions)` |
-| `who` | `#peers` members: name, kind, online, display name, status |
-| `wait` | `event_id`, `room`, `minutes?` → `reply` (with the events it claims) \| `offline` \| `checkin`; without minutes, only a reply ends it |
+| `who` | `#peers` members: name, kind, online, display name, session, session file, cwd, auto-reply |
+| `wait` | `event_id`, `room` (departure 1), `minutes?`, `resumed?` → `reply` (with the events it claims; a reply from anyone, even one `classify` would not push, departure 10) \| `offline` \| `checkin`; without minutes, only a reply ends it |
 | `watch` | Claude only: blocks until a pushed event; returns it and the rest of the queue |
-| `ack` | `event_ids` |
-| `pending`, `bye`, `notify` | hook plumbing: the prompt hook's queue (and whether a watch is live), session-end, the Notification hook's owner DM |
+| `ack` | `event_ids` → `{acked, already}` |
+| `pending`, `bye`, `notify`, `autoreply` | internal (departure 3): the prompt hook's queue (and whether a watch is live), session-end, the Notification hook's owner DM, and `/chat-autoreply`, kept in the puppet's account data `dev.pi.autoreply` and shown by `who` (departure 6) |
 | `system_mail` | internal: `to`, `text` |
 
 ## The `chat` CLI (Claude Code)
@@ -145,10 +145,10 @@ JSON lines. A request is `{id, verb, …}`, answered `{id, ok, result}` or `{id,
 
 | Command | 0 | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|---|
-| `send --wait` | reply printed | validation error or refused send | — | target went offline | check-in due |
+| `send --wait` | reply printed | validation error, refused send, or chatd gone past the window | — | target offline or unknown, before or during the wait (departure 12) | check-in due |
 | `watch` | mail printed | usage error | a live watch for this session exists | session gone: registration ended, Claude process dead, or reparented | — |
 
-`watch` has no timeout. The CLI names its Claude Code process as the nearest ancestor whose command is `claude` (premise P3, probed from a hook and from the Bash tool on 2026-11-28).
+`watch` has no timeout. A watch started for a session already gone exits 3. The CLI names its Claude Code process as the nearest ancestor whose command is `claude` (premise P3, probed from a hook and from the Bash tool on 2026-11-28).
 
 **Hooks.** `prompt` prints and acks the pending pushed events, skipping a reply a live `--wait` owns, and nudges a watch when mail is pending and none is live. `notification` (015/34), for `permission_prompt`, `idle_prompt` and `elicitation_dialog`, DMs the owner from the session's puppet, `<display name> is waiting: <message>`, at most once per session and type until the next prompt hook. It runs `"async": true`, which does not block the session (premise P5, observed for `permission_prompt` and `idle_prompt` on 2026-11-28; the type list is code.claude.com/docs/en/hooks's).
 

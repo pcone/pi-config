@@ -1426,3 +1426,14 @@ site, `offer` in `daemon.ts`; every path that queues (live transaction, `backlog
 liveness check reuses `defaultOwnerProbe.exists` (`extensions/lib/subagent-state.ts`);
 `runpod-bonsai/index.ts:155` keeps its own copy, predating this order. The socket client
 (`apps/chatd/client.ts`) is shared by the CLI and the extension.
+
+### Rework round 1 (same landing, 2026-11-28)
+
+`apps/chatd/daemon.ts` **1,307** (+166: idempotent ack, membership-start
+catch-up, pending invites, serialized DMs, the hello reservation, auto-reply,
+the start token). The **flag 1** above stands and grows: the reviewer's split
+(`waits.ts`, `mirror.ts`, a per-peer state module) is the extraction S4's chunk
+does first. Shared helpers moved out instead of being copied: the label rule
+(`protocol.ts` `mailLabel`), the reconnect window (`client.ts`
+`reconnectWithin`), `replyToOf` (`matrix.ts`), `escapeRegExp` (`classify.ts`).
+`rg -n 'RECONNECT_MS|function label\(' apps extensions` → 2 lines, both the window's seam in `client.ts`.
