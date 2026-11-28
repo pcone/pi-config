@@ -108,6 +108,29 @@ chatRows("N2: a pending-invite ack writes no marker", () => {
 	}, 60_000);
 });
 
+chatRows("invites_pushed is pruned", () => {
+	it("an invite rejected and later issued again pushes again at hello", async () => {
+		const name = uniq("b");
+		(await connectPeer(t, name)).close();
+		await quiet(300);
+		const a = await connectPeer(t, uniq("a"));
+		const room = await a.req<{ room: string; room_id: string }>("rooms", { action: "create", name: uniq("again"), invite: [name] });
+		await quiet(500);
+		const b = await connectPeer(t, name);
+		await b.ack(await b.pushed("invited you to"));
+		await b.req("rooms", { action: "leave", room: room.room_id });
+		b.close();
+		await quiet(500);
+		await a.req("send", { to: room.room, text: `@${name} come back` });
+		await quiet(500);
+		const again = await connectPeer(t, name);
+		const inv = await again.pushed("invited you to");
+		expect(inv.event_id).toBe(`invite:${room.room_id}`);
+		a.close();
+		again.close();
+	}, 30_000);
+});
+
 chatRows("N3: an unreadable marker", () => {
 	it("a marker naming an event the homeserver will not show is logged, and hello catches up from membership start", async () => {
 		const name = uniq("b");

@@ -315,12 +315,16 @@ export class Chatd {
 			} else if (reg && !reg.rooms.has(e.room_id)) {
 				reg.invited.add(e.room_id);
 			}
-		} else if (membership === "join") {
-			reg?.rooms.add(e.room_id);
-			reg?.invited.delete(e.room_id);
-		} else if (reg) {
-			reg.rooms.delete(e.room_id);
-			reg.invited.delete(e.room_id);
+		} else {
+			if (membership === "join") {
+				reg?.rooms.add(e.room_id);
+				reg?.invited.delete(e.room_id);
+			} else if (reg) {
+				reg.rooms.delete(e.room_id);
+				reg.invited.delete(e.room_id);
+			}
+			// The invite, if one was pushed at a hello, is settled.
+			await this.forgetInvites(target, (r) => r === e.room_id);
 		}
 	}
 
@@ -516,9 +520,24 @@ export class Chatd {
 	}
 
 	/** Note a pending invite as pushed: account data `dev.pi.invites_pushed` on the puppet. */
-	private async invitePushed(reg: Registration, room: string): Promise<void> {
-		const rooms = (await this.hs.accountData<{ rooms?: string[] }>(reg.userId, "dev.pi.invites_pushed"))?.rooms ?? [];
-		if (!rooms.includes(room)) await this.hs.putAccountData(reg.userId, "dev.pi.invites_pushed", { rooms: [...rooms, room] });
+	private invitePushed(reg: Registration, room: string): Promise<void> {
+		return this.serial(`invites ${reg.userId}`, async () => {
+			const rooms = (await this.hs.accountData<{ rooms?: string[] }>(reg.userId, "dev.pi.invites_pushed"))?.rooms ?? [];
+			if (!rooms.includes(room)) await this.hs.putAccountData(reg.userId, "dev.pi.invites_pushed", { rooms: [...rooms, room] });
+		});
+	}
+
+	/**
+	 * Drop rooms from a puppet's `dev.pi.invites_pushed` that are no longer
+	 * pending invites (joined, left, rejected): an invite issued again later is
+	 * news and pushes again.
+	 */
+	private forgetInvites(user: string, drop: (room: string) => boolean): Promise<void> {
+		return this.serial(`invites ${user}`, async () => {
+			const rooms = (await this.hs.accountData<{ rooms?: string[] }>(user, "dev.pi.invites_pushed"))?.rooms ?? [];
+			const kept = rooms.filter((r) => !drop(r));
+			if (kept.length !== rooms.length) await this.hs.putAccountData(user, "dev.pi.invites_pushed", { rooms: kept });
+		});
 	}
 
 	/**
@@ -528,8 +547,11 @@ export class Chatd {
 	 * note in `dev.pi.invites_pushed`.
 	 */
 	private async pendingInvites(reg: Registration): Promise<void> {
+		const invites = (await this.hs.sync(reg.userId)).rooms?.invite ?? {};
+		// Settled while chatd was not watching: forget them before deciding what is news.
+		await this.forgetInvites(reg.userId, (r) => !(r in invites));
 		const notedRooms = (await this.hs.accountData<{ rooms?: string[] }>(reg.userId, "dev.pi.invites_pushed"))?.rooms ?? [];
-		for (const [room, r] of Object.entries((await this.hs.sync(reg.userId)).rooms?.invite ?? {})) {
+		for (const [room, r] of Object.entries(invites)) {
 			reg.invited.add(room);
 			// Pushed before: as a live invite event (its ack wrote the marker), or at an earlier hello.
 			if (notedRooms.includes(room) || (await this.hs.accountData(reg.userId, "dev.pi.pushed", room))) continue;
@@ -836,12 +858,15 @@ export class Chatd {
 		await this.hs.send(this.systemUser, room, { msgtype: "m.text", body: text }, randomUUID());
 	}
 
-	private async dailyOwnerDm(key: string, text: string): Promise<void> {
-		const day = Math.floor(this.now() / DAY_MS);
-		if (this.dailyDms[key] === day) return;
-		await this.systemDm(this.config.owner, text);
-		this.dailyDms = { ...this.dailyDms, [key]: day };
-		await this.hs.putAccountData(this.systemUser, "dev.pi.daily_dms", this.dailyDms);
+	/** One at a time: the watch at start and a later run must not both pass the day check. */
+	private dailyOwnerDm(key: string, text: string): Promise<void> {
+		return this.serial("daily-dm", async () => {
+			const day = Math.floor(this.now() / DAY_MS);
+			if (this.dailyDms[key] === day) return;
+			await this.systemDm(this.config.owner, text);
+			this.dailyDms = { ...this.dailyDms, [key]: day };
+			await this.hs.putAccountData(this.systemUser, "dev.pi.daily_dms", this.dailyDms);
+		});
 	}
 
 	/** Whether the room is a DM between two agent puppets (015/32), with the pair. */
