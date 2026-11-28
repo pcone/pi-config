@@ -54,7 +54,7 @@ Confirmed (infra `docs/tuwunel.md` § Local test server, 2026-11-28):
 Verify these before relying on them; on a false one, stop with `PREMISE FALSIFIED`:
 
 - **P3.** A Claude Code hook can name its Claude Code process: the nearest ancestor whose command is `claude`. A command run from Claude's Bash tool can do the same. Probe the ancestry from both.
-- **P4.** Element X writes `m.mentions.user_ids` when the owner @mentions an agent. Record it in the live smoke. The body fallback in `classify` covers clients that do not.
+- **P4.** Element X writes `m.mentions.user_ids` when the owner @mentions an agent. Record it in the live smoke. The body fallback in `classify` covers clients that do not. Holds (live smoke, 2026-11-28): a pill picked from Element X's mention list reached the agent through `m.mentions.user_ids`; the body carried only the display name.
 - **P5.** The `Notification` hook's stdin carries `session_id`, `message` and `notification_type`, and the types for "waiting" are `permission_prompt`, `idle_prompt` and `elicitation_dialog` (code.claude.com/docs/en/hooks). Confirm with a logging hook in a scratch project. A hook marked `"async": true` does not block the session.
 
 ### Preparatory refactor
