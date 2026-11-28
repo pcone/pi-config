@@ -440,9 +440,14 @@ export class Chatd {
 		if (!Array.isArray(ids) || !ids.every((x) => typeof x === "string" && x.length > 0)) {
 			throw new ChatError("ack: event_ids must be a list of event ids");
 		}
+		// One ack at a time per puppet: two readers acking one event must not both take it.
+		return this.serial(`ack ${reg.userId}`, () => this.ackSerial(reg, ids as string[]));
+	}
+
+	private async ackSerial(reg: Registration, ids: string[]): Promise<AckResult> {
 		if (this.deps.ackDelayMs) await Bun.sleep(this.deps.ackDelayMs);
 		const result: AckResult = { acked: [], already: [] };
-		for (const id of ids as string[]) {
+		for (const id of ids) {
 			const i = reg.queue.findIndex((q) => q.event.event_id === id);
 			if (i < 0) {
 				result.already.push(id);

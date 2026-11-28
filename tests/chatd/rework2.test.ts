@@ -62,6 +62,24 @@ chatRows("N1: one event, two readers", () => {
 	}, 60_000);
 });
 
+chatRows("N1: one ack takes an event", () => {
+	it("two acks of one event at once: exactly one takes it", async () => {
+		await t.restart({ TEST_ACK_DELAY_MS: "500" });
+		try {
+			const a = await connectPeer(t, uniq("a"));
+			const b = await connectPeer(t, uniq("b"));
+			await a.req("send", { to: b.name, text: "ack me twice" });
+			const e = await b.pushed("ack me twice");
+			const r = await Promise.all([b.req<{ acked: string[] }>("ack", { event_ids: [e.event_id] }), b.req<{ acked: string[] }>("ack", { event_ids: [e.event_id] })]);
+			expect(r.flatMap((x) => x.acked)).toEqual([e.event_id]);
+			a.close();
+			b.close();
+		} finally {
+			await t.restart({});
+		}
+	}, 60_000);
+});
+
 chatRows("N2: a pending-invite ack writes no marker", () => {
 	it("after an invite ack and a join, a message older than chatd's clock is still delivered", async () => {
 		// chatd's clock runs a day ahead of the homeserver's.
