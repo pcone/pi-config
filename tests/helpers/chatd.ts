@@ -27,6 +27,8 @@ export interface TestChatd {
 	/** Send a control line to the test entry and wait for its answer line. */
 	control(line: "sweep" | "cert" | "presence"): Promise<string>;
 	log(): string;
+	/** chatd's pid, for a row that kills it from a synchronous callback. */
+	pid(): number;
 	/** A client connection to the socket. */
 	client(): Promise<ChatClient>;
 	dispose(): Promise<void>;
@@ -128,6 +130,10 @@ export async function startChatdWithHomeserver(env: Record<string, string> = {})
 			return out.slice(before).trim();
 		},
 		log: () => readFileSync(logFile, "utf8"),
+		pid: () => {
+			if (!proc) throw new Error("chatd is not running");
+			return proc.pid;
+		},
 		client: () => ChatClient.connect(socket),
 		async dispose() {
 			await stop();

@@ -68,8 +68,10 @@ export interface PiPeer {
 	branch: unknown[];
 	/** This session's derived `peer` waits. */
 	waits(): Wait[];
+	/** Run one of the extension's slash commands. */
+	command(name: string, args?: string): Promise<void>;
 	/** Call one of the extension's tools by its neutral role. */
-	tool(role: "send" | "who", params: Record<string, unknown>): Promise<{ text: string; details?: unknown }>;
+	tool(role: "send" | "who" | (string & {}), params: Record<string, unknown>): Promise<{ text: string; details?: unknown }>;
 }
 
 export interface ClaudePeer {

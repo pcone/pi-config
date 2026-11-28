@@ -31,6 +31,7 @@ export async function makePiPeer(spec: {
 }): Promise<PiStandin> {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Tool>();
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> | void }>();
 	const injected: Injected[] = [];
 	const notices: { message: string; level?: string }[] = [];
 	const options = spec.options;
@@ -45,7 +46,7 @@ export async function makePiPeer(spec: {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
 		registerTool: (def: Tool) => tools.set(def.name, def),
-		registerCommand: () => {},
+		registerCommand: (name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> | void }) => commands.set(name, def),
 		sendUserMessage: (text: string, opts?: { deliverAs?: "steer" | "followUp" }) => {
 			const deliverAs = opts?.deliverAs ?? "steer";
 			inject(text, deliverAs);
@@ -63,8 +64,13 @@ export async function makePiPeer(spec: {
 			for (const h of handlers.get(event) ?? []) await h({ type: event, ...payload }, ctx);
 		},
 		waits: spec.waits,
-		async tool(role: "send" | "who", params: Record<string, unknown>) {
-			const name = spec.roles[role];
+		async command(name: string, args = "") {
+			const c = commands.get(name);
+			if (!c) throw new Error(`command ${name} not registered`);
+			await c.handler(args, ctx);
+		},
+		async tool(role: string, params: Record<string, unknown>) {
+			const name = (spec.roles as Record<string, string>)[role] ?? role;
 			const tool = tools.get(name);
 			if (!tool) throw new Error(`tool ${name} not registered`);
 			const r = await tool.execute("call-bus", params, undefined, undefined, ctx);
