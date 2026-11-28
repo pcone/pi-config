@@ -531,3 +531,14 @@ chatRows("startup and configuration", () => {
 		for (const p of [named, cl, cl2]) p.close();
 	}, 30_000);
 });
+
+describe("test isolation", () => {
+	it("the preload points every session's chatd socket into the run's temp dir, not the live chatd", () => {
+		const { realpathSync } = require("node:fs");
+		const { tmpdir } = require("node:os");
+		const socket = socketPath(process.env);
+		expect(socket).toBe(process.env.CHATD_SOCKET as string);
+		expect(socket.startsWith(`${realpathSync(tmpdir())}/`)).toBe(true);
+		expect(existsSync(socket)).toBe(false);
+	});
+});

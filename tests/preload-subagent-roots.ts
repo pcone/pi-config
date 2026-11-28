@@ -45,6 +45,12 @@ const roots = {
 };
 for (const [name, dir] of Object.entries(roots)) process.env[name] = dir;
 
+// The chat extension in every pi session a test starts connects to `CHATD_SOCKET`,
+// else the live `$XDG_RUNTIME_DIR/chatd.sock`, which registers test sessions as
+// puppets on the production homeserver. A path nothing listens on gives a test
+// the "chatd not running" state; a test that needs chatd passes its own socket.
+process.env.CHATD_SOCKET = join(roots[PI_SUBAGENT_META_DIR_ENV], "no-chatd.sock");
+
 // `afterAll` at preload scope runs once, after the process's last test file,
 // on a failed run too. Not `process.on("exit")`: bun test never emits it
 // (verified on 1.3.11 — an exit handler's file write never appears). A killed
