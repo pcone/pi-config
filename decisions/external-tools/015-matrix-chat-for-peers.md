@@ -185,4 +185,12 @@ Scott, on the mention trigger: "That feels a little too magic - id rather someth
 - A session idle for 3 days is reported as stale.
 - A session that exits unasked is reported and not restarted.
 
+39. **A guard against agents starting Claude.**
+- A deny rule and a `PreToolUse` hook in the owner's `~/.claude/settings.json` refuse a Bash command that runs `claude`. The owner applies the block.
+- A `claude` shim earlier on `PATH` refuses to start when the environment marks an agent: `CLAUDECODE` set, or pi's `PI_*` variables.
+
+Both guard against mistakes, not a hostile process. Built as WO-2026-110. Running chatd and pi under a separate Unix user, which would be a hard wall, is deferred.
+
+**Ruling (owner, 2026-11-28, over Matrix).** After a WO-2026-107 subagent launched a `claude` process to probe hooks, Scott asked: "Any way to more mechanically lock down creation of new Claude sessions by anything but me?" He was offered (1) the deny rule and hook, (2) the PATH shim, and (3) a separate Unix user, with 1 and 2 recommended now. Scott: "agree on the easy changes to stop Claude sessions being launched for now. Separating our chat orchestration layer etc from agents later on might be a good idea? This box is *only* for agentic dev so it doesn't run much else though". On the stray trust entry the probe left in `~/.claude.json`: "fine to leave alone for now".
+
 **Not ruled yet:** nothing in this decision.
