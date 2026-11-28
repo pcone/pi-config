@@ -982,7 +982,8 @@ export class Chatd {
 			return;
 		}
 		if (typeof req !== "object" || req === null || Array.isArray(req) || typeof req.verb !== "string") {
-			conn.send({ ok: false, error: "a request is an object with a verb" });
+			const id = typeof req === "object" && req !== null && !Array.isArray(req) ? req.id : undefined;
+			conn.send({ id, ok: false, error: "a request is an object with a verb" });
 			return;
 		}
 		try {

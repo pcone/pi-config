@@ -106,8 +106,8 @@ chatRows("H2 and departure 4: what a reconnecting puppet catches up", () => {
 		const first = await connectPeer(t, name, "subagent", { cwd: "/tmp/aaa" });
 		const a = await connectPeer(t, uniq("a"));
 		await a.req("send", { to: name, text: "before" });
-		const before = await first.pushed("before");
-		await first.ack(...first.pushes.slice(0, first.pushes.indexOf(before) + 1));
+		// Unacked: no marker, so the reconnect pages back to the start of membership.
+		await first.pushed("before");
 		first.close();
 		await quiet(300);
 		await a.req("send", { to: name, text: "while-offline" });
@@ -429,6 +429,10 @@ chatRows("LOWs pinned", () => {
 		const c = await t.client();
 		const raw = (c as unknown as { socket: import("node:net").Socket }).socket;
 		raw.write("null\n42\n[]\n");
+		const answer = new Promise<string>((resolve) => raw.once("data", (d) => resolve(String(d))));
+		raw.write('{"id": 99}\n');
+		expect(await answer).toContain('"id":99');
+		expect(await answer).toContain("a request is an object with a verb");
 		await quiet(300);
 		const b = await connectPeer(t, uniq("b"));
 		expect(b.userId).toContain("@pi-");
