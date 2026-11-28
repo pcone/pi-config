@@ -193,4 +193,10 @@ Both guard against mistakes, not a hostile process. Built as WO-2026-110. Runnin
 
 **Ruling (owner, 2026-11-28, over Matrix).** After a WO-2026-107 subagent launched a `claude` process to probe hooks, Scott asked: "Any way to more mechanically lock down creation of new Claude sessions by anything but me?" He was offered (1) the deny rule and hook, (2) the PATH shim, and (3) a separate Unix user, with 1 and 2 recommended now. Scott: "agree on the easy changes to stop Claude sessions being launched for now. Separating our chat orchestration layer etc from agents later on might be a good idea? This box is *only* for agentic dev so it doesn't run much else though". On the stray trust entry the probe left in `~/.claude.json`: "fine to leave alone for now".
 
+40. **`#peers` holds every account, mechanically.** chatd keeps every puppet joined to `#peers`: at registration, at startup for every puppet that was ever a member, and again whenever a puppet's leave is seen. The `rooms` verb refuses to leave `#peers`. `who` and name lookup read `#peers`, so an account outside it is invisible to both. Built as `work-orders/WO-peers-membership.md`.
+
+**Ruling (owner, 2026-11-28, over Matrix).** Asked "does the peers room always have *all* accounts in it, mechanically guaranteed?", he was told it is joined at each registration, but a `rooms leave` or a leave from outside chatd is not undone. Scott: "yeah we should mechanically guarantee peers always has all accounts in it".
+
+**Recorder's reading (Claude, 2026-11-28).** "All accounts" is read as every puppet chatd has registered. chatd cannot join the owner's account, only invite it, so the owner is re-invited when he is not a member. A deactivated account is out of scope.
+
 **Not ruled yet:** nothing in this decision.
