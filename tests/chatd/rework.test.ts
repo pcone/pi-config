@@ -245,7 +245,7 @@ chatRows("M4: the extension acks after a reconnect", () => {
 				// Dies after the injection, before the ack reaches it.
 				if (kill && text.includes("die after me")) {
 					kill = false;
-					Bun.spawnSync(["kill", "-9", String(t.pid())]);
+					process.kill(t.pid(), "SIGKILL");
 				}
 			},
 		});
@@ -428,11 +428,13 @@ chatRows("LOWs pinned", () => {
 	it("a socket line that is not a request object answers an error and chatd lives", async () => {
 		const c = await t.client();
 		const raw = (c as unknown as { socket: import("node:net").Socket }).socket;
-		raw.write("null\n42\n[]\n");
-		const answer = new Promise<string>((resolve) => raw.once("data", (d) => resolve(String(d))));
-		raw.write('{"id": 99}\n');
-		expect(await answer).toContain('"id":99');
-		expect(await answer).toContain("a request is an object with a verb");
+		let seen = "";
+		raw.on("data", (d) => {
+			seen += String(d);
+		});
+		raw.write('null\n42\n[]\n{"id": 99}\n');
+		const answer = await until(() => seen.split("\n").find((l) => l.includes('"id":99')), 5_000, "the answer to id 99");
+		expect(answer).toContain("a request is an object with a verb");
 		await quiet(300);
 		const b = await connectPeer(t, uniq("b"));
 		expect(b.userId).toContain("@pi-");
