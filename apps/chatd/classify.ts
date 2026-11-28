@@ -29,13 +29,14 @@ function mentions(event: MatrixEvent): { userIds: string[]; room: boolean } {
 	return { userIds, room: m?.room === true };
 }
 
-function escape(s: string): string {
+export function escapeRegExp(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** `@name` as a token: not inside a longer name or address. */
 export function bodyMentions(body: string, token: string): boolean {
-	return new RegExp(`(^|[^A-Za-z0-9._@-])${escape(token)}(?![A-Za-z0-9._-])`).test(body);
+	// A trailing `.` ends a sentence, not the name: `@foo.` mentions foo.
+	return new RegExp(`(^|[^A-Za-z0-9._@-])${escapeRegExp(token)}(?![A-Za-z0-9_-])(?!\\.[A-Za-z0-9_-])`).test(body);
 }
 
 function mentioned(event: MatrixEvent, r: Recipient): boolean {

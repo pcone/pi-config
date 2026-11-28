@@ -15,11 +15,12 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { defaultOwnerProbe } from "../../extensions/lib/subagent-state.ts";
-import { type Level, type PeerKind, type Recipient, bodyMentions, classify } from "./classify.ts";
+import { type Level, type PeerKind, type Recipient, bodyMentions, classify, escapeRegExp } from "./classify.ts";
 import type { Config } from "./config.ts";
-import { Homeserver, HomeserverError, type MatrixEvent } from "./matrix.ts";
+import { Homeserver, HomeserverError, type MatrixEvent, replyToOf } from "./matrix.ts";
 import { SYSTEM_LOCALPART, SYSTEM_NAME, localOf, localpart, peerName, userId, validatePeerName } from "./names.ts";
 import {
+	type AckResult,
 	ChatError,
 	type ClientKind,
 	type Hello,
@@ -28,6 +29,7 @@ import {
 	type Pushed,
 	WAITING_TYPES,
 	type WaitResult,
+	whereToRead,
 } from "./protocol.ts";
 
 const DAY_MS = 86_400_000;
@@ -35,6 +37,10 @@ export const PRESENCE_PASS_MS = 30_000;
 export const MIRROR_SWEEP_MS = 3_600_000;
 export const MIRROR_KEEP_MS = 7 * DAY_MS;
 export const CERT_MIN_DAYS = 20;
+/** Transaction event ids remembered for idempotency; older ones are re-checked against the marker instead. */
+const PROCESSED_CAP = 10_000;
+/** Rooms chatd and agents create keep their history readable to later members (WO-2026-107 departure 4). */
+const SHARED_HISTORY = [{ type: "m.room.history_visibility", state_key: "", content: { history_visibility: "shared" } }];
 
 export interface Deps {
 	now?: () => number;
@@ -43,6 +49,9 @@ export interface Deps {
 	log?: (line: string) => void;
 	/** Test seam: runs after a mirror copy is posted, before the transaction is answered. */
 	afterMirrorCopy?: () => void;
+	/** Test seams for the schedules. */
+	presencePassMs?: number;
+	sweepMs?: number;
 }
 
 interface Conn {
@@ -63,14 +72,20 @@ interface Registration {
 	userId: string;
 	kind: ClientKind;
 	session: string;
+	sessionFile?: string;
 	cwd: string;
 	model?: string;
 	claudePid?: number;
+	/** The Claude process's start token at registration: a reused pid is not the session. */
+	claudeStart?: string | null;
 	displayName: string;
+	autoreply: boolean;
 	conn?: Conn;
 	queue: Queued[];
-	/** Event ids a reply-wait handed to its waiter; hidden from prompt and watch until acked. */
-	claimed: Set<string>;
+	/** Event ids a reply-wait handed to its waiter, with the waiter's connection; hidden from prompt and watch until acked or that connection closes. */
+	claimed: Map<string, Conn>;
+	/** Per room, the newest acked event: it and older events are never queued again. */
+	markers: Map<string, { id: string; ts: number }>;
 	mdirect: Record<string, string[]>;
 	directRooms: Set<string>;
 	/** Rooms joined. */
@@ -120,6 +135,10 @@ export class Chatd {
 	private regs = new Map<string, Registration>();
 	private waits = new Set<WaitRec>();
 	private processed = new Set<string>();
+	/** Serialized sections, by key: DM creation per pair, `m.direct` writes per user. */
+	private locks = new Map<string, Promise<unknown>>();
+	/** Registrations being built, by peer: a second hello waits (Claude) or is refused (pi). */
+	private building = new Map<string, Promise<Registration>>();
 	private kinds = new Map<string, PeerKind>();
 	private roomLabels = new Map<string, string>();
 	private dmPairs = new Map<string, [string, string] | null>();
@@ -127,7 +146,8 @@ export class Chatd {
 	private systemDirect: Record<string, string[]> = {};
 	/** Matrix presence chatd wants per puppet, and whether the last write landed. */
 	private presence = new Map<string, { want: "online" | "offline"; status: string; written?: string }>();
-	private dailyDms = new Map<string, number>();
+	/** Day of the last owner DM per key, kept in `@pi-system`'s account data `dev.pi.daily_dms` so a restart does not repeat it. */
+	private dailyDms: Record<string, number> = {};
 	private connSeq = 0;
 	private conns = new Set<Conn>();
 	peersRoom = "";
@@ -155,6 +175,7 @@ export class Chatd {
 		await this.hs.setDisplayName(this.systemUser, "pi-system");
 		await this.hs.setProfileField(this.systemUser, "dev.pi.kind", "system");
 		this.systemDirect = (await this.hs.accountData<Record<string, string[]>>(this.systemUser, "m.direct")) ?? {};
+		this.dailyDms = (await this.hs.accountData<Record<string, number>>(this.systemUser, "dev.pi.daily_dms")) ?? {};
 		this.peersRoom = await this.ownedRoom("peers", [this.config.owner]);
 		this.mirrorRoom = await this.ownedRoom("dm-mirror", [this.config.owner]);
 		this.http = Bun.serve({
@@ -163,8 +184,8 @@ export class Chatd {
 			fetch: (req) => this.onHttp(req),
 		});
 		await this.listenSocket();
-		this.timers.push(setInterval(() => void this.presencePass(), PRESENCE_PASS_MS));
-		this.timers.push(setInterval(() => void this.sweepMirror(), MIRROR_SWEEP_MS));
+		this.timers.push(setInterval(() => void this.presencePass(), this.deps.presencePassMs ?? PRESENCE_PASS_MS));
+		this.timers.push(setInterval(() => void this.sweepMirror(), this.deps.sweepMs ?? MIRROR_SWEEP_MS));
 		this.timers.push(setInterval(() => void this.certificateWatch(), DAY_MS));
 		void this.certificateWatch();
 		this.log(`chatd: listening on ${this.config.socket} and ${this.config.listen.host}:${this.config.listen.port}`);
@@ -187,6 +208,7 @@ export class Chatd {
 			name: alias,
 			preset: "private_chat",
 			invite,
+			initial_state: SHARED_HISTORY,
 		});
 		this.log(`chatd: created ${full}`);
 		return room;
@@ -244,6 +266,7 @@ export class Chatd {
 					if (this.processed.has(e.event_id)) continue;
 					await this.onEvent(e);
 					this.processed.add(e.event_id);
+					if (this.processed.size > PROCESSED_CAP) this.processed.delete(this.processed.values().next().value!);
 				}
 				return Response.json({});
 			} catch (err) {
@@ -285,7 +308,8 @@ export class Chatd {
 				await this.hs.join(target, e.room_id);
 				reg?.rooms.add(e.room_id);
 				if (direct) await this.recordDirect(target, e.sender, e.room_id);
-				if (reg && !reg.syncing) await this.catchUp(reg, e.room_id, undefined, "invite");
+				// Syncing: the backlog's next pass over joined rooms finds this one.
+				if (reg && !reg.syncing) await this.catchUp(reg, e.room_id, undefined);
 			} else if (reg && !reg.rooms.has(e.room_id)) {
 				reg.invited.add(e.room_id);
 			}
@@ -325,6 +349,10 @@ export class Chatd {
 	private async offer(reg: Registration, e: MatrixEvent, deliver = true): Promise<void> {
 		if (classify(e, e.room_id, this.recipient(reg)) !== "push") return;
 		if (reg.queue.some((q) => q.event.event_id === e.event_id)) return;
+		// Acked already: a transaction redelivered after a restart, or a re-read page.
+		// A same-millisecond neighbour of the marker is queued: a duplicate beats a loss.
+		const m = reg.markers.get(e.room_id);
+		if (m && (e.origin_server_ts < m.ts || e.event_id === m.id)) return;
 		const q: Queued = { event: e, pushed: await this.render(reg, e) };
 		reg.queue.push(q);
 		if (!deliver) return;
@@ -343,7 +371,7 @@ export class Chatd {
 		const c = e.content;
 		const expectReply = c["dev.pi.expect_reply"] === true;
 		const delivery = expectReply || c["dev.pi.delivery"] === "followUp" ? "followUp" : "steer";
-		const replyTo = (c["m.relates_to"] as { "m.in_reply_to"?: { event_id?: string } } | undefined)?.["m.in_reply_to"]?.event_id;
+		const replyTo = replyToOf(c);
 		const invite = e.type === "m.room.member";
 		const direct = reg.directRooms.has(e.room_id) || (invite && c.is_direct === true);
 		const room = direct ? "direct" : await this.roomLabel(e.room_id, e.sender, reg.userId);
@@ -401,56 +429,121 @@ export class Chatd {
 		conn.send({ id, ok: true, result: { events } });
 	}
 
-	/** The pushed-delivery marker's one writer (docs/design/chat.md § Delivery state). */
-	private async ack(reg: Registration, ids: string[]): Promise<void> {
-		for (const id of ids) {
+	/**
+	 * The pushed-delivery marker's one writer (docs/design/chat.md § Delivery
+	 * state). An id not pending is no error: an ack whose answer was lost is
+	 * retried, and the event was acked the first time. It is reported back.
+	 */
+	private async ack(reg: Registration, ids: unknown): Promise<AckResult> {
+		if (!Array.isArray(ids) || !ids.every((x) => typeof x === "string" && x.length > 0)) {
+			throw new ChatError("ack: event_ids must be a list of event ids");
+		}
+		const result: AckResult = { acked: [], already: [] };
+		for (const id of ids as string[]) {
 			const i = reg.queue.findIndex((q) => q.event.event_id === id);
-			if (i < 0) throw new ChatError(`event ${id} is not pending for ${reg.peer}`);
-			const room = reg.queue[i].event.room_id;
+			if (i < 0) {
+				result.already.push(id);
+				continue;
+			}
+			const { event, pushed } = reg.queue[i];
+			const room = event.room_id;
 			const head = reg.queue.find((q) => q.event.room_id === room)!;
 			if (head.event.event_id !== id) {
 				throw new ChatError(`out-of-order ack in ${room}: expected ${head.event.event_id}, got ${id}`);
 			}
-			const sender = reg.queue[i].pushed.sender;
+			const sender = pushed.sender;
 			if (sender !== SYSTEM_NAME && sender !== reg.lastCorrespondent && !sender.startsWith("@")) {
 				await this.hs.putAccountData(reg.userId, "dev.pi.last_correspondent", { peer: sender });
 				reg.lastCorrespondent = sender;
 			}
-			await this.hs.putAccountData(reg.userId, "dev.pi.pushed", { event_id: id }, room);
+			// The marker never moves back: an older event acked late leaves it where it is.
+			if (event.origin_server_ts >= (reg.markers.get(room)?.ts ?? -1)) {
+				await this.hs.putAccountData(reg.userId, "dev.pi.pushed", { event_id: id }, room);
+				reg.markers.set(room, { id, ts: event.origin_server_ts });
+			}
 			reg.queue.splice(i, 1);
 			reg.claimed.delete(id);
+			result.acked.push(id);
 		}
+		return result;
 	}
 
 	/**
 	 * Backlog on connect: in every joined room, the events since `dev.pi.pushed`,
-	 * else since the puppet's own join event, each offered to `classify`.
+	 * else since the puppet's membership began; then each pending invite not
+	 * pushed before. Rooms joined while it runs get their own pass.
 	 */
 	private async backlog(reg: Registration): Promise<void> {
-		const joined = await this.hs.joinedRooms(reg.userId);
-		for (const room of joined) reg.rooms.add(room);
-		for (const room of Object.keys((await this.hs.sync(reg.userId)).rooms?.invite ?? {})) reg.invited.add(room);
-		for (const room of joined) {
-			const marker = (await this.hs.accountData<{ event_id?: string }>(reg.userId, "dev.pi.pushed", room))?.event_id;
-			await this.catchUp(reg, room, marker, "join");
+		const done = new Set<string>();
+		for (;;) {
+			const joined = (await this.hs.joinedRooms(reg.userId)).filter((r) => !done.has(r));
+			if (joined.length === 0) break;
+			for (const room of joined) {
+				reg.rooms.add(room);
+				reg.invited.delete(room);
+				const marker = (await this.hs.accountData<{ event_id?: string }>(reg.userId, "dev.pi.pushed", room))?.event_id;
+				if (marker && !marker.startsWith("invite:")) {
+					reg.markers.set(room, { id: marker, ts: (await this.hs.event(reg.userId, room, marker)).origin_server_ts });
+				}
+				await this.catchUp(reg, room, marker?.startsWith("invite:") ? undefined : marker);
+				done.add(room);
+			}
+		}
+		await this.pendingInvites(reg);
+	}
+
+	/**
+	 * Queue the puppet's pending invites that no earlier push delivered
+	 * (WO-2026-107 departure 9). An invite read from sync has no event id, so
+	 * its id is `invite:<room>`; its ack writes that marker in the room.
+	 */
+	private async pendingInvites(reg: Registration): Promise<void> {
+		for (const [room, r] of Object.entries((await this.hs.sync(reg.userId)).rooms?.invite ?? {})) {
+			reg.invited.add(room);
+			if (await this.hs.accountData(reg.userId, "dev.pi.pushed", room)) continue;
+			const state = r.invite_state?.events ?? [];
+			const member = state.find((x) => x.type === "m.room.member" && x.state_key === reg.userId);
+			if (!member) continue;
+			const alias = state.find((x) => x.type === "m.room.canonical_alias")?.content.alias as string | undefined;
+			const name = state.find((x) => x.type === "m.room.name")?.content.name as string | undefined;
+			if (alias || name) this.roomLabels.set(room, alias?.split(":")[0] ?? name!);
+			await this.offer(reg, {
+				event_id: `invite:${room}`,
+				room_id: room,
+				sender: member.sender,
+				type: "m.room.member",
+				state_key: reg.userId,
+				origin_server_ts: this.now(),
+				content: member.content,
+			}, false);
 		}
 	}
 
 	/**
-	 * Offer `room`'s events newer than `marker`, or than the puppet's own
-	 * `stopAt` membership event. A join chatd made for an invite catches up from
-	 * the invite: the homeserver sends an invited puppet's rooms nothing, so a
-	 * message between the invite and the join would otherwise never reach it.
+	 * Offer `room`'s events newer than `marker`, else since the puppet's current
+	 * membership began: its join, or the invite the join answered (departure 4:
+	 * the homeserver sends an invited puppet's rooms nothing, so a message between
+	 * invite and join would be lost). A join that only changed the profile (a
+	 * new display name) is no start.
 	 */
-	private async catchUp(reg: Registration, room: string, marker: string | undefined, stopAt: "join" | "invite"): Promise<void> {
+	private async catchUp(reg: Registration, room: string, marker: string | undefined): Promise<void> {
 		const events: MatrixEvent[] = [];
 		let from: string | undefined;
+		let joinFollowedInvite = false;
 		paging: for (;;) {
 			const page = await this.hs.messages(reg.userId, room, from);
 			for (const e of page.chunk) {
 				e.room_id = room;
 				if (marker && e.event_id === marker) break paging;
-				if (!marker && e.type === "m.room.member" && e.state_key === reg.userId && e.content.membership === stopAt) break paging;
+				if (!marker && e.type === "m.room.member" && e.state_key === reg.userId) {
+					const now = e.content.membership;
+					const before = e.unsigned?.prev_content?.membership;
+					if (now === "invite" && joinFollowedInvite) break paging;
+					if (now === "join" && before !== "join" && !joinFollowedInvite) {
+						if (before !== "invite") break paging;
+						joinFollowedInvite = true;
+					}
+				}
 				events.unshift(e);
 			}
 			if (!page.end || page.chunk.length === 0) break;
@@ -469,7 +562,9 @@ export class Chatd {
 	private online(reg: Registration | undefined): boolean {
 		if (!reg) return false;
 		if (reg.kind === "claude") {
-			if (reg.claudePid !== undefined && defaultOwnerProbe.exists(reg.claudePid)) return true;
+			const pid = reg.claudePid;
+			const same = reg.claudeStart === null || reg.claudeStart === undefined || defaultOwnerProbe.startToken(pid!) === reg.claudeStart;
+			if (pid !== undefined && defaultOwnerProbe.exists(pid) && same) return true;
 			this.endRegistration(reg, "its Claude Code process is gone");
 			return false;
 		}
@@ -485,26 +580,45 @@ export class Chatd {
 		return kind;
 	}
 
-	private async hello(conn: Conn, h: Hello & { register?: boolean }): Promise<HelloResult> {
+	private async hello(conn: Conn, h: Hello): Promise<HelloResult> {
 		const peer = validatePeerName(String(h.peer ?? ""));
 		if (peer === SYSTEM_NAME) throw new ChatError("system is @pi-system's name; no client speaks as it", "refused");
 		if (!["pi", "claude", "subagent"].includes(h.kind)) throw new ChatError(`hello: unknown kind ${JSON.stringify(h.kind)}`);
 		if (h.kind === "claude" && !(Number.isInteger(h.claudePid) && (h.claudePid as number) > 0)) {
 			throw new ChatError("hello: a claude peer needs claudePid");
 		}
-		const existing = this.regs.get(peer);
-		if (existing && existing.kind !== "claude" && existing.conn && !existing.conn.closed && existing.conn !== conn) {
-			throw new ChatError(`${peer} is already connected (connection ${existing.conn.id})`, "refused");
+		const building = this.building.get(peer);
+		if (building) {
+			// A Claude session's hooks may overlap; a second pi session of one name is refused.
+			if (h.kind !== "claude") throw new ChatError(`${peer} is already connecting`, "refused");
+			await building.catch(() => {});
 		}
-		if (h.register === false && !(existing && existing.kind === h.kind)) {
+		const existing = this.regs.get(peer);
+		if (existing && this.online(existing) && (existing.kind !== h.kind || (existing.conn && existing.conn !== conn))) {
+			const what = existing.kind === h.kind ? `connection ${existing.conn!.id}` : `a ${existing.kind} session`;
+			throw new ChatError(`${peer} is already connected (${what})`, "refused");
+		}
+		const live = this.regs.get(peer);
+		if (h.register === false && !(live && live.kind === h.kind)) {
 			throw new ChatError(`no registration for ${peer} (did the session-start hook run?)`, "gone");
 		}
-		if (existing && existing.kind === h.kind && h.kind === "claude") {
-			existing.claudePid = h.claudePid;
-			existing.cwd = h.cwd ?? existing.cwd;
-			conn.reg = existing;
-			return this.helloResult(existing);
+		if (live && live.kind === "claude" && h.kind === "claude") {
+			live.claudePid = h.claudePid;
+			live.claudeStart = defaultOwnerProbe.startToken(h.claudePid!);
+			live.cwd = h.cwd ?? live.cwd;
+			conn.reg = live;
+			return this.helloResult(live);
 		}
+		const pending = this.register(conn, peer, h);
+		this.building.set(peer, pending);
+		try {
+			return this.helloResult(await pending);
+		} finally {
+			if (this.building.get(peer) === pending) this.building.delete(peer);
+		}
+	}
+
+	private async register(conn: Conn, peer: string, h: Hello): Promise<Registration> {
 		const user = userId(localpart(peer), this.config.serverName);
 		await this.hs.register(localpart(peer));
 		const reg: Registration = {
@@ -512,13 +626,17 @@ export class Chatd {
 			userId: user,
 			kind: h.kind,
 			session: String(h.session ?? ""),
+			sessionFile: h.sessionFile ? String(h.sessionFile) : undefined,
 			cwd: String(h.cwd ?? ""),
 			model: h.model,
 			claudePid: h.claudePid,
+			claudeStart: h.claudePid ? defaultOwnerProbe.startToken(h.claudePid) : undefined,
 			displayName: "",
+			autoreply: true,
 			conn: h.kind === "claude" ? undefined : conn,
 			queue: [],
-			claimed: new Set(),
+			claimed: new Map(),
+			markers: new Map(),
 			mdirect: {},
 			directRooms: new Set(),
 			rooms: new Set(),
@@ -533,6 +651,7 @@ export class Chatd {
 		await this.hs.setDisplayName(user, reg.displayName);
 		await this.hs.setProfileField(user, "dev.pi.kind", h.kind);
 		await this.hs.setProfileField(user, "dev.pi.session", reg.session);
+		await this.hs.setProfileField(user, "dev.pi.session_file", reg.sessionFile ?? "");
 		await this.hs.setProfileField(user, "dev.pi.cwd", reg.cwd);
 		if (h.model) await this.hs.setProfileField(user, "dev.pi.model", h.model);
 		const members = await this.hs.joinedMembers(this.systemUser, this.peersRoom);
@@ -546,6 +665,7 @@ export class Chatd {
 			if (!rule.actions.includes("notify")) reg.levels.set(rule.rule_id, "mentions");
 		}
 		reg.lastCorrespondent = (await this.hs.accountData<{ peer?: string }>(user, "dev.pi.last_correspondent"))?.peer;
+		reg.autoreply = (await this.hs.accountData<{ on?: boolean }>(user, "dev.pi.autoreply"))?.on !== false;
 		this.regs.set(peer, reg);
 		conn.reg = reg;
 		try {
@@ -561,16 +681,22 @@ export class Chatd {
 		reg.syncing = false;
 		this.setPresence(reg, "online");
 		if (reg.conn) for (const q of reg.queue) reg.conn.send({ push: q.pushed });
-		return this.helloResult(reg);
+		return reg;
 	}
 
 	private helloResult(reg: Registration): HelloResult {
-		return { peer: reg.peer, userId: reg.userId, displayName: reg.displayName, lastCorrespondent: reg.lastCorrespondent };
+		return {
+			peer: reg.peer,
+			userId: reg.userId,
+			displayName: reg.displayName,
+			lastCorrespondent: reg.lastCorrespondent,
+			autoreply: reg.autoreply,
+		};
 	}
 
 	/** The session's name, or for an unnamed one `<repo> <kind>`, unique among `#peers` by a suffix (015/20). */
 	private async displayNameFor(reg: Registration): Promise<string> {
-		const unnamed = reg.kind !== "pi" || new RegExp(`^${hostname().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`).test(reg.peer);
+		const unnamed = reg.kind !== "pi" || new RegExp(`^${escapeRegExp(hostname())}-\\d+$`).test(reg.peer);
 		if (!unnamed) return reg.peer;
 		const members = await this.hs.joinedMembers(this.systemUser, this.peersRoom);
 		const taken = new Set(Object.entries(members).filter(([u]) => u !== reg.userId).map(([, m]) => m.display_name ?? ""));
@@ -618,46 +744,70 @@ export class Chatd {
 
 	// ── rooms and DMs ────────────────────────────────────────────────────
 
-	private async recordDirect(user: string, other: string, room: string): Promise<void> {
-		const reg = this.regByUser(user);
-		const current = reg?.mdirect ?? (user === this.systemUser ? this.systemDirect : (await this.hs.accountData<Record<string, string[]>>(user, "m.direct")) ?? {});
-		const rooms = current[other] ?? [];
-		if (!rooms.includes(room)) {
-			const next = { ...current, [other]: [...rooms, room] };
-			await this.hs.putAccountData(user, "m.direct", next);
-			if (reg) reg.mdirect = next;
-			if (user === this.systemUser) this.systemDirect = next;
-		}
-		reg?.directRooms.add(room);
-		reg?.rooms.add(room);
+	/** Run `fn` after every earlier holder of `key`: one find-or-create at a time. */
+	private serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+		const prev = this.locks.get(key) ?? Promise.resolve();
+		const next = prev.catch(() => {}).then(fn);
+		this.locks.set(key, next);
+		void next.finally(() => {
+			if (this.locks.get(key) === next) this.locks.delete(key);
+		});
+		return next;
 	}
 
-	/** The DM room `from` holds with `to`, created on first need and recorded in `m.direct`. */
-	private async directRoom(from: string, fromDirect: Record<string, string[]>, to: string): Promise<string> {
-		const existing = fromDirect[to]?.[0];
-		if (existing) return existing;
-		const room = await this.hs.createRoom(from, { preset: "trusted_private_chat", is_direct: true, invite: [to] });
-		await this.recordDirect(from, to, room);
-		const toLocal = localOf(to, this.config.serverName);
-		if (toLocal?.startsWith("pi-")) {
-			await this.hs.register(toLocal);
-			await this.hs.join(to, room);
-			await this.recordDirect(to, from, room);
-			if (from !== this.systemUser && to !== this.systemUser) this.dmPairs.set(room, [from, to]);
-		}
-		return room;
+	/** A user's `m.direct`: the registration's or `@pi-system`'s copy, else the homeserver's. */
+	private async directOf(user: string): Promise<Record<string, string[]>> {
+		const reg = this.regByUser(user);
+		if (reg) return reg.mdirect;
+		if (user === this.systemUser) return this.systemDirect;
+		return (await this.hs.accountData<Record<string, string[]>>(user, "m.direct")) ?? {};
+	}
+
+	private recordDirect(user: string, other: string, room: string): Promise<void> {
+		return this.serial(`m.direct ${user}`, async () => {
+			const reg = this.regByUser(user);
+			const current = await this.directOf(user);
+			const rooms = current[other] ?? [];
+			if (!rooms.includes(room)) {
+				const next = { ...current, [other]: [...rooms, room] };
+				await this.hs.putAccountData(user, "m.direct", next);
+				if (reg) reg.mdirect = next;
+				if (user === this.systemUser) this.systemDirect = next;
+			}
+			reg?.directRooms.add(room);
+			reg?.rooms.add(room);
+		});
+	}
+
+	/** The DM room `from` holds with `to`, created on first need and recorded in `m.direct`. One creation per pair at a time. */
+	private directRoom(from: string, to: string): Promise<string> {
+		return this.serial(`dm ${[from, to].sort().join(" ")}`, async () => {
+			const existing = (await this.directOf(from))[to]?.[0];
+			if (existing) return existing;
+			const room = await this.hs.createRoom(from, { preset: "trusted_private_chat", is_direct: true, invite: [to], initial_state: SHARED_HISTORY });
+			await this.recordDirect(from, to, room);
+			const toLocal = localOf(to, this.config.serverName);
+			if (toLocal?.startsWith("pi-")) {
+				await this.hs.register(toLocal);
+				await this.hs.join(to, room);
+				await this.recordDirect(to, from, room);
+				if (from !== this.systemUser && to !== this.systemUser) this.dmPairs.set(room, [from, to]);
+			}
+			return room;
+		});
 	}
 
 	async systemDm(to: string, text: string): Promise<void> {
-		const room = await this.directRoom(this.systemUser, this.systemDirect, to);
+		const room = await this.directRoom(this.systemUser, to);
 		await this.hs.send(this.systemUser, room, { msgtype: "m.text", body: text }, randomUUID());
 	}
 
 	private async dailyOwnerDm(key: string, text: string): Promise<void> {
 		const day = Math.floor(this.now() / DAY_MS);
-		if (this.dailyDms.get(key) === day) return;
+		if (this.dailyDms[key] === day) return;
 		await this.systemDm(this.config.owner, text);
-		this.dailyDms.set(key, day);
+		this.dailyDms = { ...this.dailyDms, [key]: day };
+		await this.hs.putAccountData(this.systemUser, "dev.pi.daily_dms", this.dailyDms);
 	}
 
 	/** Whether the room is a DM between two agent puppets (015/32), with the pair. */
@@ -671,7 +821,8 @@ export class Chatd {
 			const other = puppets.find((p) => p !== sender)!;
 			if (direct[other]?.includes(room)) pair = [sender, other];
 		}
-		this.dmPairs.set(room, pair);
+		// A room with one member so far may still become a DM: decide again later.
+		if (members.length >= 2) this.dmPairs.set(room, pair);
 		return pair;
 	}
 
@@ -757,19 +908,31 @@ export class Chatd {
 		throw new ChatError(`no peer matches "${to}" — not sent. Peers: ${known.join(", ") || "none"}`, "unknown-peer");
 	}
 
-	private async statusOf(name: string, user: string): Promise<{ status: string; kind: string }> {
+	/** A peer's session, log, cwd, kind and auto-reply: the registration's, else the puppet's profile and account data. */
+	private async statusOf(name: string, user: string): Promise<Omit<PeerEntry, "name" | "online" | "displayName">> {
 		const reg = this.regs.get(name);
-		if (reg) return { status: reg.session || reg.cwd, kind: reg.kind };
+		if (reg) {
+			const auto = reg.kind === "claude" ? undefined : reg.autoreply;
+			return { session: reg.session, sessionFile: reg.sessionFile, cwd: reg.cwd, kind: reg.kind, autoreply: auto };
+		}
 		const p = await this.hs.profile(user, this.systemUser);
-		return { status: String(p?.["dev.pi.session"] || p?.["dev.pi.cwd"] || ""), kind: String(p?.["dev.pi.kind"] ?? "?") };
+		const kind = String(p?.["dev.pi.kind"] ?? "?");
+		const auto = kind === "pi" || kind === "subagent" ? (await this.hs.accountData<{ on?: boolean }>(user, "dev.pi.autoreply"))?.on !== false : undefined;
+		return {
+			session: String(p?.["dev.pi.session"] ?? ""),
+			sessionFile: p?.["dev.pi.session_file"] ? String(p["dev.pi.session_file"]) : undefined,
+			cwd: String(p?.["dev.pi.cwd"] ?? ""),
+			kind,
+			autoreply: auto,
+		};
 	}
 
 	private async who(): Promise<PeerEntry[]> {
 		const members = await this.hs.joinedMembers(this.systemUser, this.peersRoom);
 		const out: PeerEntry[] = [];
 		for (const [name, user] of await this.peerNames()) {
-			const { status, kind } = await this.statusOf(name, user);
-			out.push({ name, kind, online: this.online(this.regs.get(name)), displayName: members[user]?.display_name ?? name, status });
+			const s = await this.statusOf(name, user);
+			out.push({ name, online: this.online(this.regs.get(name)), displayName: members[user]?.display_name ?? name, ...s });
 		}
 		return out;
 	}
@@ -803,6 +966,8 @@ export class Chatd {
 			this.conns.delete(conn);
 			for (const w of [...this.waits]) if (w.conn === conn) this.dropWait(w);
 			const reg = conn.reg;
+			// A waiter that went without acking hands its claimed events back.
+			if (reg) for (const [id, c] of reg.claimed) if (c === conn) reg.claimed.delete(id);
 			if (reg?.watch?.conn === conn) reg.watch = undefined;
 			if (reg && reg.conn === conn) this.endRegistration(reg, "its connection closed");
 		});
@@ -814,6 +979,10 @@ export class Chatd {
 			req = JSON.parse(line);
 		} catch {
 			conn.send({ ok: false, error: "not JSON" });
+			return;
+		}
+		if (typeof req !== "object" || req === null || Array.isArray(req) || typeof req.verb !== "string") {
+			conn.send({ ok: false, error: "a request is an object with a verb" });
 			return;
 		}
 		try {
@@ -846,7 +1015,7 @@ export class Chatd {
 				this.registered(conn);
 				return this.who();
 			case "ack":
-				return this.ack(this.registered(conn), (req.event_ids as string[]) ?? []);
+				return this.ack(this.registered(conn), req.event_ids);
 			case "wait":
 				return this.wait(conn, this.registered(conn), req);
 			case "watch":
@@ -861,6 +1030,13 @@ export class Chatd {
 				this.endRegistration(reg, "its session ended");
 				return {};
 			}
+			case "autoreply": {
+				const reg = this.registered(conn);
+				if (typeof req.on !== "boolean") throw new ChatError("autoreply: on must be true or false");
+				await this.hs.putAccountData(reg.userId, "dev.pi.autoreply", { on: req.on });
+				reg.autoreply = req.on;
+				return { autoreply: req.on };
+			}
 			case "notify":
 				return this.notify(this.registered(conn), String(req.type ?? ""), String(req.message ?? ""));
 			case "system_mail":
@@ -871,7 +1047,7 @@ export class Chatd {
 	}
 
 	private async roomOf(reg: Registration, room: string): Promise<string> {
-		if (room === "owner") return this.directRoom(reg.userId, reg.mdirect, this.config.owner);
+		if (room === "owner") return this.directRoom(reg.userId, this.config.owner);
 		if (room.startsWith("!")) return room;
 		if (room.startsWith("#")) {
 			const full = room.includes(":") ? room : `${room}:${this.config.serverName}`;
@@ -880,7 +1056,7 @@ export class Chatd {
 			return id;
 		}
 		const target = await this.resolvePeer(validatePeerName(room));
-		return this.directRoom(reg.userId, reg.mdirect, target.userId);
+		return this.directRoom(reg.userId, target.userId);
 	}
 
 	private async send(reg: Registration, p: Record<string, unknown>): Promise<{ event_id: string; room: string; to: string; online?: boolean }> {
@@ -891,7 +1067,7 @@ export class Chatd {
 		let label: string;
 		let online: boolean | undefined;
 		if (to === "owner") {
-			room = await this.directRoom(reg.userId, reg.mdirect, this.config.owner);
+			room = await this.directRoom(reg.userId, this.config.owner);
 			label = "owner";
 		} else if (to.startsWith("#")) {
 			room = await this.roomOf(reg, to);
@@ -903,7 +1079,7 @@ export class Chatd {
 			if (p.requireOnline === true && !online) {
 				throw new ChatError(`peer "${target.name}" is offline and requireOnline is set — not sent`, "offline");
 			}
-			room = await this.directRoom(reg.userId, reg.mdirect, target.userId);
+			room = await this.directRoom(reg.userId, target.userId);
 			label = target.name;
 		}
 		const names = await this.peerNames();
@@ -987,6 +1163,7 @@ export class Chatd {
 				topic: typeof p.topic === "string" ? p.topic : undefined,
 				preset: "private_chat",
 				invite,
+				initial_state: SHARED_HISTORY,
 			});
 			reg.rooms.add(room);
 			return { room: `#${name}`, room_id: room };
@@ -1033,7 +1210,7 @@ export class Chatd {
 	private async notify(reg: Registration, type: string, message: string): Promise<{ sent: boolean }> {
 		if (!(WAITING_TYPES as readonly string[]).includes(type)) return { sent: false };
 		if (reg.notified.has(type)) return { sent: false };
-		const room = await this.directRoom(reg.userId, reg.mdirect, this.config.owner);
+		const room = await this.directRoom(reg.userId, this.config.owner);
 		await this.hs.send(reg.userId, room, { msgtype: "m.text", body: `${reg.displayName} is waiting: ${message}` }, randomUUID());
 		reg.notified.add(type);
 		return { sent: true };
@@ -1050,8 +1227,7 @@ export class Chatd {
 	// ── reply-waits (015/33) ─────────────────────────────────────────────
 
 	private ends(w: WaitRec, e: MatrixEvent): boolean {
-		const replyTo = (e.content["m.relates_to"] as { "m.in_reply_to"?: { event_id?: string } } | undefined)?.["m.in_reply_to"]?.event_id;
-		if (replyTo === w.ask) return true;
+		if (replyToOf(e.content) === w.ask) return true;
 		return (
 			w.target !== undefined &&
 			e.type === "m.room.message" &&
@@ -1092,8 +1268,7 @@ export class Chatd {
 		}
 		if (minutes !== undefined) {
 			w.timer = setTimeout(async () => {
-				const t = this.regByUser(target ?? "");
-				const status = t ? t.session || t.cwd : target ? (await this.statusOf(targetName, target)).status : "";
+				const status = target ? whereToRead(await this.statusOf(targetName, target)) : "";
 				this.endWait(w, { outcome: "checkin", target: targetName, status });
 			}, minutes * 60_000);
 		}
@@ -1110,7 +1285,7 @@ export class Chatd {
 		const reg = w.waiter;
 		const i = reg.queue.findIndex((q) => q.event.event_id === e.event_id);
 		const events = i < 0 ? [] : reg.queue.slice(0, i + 1).filter((q) => q.event.room_id === e.room_id).map((q) => q.pushed);
-		if (reg.kind === "claude") for (const x of events) reg.claimed.add(x.event_id);
+		if (reg.kind === "claude") for (const x of events) reg.claimed.set(x.event_id, w.conn);
 		const reply = i < 0 ? await this.render(reg, e) : reg.queue[i].pushed;
 		this.endWait(w, { outcome: "reply", reply, events });
 	}
@@ -1124,9 +1299,6 @@ export class Chatd {
 	private dropWait(w: WaitRec): void {
 		this.waits.delete(w);
 		if (w.timer) clearTimeout(w.timer);
-		const reg = w.waiter;
-		// A waiter that went without acking hands its claimed events back.
-		for (const q of reg.queue) reg.claimed.delete(q.event.event_id);
 	}
 }
 

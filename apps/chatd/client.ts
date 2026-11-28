@@ -6,6 +6,34 @@
 import { connect, type Socket } from "node:net";
 import { ChatError, type ErrorCode, type Pushed } from "./protocol.ts";
 
+/** How long a client keeps trying after a drop (WO-2026-107: one reconnect window per drop). */
+export function reconnectWindowMs(env: NodeJS.ProcessEnv = process.env): number {
+	// Internal test seam, not a documented setting.
+	const raw = env.CHAT_RECONNECT_MS;
+	if (raw === undefined) return 30_000;
+	const ms = Number(raw);
+	if (!Number.isFinite(ms) || ms <= 0) throw new Error(`CHAT_RECONNECT_MS must be a positive number, got ${raw}`);
+	return ms;
+}
+
+/**
+ * Retry `open` every 500 ms until it succeeds or the window closes; then
+ * throw naming chatd. One window per drop: a later drop gets its own.
+ */
+export async function reconnectWithin<T>(open: () => Promise<T>, windowMs: number): Promise<T> {
+	const until = Date.now() + windowMs;
+	for (;;) {
+		try {
+			return await open();
+		} catch (err) {
+			if (Date.now() > until) {
+				throw new ChatError(`chatd did not come back within ${Math.round(windowMs / 1000)} s: ${(err as Error).message}`, "refused");
+			}
+			await Bun.sleep(500);
+		}
+	}
+}
+
 export class ChatClient {
 	private seq = 0;
 	private buf = "";

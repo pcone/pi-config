@@ -16,12 +16,11 @@
  */
 
 import { readFileSync } from "node:fs";
-import { ChatClient } from "./client.ts";
+import { ChatClient, reconnectWindowMs, reconnectWithin } from "./client.ts";
 import { socketPath } from "./config.ts";
-import { ChatError, type PeerEntry, type Pushed, type WaitResult } from "./protocol.ts";
+import { ChatError, type PeerEntry, type Pushed, type WaitResult, mailLabel, whereToRead } from "./protocol.ts";
 
 const SELF = process.argv[1];
-const RECONNECT_MS = 30_000;
 
 class Exit extends Error {
 	constructor(
@@ -81,17 +80,12 @@ const cmd = (args: string) => `bun ${SELF} ${args}`;
 const sendUsage = (self: string, to = "<peer>") => cmd(`send --from ${self} ${to} '<text>'`);
 const watchCommand = (self: string) => cmd(`watch --from ${self}`);
 
-function label(p: Pushed): string {
-	const who = p.sender === "owner" ? "owner" : `peer:${p.sender}`;
-	return p.direct || p.what === "invite" ? `[${who}]` : `[${who} in ${p.room}]`;
-}
-
 export function renderMail(self: string, events: Pushed[]): string {
 	const blocks = [...events]
 		.sort((a, b) => a.ts - b.ts)
 		.map((e) => {
 			const reply = e.expectReply ? `\n(${e.sender} asked for a reply: send one with \`${sendUsage(self, e.sender)}\`)` : "";
-			return `${label(e)} ${e.body}${reply}`;
+			return `${mailLabel(e)} ${e.body}${reply}`;
 		});
 	return `chat mail for ${self} (${events.length}):\n\n${blocks.join("\n\n")}`;
 }
@@ -202,19 +196,24 @@ async function send(args: string[]): Promise<number> {
 	if (!text) throw new Exit(1, "chat send: empty message");
 	const id = identityFrom(self);
 	let client = await open(id, false);
-	const sent = await client.request<{ event_id: string; room: string; to: string; online?: boolean }>("send", {
-		to,
-		text,
-		expectReply,
-		requireOnline: requireOnline || wait !== undefined,
-	});
+	let sent: { event_id: string; room: string; to: string; online?: boolean };
+	try {
+		sent = await client.request("send", { to, text, expectReply, requireOnline: requireOnline || wait !== undefined });
+	} catch (err) {
+		client.close();
+		// § 4's table: a wait whose target is offline or unknown exits 3 (WO-2026-107 departure 12).
+		if (wait !== undefined && err instanceof ChatError && (err.code === "offline" || err.code === "unknown-peer")) {
+			console.error(`chat send: ${err.message}`);
+			return 3;
+		}
+		throw err;
+	}
 	console.log(`sent to ${sent.to}${sent.online === false ? " (offline: it reads this when it next connects)" : ""}`);
 	if (wait === undefined) {
 		client.close();
 		return 0;
 	}
 	const deadline = Date.now() + wait * 60_000;
-	let reconnected = false;
 	for (;;) {
 		try {
 			const minutes = Math.max((deadline - Date.now()) / 60_000, 0.001);
@@ -234,22 +233,13 @@ async function send(args: string[]): Promise<number> {
 			console.log(`no reply from ${r.target} after ${wait} min; peer still online. Ask it for a progress update with another --wait.${log}`);
 			return 4;
 		} catch (err) {
-			if (!(err instanceof ChatError) || err.code !== "refused" || reconnected) throw err;
-			// chatd restarted: reconnect once, within 30 s, and re-register the same ask.
-			reconnected = true;
-			client = await reconnect(id);
-		}
-	}
-}
-
-async function reconnect(id: Identity): Promise<ChatClient> {
-	const until = Date.now() + RECONNECT_MS;
-	for (;;) {
-		try {
-			return await open(id, true);
-		} catch (err) {
-			if (Date.now() > until) throw new Exit(1, `chat: chatd did not come back within 30 s: ${(err as Error).message}`);
-			await Bun.sleep(500);
+			if (!(err instanceof ChatError) || err.code !== "refused") throw err;
+			// chatd went away: one reconnect window per drop, then re-register the same ask.
+			try {
+				client = await reconnectWithin(() => open(id, true), reconnectWindowMs());
+			} catch (gone) {
+				throw new Exit(1, `chat: ${(gone as Error).message}`);
+			}
 		}
 	}
 }
@@ -257,7 +247,17 @@ async function reconnect(id: Identity): Promise<ChatClient> {
 async function watch(args: string[]): Promise<number> {
 	const { self, rest } = parseFrom(args);
 	if (rest.length > 0) throw new Exit(1, "usage: chat watch --from <name>");
-	const client = await open(identityFrom(self), false);
+	let client: ChatClient;
+	try {
+		client = await open(identityFrom(self), false);
+	} catch (err) {
+		// Session gone before the watch began: registration ended, or no Claude process above.
+		if ((err instanceof ChatError && err.code === "gone") || (err instanceof Exit && err.message.includes("no `claude` process"))) {
+			console.log(`chat: ${err.message}; watch exiting`);
+			return 3;
+		}
+		throw err;
+	}
 	const parent = process.ppid;
 	let reparented = false;
 	const tick = setInterval(() => {
@@ -299,7 +299,9 @@ async function who(args: string[]): Promise<void> {
 	client.close();
 	if (peers.length === 0) console.log("no peers");
 	for (const p of peers) {
-		console.log(`${p.name} (${p.online ? "online" : "offline"}, ${p.kind}) "${p.displayName}"${p.status ? ` — ${p.status}` : ""}`);
+		const auto = p.autoreply === undefined ? "" : `, auto-reply ${p.autoreply ? "on" : "off"}`;
+		const where = whereToRead(p);
+		console.log(`${p.name} (${p.online ? "online" : "offline"}, ${p.kind}${auto}) "${p.displayName}" session ${p.session || "?"}${where ? ` — ${where}` : ""}`);
 	}
 }
 

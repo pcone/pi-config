@@ -17,6 +17,11 @@ export interface MatrixEvent {
 	unsigned?: { prev_content?: { membership?: string }; redacted_because?: unknown };
 }
 
+/** The event an `m.in_reply_to` relation names, if any. */
+export function replyToOf(content: Record<string, unknown>): string | undefined {
+	return (content["m.relates_to"] as { "m.in_reply_to"?: { event_id?: string } } | undefined)?.["m.in_reply_to"]?.event_id;
+}
+
 export class HomeserverError extends Error {
 	constructor(
 		readonly status: number,

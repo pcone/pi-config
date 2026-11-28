@@ -203,11 +203,13 @@ for (const adapter of ADAPTERS) {
 				}
 			}, 60_000);
 
-			it("--wait implies --require-online: an offline target fails before sending", async () => {
+			// Exit 3 for an offline or unknown target: § 4's table (WO-2026-107 departure 12, owner 2026-11-28).
+			it("--wait implies --require-online: an offline or unknown target fails before sending, exit 3", async () => {
 				const { me, bob } = await pair();
+				expect((await bus.wait(me, fresh("nobody"), "hi", 1).exited).code).toBe(3);
 				await bus.disconnect(bob);
 				const r = await bus.wait(me, bob.name, "hi", 1).exited;
-				expect(r.code).toBe(1);
+				expect(r.code).toBe(3);
 				expect(r.err).toContain("requireOnline");
 				const back = await bus.connect(bob.name, "pi");
 				await Bun.sleep(500);

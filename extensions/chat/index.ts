@@ -17,16 +17,15 @@
 import { hostname } from "node:os";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ChatClient } from "../../apps/chatd/client.ts";
+import { ChatClient, reconnectWindowMs, reconnectWithin } from "../../apps/chatd/client.ts";
 import { socketPath } from "../../apps/chatd/config.ts";
 import { isValidPeerName } from "../../apps/chatd/names.ts";
-import type { HelloResult, PeerEntry, Pushed, WaitResult } from "../../apps/chatd/protocol.ts";
+import { type AckResult, ChatError, type HelloResult, type PeerEntry, type Pushed, type WaitResult, mailLabel, whereToRead } from "../../apps/chatd/protocol.ts";
 import { registerWaitSource } from "../lib/waits.ts";
 import { subagentDepth } from "../subagent-async/rpc.ts";
 import { createModelErrorMail } from "./model-error-mail.ts";
 
 const RETRY_MS = 2_000;
-const RECONNECT_MS = 30_000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
 /** PI_PEER_NAME → the session's display name → host-pid. Only name-shaped values qualify. */
@@ -38,11 +37,9 @@ export function chatIdentity(env: NodeJS.ProcessEnv, sessionName: string | undef
 	return `${hostname()}-${process.pid}`;
 }
 
-/** How a pushed event reads in the session. */
+/** How a pushed event reads in the session: the shared label and the whole body (015/38). */
 export function injectionText(p: Pushed): string {
-	const who = p.sender === "owner" ? "owner" : `peer:${p.sender}`;
-	const where = p.direct || p.what === "invite" ? "" : ` in ${p.room}`;
-	return `[${who}${where}] ${p.body}`;
+	return `${mailLabel(p)} ${p.body}`;
 }
 
 function firstLine(text: string): string {
@@ -59,7 +56,7 @@ export default function (pi: ExtensionAPI) {
 	const state = {
 		peer: "",
 		kind: "pi" as "pi" | "subagent",
-		session: "",
+		sessionFile: undefined as string | undefined,
 		sessionId: "",
 		cwd: "",
 		model: undefined as string | undefined,
@@ -67,6 +64,7 @@ export default function (pi: ExtensionAPI) {
 		lastCorrespondent: undefined as string | undefined,
 		/** Resolved once at session_start, so a reconnect dials the same chatd. */
 		socket: "",
+		reconnectMs: 30_000,
 	};
 	let client: ChatClient | undefined;
 	let shuttingDown = false;
@@ -114,39 +112,42 @@ export default function (pi: ExtensionAPI) {
 	// ── connection ───────────────────────────────────────────────────────
 
 	async function connect(): Promise<void> {
+		if (shuttingDown) return;
 		const c = await ChatClient.connect(state.socket);
 		c.onPush((p) => onPush(p));
-		const hello = await c.request<HelloResult>("hello", {
-			peer: state.peer,
-			kind: state.kind,
-			session: state.session,
-			cwd: state.cwd,
-			model: state.model,
-		});
+		let hello: HelloResult;
+		try {
+			hello = await c.request<HelloResult>("hello", {
+				peer: state.peer,
+				kind: state.kind,
+				session: state.sessionId,
+				sessionFile: state.sessionFile,
+				cwd: state.cwd,
+				model: state.model,
+			});
+		} catch (err) {
+			c.close();
+			throw err;
+		}
 		state.lastCorrespondent = hello.lastCorrespondent;
+		state.autoreply = hello.autoreply;
 		c.onClose(() => {
 			if (client === c && !shuttingDown) void reconnect();
 		});
 		client = c;
 		for (const [id, sent] of awaitingReply) void watchReply(id, sent.room);
+		// Delivered before the drop and not yet acked: the replay is in `seen`, so ack it now.
+		void deliver();
 	}
 
-	/** chatd went away: reconnect once, within 30 s, and re-register the waits. */
+	/** chatd went away: one reconnect window per drop (at most 30 s), then re-register the waits. */
 	async function reconnect(): Promise<void> {
 		client = undefined;
-		const until = Date.now() + RECONNECT_MS;
-		for (;;) {
+		try {
+			await reconnectWithin(connect, state.reconnectMs);
+		} catch (err) {
 			if (shuttingDown) return;
-			try {
-				await connect();
-				return;
-			} catch (err) {
-				if (Date.now() > until) {
-					notify(`chat: lost chatd and could not reconnect within 30 s: ${(err as Error).message}. Peer messages are not delivered until the session restarts.`, "error");
-					return;
-				}
-				await Bun.sleep(500);
-			}
+			notify(`chat: lost chatd: ${(err as Error).message}. Peer messages are not delivered until the session restarts.`, "error");
 		}
 	}
 
@@ -155,10 +156,10 @@ export default function (pi: ExtensionAPI) {
 			shuttingDown = false;
 			state.sessionId = ctx.sessionManager.getSessionId();
 			state.socket = socketPath();
+			state.reconnectMs = reconnectWindowMs();
 			state.peer = chatIdentity(process.env, ctx.sessionManager.getSessionName() ?? undefined);
 			state.kind = subagentDepth(process.env) > 0 ? "subagent" : "pi";
-			// The session log, where one exists: what a check-in and `who` point a peer at.
-			state.session = ctx.sessionManager.getSessionFile() ?? "";
+			state.sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
 			state.cwd = ctx.cwd;
 			state.model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 			notify = (message, level) => ctx.ui.notify(message, level);
@@ -239,13 +240,23 @@ export default function (pi: ExtensionAPI) {
 			if (!d.delivered) blocked.add(d.pushed.room_id);
 			else ack.push(d);
 		}
-		if (ack.length === 0) return;
+		if (ack.length === 0 || !client || client.closed) return;
 		try {
-			await request("ack", { event_ids: ack.map((d) => d.pushed.event_id) });
-			for (const d of ack) deliveries.splice(deliveries.indexOf(d), 1);
-		} catch {
-			// Unacked events are resent on the next connection; a duplicate beats a loss.
+			const r = await request<AckResult>("ack", { event_ids: ack.map((d) => d.pushed.event_id) });
+			// `already`: acked by an earlier batch whose answer was lost.
+			const done = new Set([...r.acked, ...r.already]);
+			for (const d of ack) if (done.has(d.pushed.event_id)) deliveries.splice(deliveries.indexOf(d), 1);
+		} catch (err) {
+			// A dropped connection resends on reconnect; anything else is chatd refusing.
+			if (!(err instanceof ChatError && err.code === "refused")) notifyOnce(`chat: an ack failed, so delivered messages may be injected again: ${(err as Error).message}`);
 		}
+	}
+
+	const notified = new Set<string>();
+	function notifyOnce(message: string): void {
+		if (notified.has(message)) return;
+		notified.add(message);
+		notify(message, "warning");
 	}
 
 	// ── outbound ─────────────────────────────────────────────────────────
@@ -292,8 +303,13 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const r = await request<WaitResult>("wait", { event_id: id, room });
 			if (r.outcome === "reply") awaitingReply.delete(id);
-		} catch {
-			// The connection went; `connect` re-registers every open wait.
+		} catch (err) {
+			// The connection went: `connect` re-registers every open wait.
+			if (err instanceof ChatError && err.code === "refused") return;
+			if (!client || client.closed) return;
+			// chatd refused it: no wait is held there, so none is held here.
+			awaitingReply.delete(id);
+			notify(`chat: the reply wait for ${id} could not be held, so it is dropped: ${(err as Error).message}`, "warning");
 		}
 	}
 
@@ -423,7 +439,11 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({}),
 		async execute() {
 			const peers = await request<PeerEntry[]>("who");
-			const lines = peers.map((p) => `${p.online ? "●" : "○"} ${p.name} (${p.online ? "online" : "offline"}, ${p.kind}) "${p.displayName}"${p.status ? ` — ${p.status}` : ""}`);
+			const lines = peers.map((p) => {
+				const auto = p.autoreply === undefined ? "" : `, auto-reply ${p.autoreply ? "on" : "off"}`;
+				const where = whereToRead(p);
+				return `${p.online ? "●" : "○"} ${p.name} (${p.online ? "online" : "offline"}, ${p.kind}${auto}) "${p.displayName}" session ${p.session || "?"}${where ? ` — ${where}` : ""}`;
+			});
 			return {
 				content: [{ type: "text", text: `self: ${state.peer}\n${lines.join("\n") || "no peers"}` }],
 				details: { self: state.peer, peers },
@@ -502,13 +522,22 @@ export default function (pi: ExtensionAPI) {
 		description: "Toggle automatic replies to chat reply requests: /chat-autoreply [on|off]",
 		handler: async (args, ctx: ExtensionContext) => {
 			const value = args.trim().toLowerCase();
-			if (value === "on") state.autoreply = true;
-			else if (value === "off") state.autoreply = false;
-			else if (value === "") state.autoreply = !state.autoreply;
+			let on: boolean;
+			if (value === "on") on = true;
+			else if (value === "off") on = false;
+			else if (value === "") on = !state.autoreply;
 			else {
 				ctx.ui.notify("Usage: /chat-autoreply [on|off]", "warning");
 				return;
 			}
+			// Kept on the puppet (`dev.pi.autoreply`), so a restarted session keeps it.
+			try {
+				await request("autoreply", { on });
+			} catch (err) {
+				ctx.ui.notify(`chat: auto-reply not changed: ${(err as Error).message}`, "error");
+				return;
+			}
+			state.autoreply = on;
 			ctx.ui.notify(`Auto-reply ${state.autoreply ? "ON" : "OFF"}`, "info");
 		},
 	});
