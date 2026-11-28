@@ -411,3 +411,10 @@ The code review of the build (tip `ba64d2a`) listed 12 departures. Offered each 
 | 10 | A wait result may carry an event `classify` would not push | accepted: 015/33, a reply from anyone |
 | 11 | `system_mail` accepts `to: owner` | accepted under the trust boundary |
 | 12 | `send --wait` to an offline or unknown peer exits 1 | fix: exit 3, as § 4's table says |
+
+**Re-review additions (owner, 2026-11-28, over Matrix).** Offered three internal pieces beyond the departure rulings, each recommended, Scott: "Agree on all".
+- The socket verb `autoreply` persists the auto-reply setting (departure 6).
+- The wait flag `resumed` keeps a re-registered wait from ending as "target offline" right after a chatd restart.
+- `hello` carries `sessionFile` (departure 7).
+
+The synthetic `invite:<room>` delivery ids write no `dev.pi.pushed`. The marker stays `{event_id}` as specified.
