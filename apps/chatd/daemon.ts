@@ -52,6 +52,8 @@ export interface Deps {
 	/** Test seams for the schedules. */
 	presencePassMs?: number;
 	sweepMs?: number;
+	/** Test seam: hold each ack this long, so two readers can take one event. */
+	ackDelayMs?: number;
 }
 
 interface Conn {
@@ -438,6 +440,7 @@ export class Chatd {
 		if (!Array.isArray(ids) || !ids.every((x) => typeof x === "string" && x.length > 0)) {
 			throw new ChatError("ack: event_ids must be a list of event ids");
 		}
+		if (this.deps.ackDelayMs) await Bun.sleep(this.deps.ackDelayMs);
 		const result: AckResult = { acked: [], already: [] };
 		for (const id of ids as string[]) {
 			const i = reg.queue.findIndex((q) => q.event.event_id === id);
@@ -447,6 +450,14 @@ export class Chatd {
 			}
 			const { event, pushed } = reg.queue[i];
 			const room = event.room_id;
+			if (id.startsWith("invite:")) {
+				// A pending invite read at hello has no event and no server time: it writes no
+				// marker. The room is noted as pushed, so a later hello does not push it again.
+				await this.invitePushed(reg, room);
+				reg.queue.splice(i, 1);
+				result.acked.push(id);
+				continue;
+			}
 			const head = reg.queue.find((q) => q.event.room_id === room)!;
 			if (head.event.event_id !== id) {
 				throw new ChatError(`out-of-order ack in ${room}: expected ${head.event.event_id}, got ${id}`);
@@ -481,26 +492,42 @@ export class Chatd {
 			for (const room of joined) {
 				reg.rooms.add(room);
 				reg.invited.delete(room);
-				const marker = (await this.hs.accountData<{ event_id?: string }>(reg.userId, "dev.pi.pushed", room))?.event_id;
-				if (marker && !marker.startsWith("invite:")) {
-					reg.markers.set(room, { id: marker, ts: (await this.hs.event(reg.userId, room, marker)).origin_server_ts });
+				let marker = (await this.hs.accountData<{ event_id?: string }>(reg.userId, "dev.pi.pushed", room))?.event_id;
+				if (marker) {
+					try {
+						reg.markers.set(room, { id: marker, ts: (await this.hs.event(reg.userId, room, marker)).origin_server_ts });
+					} catch (err) {
+						if (!(err instanceof HomeserverError) || (err.status !== 404 && err.status !== 403)) throw err;
+						// Redacted, purged or unreadable: page from the start of membership instead.
+						this.log(`chatd: ${reg.peer}'s marker ${marker} in ${room} is unreadable (${err.status}); catching up from its membership start`);
+						marker = undefined;
+					}
 				}
-				await this.catchUp(reg, room, marker?.startsWith("invite:") ? undefined : marker);
+				await this.catchUp(reg, room, marker);
 				done.add(room);
 			}
 		}
 		await this.pendingInvites(reg);
 	}
 
+	/** Note a pending invite as pushed: account data `dev.pi.invites_pushed` on the puppet. */
+	private async invitePushed(reg: Registration, room: string): Promise<void> {
+		const rooms = (await this.hs.accountData<{ rooms?: string[] }>(reg.userId, "dev.pi.invites_pushed"))?.rooms ?? [];
+		if (!rooms.includes(room)) await this.hs.putAccountData(reg.userId, "dev.pi.invites_pushed", { rooms: [...rooms, room] });
+	}
+
 	/**
 	 * Queue the puppet's pending invites that no earlier push delivered
 	 * (WO-2026-107 departure 9). An invite read from sync has no event id, so
-	 * its id is `invite:<room>`; its ack writes that marker in the room.
+	 * its id is `invite:<room>`; acking it writes no `dev.pi.pushed`, only a
+	 * note in `dev.pi.invites_pushed`.
 	 */
 	private async pendingInvites(reg: Registration): Promise<void> {
+		const notedRooms = (await this.hs.accountData<{ rooms?: string[] }>(reg.userId, "dev.pi.invites_pushed"))?.rooms ?? [];
 		for (const [room, r] of Object.entries((await this.hs.sync(reg.userId)).rooms?.invite ?? {})) {
 			reg.invited.add(room);
-			if (await this.hs.accountData(reg.userId, "dev.pi.pushed", room)) continue;
+			// Pushed before: as a live invite event (its ack wrote the marker), or at an earlier hello.
+			if (notedRooms.includes(room) || (await this.hs.accountData(reg.userId, "dev.pi.pushed", room))) continue;
 			const state = r.invite_state?.events ?? [];
 			const member = state.find((x) => x.type === "m.room.member" && x.state_key === reg.userId);
 			if (!member) continue;
@@ -587,9 +614,9 @@ export class Chatd {
 		if (h.kind === "claude" && !(Number.isInteger(h.claudePid) && (h.claudePid as number) > 0)) {
 			throw new ChatError("hello: a claude peer needs claudePid");
 		}
-		const building = this.building.get(peer);
-		if (building) {
-			// A Claude session's hooks may overlap; a second pi session of one name is refused.
+		// A Claude session's hooks may overlap; a second pi session of one name is refused.
+		// Re-checked after each wait: a third hello may have started building meanwhile.
+		for (let building = this.building.get(peer); building; building = this.building.get(peer)) {
 			if (h.kind !== "claude") throw new ChatError(`${peer} is already connecting`, "refused");
 			await building.catch(() => {});
 		}
@@ -749,9 +776,11 @@ export class Chatd {
 		const prev = this.locks.get(key) ?? Promise.resolve();
 		const next = prev.catch(() => {}).then(fn);
 		this.locks.set(key, next);
-		void next.finally(() => {
+		const cleanup = () => {
 			if (this.locks.get(key) === next) this.locks.delete(key);
-		});
+		};
+		// Handled here, so a failed section leaves no unhandled rejection; the caller gets it.
+		void next.then(cleanup, cleanup);
 		return next;
 	}
 
@@ -1253,11 +1282,19 @@ export class Chatd {
 		const replies = (await this.hs.relations(reg.userId, room, ask)).filter((e) => this.ends(w, { ...e, room_id: e.room_id ?? room }));
 		let found = replies.sort((a, b) => a.origin_server_ts - b.origin_server_ts)[0];
 		if (!found && target) {
-			const page = await this.hs.messages(reg.userId, room, undefined, 100);
-			found = page.chunk
-				.map((e) => ({ ...e, room_id: room }))
-				.filter((e) => this.ends(w, e))
-				.sort((a, b) => a.origin_server_ts - b.origin_server_ts)[0];
+			// Back to the ask, however many pages: the first DM after it is the reply.
+			const after: MatrixEvent[] = [];
+			let from: string | undefined;
+			paging: for (;;) {
+				const page = await this.hs.messages(reg.userId, room, from);
+				for (const e of page.chunk) {
+					if (e.event_id === ask || e.origin_server_ts < w.askTs) break paging;
+					after.push({ ...e, room_id: room });
+				}
+				if (!page.end || page.chunk.length === 0) break;
+				from = page.end;
+			}
+			found = after.filter((e) => this.ends(w, e)).sort((a, b) => a.origin_server_ts - b.origin_server_ts)[0];
 		}
 		if (found) {
 			await this.endWithReply(w, found);

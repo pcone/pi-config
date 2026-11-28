@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { ChatClient, reconnectWindowMs, reconnectWithin } from "./client.ts";
 import { socketPath } from "./config.ts";
-import { ChatError, type PeerEntry, type Pushed, type WaitResult, mailLabel, whereToRead } from "./protocol.ts";
+import { type AckResult, ChatError, type PeerEntry, type Pushed, type WaitResult, mailLabel, whereToRead } from "./protocol.ts";
 
 const SELF = process.argv[1];
 
@@ -94,8 +94,16 @@ function emitContext(event: string, text: string): void {
 	process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } }));
 }
 
-async function ackAll(client: ChatClient, events: Pushed[]): Promise<void> {
-	if (events.length > 0) await client.request("ack", { event_ids: events.map((e) => e.event_id) });
+/**
+ * Ack, and keep only the events this call acked. An id that comes back
+ * `already` was taken by a racing reader (a prompt hook and a watch), which
+ * prints it: at-most-once means one of them does.
+ */
+async function ackAll(client: ChatClient, events: Pushed[]): Promise<Pushed[]> {
+	if (events.length === 0) return [];
+	const r = await client.request<AckResult>("ack", { event_ids: events.map((e) => e.event_id) });
+	const mine = new Set(r.acked);
+	return events.filter((e) => mine.has(e.event_id));
 }
 
 async function hook(event: string | undefined): Promise<void> {
@@ -128,8 +136,9 @@ async function hook(event: string | undefined): Promise<void> {
 		}
 		case "prompt": {
 			const client = await open(id, true);
-			const { events, watchLive } = await client.request<{ events: Pushed[]; watchLive: boolean }>("pending", { prompt: true });
-			await ackAll(client, events);
+			const pending = await client.request<{ events: Pushed[]; watchLive: boolean }>("pending", { prompt: true });
+			const events = await ackAll(client, pending.events);
+			const { watchLive } = pending;
 			client.close();
 			if (events.length === 0) return;
 			const parts = [renderMail(self, events)];
@@ -220,9 +229,12 @@ async function send(args: string[]): Promise<number> {
 			const minutes = Math.max((deadline - Date.now()) / 60_000, 0.001);
 			const r = await client.request<WaitResult>("wait", { event_id: sent.event_id, room: sent.room, minutes, resumed });
 			if (r.outcome === "reply") {
-				await ackAll(client, r.events);
+				const mine = await ackAll(client, r.events);
 				client.close();
-				console.log(renderMail(self, r.events.length > 0 ? r.events : [r.reply]));
+				// The reply itself, unless a racing reader took the room's events with it.
+				const show = r.events.length === 0 ? [r.reply] : mine;
+				if (show.length > 0) console.log(renderMail(self, show));
+				else console.log(`chat: the reply from ${sent.to} was shown at the prompt`);
 				return 0;
 			}
 			client.close();
@@ -269,9 +281,13 @@ async function watch(args: string[]): Promise<number> {
 		}
 	}, 1_000);
 	try {
-		const r = await client.request<{ events: Pushed[] }>("watch");
-		await ackAll(client, r.events);
-		console.log(renderMail(self, r.events));
+		let mine: Pushed[] = [];
+		// Events a racing prompt hook took first are not this watch's: wait again.
+		while (mine.length === 0) {
+			const r = await client.request<{ events: Pushed[] }>("watch");
+			mine = await ackAll(client, r.events);
+		}
+		console.log(renderMail(self, mine));
 		console.log(`chat: handle the mail above, then start the watch again (Bash run_in_background): \`${watchCommand(self)}\``);
 		return 0;
 	} catch (err) {

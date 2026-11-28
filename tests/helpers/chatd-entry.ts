@@ -8,6 +8,7 @@
  *   TEST_NOW_OFFSET_MS   added to Date.now() for chatd's clock
  *   TEST_EXIT_AFTER_MIRROR  exit after the first mirror copy, before answering the transaction
  *   TEST_PRESENCE_PASS_MS, TEST_SWEEP_MS  the presence pass's and the mirror sweep's intervals
+ *   TEST_ACK_DELAY_MS    hold each ack, so two readers take one event
  */
 
 import { loadConfig } from "../../apps/chatd/config.ts";
@@ -23,6 +24,7 @@ const chatd = await startChatd(loadConfig(), {
 	afterMirrorCopy: process.env.TEST_EXIT_AFTER_MIRROR ? () => process.exit(137) : undefined,
 	presencePassMs: process.env.TEST_PRESENCE_PASS_MS ? Number(process.env.TEST_PRESENCE_PASS_MS) : undefined,
 	sweepMs: process.env.TEST_SWEEP_MS ? Number(process.env.TEST_SWEEP_MS) : undefined,
+	ackDelayMs: process.env.TEST_ACK_DELAY_MS ? Number(process.env.TEST_ACK_DELAY_MS) : undefined,
 });
 process.on("SIGTERM", async () => {
 	await chatd.stop();
