@@ -100,10 +100,20 @@ export async function startChatdWithHomeserver(env: Record<string, string> = {})
 		const p = proc;
 		proc = undefined;
 		p.kill("SIGTERM");
+		const killed = setTimeout(() => p.kill("SIGKILL"), 10_000);
 		await p.exited;
+		clearTimeout(killed);
 	}
 
-	await start(env);
+	try {
+		await start(env);
+	} catch (err) {
+		// A failed start leaves neither chatd, the homeserver nor the directory behind.
+		await kill();
+		await hs.dispose();
+		rmSync(dir, { recursive: true, force: true });
+		throw err;
+	}
 	return {
 		hs,
 		socket,

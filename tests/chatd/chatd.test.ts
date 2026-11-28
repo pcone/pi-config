@@ -13,8 +13,11 @@ import { isValidPeerName, localpart, peerName } from "../../apps/chatd/names.ts"
 import type { Pushed } from "../../apps/chatd/protocol.ts";
 import { type TestChatd, startChatdWithHomeserver } from "../helpers/chatd.ts";
 import { childEnv, scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ownerLogin } from "../helpers/tuwunel.ts";
+import { TUWUNEL_PLATFORM_OK, ownerLogin } from "../helpers/tuwunel.ts";
 import { asCall, connectPeer, ownerCall, puppet, q, quiet, uniq } from "./harness.ts";
+
+/** The pinned Tuwunel runs on Linux x86_64 only; elsewhere these rows skip. */
+const chatRows = TUWUNEL_PLATFORM_OK ? describe : describe.skip;
 
 const restoreSubagentEnv = scrubSubagentEnv();
 afterAll(restoreSubagentEnv);
@@ -22,10 +25,12 @@ afterAll(restoreSubagentEnv);
 let t: TestChatd;
 let ownerToken: string;
 beforeAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	t = await startChatdWithHomeserver();
 	ownerToken = await ownerLogin(t.hs);
 }, 60_000);
 afterAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	await t.dispose();
 });
 
@@ -55,7 +60,7 @@ async function peersRoom(): Promise<string> {
 
 const messages = (p: { pushes: Pushed[] }) => p.pushes.filter((x) => x.what === "message");
 
-describe("rows 1–5: who a message reaches", () => {
+chatRows("rows 1–5: who a message reaches", () => {
 	it("row 1: a DM from A reaches only B; creating it writes m.direct on both puppets", async () => {
 		const a = await connectPeer(t, uniq("a"));
 		const b = await connectPeer(t, uniq("b"));
@@ -145,7 +150,7 @@ describe("rows 1–5: who a message reaches", () => {
 	}, 30_000);
 });
 
-describe("delivery state", () => {
+chatRows("delivery state", () => {
 	it("row 7: chatd killed between a push and its ack delivers the event once more; read before the ack loses nothing", async () => {
 		const a = await connectPeer(t, uniq("a"));
 		const bName = uniq("b");
@@ -187,7 +192,7 @@ describe("delivery state", () => {
 	}, 30_000);
 });
 
-describe("rows 8–11: the owner, the tokens, the homeserver", () => {
+chatRows("rows 8–11: the owner, the tokens, the homeserver", () => {
 	it("row 8: the owner's DM reaches the session from owner, and send to owner reaches @scott", async () => {
 		const b = await connectPeer(t, uniq("b"));
 		const created = await ownerCall(t, ownerToken, "POST", "/_matrix/client/v3/createRoom", {
@@ -271,7 +276,7 @@ describe("rows 8–11: the owner, the tokens, the homeserver", () => {
 	}, 30_000);
 });
 
-describe("row 12: names", () => {
+chatRows("row 12: names", () => {
 	it("Foo, foo, _foo and __ map to distinct localparts, and peerName inverts localpart", () => {
 		const parts = ["Foo", "foo", "_foo", "__"].map(localpart);
 		expect(new Set(parts).size).toBe(4);
@@ -305,7 +310,7 @@ describe("row 12: names", () => {
 	}, 30_000);
 });
 
-describe("row 14: #dm-mirror", () => {
+chatRows("row 14: #dm-mirror", () => {
 	it("an agent DM appears once, naming both; a crash after the copy makes no second; the owner's DMs are not copied; no agent is a member; old copies are redacted", async () => {
 		const mirror = (await asCall(t, "GET", `/_matrix/client/v3/directory/room/${q(`#dm-mirror:${t.hs.serverName}`)}`)).json.room_id;
 		const copies = async (needle: string) =>
@@ -355,7 +360,7 @@ describe("row 14: #dm-mirror", () => {
 	}, 90_000);
 });
 
-describe("rows 15–20", () => {
+chatRows("rows 15–20", () => {
 	it("row 15: an m.room.encrypted event is not pushed, is logged, and the owner is told once per room", async () => {
 		const b = await connectPeer(t, uniq("b"));
 		const created = await ownerCall(t, ownerToken, "POST", "/_matrix/client/v3/createRoom", { preset: "trusted_private_chat", is_direct: true, invite: [b.userId] });
@@ -482,7 +487,7 @@ describe("rows 15–20", () => {
 	}, 30_000);
 });
 
-describe("startup and configuration", () => {
+chatRows("startup and configuration", () => {
 	it("the socket is mode 0600; a second chatd on a live socket fails naming it", async () => {
 		expect(statSync(t.socket).mode & 0o777).toBe(0o600);
 		const proc = Bun.spawnSync(["bun", `${import.meta.dir}/../helpers/chatd-entry.ts`], {

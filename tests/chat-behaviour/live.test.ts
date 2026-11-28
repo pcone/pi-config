@@ -6,6 +6,9 @@
 // See docs/investigations/or-workspace-attribution-2026-10.md.
 
 /**
+ * Row provenance: `// inventory:` lines name the old suite's row, listed in
+ * ~/Developer/notes/stage3/peer-link-rows.md.
+ *
  * Real agent sessions: injection starts a turn, the auto-reply answers once,
  * and the model's own send.
  */
@@ -34,6 +37,7 @@ for (const adapter of ADAPTERS) {
 			await bus.reset();
 		});
 
+		// inventory: peer-link.test.ts:802
 		it("a peer message starts a turn and is auto-replied once", async () => {
 			const alice = await bus.connect(fresh("alice"), "pi");
 			const bob = await bus.connectLive(fresh("bob"), ["who"]);
@@ -46,6 +50,7 @@ for (const adapter of ADAPTERS) {
 			expect(fromPeer(alice, bob.name)[0].text.length).toBeGreaterThan(`[peer:${bob.name}] `.length);
 		}, 240_000);
 
+		// inventory: peer-link.test.ts:889
 		it("the model sends with the send tool; a one-way send steers", async () => {
 			const bob = await bus.connect(fresh("bob"), "pi");
 			const alice = await bus.connectLive(fresh("alice"), ["who", "send"]);
@@ -59,6 +64,7 @@ for (const adapter of ADAPTERS) {
 			expect(got.deliverAs).toBe("steer");
 		}, 240_000);
 
+		// inventory: peer-link.test.ts:927
 		it("an explicit send to the asker is its reply: no auto-reply follows", async () => {
 			const alice = await bus.connect(fresh("alice"), "pi");
 			const bob = await bus.connectLive(fresh("bob"), ["who", "send"]);
@@ -75,6 +81,7 @@ for (const adapter of ADAPTERS) {
 			expect(fromPeer(alice, bob.name)).toHaveLength(1);
 		}, 240_000);
 
+		// inventory: peer-link.test.ts:967
 		it("a send to another peer does not answer the asker's reply request", async () => {
 			const alice = await bus.connect(fresh("alice"), "pi");
 			const carol = await bus.connect(fresh("carol"), "pi");

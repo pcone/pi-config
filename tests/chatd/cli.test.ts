@@ -1,6 +1,6 @@
 /**
  * The `chat` CLI against chatd and a real Tuwunel (WO-2026-107 § Behaviour
- * rows 6, 13, 21, 22). The CLI runs under a stand-in `claude` process, as
+ * rows 6, 13, 21; row 22 is in tests/chat-behaviour/claude.test.ts). The CLI runs under a stand-in `claude` process, as
  * Claude Code's hooks and Bash tool run it.
  */
 
@@ -9,8 +9,13 @@ import { join } from "node:path";
 import type { MatrixEvent } from "../../apps/chatd/matrix.ts";
 import { ClaudeProcess } from "../chat-behaviour/claude-process.ts";
 import { type TestChatd, startChatdWithHomeserver } from "../helpers/chatd.ts";
+import { TUWUNEL_PLATFORM_OK } from "../helpers/tuwunel.ts";
+
 import { childEnv, scrubSubagentEnv } from "../helpers/subagent-env.ts";
 import { asCall, connectPeer, q, quiet, uniq } from "./harness.ts";
+
+/** The pinned Tuwunel runs on Linux x86_64 only; elsewhere these rows skip. */
+const chatRows = TUWUNEL_PLATFORM_OK ? describe : describe.skip;
 
 const restoreSubagentEnv = scrubSubagentEnv();
 afterAll(restoreSubagentEnv);
@@ -20,9 +25,11 @@ const CLI = join(import.meta.dir, "..", "..", "apps", "chatd", "cli.ts");
 let t: TestChatd;
 const procs: ClaudeProcess[] = [];
 beforeAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	t = await startChatdWithHomeserver();
 }, 60_000);
 afterAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	for (const p of procs) p.dispose();
 	await t.dispose();
 });
@@ -38,7 +45,7 @@ async function claude(): Promise<{ proc: ClaudeProcess; sid: string; name: strin
 	return { proc, sid, name: `claude-${sid}`, hook };
 }
 
-describe("row 6: a reply-wait ends per 015/33", () => {
+chatRows("row 6: a reply-wait ends per 015/33", () => {
 	it("on the reply to its event", async () => {
 		const c = await claude();
 		const p = await connectPeer(t, uniq("p"));
@@ -103,7 +110,7 @@ describe("row 6: a reply-wait ends per 015/33", () => {
 	}, 60_000);
 });
 
-describe("row 13: what wakes a watch", () => {
+chatRows("row 13: what wakes a watch", () => {
 	it("a room post at all messages leaves it blocked; an @mention or a DM wakes it", async () => {
 		const c = await claude();
 		const p = await connectPeer(t, uniq("p"));
@@ -122,7 +129,7 @@ describe("row 13: what wakes a watch", () => {
 	}, 40_000);
 });
 
-describe("row 21: the notification hook", () => {
+chatRows("row 21: the notification hook", () => {
 	it("permission_prompt DMs the owner once; a second before the next prompt does not; after it, one more", async () => {
 		const c = await claude();
 		const user = `@pi-claude-${c.sid}:${t.hs.serverName}`;
@@ -144,14 +151,12 @@ describe("row 21: the notification hook", () => {
 		await c.hook("prompt");
 		await c.hook("notification", note);
 		expect(await ownerDm()).toHaveLength(2);
-	}, 30_000);
-});
-
-describe("row 22", () => {
-	it("chat hook stop exits 1 as an unknown subcommand", async () => {
-		const c = await claude();
-		const r = await c.hook("stop");
-		expect(r.code).toBe(1);
-		expect(r.err).toContain('unknown hook subcommand "stop"');
+		// Once per type, not per session: each waiting type sends its own.
+		await c.hook("notification", { notification_type: "idle_prompt", message: "Claude is waiting for your input" });
+		await c.hook("notification", { notification_type: "elicitation_dialog", message: "an MCP server asks" });
+		const all = await ownerDm();
+		expect(all).toHaveLength(4);
+		expect(all.some((m) => m.endsWith("is waiting: Claude is waiting for your input"))).toBe(true);
+		expect(all.some((m) => m.endsWith("is waiting: an MCP server asks"))).toBe(true);
 	}, 30_000);
 });

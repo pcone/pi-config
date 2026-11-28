@@ -1,4 +1,7 @@
 /**
+ * Row provenance: `// inventory:` lines name the old suite's row, listed in
+ * ~/Developer/notes/stage3/peer-link-rows.md.
+ *
  * A model HTTP error mails a peer, throttled (decision external-tools/008;
  * docs/design/model-error-mail.md).
  *
@@ -139,6 +142,10 @@ for (const adapter of ADAPTERS) {
 			expect(texts.filter((t) => t.includes(`suppressed: 2 more qualifying failures since ${new Date(firstAt).toISOString()}`))).toHaveLength(1);
 		});
 
+		it("throttle: the window is 30 minutes (decision 008)", () => {
+			expect(m.MAIL_THROTTLE_MS).toBe(30 * 60_000);
+		});
+
 		it("throttle: the window is exclusive at its boundary", async () => {
 			const h = await harness({ correspondent: CORRESPONDENT, peers: [online(CORRESPONDENT)] });
 			await h.onAssistantMessage(err(E_429));
@@ -251,6 +258,7 @@ for (const adapter of ADAPTERS) {
 			await injectedWith(peer, MARK);
 		}
 
+		// inventory: model-error-mail.test.ts:512, :828
 		it("the correspondent recorded on delivery is the only recipient", async () => {
 			const corr = await bus.connect(fresh("corr"), "pi");
 			const bystander = await bus.connect(fresh("bystander"), "pi");
@@ -263,6 +271,7 @@ for (const adapter of ADAPTERS) {
 			expect(await gotMail(me)).toBe(false);
 		}, 40_000);
 
+		// inventory: model-error-mail.test.ts:543
 		it("the correspondent outlives a restart of the session", async () => {
 			const corr = await bus.connect(fresh("corr"), "pi");
 			const bystander = await bus.connect(fresh("bystander"), "pi");
@@ -277,6 +286,7 @@ for (const adapter of ADAPTERS) {
 			expect(await gotMail(bystander)).toBe(false);
 		}, 40_000);
 
+		// inventory: model-error-mail.test.ts:558
 		it("an offline correspondent falls to the peers online now", async () => {
 			const corrName = fresh("corr");
 			const corr = await bus.connect(corrName, "pi");
@@ -290,6 +300,7 @@ for (const adapter of ADAPTERS) {
 			await gotMailSoon(live);
 		}, 40_000);
 
+		// inventory: model-error-mail.test.ts:576
 		it("no live peer: warns once, mails nothing, and the next failure mails a peer that appeared", async () => {
 			const me = await bus.connect(fresh("me"), "pi");
 			await me.emit("message_end", errorEnd());
@@ -302,6 +313,7 @@ for (const adapter of ADAPTERS) {
 			await gotMailSoon(late);
 		}, 40_000);
 
+		// inventory: model-error-mail.test.ts:654, :687
 		it("a Claude correspondent receives it, and an online pi peer does not", async () => {
 			const claude = await bus.connect(crypto.randomUUID(), "claude");
 			const pi = await bus.connect(fresh("pi"), "pi");
@@ -326,6 +338,7 @@ for (const adapter of ADAPTERS) {
 			expect(await gotMail(sub)).toBe(false);
 		}, 40_000);
 
+		// inventory: model-error-mail.test.ts:773
 		it("the mail adds nothing to the failing session", async () => {
 			const corr = await bus.connect(fresh("corr"), "pi");
 			const me = await bus.connect(fresh("me"), "pi");

@@ -1,4 +1,7 @@
 /**
+ * Row provenance: `// inventory:` lines name the old suite's row, listed in
+ * ~/Developer/notes/stage3/peer-link-rows.md.
+ *
  * Claude Code peers: the CLI as Claude Code's hooks and Bash tool run it.
  *
  * Delivery here is at-most-once: a hook, a watch or a reply-wait claims what
@@ -34,6 +37,7 @@ for (const adapter of ADAPTERS) {
 			return { me, bob };
 		}
 
+		// inventory: peer-link-external.test.ts:113
 		it("session-start names the session; a pi send reaches its next prompt, once; session-end ends it", async () => {
 			const id = sid();
 			const me = await bus.connect(id, "claude");
@@ -86,6 +90,7 @@ for (const adapter of ADAPTERS) {
 			}
 		}, 60_000);
 
+		// inventory: peer-link-external.test.ts:142
 		it("a prompt claims its mail: an Escape-aborted prompt does not re-emit it", async () => {
 			const { me, bob } = await pair();
 			await bus.send(bob, me.name, "mail lost to Escape");
@@ -93,6 +98,7 @@ for (const adapter of ADAPTERS) {
 			expect((await bus.pushed(me)).out).not.toContain("mail lost to Escape");
 		}, 60_000);
 
+		// inventory: peer-link-external.test.ts:155
 		it("a prompt claims only what it shows; mid-turn arrivals wait for the next prompt", async () => {
 			const { me, bob } = await pair();
 			await bus.send(bob, me.name, "seen by the turn");
@@ -103,6 +109,7 @@ for (const adapter of ADAPTERS) {
 			expect(next).not.toContain("seen by the turn");
 		}, 60_000);
 
+		// inventory: peer-link-external.test.ts:92
 		it("renders mail oldest first, with the reply command when a reply is asked", async () => {
 			const { me, bob } = await pair();
 			await bus.send(bob, me.name, "first");
@@ -121,6 +128,7 @@ for (const adapter of ADAPTERS) {
 			expect(r.err).toContain('unknown hook subcommand "stop"');
 		}, 60_000);
 
+		// inventory: peer-link-external.test.ts:174
 		it("sends to a pi peer from stdin with --reply: the text arrives as a reply request", async () => {
 			const { me, bob } = await pair();
 			const r = await me.run(["send", ...me.from, "--reply", bob.name, "-"], "repro: x\nwhere: y\n");
@@ -130,6 +138,7 @@ for (const adapter of ADAPTERS) {
 			expect(got.deliverAs).toBe("followUp");
 		}, 60_000);
 
+		// inventory: peer-link-external.test.ts:185
 		it("fails loud: an unknown target, an unregistered sender, requireOnline to an offline peer", async () => {
 			const { me, bob } = await pair();
 			const unknown = await me.run(["send", ...me.from, fresh("nobody"), "hi"]);
@@ -148,6 +157,7 @@ for (const adapter of ADAPTERS) {
 			expect(back.injected).toEqual([]);
 		}, 60_000);
 
+		// inventory: peer-link-external.test.ts:319
 		it("the peer list shows a pi peer's session log, else its cwd", async () => {
 			const { me, bob } = await pair();
 			const other = await bus.connect(fresh("nolog"), "pi", { cwd: "/w/other" });
@@ -156,7 +166,9 @@ for (const adapter of ADAPTERS) {
 			expect(out).toMatch(new RegExp(`${other.name}.*/w/other`));
 		}, 60_000);
 
+		// inventory: peer-link-external.test.ts:204–333, decision 012
 		describe("send --wait", () => {
+			// inventory: peer-link-external.test.ts:238, 288
 			it("a reply from the target ends the wait: exit 0, printed, and not shown again at the next prompt", async () => {
 				const { me, bob } = await pair();
 				const waiter = bus.wait(me, bob.name, "hi", 1);
@@ -172,6 +184,7 @@ for (const adapter of ADAPTERS) {
 				expect((await bus.pushed(me)).out).not.toContain("the answer");
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:254
 			it("mail from the target sent before the send does not end the wait", async () => {
 				const { me, bob } = await pair();
 				await bus.send(bob, me.name, "old news");
@@ -182,6 +195,7 @@ for (const adapter of ADAPTERS) {
 				expect(r.out).not.toContain("old news");
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:327
 			it("a check-in names the target's session log", async () => {
 				const { me, bob } = await pair();
 				const r = await bus.wait(me, bob.name, "hi", 0.03).exited;
@@ -189,6 +203,7 @@ for (const adapter of ADAPTERS) {
 				expect(r.out).toContain("/s/bug-triage.jsonl");
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:264
 			it("the target going offline ends the wait with exit 3", async () => {
 				const { me, bob } = await pair();
 				const waiter = bus.wait(me, bob.name, "hi", 1);
@@ -216,6 +231,7 @@ for (const adapter of ADAPTERS) {
 				expect(back.injected).toEqual([]);
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:308
 			it("--wait rejects a non-positive or non-numeric value before sending", async () => {
 				const { me, bob } = await pair();
 				for (const bad of ["0", "x", "-1"]) {
@@ -228,7 +244,9 @@ for (const adapter of ADAPTERS) {
 			}, 60_000);
 		});
 
+		// inventory: peer-link-external.test.ts:451–707, decision 014
 		describe("the watch", () => {
+			// inventory: peer-link-external.test.ts:465
 			it("direct mail wakes the watch: exit 0 with the mail and the restart line", async () => {
 				const { me, bob } = await pair();
 				const watcher = bus.watch(me);
@@ -245,6 +263,7 @@ for (const adapter of ADAPTERS) {
 				expect((await bus.pushed(me)).out).not.toContain("direct ask");
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:484, 500
 			it("a live reply-wait owns its reply: the watch does not claim it, the waiter does", async () => {
 				const { me, bob } = await pair();
 				const watcher = bus.watch(me);
@@ -265,6 +284,7 @@ for (const adapter of ADAPTERS) {
 				}
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:523
 			it("a prompt hook skips a reply a live reply-wait owns", async () => {
 				const { me, bob } = await pair();
 				const waiter = bus.wait(me, bob.name, "question", 1);
@@ -279,6 +299,7 @@ for (const adapter of ADAPTERS) {
 				}
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:546
 			it("a second watch for the same session is refused with exit 2", async () => {
 				const { me } = await pair();
 				const first = bus.watch(me);
@@ -292,6 +313,7 @@ for (const adapter of ADAPTERS) {
 				}
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:560
 			it("a watch exits 3 when the session's registration ends", async () => {
 				const { me } = await pair();
 				const watcher = bus.watch(me);
@@ -305,6 +327,7 @@ for (const adapter of ADAPTERS) {
 				}
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:645 (neutral half: the session is gone)
 			it("a watch exits once its Claude Code process is gone", async () => {
 				const { me } = await pair();
 				const watcher = bus.watch(me);
@@ -314,6 +337,7 @@ for (const adapter of ADAPTERS) {
 				expect(r.out).toContain("watch exiting");
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:575
 			it("the prompt hook nudges a watch when mail is pending and none is live, not when one is", async () => {
 				const { me, bob } = await pair();
 				await bus.send(bob, me.name, "first");
@@ -328,6 +352,7 @@ for (const adapter of ADAPTERS) {
 				}
 			}, 60_000);
 
+			// inventory: peer-link-external.test.ts:698
 			it("a prompt with no mail and a live watch emits nothing", async () => {
 				const { me } = await pair();
 				const watcher = bus.watch(me);

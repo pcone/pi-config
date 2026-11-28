@@ -1262,7 +1262,9 @@ export class Chatd {
 			await this.endWithReply(w, found);
 			return DEFERRED;
 		}
-		if (minutes !== undefined && target && !this.online(this.regByUser(target))) {
+		// A wait re-registered after chatd restarted gives its target time to reconnect too:
+		// every target is offline the moment chatd comes back.
+		if (minutes !== undefined && target && p.resumed !== true && !this.online(this.regByUser(target))) {
 			this.endWait(w, { outcome: "offline", target: targetName });
 			return DEFERRED;
 		}

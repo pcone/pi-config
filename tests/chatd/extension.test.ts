@@ -12,8 +12,11 @@ import { injectedWith, until } from "../chat-behaviour/bus.ts";
 import { makePiPeer, type PiStandin } from "../chat-behaviour/adapters/pi-standin.ts";
 import { type TestChatd, startChatdWithHomeserver } from "../helpers/chatd.ts";
 import { scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ownerLogin } from "../helpers/tuwunel.ts";
+import { TUWUNEL_PLATFORM_OK, ownerLogin } from "../helpers/tuwunel.ts";
 import { asCall, connectPeer, ownerCall, q, quiet, uniq } from "./harness.ts";
+
+/** The pinned Tuwunel runs on Linux x86_64 only; elsewhere these rows skip. */
+const chatRows = TUWUNEL_PLATFORM_OK ? describe : describe.skip;
 
 const restoreSubagentEnv = scrubSubagentEnv();
 afterAll(restoreSubagentEnv);
@@ -22,10 +25,12 @@ let t: TestChatd;
 let ownerToken: string;
 const standins: PiStandin[] = [];
 beforeAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	t = await startChatdWithHomeserver();
 	ownerToken = await ownerLogin(t.hs);
 }, 60_000);
 afterAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	for (const s of standins) await s.shutdown();
 	await t.dispose();
 });
@@ -45,7 +50,7 @@ async function pi(name: string, env: Record<string, string> = {}) {
 	return s.peer;
 }
 
-describe("injection", () => {
+chatRows("injection", () => {
 	it("row 8: the owner's DM reads [owner] …; a room mention reads [<who> in #room] …", async () => {
 		const b = await pi(uniq("b"));
 		const user = `@pi-${b.name}:${t.hs.serverName}`;
@@ -78,7 +83,7 @@ describe("injection", () => {
 	}, 30_000);
 });
 
-describe("a reply-wait asked in a room", () => {
+chatRows("a reply-wait asked in a room", () => {
 	it("a reply sent there while chatd was down ends it after the reconnect: the relations listing finds it", async () => {
 		_testClearWaitSources();
 		const relay = await connectPeer(t, uniq("relay"));
@@ -98,7 +103,7 @@ describe("a reply-wait asked in a room", () => {
 	}, 60_000);
 });
 
-describe("a subagent session", () => {
+chatRows("a subagent session", () => {
 	it("connects as kind subagent under its name; @room does not reach it, a DM does", async () => {
 		const s = await pi(uniq("sub"), { PI_SUBAGENT_DEPTH: "1" });
 		const user = `@pi-${s.name}:${t.hs.serverName}`;
@@ -114,7 +119,7 @@ describe("a subagent session", () => {
 	}, 30_000);
 });
 
-describe("a chatd restart", () => {
+chatRows("a chatd restart", () => {
 	it("the extension reconnects once; mail after it is injected, and a reply sent while chatd was down ends the wait", async () => {
 		_testClearWaitSources();
 		const bob = await connectPeer(t, uniq("bob"));

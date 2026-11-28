@@ -1,4 +1,7 @@
 /**
+ * Row provenance: `// inventory:` lines name the old suite's row, listed in
+ * ~/Developer/notes/stage3/peer-link-rows.md.
+ *
  * An unanswered reply request is a derived `peer` wait (decision
  * checkpoint/003; docs/design/checkpoint-waits.md). The checkpoint's reading of the wait
  * stays there; these rows pin the wait itself.
@@ -28,6 +31,7 @@ for (const adapter of ADAPTERS) {
 			await bus.reset();
 		});
 
+		// inventory: checkpoint-waits.test.ts:583
 		it("an unanswered expectReply is a wait naming the peer and the ask; the reply ends it", async () => {
 			const bob = await bus.connect(fresh("bob"), "pi");
 			const alice = await bus.connect(fresh("alice"), "pi");
@@ -64,6 +68,7 @@ for (const adapter of ADAPTERS) {
 			await until(() => (alice.waits().length === 0 ? true : undefined), 10_000, "both waits to end");
 		}, 40_000);
 
+		// inventory: checkpoint-waits.test.ts:689
 		it("a reply relayed by a third peer ends the wait it names", async () => {
 			const bobName = fresh("bob");
 			await bus.disconnect(await bus.connect(bobName, "pi"));

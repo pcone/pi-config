@@ -7,6 +7,7 @@
  *   TEST_CERT_ERROR      message the certificate check fails with
  *   TEST_NOW_OFFSET_MS   added to Date.now() for chatd's clock
  *   TEST_EXIT_AFTER_MIRROR  exit after the first mirror copy, before answering the transaction
+ *   TEST_PRESENCE_PASS_MS, TEST_SWEEP_MS  the presence pass's and the mirror sweep's intervals
  */
 
 import { loadConfig } from "../../apps/chatd/config.ts";
@@ -20,6 +21,8 @@ const chatd = await startChatd(loadConfig(), {
 		return new Date(process.env.TEST_CERT_NOT_AFTER ?? "2099-01-01T00:00:00Z");
 	},
 	afterMirrorCopy: process.env.TEST_EXIT_AFTER_MIRROR ? () => process.exit(137) : undefined,
+	presencePassMs: process.env.TEST_PRESENCE_PASS_MS ? Number(process.env.TEST_PRESENCE_PASS_MS) : undefined,
+	sweepMs: process.env.TEST_SWEEP_MS ? Number(process.env.TEST_SWEEP_MS) : undefined,
 });
 process.on("SIGTERM", async () => {
 	await chatd.stop();

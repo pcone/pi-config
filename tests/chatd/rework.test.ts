@@ -19,8 +19,11 @@ import { injectedWith, until } from "../chat-behaviour/bus.ts";
 import { ClaudeProcess } from "../chat-behaviour/claude-process.ts";
 import { type TestChatd, startChatdWithHomeserver } from "../helpers/chatd.ts";
 import { childEnv, scrubSubagentEnv } from "../helpers/subagent-env.ts";
-import { ownerLogin } from "../helpers/tuwunel.ts";
+import { TUWUNEL_PLATFORM_OK, ownerLogin } from "../helpers/tuwunel.ts";
 import { asCall, connectPeer, ownerCall, q, quiet, uniq } from "./harness.ts";
+
+/** The pinned Tuwunel runs on Linux x86_64 only; elsewhere these rows skip. */
+const chatRows = TUWUNEL_PLATFORM_OK ? describe : describe.skip;
 
 const restoreSubagentEnv = scrubSubagentEnv();
 afterAll(restoreSubagentEnv);
@@ -32,10 +35,12 @@ let ownerToken: string;
 const standins: PiStandin[] = [];
 const procs: ClaudeProcess[] = [];
 beforeAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	t = await startChatdWithHomeserver();
 	ownerToken = await ownerLogin(t.hs);
 }, 60_000);
 afterAll(async () => {
+	if (!TUWUNEL_PLATFORM_OK) return;
 	for (const s of standins) await s.shutdown();
 	for (const p of procs) p.dispose();
 	await t.dispose();
@@ -71,7 +76,7 @@ async function untilJoined(name: string, room: string): Promise<void> {
 	);
 }
 
-describe("H1: ack is idempotent", () => {
+chatRows("H1: ack is idempotent", () => {
 	it("a repeated ack, alone or in a batch, reports already-acked and acks the rest", async () => {
 		const a = await connectPeer(t, uniq("a"));
 		const b = await connectPeer(t, uniq("b"));
@@ -95,7 +100,7 @@ describe("H1: ack is idempotent", () => {
 	}, 30_000);
 });
 
-describe("H2 and departure 4: what a reconnecting puppet catches up", () => {
+chatRows("H2 and departure 4: what a reconnecting puppet catches up", () => {
 	it("a DM sent while a subagent was offline arrives although its derived display name changed", async () => {
 		const name = uniq("sub");
 		const first = await connectPeer(t, name, "subagent", { cwd: "/tmp/aaa" });
@@ -148,7 +153,7 @@ describe("H2 and departure 4: what a reconnecting puppet catches up", () => {
 	}, 30_000);
 });
 
-describe("departure 9: pending invites at hello", () => {
+chatRows("departure 9: pending invites at hello", () => {
 	it("an invite to an offline puppet is pushed when it connects, once", async () => {
 		const name = uniq("b");
 		(await connectPeer(t, name)).close();
@@ -170,7 +175,7 @@ describe("departure 9: pending invites at hello", () => {
 	}, 30_000);
 });
 
-describe("M1: one DM room per pair", () => {
+chatRows("M1: one DM room per pair", () => {
 	it("two first sends at once make one room, and DMs to two peers at once both land in m.direct", async () => {
 		const a = await connectPeer(t, uniq("a"));
 		const b = await connectPeer(t, uniq("b"));
@@ -191,7 +196,7 @@ describe("M1: one DM room per pair", () => {
 	}, 30_000);
 });
 
-describe("M2: claimed events come back when the waiter goes", () => {
+chatRows("M2: claimed events come back when the waiter goes", () => {
 	it("a wait result's events show at the next prompt when the waiter closed without acking", async () => {
 		const name = uniq("claude");
 		const p = await connectPeer(t, uniq("p"));
@@ -212,7 +217,7 @@ describe("M2: claimed events come back when the waiter goes", () => {
 	}, 30_000);
 });
 
-describe("M7, M8: one session per name", () => {
+chatRows("M7, M8: one session per name", () => {
 	it("two pi hellos for one name at once: exactly one connects", async () => {
 		const name = uniq("pi");
 		const results = await Promise.allSettled([connectPeer(t, name), connectPeer(t, name)]);
@@ -230,7 +235,7 @@ describe("M7, M8: one session per name", () => {
 	}, 30_000);
 });
 
-describe("M4: the extension acks after a reconnect", () => {
+chatRows("M4: the extension acks after a reconnect", () => {
 	it("a message injected just before chatd died is acked once the extension reconnects", async () => {
 		const a = await connectPeer(t, uniq("a"));
 		let kill = false;
@@ -258,7 +263,7 @@ describe("M4: the extension acks after a reconnect", () => {
 	}, 60_000);
 });
 
-describe("M5 and the CLI's gone session", () => {
+chatRows("M5 and the CLI's gone session", () => {
 	it("watch exits 3 when the session already ended", async () => {
 		const proc = await ClaudeProcess.start(CLI, childEnv({ CHATD_SOCKET: t.socket }));
 		procs.push(proc);
@@ -272,7 +277,7 @@ describe("M5 and the CLI's gone session", () => {
 	}, 30_000);
 });
 
-describe("departures 6 and 7: what who shows", () => {
+chatRows("departures 6 and 7: what who shows", () => {
 	it("/chat-autoreply off persists across a restart of the session and shows in who", async () => {
 		const name = uniq("auto");
 		const first = await pi(name);
@@ -302,7 +307,7 @@ describe("departures 6 and 7: what who shows", () => {
 	}, 30_000);
 });
 
-describe("test review item 6: the verbs", () => {
+chatRows("test review item 6: the verbs", () => {
 	it("read moves m.read and m.fully_read, and never dev.pi.pushed", async () => {
 		const a = await connectPeer(t, uniq("a"));
 		const b = await connectPeer(t, uniq("b"));
@@ -373,7 +378,7 @@ describe("test review item 6: the verbs", () => {
 	}, 30_000);
 });
 
-describe("test review items 4 and 5: catch-up paths and paging", () => {
+chatRows("test review items 4 and 5: catch-up paths and paging", () => {
 	it("a wait registered after its reply exists ends through the relations listing alone (a relayed reply in a room)", async () => {
 		const asker = await connectPeer(t, uniq("asker"), "claude");
 		const relay = await connectPeer(t, uniq("relay"));
@@ -419,7 +424,7 @@ describe("test review items 4 and 5: catch-up paths and paging", () => {
 	}, 60_000);
 });
 
-describe("LOWs pinned", () => {
+chatRows("LOWs pinned", () => {
 	it("a socket line that is not a request object answers an error and chatd lives", async () => {
 		const c = await t.client();
 		const raw = (c as unknown as { socket: import("node:net").Socket }).socket;

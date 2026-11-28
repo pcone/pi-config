@@ -214,10 +214,11 @@ async function send(args: string[]): Promise<number> {
 		return 0;
 	}
 	const deadline = Date.now() + wait * 60_000;
+	let resumed = false;
 	for (;;) {
 		try {
 			const minutes = Math.max((deadline - Date.now()) / 60_000, 0.001);
-			const r = await client.request<WaitResult>("wait", { event_id: sent.event_id, room: sent.room, minutes });
+			const r = await client.request<WaitResult>("wait", { event_id: sent.event_id, room: sent.room, minutes, resumed });
 			if (r.outcome === "reply") {
 				await ackAll(client, r.events);
 				client.close();
@@ -237,6 +238,7 @@ async function send(args: string[]): Promise<number> {
 			// chatd went away: one reconnect window per drop, then re-register the same ask.
 			try {
 				client = await reconnectWithin(() => open(id, true), reconnectWindowMs());
+				resumed = true;
 			} catch (gone) {
 				throw new Exit(1, `chat: ${(gone as Error).message}`);
 			}

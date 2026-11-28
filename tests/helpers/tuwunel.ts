@@ -30,6 +30,9 @@ const fetchHint = (dir: string) =>
 
 const verified = new Set<string>();
 
+/** The release ships for Linux x86_64 only: elsewhere the chat rows skip (bin/setup says so). */
+export const TUWUNEL_PLATFORM_OK = process.platform === "linux" && process.arch === "x64";
+
 /** The cached binary's path, after checking the release archive's sha256 once per process. */
 export function tuwunelBinary(home = homedir()): string {
 	const dir = tuwunelCacheDir(home);
@@ -154,10 +157,24 @@ export async function startTuwunel(): Promise<TestHomeserver> {
 		const p = proc;
 		proc = undefined;
 		p.kill("SIGTERM");
+		const killed = setTimeout(() => p.kill("SIGKILL"), 10_000);
 		await p.exited;
+		clearTimeout(killed);
 	}
 
-	await start();
+	try {
+		await start();
+	} catch (err) {
+		// A failed start leaves no server and no directory behind.
+		if (proc) {
+			const p = proc;
+			proc = undefined;
+			p.kill("SIGKILL");
+			await p.exited;
+		}
+		rmSync(dir, { recursive: true, force: true });
+		throw err;
+	}
 	const hs: TestHomeserver = {
 		url,
 		serverName: TEST_SERVER_NAME,
@@ -174,7 +191,12 @@ export async function startTuwunel(): Promise<TestHomeserver> {
 			rmSync(dir, { recursive: true, force: true });
 		},
 	};
-	await waitForOwner(hs);
+	try {
+		await waitForOwner(hs);
+	} catch (err) {
+		await hs.dispose();
+		throw err;
+	}
 	return hs;
 }
 

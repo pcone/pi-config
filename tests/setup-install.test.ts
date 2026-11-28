@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { childEnv } from "./helpers/subagent-env.ts";
-import { TUWUNEL_ASSET, TUWUNEL_SHA256, tuwunelBinary, tuwunelCacheDir } from "./helpers/tuwunel.ts";
+import { TUWUNEL_ASSET, TUWUNEL_PLATFORM_OK, TUWUNEL_SHA256, tuwunelBinary, tuwunelCacheDir } from "./helpers/tuwunel.ts";
 
 const SETUP = join(import.meta.dir, "..", "bin", "setup");
 const HOOK = join(import.meta.dir, "..", "bin", "pre-push");
@@ -425,7 +425,7 @@ describe("bin/setup — the Tuwunel test binary", () => {
 		expect(ghCalls(env)).toContain(`release download v2.1.0 -R matrix-construct/tuwunel -p ${TUWUNEL_ASSET}`);
 	}, 20_000);
 
-	it("fetches the pinned release, checks it and unpacks an executable", async () => {
+	it.skipIf(!TUWUNEL_PLATFORM_OK)("fetches the pinned release, checks it and unpacks an executable", async () => {
 		const real = join(tuwunelBinary(), "..", TUWUNEL_ASSET);
 		const env = await skeleton({ baba: "dangling", platform: "Linux", machine: "x86_64", ghAsset: real });
 		const result = await run(env);

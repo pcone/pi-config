@@ -31,6 +31,7 @@ import {
 } from "../extensions/lib/waits.ts";
 import { PI_SUBAGENT_META_DIR_ENV } from "../extensions/lib/subagent-state.ts";
 import { type TestChatd, startChatdWithHomeserver } from "./helpers/chatd.ts";
+import { TUWUNEL_PLATFORM_OK } from "./helpers/tuwunel.ts";
 import { setEnvForRow } from "./helpers/subagent-env.ts";
 
 // ---------------------------------------------------------------------------
@@ -500,7 +501,7 @@ describe("derived: subagent", () => {
 // and a Tuwunel on loopback (tests/helpers/chatd.ts).
 // ---------------------------------------------------------------------------
 
-describe("derived: chat mail", () => {
+describe.skipIf(!TUWUNEL_PLATFORM_OK)("derived: chat mail", () => {
 	let chatd: TestChatd;
 	let handlers: Map<string, Array<(event: any, ctx: any) => unknown>>;
 	let injected: string[];

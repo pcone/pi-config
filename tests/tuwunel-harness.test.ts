@@ -14,6 +14,7 @@ import {
 	ownerLogin,
 	startTuwunel,
 	tuwunelBinary,
+	TUWUNEL_PLATFORM_OK,
 	tuwunelCacheDir,
 } from "./helpers/tuwunel.ts";
 
@@ -39,7 +40,7 @@ describe("tuwunel harness", () => {
 		expect(() => tuwunelBinary(home)).toThrow(/has sha256 [0-9a-f]{64}, expected 05c686ae/);
 	});
 
-	it("starts a fresh server: the owner logs in, and an event reaches the registered appservice port", async () => {
+	it.skipIf(!TUWUNEL_PLATFORM_OK)("starts a fresh server: the owner logs in, and an event reaches the registered appservice port", async () => {
 		const hs: TestHomeserver = await startTuwunel();
 		const got: string[] = [];
 		const as = Bun.serve({
