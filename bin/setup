@@ -28,7 +28,7 @@ fail() {
 
 # ── The global pi install ───────────────────────────────────────────────────
 # pi is installed globally; bun test, and an extension run directly (`bun
-# extensions/peer-link/external.ts`), do not respect NODE_PATH. So the repo's
+# apps/chatd/cli.ts`), do not respect NODE_PATH. So the repo's
 # node_modules links point into the global install, resolved rather than
 # hard-coded: `npm root -g` is what npm and Homebrew both answer with.
 #
@@ -156,6 +156,53 @@ case "$mainline_rc" in
     echo "pi.mainline: unset, set to main in this clone" ;;
   *) fail "git config --get pi.mainline failed (status $mainline_rc)" ;;
 esac
+
+# ── Tuwunel, the chat rows' homeserver ──────────────────────────────────────
+# tests/helpers/tuwunel.ts runs the pinned release binary from this cache and
+# checks the archive's sha256 there too. The release ships for Linux x86_64
+# only, so elsewhere one line says the chat rows cannot run.
+TUWUNEL_VERSION="v2.1.0"
+TUWUNEL_ASSET="v2.1.0-release-default-x86_64-v1-linux-gnu-tuwunel.zst"
+TUWUNEL_SHA256="05c686aeae2c8ef01d288de844347c0630cd982862b5f9cbb8972cd20dc424a4"
+TUWUNEL_DIR="$HOME/.cache/pi-config/tuwunel/$TUWUNEL_VERSION"
+if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+  echo "tuwunel: no release binary for $(uname -s) $(uname -m); the chat rows (tests/chat-behaviour, tests/chatd) need Linux x86_64"
+elif [ -x "$TUWUNEL_DIR/tuwunel" ] && [ -f "$TUWUNEL_DIR/$TUWUNEL_ASSET" ]; then
+  echo "tuwunel: cached at $TUWUNEL_DIR"
+else
+  command -v gh >/dev/null 2>&1 || fail "gh is not on PATH; it fetches the Tuwunel test binary ($TUWUNEL_ASSET)"
+  command -v zstd >/dev/null 2>&1 || fail "zstd is not on PATH; it unpacks the Tuwunel test binary"
+  mkdir -p "$TUWUNEL_DIR"
+  gh release download "$TUWUNEL_VERSION" -R matrix-construct/tuwunel -p "$TUWUNEL_ASSET" -D "$TUWUNEL_DIR" --clobber \
+    || fail "gh release download $TUWUNEL_VERSION -R matrix-construct/tuwunel -p '$TUWUNEL_ASSET' failed"
+  sum="$(sha256sum "$TUWUNEL_DIR/$TUWUNEL_ASSET" | cut -d' ' -f1)"
+  if [ "$sum" != "$TUWUNEL_SHA256" ]; then
+    rm -f "$TUWUNEL_DIR/$TUWUNEL_ASSET"
+    fail "$TUWUNEL_ASSET has sha256 $sum, expected $TUWUNEL_SHA256; removed it"
+  fi
+  zstd -q -d -f "$TUWUNEL_DIR/$TUWUNEL_ASSET" -o "$TUWUNEL_DIR/tuwunel"
+  chmod +x "$TUWUNEL_DIR/tuwunel"
+  echo "tuwunel: fetched $TUWUNEL_VERSION to $TUWUNEL_DIR"
+fi
+
+# ── chatd, a systemd user service (015/31) ──────────────────────────────────
+# The unit runs chatd from this checkout. SYSTEMD_USER_DIR redirects the
+# install (a test, a worktree run); a redirected install is never enabled, so
+# only a run into the real user unit directory touches systemd.
+UNIT_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+BUN_BIN="$(command -v bun || true)"
+[ -n "$BUN_BIN" ] || fail "bun is not on PATH; chatd.service runs chatd with it"
+mkdir -p "$UNIT_DIR"
+sed -e "s|@BUN@|$BUN_BIN|g" -e "s|@REPO@|$REPO|g" "$REPO/apps/chatd/chatd.service" > "$UNIT_DIR/chatd.service"
+if [ -n "${SYSTEMD_USER_DIR:-}" ]; then
+  echo "chatd.service: written to $UNIT_DIR (SYSTEMD_USER_DIR set: not enabled)"
+elif command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload || fail "systemctl --user daemon-reload failed"
+  systemctl --user enable chatd.service || fail "systemctl --user enable chatd.service failed"
+  echo "chatd.service: installed and enabled in $UNIT_DIR; start it once ~/.config/chatd/tokens exists: systemctl --user start chatd"
+else
+  echo "chatd.service: written to $UNIT_DIR; no systemctl here, so it is not enabled"
+fi
 
 # ── baba ────────────────────────────────────────────────────────────────────
 # `extensions/baba` is a tracked symlink to the baba-pi repo, which needs the

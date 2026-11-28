@@ -61,7 +61,8 @@ Broadcast stops being a separate concept: it is a post in a shared room, pulled,
 **Identity.** Each peer name is one Matrix user, `@pi-<name>:chat.sjmcd.me`, created on first use. Claude Code sessions use their peer name as today. Every user shows a readable display name (015/20): the session's name, or for an unnamed session one chatd derives from its repo and role and keeps unique. Session id, working directory and model go in the presence status message, and in custom profile fields if Tuwunel supports them (MSC4133). The owner's account sits outside the namespace, so no agent process can send as the owner: the server enforces 015/2, and the forged-owner question of the first draft goes away.
 
 **State lives on the server.**
-- Unread state is each puppet's Matrix read marker. A pushed message is marked read only after the session injects it, so delivery is at-least-once, as today.
+- The pushed-delivery state is room account data `dev.pi.pushed` on each puppet, written only by `ack`; `read` moves the read markers and never it (WO-2026-107: read receipts as the delivery state would lose an unacked push on restart).
+- The model-error mail's last correspondent is account data `dev.pi.last_correspondent` on the session's puppet (008).
 - The last-digest time and engaged rooms live in the puppet's Matrix account data.
 - The local daemon keeps no state a restart would lose.
 

@@ -303,8 +303,8 @@ update (038's supersession note landed at `2bbcae3`).
 One known residue from WO-2026-065's quota-mechanism refactor
 (`extensions/lib/quota.ts`), a behaviour-preserving cleanup deferred because it moves a
 rendered byte this order had to hold still. The landing's other residue — the "online
-peers other than self" predicate written twice in peer-link — closed in WO-2026-066
-(`onlineExcept` in `extensions/peer-link/mailbox.ts`, both callers).
+peers other than self" predicate written twice — closed in WO-2026-066, and gone with
+the file mailbox (WO-2026-107).
 
 - **Overflow unification.** `QuotaSnapshot.overflow` keeps z.ai/MiniMax *clipping* the
   first part while Go and Kimi *ellipsise* it — each provider's pre-refactor behaviour,

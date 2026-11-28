@@ -8,8 +8,8 @@
  * before `session.dispose()`, i.e. `if (runner.hasHandlers(...)) await runner.emit(...)`).
  *
  * A test that builds an `AgentSession` directly therefore leaves every extension that
- * owns a timer running for the rest of the bun process. peer-link's 2 s scan and 5 s
- * heartbeat kept publishing into a mailbox its row had already deleted, and the next
+ * owns a timer running for the rest of the bun process. An extension's interval timers
+ * kept writing into a directory its row had already deleted, and the next
  * row in the file took the ENOENT (pi-config#25). The helper exists so the three e2e
  * harnesses do not each grow their own copy of that two-line teardown.
  *

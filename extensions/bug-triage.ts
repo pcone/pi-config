@@ -11,11 +11,11 @@
  * activates only for a session explicitly launched as the triage peer
  * (and reactivates correctly on `/resume` of that named session).
  *
- * The same `--name` also drives peer-link's mailbox identity — peer-link
- * falls back to the session display name when PI_PEER_NAME is unset — so
- * `pi --name bug-triage` is the complete launch: reporters `peer_send` to
+ * The same `--name` also drives the chat identity — extensions/chat falls
+ * back to the session display name when PI_PEER_NAME is unset — so
+ * `pi --name bug-triage` is the complete launch: reporters `chat_send` to
  * "bug-triage" and it reaches this session, no env var needed. A stale
- * PI_PEER_NAME=bug-triage in the shell would hijack that mailbox identity
+ * PI_PEER_NAME=bug-triage in the shell would hijack that chat identity
  * for an unrelated session, so we warn if it's set without the name.
  *
  * The role file agents/bug-triage.md is appended to the system prompt
@@ -69,7 +69,7 @@ function readRole(): string | undefined {
 
 const KICKOFF = `## Role: bug-triage peer
 
-You are the standing bug-triage peer. Await handoffs via peer_send (they arrive as [peer:<caller>] messages). For each: reproduce, pin with a failing .cases, root-cause, file a gh issue. Ping the caller back ONLY if the bug affects their in-flight work. Full role in your system prompt.`;
+You are the standing bug-triage peer. Await handoffs via chat_send (they arrive as [peer:<caller>] messages). For each: reproduce, pin with a failing .cases, root-cause, file a gh issue. Ping the caller back ONLY if the bug affects their in-flight work. Full role in your system prompt.`;
 
 export default function bugTriageExt(pi: ExtensionAPI): void {
 	let pendingKickoff = false;
@@ -82,14 +82,14 @@ export default function bugTriageExt(pi: ExtensionAPI): void {
 			pi.events.emit("pi-config:startup-summary-item", {
 				key: "bug-triage",
 				order: 31,
-				text: `[bug-triage] Standing peer. Awaiting handoffs via peer_send("${ROLE_NAME}", …).`,
+				text: `[bug-triage] Standing peer. Awaiting handoffs via chat_send("${ROLE_NAME}", …).`,
 			});
 		} else if ((process.env.PI_PEER_NAME ?? "").trim() === ROLE_NAME) {
-			// Stale PI_PEER_NAME in the shell: peer-link would give this unrelated
-			// session the "bug-triage" mailbox identity (PI_PEER_NAME wins) and
+			// Stale PI_PEER_NAME in the shell: chat would give this unrelated
+			// session the "bug-triage" identity (PI_PEER_NAME wins) and
 			// hijack reporters' handoffs, while the role stays inactive (no --name).
 			ctx.ui.notify(
-				`PI_PEER_NAME is "${ROLE_NAME}" but this session isn't named "${ROLE_NAME}" — it would hijack the "bug-triage" mailbox. Launch the peer with --name (pi --name ${ROLE_NAME}), or unset the stale PI_PEER_NAME in your shell.`,
+				`PI_PEER_NAME is "${ROLE_NAME}" but this session isn't named "${ROLE_NAME}" — it would hijack the "bug-triage" chat identity. Launch the peer with --name (pi --name ${ROLE_NAME}), or unset the stale PI_PEER_NAME in your shell.`,
 				"warning",
 			);
 		}

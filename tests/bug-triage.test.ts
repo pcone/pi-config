@@ -42,7 +42,7 @@ describe("isBugTriagePeer — env-var is NOT the trigger (regression)", () => {
 	it("is true on the session name regardless of PI_PEER_NAME (name wins)", () => {
 		// Properly launched: both set. Misconfigured: name set, env not — role
 		// still fires on the intentional name signal (a separate warning covers
-		// the missing PI_PEER_NAME / broken mailbox).
+		// the missing PI_PEER_NAME / a stale chat identity).
 		expect(isBugTriagePeer({ PI_PEER_NAME: "bug-triage" }, "bug-triage")).toBe(true);
 		expect(isBugTriagePeer({ PI_PEER_NAME: "something-else" }, "bug-triage")).toBe(true);
 		expect(isBugTriagePeer({}, "bug-triage")).toBe(true);

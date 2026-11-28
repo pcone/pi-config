@@ -280,10 +280,10 @@ export function buildSubagentEnv(config: SubagentEnvConfig): Record<string, stri
 		// target-dir lock serialises concurrent rustc runs — the memory peak
 		// that pushes an 8 GB box into swap when several lanes build at once.
 		...(config.cargoTargetDir ? { CARGO_TARGET_DIR: config.cargoTargetDir } : {}),
-		// peer-link identity: the subagent's peer name is its session id, so
-		// the same id steers it, resumes it, and addresses peer messages to
-		// it. Always set — an inherited PI_PEER_NAME would make sibling
-		// subagents collide on one mailbox identity.
+		// chat identity: the subagent's peer name is its session id, so the
+		// same id steers it, resumes it, and addresses chat messages to it
+		// (015/30). Always set — an inherited PI_PEER_NAME would make sibling
+		// subagents collide on one chat account.
 		PI_PEER_NAME: config.sessionId,
 	};
 }

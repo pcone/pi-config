@@ -393,7 +393,7 @@ describe("extension wiring", () => {
  * session came back without `read`/`bash`/`edit`/`write`.
  */
 describe("tool loadout survives the cut", () => {
-	const TOOLS = ["read", "bash", "edit", "write", "subagent", "peer_send"].map((name) => ({
+	const TOOLS = ["read", "bash", "edit", "write", "subagent", "chat_send"].map((name) => ({
 		name,
 		description: `${name} tool`,
 		parameters: { type: "object", properties: {} },

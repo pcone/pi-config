@@ -7,6 +7,8 @@ date: 2026-11-26
 
 # Background reply-waits for a Claude Code peer
 
+> **Superseded in part (owner 2026-11-27, [015](015-matrix-chat-for-peers.md) rule 15).** Matrix replaces the peer-link file mailbox, removed rather than bridged. The behaviour this ruling set that carries over, and what replaced the rest, is in `docs/design/chat.md`.
+>
 > **Superseded in part (owner 2026-11-26, [013](013-tos-line-credentials-not-turns.md)).** A watcher on unsolicited mail is permitted, not rejected. The reply-wait mechanism stands.
 
 **Ruling (owner, 2026-11-26).** Claude proposed that a background waiter for a reply to Claude's own send may outlive the turn and wake the session, against 003's rule that nothing starts a Claude turn. Scott: "this sounds good to me". On the wait's length he asked whether to "just ask for an update from the pi orchestrators before interval expiry", then: "interrupting the pi orchestrator with a message is fine if it's infrequent - if we're just asking for an update on progress after 30-45 mins to sanity check that it's not churning I don't think that's an issue".

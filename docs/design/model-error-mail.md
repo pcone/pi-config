@@ -1,12 +1,14 @@
 # Model error mail
 
-A model request that fails with an HTTP 4XX or 5XX mails a peer from the
-peer-link extension. No model involvement: the seat's turn is already dead, so
-nothing in the transcript is the model's to write.
+A model request that fails with an HTTP 4XX or 5XX mails a peer from the chat
+extension, as a DM from `@pi-system`. No model involvement: the seat's turn is
+already dead, so nothing in the transcript is the model's to write.
 
-Code: `extensions/peer-link/model-error-mail.ts` (classifier, throttle,
-recipient, envelope text), wired in `extensions/peer-link/index.ts`.
-Rulings: `decisions/external-tools/008-model-error-mail.md`. Order:
+Code: `extensions/chat/model-error-mail.ts` (classifier, throttle, recipient,
+mail text), wired in `extensions/chat/index.ts`; chatd posts the mail
+(`system_mail`, docs/design/chat.md § `@pi-system`). Rulings:
+`decisions/external-tools/008-model-error-mail.md`, 015/15. Orders:
+`work-orders/WO-2026-107-chatd-cutover.md` (the chat path). Earlier:
 `work-orders/WO-2026-065-model-error-mail.md`; liveness gate and loud init:
 `work-orders/WO-2026-066-recipient-liveness.md`; the external correspondent:
 `work-orders/WO-2026-067-external-correspondent.md`.
@@ -42,16 +44,15 @@ The non-HTTP forms are not a response with a status, so the owner's "4XX/5XX"
 does not cover them (decision 008 reads it as excluding user aborts too).
 `Provider returned error` on its own is the one to watch: if a usage stall turns
 out to present that way, it is a follow-up with evidence, not a reason to widen
-the regex. `tests/model-error-mail.test.ts` holds the table.
+the regex. `tests/chat-behaviour/model-error-mail.test.ts` holds the table.
 
 ## No model involvement
 
-The extension composes the envelope and writes it with `sendEnvelope`. It does
-not call a tool, does not `sendUserMessage`, and adds no user message or tool
-call to this session's branch. `tests/model-error-mail.test.ts` asserts the
-branch itself: it drives the wired extension over an in-memory session whose
-`sendUserMessage` appends a user entry, then checks the branch's entries are
-unchanged and the mail still went out.
+The extension composes the mail and hands it to chatd with `system_mail`. It
+does not call a tool, does not `sendUserMessage`, and adds no user message or
+tool call to this session's branch. `tests/chat-behaviour/model-error-mail.test.ts`
+drives the wired extension and checks that nothing was injected into the failing
+session while the mail still went out.
 
 ## Throttle
 
@@ -65,53 +66,42 @@ One mail per session per 30 minutes.
   when the dropped window opened. It then resets.
 - A non-error assistant message ends the stall: the window and the counter
   clear, so a new stall after a good turn mails immediately.
-- No deliverable recipient — no peer online now and no registered external
-  correspondent named — one warn, nothing mailed. The window does not open, so
-  the next failure after a peer becomes reachable still mails.
+- No deliverable recipient — no peer online now, or `system_mail` failed — one
+  warn, nothing mailed. The window does not open, so the next failure after a
+  peer becomes reachable still mails.
 
 State is in-process. A window in progress does not survive a restart; the
 recipient does (below).
 
-## Recipient — the last correspondent, while it is reachable
+## Recipient — the last correspondent, while it is online
 
-The peer that most recently sent this session an envelope: the `from` of the
-newest delivered envelope, written to `_state/<peer>.json` in the mailbox so a
-restart keeps it. The mail goes to that peer when it is reachable, and otherwise
-to every peer online now. With no reachable peer, nothing is sent. No config
-key, no environment variable, no hardcoded id.
+The peer whose pushed message this session most recently delivered. chatd
+writes it on ack as account data `dev.pi.last_correspondent` on the session's
+puppet and returns it at `hello`, so a restart keeps it; the extension tracks
+later deliveries itself. The owner counts (`owner`); `@pi-system` does not. No
+config key, no environment variable, no hardcoded id.
 
-Reachable means one of two things, one predicate over the named peer:
+The mail goes to that peer while it is online (`who`), the owner always, and
+otherwise as `@pi-system` DMs to every online non-subagent peer, a Claude
+session included: a Claude session is online while registered
+(WO-2026-107). With no recipient, nothing is sent. `recipients()` in
+`extensions/chat/model-error-mail.ts` is the rule.
 
-- **Online now** — its heartbeat is inside the liveness window. This is the
-gate the owner's "online, else broadcast" ruling asked for (owner 2026-11-03,
-decision external-tools/008); a pi correspondent can be gone by the next
-failure, because a subagent heartbeats as a real peer and its heartbeat ages
-out when it exits, and mail to a dead peer queues in an inbox nobody reads —
-the silence this feature exists to break, one peer over. Liveness is the same
-read the send gate uses, `listPeers(...).online` over the heartbeat files.
-- **A registered external peer** — `external: true` in its registration. It is
-never online: a Claude Code seat reads its inbox only when its user prompts
-(`docs/design/peer-link-external.md`), so it is reachable *when named* and not
-when swept. That is why the broadcast arm stays online-only even when the
-external peer is the only other peer: sweeping it would queue mail into an
-inbox nobody has promised to read, while naming it delivers on the next prompt
-(owner 2026-11-03, decision 008; decision 003 for prompt-driven delivery).
+An offline correspondent is not a recipient: a subagent that has exited reads
+nothing, which is the silence this mail exists to break (owner 2026-11-03,
+decision 008).
 
-`recipients()` in `extensions/peer-link/model-error-mail.ts` is the rule.
-
-Recording is unchanged by the gate: the sender of a delivered envelope is
+Recording does not depend on liveness: the sender of a delivered message is
 recorded whether or not it is online, because the record says who wrote last,
 not who can receive.
 
 This session is never a recipient, even when the record names it: a session
-that mailed itself would otherwise become its own correspondent, and the model
-error would come back as an injected user message — the one thing the mail path
-must never cause. The correspondent arm carries the self term itself; the
-broadcast arm gets it from `onlineExcept` in `mailbox.ts`.
+that mailed itself would become its own correspondent, and the model error
+would come back as an injected user message — the one thing the mail path must
+never cause. chatd refuses a `system_mail` to its sender too.
 
-"Delivered" means the extension's inbox scan injected it and acked it — an
-envelope read but not delivered is retried, not recorded. Two envelopes landing
-in the same scan window resolve in directory-read order, not by `sentAt`.
+"Delivered" means injected and acked: a pushed event that failed to inject is
+retried, not recorded.
 
 ## The mail
 
@@ -128,14 +118,12 @@ wants more reads the sender's session log.
 
 ## Delivery
 
-Unchanged from peer-link. A pi peer picks the envelope up on its next inbox
-scan. A Claude Code peer reads it on its user's next prompt and starts no turn
-(decision 003, 008 § Constraint).
+A DM like any other: injected into a pi peer as `[peer:system] …`, shown to a
+Claude Code peer at its next prompt or by its watch (docs/design/chat.md).
 
 ## Cost
 
 Nothing runs on a turn that has no qualifying failure: one `stopReason` test
-per assistant message, then one regex test. The mailbox is only read when a mail
-is about to go out, so an idle minute costs nothing.
-`tests/model-error-mail.test.ts` covers the behaviour; the measured figures are
-in the landing report for WO-2026-065.
+per assistant message, then one regex test. chatd is asked (`who`,
+`system_mail`) only when a mail is about to go out, so an idle minute costs
+nothing.

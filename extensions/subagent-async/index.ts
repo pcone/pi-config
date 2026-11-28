@@ -1749,7 +1749,7 @@ export default function (pi: ExtensionAPI) {
 							"",
 							"The session id is the subagent's real pi session id — search it in /resume",
 							"or join it from a terminal with `pi --session <id>`.",
-							"It is also its peer-link name: message it anytime with peer_send (to: the session id).",
+							"It is also its chat name: message it anytime with `chat_send` (to: the session id).",
 							"",
 							"Watch live:",
 							"```bash",

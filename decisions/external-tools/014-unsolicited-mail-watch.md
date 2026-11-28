@@ -7,6 +7,8 @@ date: 2026-11-27
 
 # Unsolicited-mail watch for a Claude Code peer
 
+> **Superseded in part (owner 2026-11-27, [015](015-matrix-chat-for-peers.md) rule 15).** Matrix replaces the peer-link file mailbox, removed rather than bridged. The behaviour this ruling set that carries over, and what replaced the rest, is in `docs/design/chat.md`.
+
 **Ruling (owner, 2026-11-27).** Scott asked for the watcher 013 permits: "yeah we want to build this, but do a review of broadcast type messages - perhaps anything that broadcasts rather than sends to a specific session should probably not trigger this?" Asked how a broadcast is marked, he picked "Sender flag (Recommended)": envelopes carry a `broadcast` field, pi's `to: "*"` sets it, and `external.ts send` gains a multi-recipient form that sets it. Asked whether pi's `*` should reach Claude sessions, he picked "Include Claude (Recommended)": each listed external peer gets a copy, flagged, read at its next prompt.
 
 **Ruling (owner, 2026-11-27, second round).** Asked how the watch should treat the 24 h expiry of an external registration, Scott picked "Watch refreshes (Recommended)": while it runs, the watch refreshes the session's registration once a minute and exits quietly when its parent process is gone. Asked what `*` with `--require-online` reaches from a Claude session, he picked "Match pi's rule (Recommended)": only online pi peers, zero targets an error, one shared function.

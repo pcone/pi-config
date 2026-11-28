@@ -644,10 +644,10 @@ describe("buildSubagentArgs (session id unification)", () => {
 	});
 });
 
-// ── Spawn env: peer-link identity ──────────────────────────────────────────
+// ── Spawn env: chat identity ──────────────────────────────────────────
 // The subagent's peer name is its session id (PI_PEER_NAME), so the same id
 // steers it, resumes it, and addresses peer messages to it. Always set — an
-// inherited PI_PEER_NAME would make sibling subagents collide on one mailbox.
+// inherited PI_PEER_NAME would make sibling subagents collide on one chat account.
 
 describe("buildSubagentEnv (peer identity)", () => {
 	it("names the subagent after its session id", () => {
