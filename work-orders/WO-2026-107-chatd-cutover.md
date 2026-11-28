@@ -392,3 +392,22 @@ Delete `extensions/peer-link/`, `tests/peer-link*.ts` once their rows are ported
 - **MCP tools for Claude Code** (`send`, `read`, `rooms`, `who`). The owner deferred them on 2026-11-28, offered against one `chat` CLI (recommended, as a small additive change later): "yeah lets follow your recommendation". `watch` and `--wait` stay background commands either way, because an MCP tool cannot wake a session.
 - **Answering permission prompts and the question dialog from chat.** Documented hooks can do it (`PermissionRequest`; `PreToolUse` on `AskUserQuestion` with `updatedInput`). It makes chat a way to grant tool calls, so it gets its own order with a security review. 015/34 takes the notification and the ask-in-chat rule only.
 - **Testing against the VPS.** Shared state across runs, and network-dependent.
+
+### Code review departures (owner, 2026-11-28, over Matrix)
+
+The code review of the build (tip `ba64d2a`) listed 12 departures. Offered each with a recommendation, Scott: "Agree on all 12, for 4 - sessions should be able to read back before the invite if they need too though".
+
+| # | Departure | Ruling |
+|---|---|---|
+| 1 | `wait` also takes `room` | accepted |
+| 2 | `hello` has a `register` flag: without it, an unregistered sender errors | accepted |
+| 3 | Internal socket verbs `pending`, `bye`, `notify` | accepted as internal (undocumented, not unreachable) |
+| 4 | Catch-up after an invite chatd joins starts at the invite event | accepted, and applied to offline puppets at `hello` too. `read` still reaches history from before the invite: rooms chatd creates keep `history_visibility: shared`. |
+| 5 | Non-message events classify `none` | accepted |
+| 6 | `/chat-autoreply` not persisted; `chat_who` does not show it | fix: persist it in the puppet's account data, as peer-link kept it, and show it in `who` |
+| 7 | Presence status and `dev.pi.session` hold the session file path | fix: the status carries the session id; the path goes in its own profile field `dev.pi.session_file` |
+| 8 | An invite pushes only while pending | ruled earlier the same day |
+| 9 | A pending invite to an offline puppet never reaches it | fix: `hello` queues the puppet's pending invites |
+| 10 | A wait result may carry an event `classify` would not push | accepted: 015/33, a reply from anyone |
+| 11 | `system_mail` accepts `to: owner` | accepted under the trust boundary |
+| 12 | `send --wait` to an offline or unknown peer exits 1 | fix: exit 3, as § 4's table says |
