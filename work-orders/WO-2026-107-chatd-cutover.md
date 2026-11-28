@@ -418,3 +418,7 @@ The code review of the build (tip `ba64d2a`) listed 12 departures. Offered each 
 - `hello` carries `sessionFile` (departure 7).
 
 The synthetic `invite:<room>` delivery ids write no `dev.pi.pushed`. The marker stays `{event_id}` as specified.
+
+**Landing rulings (owner, 2026-11-28, over Matrix).** Offered two points before the landing, each recommended, Scott: "Accept 1 and 2, agree on landing seq".
+- The chat tests add about 48 s to the full suite (281 s against 244 s). Accepted. Sharing one Tuwunel server across the chat tests is deferred debt, carried by S4 in `WO-matrix-bridge.md`.
+- Each puppet's account data `dev.pi.invites_pushed` records the invites already pushed, so an invite pushes once while pending. Entries for invites no longer pending are pruned.
